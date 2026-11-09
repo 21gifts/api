@@ -1,7 +1,7 @@
 # Shop identity
 
 Status: **S1, S2, S3 and S5 implemented** in this repository. S4, the shop
-page, is in 21gifts/app#646 (open, not merged). The API route and response
+page, is in 21gifts/app (21gifts/app#646, merged 2026-10-21). The API route and response
 fields are documented in `SPEC.md`; the durable table is documented in
 `docs/schema/shop_identity.sql`.
 
@@ -314,7 +314,7 @@ Kind 0 content of a public shop:
 | `banner`       | absolute URL of `/messages/:id/photo/1.<ext>`, otherwise `KIND0_BANNER_URL` |
 | `website`      | `<site origin>/{npub}`, see below                                           |
 | `nip05`        | `<local>@<domain>`, see below                                               |
-| `lud16`        | the till account's Lightning address, see below                             |
+| `lud16`        | the till account's receiving address (verified wallet), see below           |
 
 The `picture` and `banner` URLs need only the content types of photo 0
 (`photo.<ext>`) and of the extra still stored at index 1 (`photo/1.<ext>`).
@@ -366,12 +366,13 @@ Accounts call both without them and keep their content.
 
 Kind 10002 lists the same write relays as an account's.
 
-The `lud16` is a plain Lightning address: the till account's
-`lightning_address`, set only when the till account has a name (so it has
-its own kind 0), a non-blank username and a non-blank address. That is the
+The `lud16` is the till account's receiving address
+(`<username>@<host>`), set only when the till account has a name (so it has
+its own kind 0), a non-blank username and a verified wallet, and the LNURL
+server is configured. That is the
 `payUsername` rule of `GET /shops/:npub` plus the name, so a till account
-without a username lists the shop but gives it no `lud16`, although its own
-kind 0 carries one. The till account's LNURL response is unchanged, so this
+without a username or without a verified wallet lists the shop but gives it
+no `lud16`. The till account's LNURL response is unchanged, so this
 spec adds no zap receipts for a shop key.
 
 ### NIP-05
@@ -542,8 +543,8 @@ The JSON above is a map-complete shop. `place` is null when the note has no
 finite coordinates. When `place` is present, `lat` and `lng` are as in
 `GET /messages/places`, and `address` is null unless every structured part
 is non-blank. `payUsername` is the till
-account's username when the account has a username and a non-empty linked
-Lightning address is stored; otherwise `null`. Whether that address resolves
+account's username when the account has a username and a receiving address
+(a verified wallet with the LNURL server configured); otherwise `null`. Whether that address resolves
 at payment time is not checked here; the pay page reports that as it does for
 accounts.
 `nip05` is `null` when `nip05Domain` gives `null`, the same case in which
@@ -999,7 +1000,7 @@ paged start-up pass deploy together. The old `syncShopOcpPlace`, `removeShopOcpP
 1. S1 and S2: shop keys, backfill, profiles, NIP-05.
 2. S3: `GET /shops/:npub`, `shopNpub`.
 3. S5 ships in this same release with both outboxes, both senders and start-up.
-4. S4 is 21gifts/app#646 (open); it goes live before this API.
+4. S4 is 21gifts/app#646 (merged 2026-10-21); it went live before this API.
 5. Shop kind 0 uses `<site origin>/{npub}`.
 
 S1, S2, S3 and S5 are one pull request and one release in this repository.

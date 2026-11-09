@@ -1,14 +1,32 @@
+import { createHmac } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MergeDb } from '@/lib/account-merge';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
+import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { DiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
+import { InMemoryMemberEventStore } from '@/lib/member-event-store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
+import { InMemoryPushStore, PostgresPushStore } from '@/lib/push-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
+import type { ShopPayments } from '@/lib/shop-payment';
+import { parseNostrKek } from '@/lib/nostr/kek';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { InMemoryWalletStore } from '@/lib/wallet-store';
+import {
+  BOLT11,
+  FREE_PAYMENTS_ENV,
+  LNURL_SERVER,
+  WALLET_PUBKEY,
+  createWalletAccount,
+  walletLnurlFetch,
+} from '@/__tests__/helpers/wallet-lnurl';
+import { PINNED, seedPinnedAccount, stagePendingRecovery } from '@/__tests__/helpers/recovery';
 
 function b64url(bytes: Uint8Array): string {
   return Buffer.from(bytes)
@@ -172,8 +190,6 @@ describe('createApp', () => {
       linkingKey: `02${'a'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -203,6 +219,13 @@ describe('createApp', () => {
     const app = createApp({ debugToken: '' });
     const res = await app.request('/debug/push-ping', { method: 'POST' });
     expect(res.status).toBe(503);
+  });
+
+  it('mounts the push broadcast routes behind the debug token', async () => {
+    const app = createApp({ debugToken: '' });
+    const res = await app.request('/debug/push-broadcast', { method: 'POST' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
   it('returns 503 on POST /debug/passkey-renew/reopen when debugToken is blank', async () => {
@@ -317,8 +340,6 @@ describe('createApp', () => {
       linkingKey: `02${'a'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -331,8 +352,6 @@ describe('createApp', () => {
       linkingKey: `02${'b'.repeat(64)}`,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -345,8 +364,6 @@ describe('createApp', () => {
       linkingKey: `02${'d'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -359,8 +376,6 @@ describe('createApp', () => {
       linkingKey: `02${'e'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -373,8 +388,6 @@ describe('createApp', () => {
       linkingKey: `02${'f'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'f'.repeat(64),
@@ -387,8 +400,6 @@ describe('createApp', () => {
       linkingKey: `02${'0'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '0'.repeat(64),
@@ -401,8 +412,6 @@ describe('createApp', () => {
       linkingKey: `02${'1'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '1'.repeat(64),
@@ -415,8 +424,6 @@ describe('createApp', () => {
       linkingKey: `02${'2'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '2'.repeat(64),
@@ -429,8 +436,6 @@ describe('createApp', () => {
       linkingKey: `02${'3'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '3'.repeat(64),
@@ -443,8 +448,6 @@ describe('createApp', () => {
       linkingKey: `02${'c'.repeat(64)}`,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -579,6 +582,69 @@ describe('createApp', () => {
     expect(res.status).toBe(200);
   });
 
+  it('links in-memory push subscriptions to the in-memory recovery commit', async () => {
+    const commitWith = async (pushStore: InMemoryPushStore | PostgresPushStore) => {
+      const authStore = new InMemoryAuthStore();
+      createApp({ authStore, pushStore });
+      const push = new InMemoryPushStore();
+      const subscriber = pushStore instanceof InMemoryPushStore ? pushStore : push;
+      await createWalletAccount(authStore, 'acc', 'ada');
+      await subscriber.upsertSubscription({
+        endpoint: 'https://push.example/acc',
+        accountId: 'acc',
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(1),
+        sessionToken: null,
+      });
+      const newKey = `03${'2'.repeat(64)}`;
+      const now = Date.now();
+      await authStore.startRecoveryChallenge({
+        accountId: 'acc',
+        oldSparkPubkey: WALLET_PUBKEY,
+        challenge: {
+          id: 'c1',
+          type: 'recovery',
+          challenge: 'chal',
+          accountId: 'acc',
+          consumed: false,
+          createdAt: now,
+        },
+        now,
+      });
+      await authStore.storePendingRecovery({
+        challengeId: 'c1',
+        pending: {
+          accountId: 'acc',
+          oldSparkPubkey: WALLET_PUBKEY,
+          newSparkPubkey: newKey,
+          credentialId: 'new-credential',
+          publicKey: Uint8Array.of(1),
+          signCount: 0,
+          createdAt: now,
+          forwardedAt: null,
+        },
+        now,
+      });
+      await authStore.markRecoveryForwarded({
+        newSparkPubkey: newKey,
+        oldSparkPubkey: WALLET_PUBKEY,
+        username: 'ada',
+        now,
+      });
+      expect(
+        await authStore.commitRecovery({ accountId: 'acc', newSparkPubkey: newKey, now }),
+      ).toBe('committed');
+      return subscriber.listByAccount('acc');
+    };
+    expect(await commitWith(new InMemoryPushStore())).toEqual([]);
+    const unlinked = new PostgresPushStore({
+      query: async () => [],
+      execute: async () => undefined,
+    });
+    expect(await commitWith(unlinked)).toHaveLength(1);
+  });
+
   it('returns 401 for unauthenticated GET /conversations', async () => {
     const app = createApp();
     const res = await app.request('/conversations');
@@ -605,6 +671,137 @@ describe('createApp', () => {
     const app = createApp({ debugToken: '' });
     const res = await app.request('/debug/api-log');
     expect(res.status).toBe(503);
+  });
+
+  it('returns 401 on POST /me/wallet/report and POST /me/events without a session', async () => {
+    const app = createApp();
+    const wallet = await app.request('/me/wallet/report', { method: 'POST' });
+    expect(wallet.status).toBe(401);
+    expect(await wallet.json()).toEqual({ error: 'Unauthorized' });
+    const hearts = await app.request('/me/wallet/hearts', { method: 'POST' });
+    expect(hearts.status).toBe(401);
+    expect(await hearts.json()).toEqual({ error: 'Unauthorized' });
+    const events = await app.request('/me/events', { method: 'POST' });
+    expect(events.status).toBe(401);
+    expect(await events.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('stores a wallet report and member events when the stores are omitted', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-default',
+      linkingKey: `02${'a'.repeat(64)}`,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await authStore.createSession({
+      token: 'tok-default',
+      accountId: 'acc-default',
+      createdAt: Date.now(),
+    });
+    const app = createApp({ authStore });
+    const headers = {
+      authorization: 'Bearer tok-default',
+      'content-type': 'application/json',
+    };
+    const wallet = await app.request('/me/wallet/report', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        balanceSats: 1000,
+        syncedAt: new Date().toISOString(),
+        payments: [
+          {
+            id: 'p1',
+            direction: 'out',
+            status: 'completed',
+            amountSats: 21,
+            feeSats: 0,
+            timestamp: Math.floor(Date.now() / 1000),
+            method: 'lightning',
+          },
+        ],
+      }),
+    });
+    expect(wallet.status).toBe(200);
+    expect(await wallet.json()).toEqual({ acknowledgedIds: ['p1'] });
+    const events = await app.request('/me/events', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events: [{ name: 'login', at: new Date().toISOString() }] }),
+    });
+    expect(events.status).toBe(200);
+    expect(await events.json()).toEqual({ accepted: 1, dropped: 0 });
+  });
+
+  it('persists wallet reports and member events into injected stores', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-injected',
+      linkingKey: `02${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bea',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await authStore.createSession({
+      token: 'tok-injected',
+      accountId: 'acc-injected',
+      createdAt: Date.now(),
+    });
+    const walletStore = new InMemoryWalletStore();
+    const memberEventStore = new InMemoryMemberEventStore();
+    const app = createApp({ authStore, walletStore, memberEventStore });
+    const headers = {
+      authorization: 'Bearer tok-injected',
+      'content-type': 'application/json',
+    };
+    const wallet = await app.request('/me/wallet/report', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        balanceSats: 1000,
+        syncedAt: new Date().toISOString(),
+        payments: [
+          {
+            id: 'p1',
+            direction: 'out',
+            status: 'completed',
+            amountSats: 21,
+            feeSats: 0,
+            timestamp: Math.floor(Date.now() / 1000),
+            method: 'lightning',
+          },
+        ],
+      }),
+    });
+    expect(wallet.status).toBe(200);
+    expect(await wallet.json()).toEqual({ acknowledgedIds: ['p1'] });
+    expect(await walletStore.latestBalance('acc-injected')).toMatchObject({
+      accountId: 'acc-injected',
+      balanceSats: 1000,
+    });
+    expect(await walletStore.listPayments('acc-injected', 10)).toEqual([
+      expect.objectContaining({ paymentId: 'p1', accountId: 'acc-injected' }),
+    ]);
+    const events = await app.request('/me/events', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events: [{ name: 'login', at: new Date().toISOString() }] }),
+    });
+    expect(events.status).toBe(200);
+    expect(await events.json()).toEqual({ accepted: 1, dropped: 0 });
+    expect(await memberEventStore.listForAccount('acc-injected', 10)).toEqual([
+      expect.objectContaining({ name: 'login', accountId: 'acc-injected' }),
+    ]);
   });
 });
 
@@ -648,8 +845,21 @@ describe('CORS', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
   });
 
-  it('allows DELETE on the lightning-address preflight', async () => {
-    const res = await createApp().request('/me/lightning-address', {
+  it('allows X-App-Build on the passkey preflight', async () => {
+    const res = await createApp().request('/auth/passkey/authenticate/finish', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.21.gifts',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type, x-app-build',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-headers')).toMatch(/x-app-build/i);
+  });
+
+  it('allows DELETE on the point-of-sale preflight', async () => {
+    const res = await createApp().request('/pos', {
       method: 'OPTIONS',
       headers: {
         origin: 'https://app.21.gifts',
@@ -695,6 +905,591 @@ describe('CORS', () => {
       headers: { origin: 'https://custom.test' },
     });
     expect(res.headers.get('access-control-allow-origin')).toBe('https://custom.test');
+  });
+
+  it('allows any origin on /lnurlp/* and /verify/* only when the LNURL server is on', async () => {
+    const off = createApp({ env: {} });
+    const offInvoice = await off.request('/lnurlp/ada/invoice', {
+      headers: { origin: 'https://evil.test' },
+    });
+    expect(offInvoice.status).toBe(404);
+    expect(offInvoice.headers.get('access-control-allow-origin')).not.toBe('*');
+    const offVerify = await off.request('/verify/x', {
+      headers: { origin: 'https://evil.test' },
+    });
+    expect(offVerify.status).toBe(404);
+    expect(offVerify.headers.get('access-control-allow-origin')).not.toBe('*');
+
+    const on = createApp({
+      env: {
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      },
+      fetchImpl: async () => new Response('ok', { status: 200 }),
+    });
+    const invoice = await on.request('/lnurlp/ada/invoice', {
+      headers: { origin: 'https://evil.test' },
+    });
+    expect(invoice.headers.get('access-control-allow-origin')).toBe('*');
+    const verify = await on.request('/verify/abc', {
+      headers: { origin: 'https://evil.test' },
+    });
+    expect(verify.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('keeps the allow-list CORS on /lnurlpay/* and adds breez headers there', async () => {
+    const on = createApp({
+      env: {
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      },
+      allowedOrigins: ['https://app.21.gifts'],
+    });
+    const denied = await on.request(`/lnurlpay/${'02'}${'a'.repeat(64)}`, {
+      method: 'POST',
+      headers: { origin: 'https://evil.test' },
+      body: '{}',
+    });
+    expect(denied.headers.get('access-control-allow-origin')).not.toBe('https://evil.test');
+
+    const preflight = await on.request(`/lnurlpay/${'02'}${'a'.repeat(64)}`, {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.21.gifts',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'x-breez-signature,x-breez-timestamp',
+      },
+    });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('access-control-allow-origin')).toBe('https://app.21.gifts');
+    const allowHeaders = preflight.headers.get('access-control-allow-headers') ?? '';
+    expect(allowHeaders.toLowerCase()).toMatch(/x-breez-signature/);
+    expect(allowHeaders.toLowerCase()).toMatch(/x-breez-timestamp/);
+
+    const elsewhere = await on.request('/me', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.21.gifts',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'x-breez-signature,x-breez-timestamp',
+      },
+    });
+    const meHeaders = elsewhere.headers.get('access-control-allow-headers') ?? '';
+    expect(meHeaders.toLowerCase()).not.toMatch(/x-breez-signature/);
+    expect(meHeaders.toLowerCase()).not.toMatch(/x-breez-timestamp/);
+  });
+});
+
+describe('LNURL server wiring', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function routePairs(app: ReturnType<typeof createApp>): Array<{ method: string; path: string }> {
+    return app.routes.map((route) => ({ method: route.method, path: route.path }));
+  }
+
+  it('passes the gift store to the welcome ping of verify, About me, and posting', async () => {
+    const welcome = {
+      amountSats: 1,
+      recipientWosUser: 'ada',
+      kind: 'welcome' as const,
+      description: '21gifts welcome',
+    };
+    /** Verify, save About me, and post a photo; returns the welcome pings sent. */
+    async function welcomePings(paidAtMs: number): Promise<number> {
+      const member = '11111111-1111-4111-8111-111111111111';
+      const authStore = new InMemoryAuthStore();
+      await createWalletAccount(authStore, member, 'ada');
+      await authStore.updateAccount({ ...(await authStore.getAccount(member))!, role: 'basis' });
+      await authStore.createAccount({
+        id: 'mod',
+        linkingKey: null,
+        role: 'founder',
+        name: 'Mod',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'd'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: 1,
+      });
+      await authStore.createSession({ token: 'tok', accountId: member, createdAt: Date.now() });
+      await authStore.createSession({ token: 'mod-tok', accountId: 'mod', createdAt: Date.now() });
+      const messageStore = new InMemoryMessageStore();
+      await messageStore.create(
+        {
+          id: 'photo-post',
+          accountId: member,
+          name: 'ada',
+          text: 'photo',
+          createdAt: new Date(1),
+          hasPhoto: true,
+          hasVideo: false,
+          videoContentType: null,
+          ...unsignedNostrDefaults(),
+        },
+        { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+      );
+      const ping = vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined);
+      const app = createApp({
+        authStore,
+        messageStore,
+        spendPing: { ping },
+        giftStore: new InMemoryGiftStore([{ ...welcome, paidAt: new Date(paidAtMs) }]),
+        env: FREE_PAYMENTS_ENV,
+      });
+      const verified = await app.request('/trust/verify', {
+        method: 'POST',
+        headers: { authorization: 'Bearer mod-tok', 'content-type': 'application/json' },
+        body: JSON.stringify({ accountId: member, confirmedName: 'ada' }),
+      });
+      expect(verified.status).toBe(200);
+      const photo = {
+        contentType: 'image/jpeg',
+        data: Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64'),
+      };
+      const about = await app.request('/me/about', {
+        method: 'PUT',
+        headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'I build on Bitcoin', photo }),
+      });
+      expect(about.status).toBe(200);
+      const posted = await app.request('/messages', {
+        method: 'POST',
+        headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello', photo }),
+      });
+      expect(posted.status).toBe(200);
+      return ping.mock.calls.filter((call) => call[2] === 'welcome').length;
+    }
+
+    // The wallet was verified at 2: a record paid at 5 is the welcome gift, one paid at 1 is not.
+    expect(await welcomePings(5)).toBe(0);
+    expect(await welcomePings(1)).toBe(3);
+  });
+
+  it('mounts POST /webhooks/lnurl only when LNURL_WEBHOOK_SECRET is set', async () => {
+    const off = createApp({ env: { LNURL_WEBHOOK_SECRET: ' ' } });
+    expect(routePairs(off).some((r) => r.path === '/webhooks/lnurl')).toBe(false);
+    expect((await off.request('/webhooks/lnurl', { method: 'POST' })).status).toBe(404);
+    const on = createApp({ env: { LNURL_WEBHOOK_SECRET: 'secret' } });
+    expect(routePairs(on).some((r) => r.method === 'POST' && r.path === '/webhooks/lnurl')).toBe(
+      true,
+    );
+    const body = JSON.stringify({
+      template: 'spark_payment_received',
+      data: { payment_hash: 'ab'.repeat(32), user_pubkey: `02${'1'.repeat(64)}`, amount_sat: 21 },
+    });
+    const signature = createHmac('sha256', 'secret').update(body).digest('hex');
+    const res = await on.request('/webhooks/lnurl', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breez-signature': signature },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: 'unknown' });
+
+    const wallet = `02${'1'.repeat(64)}`;
+    const now = Date.now();
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc',
+      linkingKey: 'a'.repeat(64),
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: now,
+      rulesAgreedAt: now,
+      username: 'ada',
+      walletRequired: true,
+    });
+    await auth.claimSparkPubkey('acc', wallet);
+    await auth.markSparkPubkeyVerified('acc', wallet, 'ada', now);
+    const known = createApp({ authStore: auth, env: { LNURL_WEBHOOK_SECRET: 'secret' } });
+    const noDevice = await known.request('/webhooks/lnurl', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breez-signature': signature },
+      body,
+    });
+    expect(await noDevice.json()).toEqual({ outcome: 'no_device' });
+  });
+
+  it('does not mount the new routes when LNURL_SERVER_URL is unset', async () => {
+    const app = createApp({ env: {} });
+    const pairs = routePairs(app);
+    expect(pairs.some((r) => r.method === 'PUT' && r.path === '/me/wallet')).toBe(false);
+    expect(pairs.some((r) => r.method === 'POST' && r.path === '/lnurlpay/:pubkey')).toBe(false);
+    expect(pairs.some((r) => r.method === 'POST' && r.path === '/lnurlpay/:pubkey/recover')).toBe(
+      false,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/lnurlpay/:pubkey/metadata')).toBe(
+      false,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/lnurlp/:username/invoice')).toBe(
+      false,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/verify/:paymentHash')).toBe(false);
+
+    for (const [method, path] of [
+      ['PUT', '/me/recovery-share'],
+      ['GET', '/me/previous-wallets'],
+      ['DELETE', '/me/previous-wallets/:sparkPubkey'],
+    ] as const) {
+      expect(pairs.some((r) => r.method === method && r.path === path)).toBe(false);
+    }
+
+    expect((await app.request('/me/wallet', { method: 'PUT' })).status).toBe(404);
+    expect((await app.request('/me/recovery-share', { method: 'PUT' })).status).toBe(404);
+    expect((await app.request('/me/previous-wallets')).status).toBe(404);
+    expect((await app.request('/lnurlpay/x', { method: 'POST' })).status).toBe(404);
+    expect((await app.request('/lnurlp/x/invoice')).status).toBe(404);
+    expect((await app.request('/verify/x')).status).toBe(404);
+  });
+
+  it('mounts the new routes when LNURL_SERVER_URL and PUBLIC_BASE_URL are set', async () => {
+    const app = createApp({
+      env: {
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      },
+      fetchImpl: async () => new Response('{"status":"OK"}', { status: 200 }),
+    });
+    const pairs = routePairs(app);
+    expect(pairs.some((r) => r.method === 'PUT' && r.path === '/me/wallet')).toBe(true);
+    expect(pairs.some((r) => r.method === 'POST' && r.path === '/lnurlpay/:pubkey')).toBe(true);
+    expect(pairs.some((r) => r.method === 'POST' && r.path === '/lnurlpay/:pubkey/recover')).toBe(
+      true,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/lnurlpay/:pubkey/metadata')).toBe(
+      true,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/lnurlp/:username/invoice')).toBe(
+      true,
+    );
+    expect(pairs.some((r) => r.method === 'GET' && r.path === '/verify/:paymentHash')).toBe(true);
+
+    for (const [method, path] of [
+      ['PUT', '/me/recovery-share'],
+      ['GET', '/me/previous-wallets'],
+      ['DELETE', '/me/previous-wallets/:sparkPubkey'],
+    ] as const) {
+      expect(pairs.some((r) => r.method === method && r.path === path)).toBe(true);
+    }
+
+    expect((await app.request('/me/wallet', { method: 'PUT' })).status).toBe(401);
+    expect((await app.request('/me/recovery-share', { method: 'PUT' })).status).toBe(401);
+    expect((await app.request('/lnurlpay/not-a-key', { method: 'POST', body: '{}' })).status).toBe(
+      404,
+    );
+    expect((await app.request('/lnurlp/_/invoice')).status).toBe(404);
+    expect((await app.request('/verify/abc')).status).toBe(200);
+  });
+
+  it('passes RECOVERY_SHARE_KEK and the fetch to the /me recovery routes', async () => {
+    const env = { LNURL_SERVER_URL: 'http://lnurl.test', PUBLIC_BASE_URL: 'https://example.test' };
+    const share =
+      'duckling enlarge academic academic agency result length solution fridge kidney ' +
+      'coal piece deal husband erode duke ajar critical decision keyboard';
+    const recovered = async (): Promise<InMemoryAuthStore> => {
+      const authStore = new InMemoryAuthStore();
+      await seedPinnedAccount(authStore);
+      const now = Date.now();
+      await stagePendingRecovery(authStore, { createdAt: now, forwardedAt: now });
+      await authStore.commitRecovery({
+        accountId: PINNED.accountId,
+        newSparkPubkey: PINNED.newSparkPubkey,
+        now,
+      });
+      await authStore.createSession({ token: 'tok', accountId: PINNED.accountId, createdAt: now });
+      return authStore;
+    };
+    const putShare = (app: ReturnType<typeof createApp>): Promise<Response> =>
+      Promise.resolve(
+        app.request('/me/recovery-share', {
+          method: 'PUT',
+          headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+          body: JSON.stringify({ sparkPubkey: PINNED.newSparkPubkey, share }),
+        }),
+      );
+
+    const withoutKek = await putShare(createApp({ env, authStore: await recovered() }));
+    expect(withoutKek.status).toBe(503);
+
+    const explorerUrls: string[] = [];
+    const app = createApp({
+      env,
+      authStore: await recovered(),
+      recoveryShareKek: new Uint8Array(32).fill(0xcd),
+      fetchImpl: async (input) => {
+        explorerUrls.push(String(input));
+        return Response.json({ balance: { btcSoftBalanceSats: 7 } });
+      },
+    });
+    const stored = await putShare(app);
+    expect(stored.status).toBe(200);
+    expect(((await stored.json()) as { socialRecoverySetUp: boolean }).socialRecoverySetUp).toBe(
+      true,
+    );
+    const listed = await app.request('/me/previous-wallets', {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(((await listed.json()) as { wallets: Array<{ balanceSats: number }> }).wallets).toEqual([
+      expect.objectContaining({ sparkPubkey: PINNED.oldSparkPubkey, balanceSats: 7 }),
+    ]);
+    expect(explorerUrls).toHaveLength(1);
+    expect(explorerUrls[0]?.startsWith('https://api.sparkscan.io/v1/address/spark1')).toBe(true);
+  });
+
+  async function giftInvoiceApp(
+    invoiceRateCaps: { burstCap: number; hourCap: number } | null,
+  ): Promise<{ app: ReturnType<typeof createApp>; token: string; noteId: string }> {
+    const kek = parseNostrKek('11'.repeat(32));
+    const token = `payer-caps-${invoiceRateCaps === null ? 'default' : 'raised'}`;
+    const noteId = '55555555-5555-4555-8555-555555555555';
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: token,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Payer',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({ token, accountId: token, createdAt: Date.now() });
+    await createWalletAccount(authStore, 'wal-caps', 'wally');
+    await ensureAccountNostrKey(authStore, token, kek);
+    await ensureAccountNostrKey(authStore, 'wal-caps', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: noteId,
+      accountId: 'wal-caps',
+      name: 'wally',
+      text: 'hi',
+      createdAt: new Date(),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const app = createApp({
+      env: {
+        LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+        PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+      },
+      authStore,
+      messageStore,
+      nostrKek: kek,
+      fetchImpl: walletLnurlFetch('wally').fetchImpl,
+      invoiceRateCaps,
+    });
+    return { app, token, noteId };
+  }
+
+  async function postGiftInvoice(
+    app: ReturnType<typeof createApp>,
+    token: string,
+    noteId: string,
+  ): Promise<number> {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const res = await app.request(`/messages/${noteId}/invoice`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      return res.status;
+    } finally {
+      nip57.mockRestore();
+    }
+  }
+
+  async function repayInvoiceApp(
+    invoiceRateCaps: { burstCap: number; hourCap: number } | null,
+  ): Promise<{
+    app: ReturnType<typeof createApp>;
+    token: string;
+    noteIds: [string, string];
+  }> {
+    const now = (): number => Date.UTC(2027, 2, 1, 12);
+    const fundedAt = new Date(Date.UTC(2027, 1, 27, 12));
+    const kek = parseNostrKek('11'.repeat(32));
+    const token = invoiceRateCaps === null ? 'repay-cap-default' : 'repay-cap-raised';
+    const noteIds: [string, string] =
+      invoiceRateCaps === null
+        ? ['66666666-6666-4666-8666-666666666661', '66666666-6666-4666-8666-666666666662']
+        : ['77777777-7777-4777-8777-777777777771', '77777777-7777-4777-8777-777777777772'];
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: token,
+      linkingKey: `02${'ab'.repeat(32)}`,
+      role: 'verified',
+      name: 'Ada',
+      username: 'ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({ token, accountId: token, createdAt: now() });
+    await createWalletAccount(authStore, 'repay-cap-giver', 'bea');
+    await ensureAccountNostrKey(authStore, token, kek);
+    await ensureAccountNostrKey(authStore, 'repay-cap-giver', kek);
+    const messageStore = new InMemoryMessageStore();
+    let invoicePr = 0;
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: `${LNURL_SERVER.publicBaseUrl}/lnurlp/bea/invoice`,
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      invoicePr += 1;
+      return new Response(JSON.stringify({ pr: `lnbc21n1repay${invoicePr}` }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    for (const [index, noteId] of noteIds.entries()) {
+      await messageStore.create({
+        id: noteId,
+        accountId: token,
+        name: 'Ada',
+        text: 'need a ticket',
+        createdAt: new Date(Date.UTC(2026, 8, 28, 12)),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: (index === 0 ? 'e1' : 'e2').repeat(32),
+        sats: 21,
+        goalSats: 21,
+        goalRepayable: true,
+        goalTermDays: 1,
+        goalFundedAt: fundedAt,
+      });
+      const receiptId = `r-cap-${index + 1}`;
+      await messageStore.recordZapReceipt(receiptId, noteId, 21, null);
+      await messageStore.updateZapReceiptGift(receiptId, { payerAccountId: 'repay-cap-giver' });
+    }
+    const app = createApp({
+      env: {
+        LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+        PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+      },
+      authStore,
+      messageStore,
+      nostrKek: kek,
+      now,
+      fetchImpl,
+      invoiceRateCaps,
+    });
+    return { app, token, noteIds };
+  }
+
+  async function postRepaymentInvoice(
+    app: ReturnType<typeof createApp>,
+    token: string,
+    noteId: string,
+  ): Promise<Response> {
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    let hash = 0;
+    const inspected = vi.spyOn(bolt11, 'inspectBolt11').mockImplementation(() => {
+      hash += 1;
+      return {
+        paymentHash: hash.toString(16).padStart(64, '0'),
+        amountMsat: 21_000,
+        description: null,
+        descriptionHash: 'cd'.repeat(32),
+        expirySeconds: 3600,
+      };
+    });
+    try {
+      return await app.request(`/messages/${noteId}/repayment`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}` },
+      });
+    } finally {
+      nip57.mockRestore();
+      inspected.mockRestore();
+    }
+  }
+
+  it('rate-limits gift invoices at the default caps', async () => {
+    const { app, token, noteId } = await giftInvoiceApp(null);
+    expect(await postGiftInvoice(app, token, noteId)).toBe(200);
+    expect(await postGiftInvoice(app, token, noteId)).toBe(429);
+    expect(
+      warn.mock.calls.some((call) => String(call[0]).startsWith('test invoice rate caps')),
+    ).toBe(false);
+  });
+
+  it('raises gift invoice caps when invoiceRateCaps is set', async () => {
+    const { app, token, noteId } = await giftInvoiceApp({ burstCap: 5, hourCap: 20 });
+    expect(await postGiftInvoice(app, token, noteId)).toBe(200);
+    expect(await postGiftInvoice(app, token, noteId)).toBe(200);
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=20/h');
+  });
+
+  it('rate-limits repayment invoices at the default caps', async () => {
+    const { app, token, noteIds } = await repayInvoiceApp(null);
+    const first = await postRepaymentInvoice(app, token, noteIds[0]);
+    expect(first.status).toBe(200);
+    const second = await postRepaymentInvoice(app, token, noteIds[1]);
+    expect(second.status).toBe(429);
+    expect(await second.json()).toEqual({ error: 'Too many payments' });
+    expect(second.headers.get('Retry-After')).toBe('10');
+    expect(
+      warn.mock.calls.some((call) => String(call[0]).startsWith('test invoice rate caps')),
+    ).toBe(false);
+  });
+
+  it('raises repayment invoice caps when invoiceRateCaps is set', async () => {
+    const { app, token, noteIds } = await repayInvoiceApp({ burstCap: 5, hourCap: 20 });
+    expect((await postRepaymentInvoice(app, token, noteIds[0])).status).toBe(200);
+    expect((await postRepaymentInvoice(app, token, noteIds[1])).status).toBe(200);
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=20/h');
+  });
+
+  it('resolves test invoice caps from env on a loopback boot', async () => {
+    const app = createApp({
+      env: {
+        BIND_ADDR: '127.0.0.1:3000',
+        WEBAUTHN_RP_ID: 'localhost',
+        TEST_INVOICE_BURST_CAP: '5',
+        TEST_INVOICE_HOUR_CAP: '40',
+      },
+    });
+    expect((await app.request('/healthz')).status).toBe(200);
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=40/h');
+  });
+
+  it('throws at boot when test invoice caps are malformed on a loopback boot', () => {
+    expect(() =>
+      createApp({
+        env: {
+          BIND_ADDR: '127.0.0.1:3000',
+          WEBAUTHN_RP_ID: 'localhost',
+          TEST_INVOICE_BURST_CAP: 'nope',
+        },
+      }),
+    ).toThrowError('TEST_INVOICE_BURST_CAP must be an integer from 1 to 100000');
   });
 });
 
@@ -759,6 +1554,210 @@ describe('parseBindAddr', () => {
 
   it('rejects port with trailing junk', () => {
     expect(() => parseBindAddr('0.0.0.0:3000x')).toThrowError(/must be 0\.\.65535/);
+  });
+});
+
+describe('free in-app payments wiring', () => {
+  const NOTE = '55555555-5555-4555-8555-555555555555';
+  let payerCount = 0;
+
+  async function payWalletNote(
+    env: Record<string, string>,
+    sparkInvoiceStore?: InMemorySparkInvoiceStore,
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const kek = parseNostrKek('11'.repeat(32));
+    payerCount += 1;
+    const payer = `payer-${payerCount}`;
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: payer,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Payer',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({ token: payer, accountId: payer, createdAt: Date.now() });
+    await createWalletAccount(authStore, 'wal', 'wally');
+    await ensureAccountNostrKey(authStore, payer, kek);
+    await ensureAccountNostrKey(authStore, 'wal', kek);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: NOTE,
+      accountId: 'wal',
+      name: 'wally',
+      text: 'hi',
+      createdAt: new Date(),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const app = createApp({
+      env,
+      authStore,
+      messageStore,
+      nostrKek: kek,
+      fetchImpl: walletLnurlFetch('wally').fetchImpl,
+      ...(sparkInvoiceStore === undefined ? {} : { sparkInvoiceStore }),
+    });
+    const bolt11 = await import('@/lib/bolt11');
+    const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const res = await app.request(`/messages/${NOTE}/invoice`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${payer}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    } finally {
+      nip57.mockRestore();
+    }
+  }
+
+  it('returns a Spark invoice from the default store when both configs resolve', async () => {
+    const { status, body } = await payWalletNote(FREE_PAYMENTS_ENV);
+    expect(status).toBe(200);
+    expect(String(body['sparkInvoice']).startsWith('spark1')).toBe(true);
+  });
+
+  it('uses the injected Spark invoice store', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    const { body } = await payWalletNote(FREE_PAYMENTS_ENV, store);
+    const open = await store.listOpen(new Date(0));
+    expect(open.map((row) => row.invoice)).toEqual([body['sparkInvoice']]);
+    expect(open[0]?.bolt11).toBe(BOLT11);
+  });
+
+  it('returns sparkInvoice null without LNURL_ZAP_NSEC_HEX', async () => {
+    const env = { ...FREE_PAYMENTS_ENV };
+    delete env['LNURL_ZAP_NSEC_HEX'];
+    const { status, body } = await payWalletNote(env);
+    expect(status).toBe(200);
+    expect(body['sparkInvoice']).toBeNull();
+  });
+
+  it('does not use the wallet without the LNURL server', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    const { status } = await payWalletNote(
+      { LNURL_ZAP_NSEC_HEX: FREE_PAYMENTS_ENV['LNURL_ZAP_NSEC_HEX'] ?? '' },
+      store,
+    );
+    expect(status).toBe(400);
+    expect(await store.listOpen(new Date(0))).toEqual([]);
+  });
+});
+
+describe('createApp shop payments in USDT and USDC', () => {
+  const SHOP_ENV = {
+    LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+    PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+    ORCHESTRA_BASE_URL: 'https://orchestra.example',
+    ORCHESTRA_API_KEY: 'fn_server',
+    SHOP_EVM_RPC: JSON.stringify({ '137': 'https://polygon.rpc.example' }),
+    SHOP_REFUND_ADDRESS: `0x${'ab'.repeat(20)}`,
+  };
+  const SHOP_PATHS = [
+    'GET /lnurlp/cb/:username',
+    'GET /lnurlp/tx/:username',
+    'GET /lnurlp/wait/:payment',
+    'POST /debug/shop-proofs/:id/retry',
+  ];
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function routeKeys(app: ReturnType<typeof createApp>): string[] {
+    return app.routes.map((route) => `${route.method} ${route.path}`);
+  }
+
+  async function postPayment(app: ReturnType<typeof createApp>): Promise<Response> {
+    return app.request('/pay/wally/payment', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+  }
+
+  it('mounts no shop route without the LNURL server', () => {
+    const app = createApp({ env: {}, debugToken: 'debug-token' });
+    const keys = routeKeys(app);
+    for (const path of SHOP_PATHS) {
+      expect(keys).not.toContain(path);
+    }
+  });
+
+  it('builds the service without Orchestra when the shop variables are unset', async () => {
+    const authStore = new InMemoryAuthStore();
+    await createWalletAccount(authStore, 'wal-shop', 'wally');
+    const { fetchImpl, seen } = walletLnurlFetch('wally');
+    const app = createApp({
+      env: { LNURL_SERVER_URL: LNURL_SERVER.baseUrl, PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl },
+      authStore,
+      fetchImpl,
+      debugToken: 'debug-token',
+    });
+    expect(routeKeys(app)).toEqual(expect.arrayContaining(SHOP_PATHS));
+    const res = await postPayment(app);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'Stablecoin payment is unavailable',
+      code: 'stablecoin_unavailable',
+    });
+    expect(seen.some((request) => request.url.startsWith('https://orchestra.example'))).toBe(false);
+    const retry = await app.request(
+      '/debug/shop-proofs/00000000-0000-4000-8000-000000000001/retry',
+      { method: 'POST', headers: { authorization: 'Bearer debug-token' } },
+    );
+    expect(retry.status).toBe(404);
+    expect(await retry.json()).toEqual({ error: 'Not found' });
+    const wait = await app.request('/lnurlp/wait/00000000-0000-4000-8000-000000000001');
+    expect(wait.status).toBe(404);
+  });
+
+  it('asks Orchestra when the shop variables resolve', async () => {
+    const authStore = new InMemoryAuthStore();
+    await createWalletAccount(authStore, 'wal-shop', 'wally');
+    const { fetchImpl, seen } = walletLnurlFetch('wally');
+    const app = createApp({ env: SHOP_ENV, authStore, fetchImpl });
+    const res = await postPayment(app);
+    // The fake Orchestra answers 500, so no pair commits (order 9).
+    expect(res.status).toBe(503);
+    expect(seen.some((request) => request.url.startsWith('https://orchestra.example/'))).toBe(true);
+  });
+
+  it('uses an injected service for every shop route', async () => {
+    const authStore = new InMemoryAuthStore();
+    await createWalletAccount(authStore, 'wal-shop', 'wally');
+    const { fetchImpl } = walletLnurlFetch('wally');
+    const offersStablecoins = vi.fn(() => false);
+    const wait = vi.fn(async () => null);
+    const shopPayments = { offersStablecoins, wait } as unknown as ShopPayments;
+    const app = createApp({ env: SHOP_ENV, authStore, fetchImpl, shopPayments });
+    expect((await postPayment(app)).status).toBe(503);
+    expect(offersStablecoins).toHaveBeenCalledWith('wally');
+    const id = '00000000-0000-4000-8000-000000000002';
+    expect((await app.request(`/lnurlp/wait/${id}`)).status).toBe(404);
+    expect(wait).toHaveBeenCalledWith(id, null, expect.any(Number));
+  });
+
+  it('ignores an injected service while the LNURL server is off', async () => {
+    const offersStablecoins = vi.fn(() => true);
+    const app = createApp({
+      env: {},
+      shopPayments: { offersStablecoins } as unknown as ShopPayments,
+    });
+    expect(routeKeys(app)).not.toContain('GET /lnurlp/cb/:username');
+    expect((await postPayment(app)).status).toBe(404);
+    expect(offersStablecoins).not.toHaveBeenCalled();
   });
 });
 

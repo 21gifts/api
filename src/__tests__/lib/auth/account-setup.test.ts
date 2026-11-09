@@ -7,8 +7,6 @@ const base: Account = {
   linkingKey: null,
   role: 'basis',
   name: null,
-  lightningAddress: null,
-  lightningAddressVerified: false,
   forumLawsDismissed: false,
   location: null,
   viewKey: 'a'.repeat(64),
@@ -30,7 +28,7 @@ describe('accountSetup', () => {
         walletRequired: true,
         name: 'Ada',
         username: 'ada',
-        lightningAddress: 'ada@walletofsatoshi.com',
+        sparkPubkeyVerifiedAt: 3,
         rulesAgreedAt: 2,
       }),
     ).toBeNull();
@@ -57,34 +55,39 @@ describe('accountSetup', () => {
     expect(accountSetup({ ...base, name: 'Ada', username: '  ' })).toBe('username');
   });
 
-  it('asks for a Lightning Address after a name and username', () => {
+  it('asks for the receiving wallet after a name and username', () => {
     expect(accountSetup({ ...base, name: 'Ada', username: 'ada' })).toBe('lightning-address');
   });
 
-  it('treats a blank Lightning Address as missing', () => {
-    expect(accountSetup({ ...base, name: 'Ada', username: 'ada', lightningAddress: '  ' })).toBe(
-      'lightning-address',
-    );
-  });
-
-  it('asks for rules after name, username, and Lightning Address', () => {
+  it('asks for rules once the wallet is verified', () => {
     expect(
       accountSetup({
         ...base,
         name: 'Ada',
         username: 'ada',
-        lightningAddress: 'ada@walletofsatoshi.com',
+        sparkPubkeyVerifiedAt: 3,
       }),
     ).toBe('rules');
   });
 
-  it('is complete when name, username, Lightning Address, and rules are set', () => {
+  it('asks for rules once the wallet step is skipped', () => {
     expect(
       accountSetup({
         ...base,
         name: 'Ada',
         username: 'ada',
-        lightningAddress: 'ada@walletofsatoshi.com',
+        lightningAddressSkippedAt: 11,
+      }),
+    ).toBe('rules');
+  });
+
+  it('is complete when name, username, a verified wallet, and rules are set', () => {
+    expect(
+      accountSetup({
+        ...base,
+        name: 'Ada',
+        username: 'ada',
+        sparkPubkeyVerifiedAt: 3,
         rulesAgreedAt: 2,
       }),
     ).toBeNull();
@@ -94,7 +97,7 @@ describe('accountSetup', () => {
     expect(accountSetup({ ...base, nameSkippedAt: 10 })).toBe('username');
   });
 
-  it('cannot skip username even when name and Lightning Address are skipped', () => {
+  it('cannot skip username even when name and the wallet step are skipped', () => {
     expect(
       accountSetup({
         ...base,
@@ -104,7 +107,7 @@ describe('accountSetup', () => {
     ).toBe('username');
   });
 
-  it('is complete when name is skipped, username is set, Lightning Address is skipped, and rules are agreed', () => {
+  it('is complete when name is skipped, username is set, the wallet step is skipped, and rules are agreed', () => {
     expect(
       accountSetup({
         ...base,
@@ -167,7 +170,7 @@ describe('accountMissing', () => {
         walletBackupSeenAt: 10,
         name: 'Ada',
         username: 'ada',
-        lightningAddress: 'ada@walletofsatoshi.com',
+        sparkPubkeyVerifiedAt: 3,
         rulesAgreedAt: 2,
       }),
     ).toEqual([]);
@@ -188,22 +191,41 @@ describe('accountMissing', () => {
         ...base,
         name: 'Ada',
         username: 'ada',
-        lightningAddress: 'ada@walletofsatoshi.com',
+        sparkPubkeyVerifiedAt: 3,
         rulesAgreedAt: 2,
       }),
     ).toEqual([]);
   });
 
-  it('lists lightning-address again after unlink clears the skip', () => {
-    const afterUnlink: Account = {
+  it('lists lightning-address until the wallet is verified, even when skipped', () => {
+    const named: Account = {
       ...base,
       name: 'Ada',
       username: 'ada',
-      lightningAddress: null,
-      lightningAddressSkippedAt: null,
+      lightningAddressSkippedAt: 11,
       rulesAgreedAt: 2,
     };
-    expect(accountSetup(afterUnlink)).toBe('lightning-address');
-    expect(accountMissing(afterUnlink)).toEqual(['lightning-address']);
+    expect(accountSetup(named)).toBeNull();
+    expect(accountMissing(named)).toEqual(['lightning-address']);
+    expect(accountMissing({ ...named, sparkPubkey: `02${'a'.repeat(64)}` })).toEqual([
+      'lightning-address',
+    ]);
+  });
+
+  it('counts a verified wallet for both setup and missing', () => {
+    const wallet: Account = {
+      ...base,
+      name: 'Ada',
+      username: 'ada',
+      rulesAgreedAt: 2,
+      sparkPubkey: `02${'a'.repeat(64)}`,
+      sparkPubkeyVerifiedAt: 3,
+    };
+    expect(accountMissing(wallet)).toEqual([]);
+    expect(accountSetup(wallet)).toBeNull();
+    expect(accountMissing({ ...wallet, sparkPubkeyVerifiedAt: null })).toEqual([
+      'lightning-address',
+    ]);
+    expect(accountSetup({ ...wallet, sparkPubkeyVerifiedAt: null })).toBe('lightning-address');
   });
 });

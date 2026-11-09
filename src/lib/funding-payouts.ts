@@ -21,7 +21,7 @@ export interface PayoutMatrixAccount {
   name: string | null;
   /** Live role. `basis` is never entitled. */
   role: AccountRole;
-  /** Lightning address used to match `gift.recipient_wos_user`, or null. */
+  /** Receiving address (verified wallet) used to match `gift.recipient_wos_user`, or null. */
   lightningAddress: string | null;
 }
 
@@ -66,7 +66,7 @@ function utcDay(ms: number): string {
 }
 
 /**
- * Local part of a Lightning address or Wallet of Satoshi handle.
+ * Local part of a Lightning address or a stored gift recipient handle.
  *
  * @param value - Raw address or handle.
  * @returns Trimmed lowercase text before the first `@`, or the whole string.

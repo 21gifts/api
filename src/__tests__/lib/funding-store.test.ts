@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
-import type { FundingGrant } from '@/lib/funding';
+import type { FundingGrant, GrantRound } from '@/lib/funding';
 import {
   FUNDING_SCHEMA_SQL,
   InMemoryFundingStore,
@@ -243,6 +244,14 @@ class RaceStore implements FundingStore {
 
   expireTrialIfUnchanged(grant: FundingGrant): Promise<FundingGrant | undefined> {
     return this.#inner.expireTrialIfUnchanged(grant);
+  }
+
+  admitWithinPlaces(
+    grant: FundingGrant,
+    from: readonly FundingGrant['status'][],
+    round: GrantRound,
+  ): Promise<FundingGrant | 'full' | undefined> {
+    return this.#inner.admitWithinPlaces(grant, from, round);
   }
 }
 
@@ -587,5 +596,109 @@ describe('PostgresFundingStore', () => {
     expect(sql.queries[0]?.text).toMatch(/status = ANY\(\$9::text\[\]\)/);
     expect(sql.queries[0]?.params[8]).toBe('{"pending","trial"}');
     expect(missed).toBeUndefined();
+  });
+});
+
+describe('admitWithinPlaces', () => {
+  const START = Date.parse('2026-10-16T00:00:00.000Z');
+  const ROUND: GrantRound = { number: 1, startsAtMs: START, places: 1, nextGoalShops: 20 };
+  const base: FundingGrant = {
+    accountId: 'acc-a',
+    status: 'pending',
+    appliedAt: START - 10,
+    decidedAt: null,
+    decidedBy: null,
+    trialUtcDate: null,
+    admittedAt: null,
+    note: null,
+  };
+  const admitted = (accountId: string): FundingGrant => ({
+    ...base,
+    accountId,
+    status: 'admitted',
+    decidedAt: START + 5,
+    decidedBy: 'staff',
+    admittedAt: START + 5,
+  });
+
+  it('in memory: writes while a place is free, then reports full', async () => {
+    const store = new InMemoryFundingStore([base, { ...base, accountId: 'acc-b' }]);
+    expect(await store.admitWithinPlaces(admitted('acc-a'), ['pending', 'trial'], ROUND)).toEqual(
+      admitted('acc-a'),
+    );
+    expect(await store.admitWithinPlaces(admitted('acc-b'), ['pending', 'trial'], ROUND)).toBe(
+      'full',
+    );
+    expect((await store.getByAccountId('acc-b'))?.status).toBe('pending');
+  });
+
+  it('in memory: a status miss or a missing row is undefined', async () => {
+    const store = new InMemoryFundingStore([{ ...base, status: 'rejected' }]);
+    expect(await store.admitWithinPlaces(admitted('acc-a'), ['pending'], ROUND)).toBeUndefined();
+    expect(await store.admitWithinPlaces(admitted('acc-x'), ['pending'], ROUND)).toBeUndefined();
+  });
+
+  class MockTx implements MergeTx {
+    queries: { text: string; params: readonly unknown[] }[] = [];
+    constructor(private readonly results: unknown[][]) {}
+    async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+      this.queries.push({ text, params });
+      return (this.results.shift() ?? []) as T[];
+    }
+  }
+
+  function txPort(tx: MockTx): MergeDb {
+    return { begin: (run) => run(tx) };
+  }
+
+  const row = {
+    account_id: 'acc-a',
+    status: 'admitted',
+    applied_at: new Date(START - 10),
+    decided_at: new Date(START + 5),
+    decided_by: 'staff',
+    trial_utc_date: null,
+    admitted_at: new Date(START + 5),
+    note: null,
+  };
+
+  it('postgres: locks, counts the round, then updates with the status CAS', async () => {
+    const tx = new MockTx([[], [{ admitted: '0' }], [row]]);
+    const store = new PostgresFundingStore(new MockSql(), txPort(tx));
+    const stored = await store.admitWithinPlaces(admitted('acc-a'), ['pending', 'trial'], ROUND);
+    expect(stored).toEqual(admitted('acc-a'));
+    expect(tx.queries[0]?.text).toMatch(/pg_advisory_xact_lock\(\$1\)/);
+    expect(tx.queries[1]?.text).toMatch(/status = 'admitted' AND admitted_at >= \$1/);
+    expect(tx.queries[1]?.params).toEqual([new Date(START)]);
+    expect(tx.queries[2]?.text).toMatch(/UPDATE funding_grant SET/);
+    expect(tx.queries[2]?.params[8]).toBe('{"pending","trial"}');
+  });
+
+  it('postgres: a full round writes nothing', async () => {
+    const tx = new MockTx([[], [{ admitted: 1 }]]);
+    const store = new PostgresFundingStore(new MockSql(), txPort(tx));
+    expect(await store.admitWithinPlaces(admitted('acc-a'), ['pending'], ROUND)).toBe('full');
+    expect(tx.queries).toHaveLength(2);
+  });
+
+  it('postgres: a missing count row counts as zero and a CAS miss is undefined', async () => {
+    const tx = new MockTx([[], [], []]);
+    const store = new PostgresFundingStore(new MockSql(), txPort(tx));
+    expect(
+      await store.admitWithinPlaces(
+        { ...admitted('acc-a'), decidedAt: null, admittedAt: null },
+        ['pending'],
+        ROUND,
+      ),
+    ).toBeUndefined();
+    expect(tx.queries[2]?.params[3]).toBeNull();
+    expect(tx.queries[2]?.params[6]).toBeNull();
+  });
+
+  it('postgres: without a transaction port the admission throws', async () => {
+    const store = new PostgresFundingStore(new MockSql());
+    await expect(store.admitWithinPlaces(admitted('acc-a'), ['pending'], ROUND)).rejects.toThrow(
+      'funding transactions are not configured',
+    );
   });
 });

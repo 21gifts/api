@@ -2,7 +2,7 @@
  * Trust-chain domain: stored edges, public graph, and per-account actors.
  *
  * `verified` is a moderator confirming this person in real life
- * (forum badge), not Lightning-Address proof-of-control. Public
+ * (forum badge), not a verified wallet. Public
  * {@link buildTrustChain} never invents edges. At most one public incoming
  * edge per subject: the oldest eligible sibling (`createdAt` then `id`),
  * skipping a non-chain oldest sibling so a later displayable contact can

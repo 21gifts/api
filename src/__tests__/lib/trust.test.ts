@@ -15,8 +15,6 @@ function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Acco
   return {
     linkingKey: null,
     name: null,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
@@ -286,7 +284,6 @@ describe('buildTrustChain', () => {
       role: 'basis',
       createdAt: 0,
       name: 'Basis',
-      lightningAddress: 'b@walletofsatoshi.com',
       viewKey: 'b'.repeat(64),
       linkingKey: 'aa'.repeat(32),
     });

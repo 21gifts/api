@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   EMPTY_DEBUG_NOSTR,
   debugNostrFieldsFromListRow,
@@ -15,6 +15,13 @@ import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import type { MessageRow } from '@/lib/message';
+import {
+  PINNED,
+  seedPinnedAccount,
+  stagePendingRecovery,
+  storeRecoveryShare,
+} from '@/__tests__/helpers/recovery';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const account: Account = {
   id: 'acc',
@@ -22,13 +29,18 @@ const account: Account = {
   role: 'basis',
   name: 'Ada',
   username: 'ada',
-  lightningAddress: 'ada@walletofsatoshi.com',
-  lightningAddressVerified: false,
   forumLawsDismissed: false,
   location: null,
   viewKey: 'a'.repeat(64),
   createdAt: 1,
   rulesAgreedAt: null,
+};
+
+/** {@link account} with a verified wallet. */
+const wallet: Account = {
+  ...account,
+  sparkPubkey: `02${'a'.repeat(64)}`,
+  sparkPubkeyVerifiedAt: 3,
 };
 
 function note(text: string, hasPhoto = false): MessageRow {
@@ -43,6 +55,52 @@ function note(text: string, hasPhoto = false): MessageRow {
   };
 }
 
+describe('receiving address fields', () => {
+  it('is the wallet address only with a verified wallet and the LNURL server', () => {
+    expect(serializeAccount(wallet, LNURL_SERVER)).toMatchObject({
+      lightningAddress: 'ada@example.test',
+      lightningAddressVerified: true,
+    });
+    expect(serializeAccount(wallet)).toMatchObject({
+      lightningAddress: null,
+      lightningAddressVerified: false,
+    });
+    expect(
+      serializeAccount({ ...wallet, sparkPubkeyVerifiedAt: null }, LNURL_SERVER),
+    ).toMatchObject({ lightningAddress: null, lightningAddressVerified: false });
+    expect(serializeViewProfile(wallet, true, null, false, LNURL_SERVER)).toMatchObject({
+      lightningAddress: 'ada@example.test',
+      lightningAddressVerified: true,
+    });
+    const owner = serializeOwnerAccount(
+      wallet,
+      false,
+      null,
+      false,
+      null,
+      null,
+      false,
+      false,
+      false,
+      LNURL_SERVER,
+    );
+    expect(owner.lightningAddress).toBe('ada@example.test');
+    expect(owner.setup).toBe('rules');
+    expect(owner.missing).toEqual(['rules']);
+  });
+
+  it('passes the LNURL server through serializeOwnerAccountWithPosts', async () => {
+    const json = await serializeOwnerAccountWithPosts(
+      wallet,
+      { accountHasLivePost: async () => false, getById: async () => undefined },
+      undefined,
+      LNURL_SERVER,
+    );
+    expect(json.lightningAddress).toBe('ada@example.test');
+    expect(json.lightningAddressVerified).toBe(true);
+  });
+});
+
 describe('serializeAccount', () => {
   it('emits only the eleven public fields without viewKey', () => {
     const json = serializeAccount(account);
@@ -53,7 +111,7 @@ describe('serializeAccount', () => {
       name: 'Ada',
       username: 'ada',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
@@ -63,12 +121,18 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
     expect(json).not.toHaveProperty('notificationLevel');
+    expect(json).not.toHaveProperty('notifyHearts');
     expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');
     expect(json).not.toHaveProperty('walletRequired');
     expect(json).not.toHaveProperty('walletBackupSeenAt');
+    expect(json).not.toHaveProperty('walletIntroSeen');
+    expect(json).not.toHaveProperty('hadExternalWallet');
     expect(json).not.toHaveProperty('staffTag');
+    expect(json).not.toHaveProperty('sparkPubkey');
+    expect(json).not.toHaveProperty('sparkWalletVerified');
+    expect(json).not.toHaveProperty('sparkPubkeyVerifiedAt');
     expect(Object.keys(json)).toHaveLength(11);
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
@@ -181,6 +245,10 @@ describe('serializeDebugAccount', () => {
     expect(json.profileMessageId).toBeNull();
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
+    expect(json.walletIntroSeen).toBe(false);
+    expect(json).not.toHaveProperty('hadExternalWallet');
+    expect(json.sparkPubkey).toBeNull();
+    expect(json.sparkPubkeyVerifiedAt).toBeNull();
     expect(json.nostrPubkey).toBeNull();
     expect(json.nostrNsecCiphertext).toBeNull();
     expect(json).not.toHaveProperty('hasPosted');
@@ -189,6 +257,7 @@ describe('serializeDebugAccount', () => {
     expect(serializeDebugAccount(account).isPlatform).toBe(false);
     expect(serializeDebugAccount(account).sessionRefused).toBe(false);
     expect(serializeDebugAccount({ ...account, sessionRefused: true }).sessionRefused).toBe(true);
+    expect(serializeDebugAccount({ ...account, walletIntroSeen: true }).walletIntroSeen).toBe(true);
   });
 
   it('includes staffTag on debug JSON only when set', () => {
@@ -196,6 +265,29 @@ describe('serializeDebugAccount', () => {
     expect(serializeDebugAccount({ ...account, staffTag: 'software_developer' }).staffTag).toBe(
       'software_developer',
     );
+  });
+
+  it('includes notifyHearts on debug JSON and defaults an omitted value to true', () => {
+    expect(serializeDebugAccount(account).notifyHearts).toBe(true);
+    expect(serializeDebugAccount({ ...account, notifyHearts: false }).notifyHearts).toBe(false);
+    expect(serializeDebugAccount({ ...account, notifyHearts: true }).notifyHearts).toBe(true);
+  });
+
+  it('includes sparkPubkey and sparkPubkeyVerifiedAt on debug JSON', () => {
+    const pubkey = `02${'a'.repeat(64)}`;
+    const unset = serializeDebugAccount(account);
+    expect(unset.sparkPubkey).toBeNull();
+    expect(unset.sparkPubkeyVerifiedAt).toBeNull();
+    const claimed = serializeDebugAccount({ ...account, sparkPubkey: pubkey });
+    expect(claimed.sparkPubkey).toBe(pubkey);
+    expect(claimed.sparkPubkeyVerifiedAt).toBeNull();
+    const verified = serializeDebugAccount({
+      ...account,
+      sparkPubkey: pubkey,
+      sparkPubkeyVerifiedAt: 99,
+    });
+    expect(verified.sparkPubkey).toBe(pubkey);
+    expect(verified.sparkPubkeyVerifiedAt).toBe(99);
   });
 
   it('hex-encodes passkey public keys that are not Uint8Array', () => {
@@ -233,14 +325,17 @@ describe('serializeDebugAccount', () => {
 });
 
 describe('serializeDebugAccountDetail', () => {
-  it('emits null addressVerification when none is stored', () => {
-    const json = serializeDebugAccountDetail(account, EMPTY_DEBUG_NOSTR, {
-      passkeys: [],
-      sessions: [],
-      addressVerification: undefined,
-      passkeyChallenges: [],
-    });
-    expect(json.addressVerification).toBeNull();
+  it('has no address verification and shows the wallet address with the LNURL server', () => {
+    const json = serializeDebugAccountDetail(
+      wallet,
+      EMPTY_DEBUG_NOSTR,
+      { passkeys: [], sessions: [], passkeyChallenges: [] },
+      LNURL_SERVER,
+    );
+    expect(json).not.toHaveProperty('addressVerification');
+    expect(json.lightningAddress).toBe('ada@example.test');
+    expect(json.lightningAddressVerified).toBe(true);
+    expect(serializeDebugAccount(wallet).lightningAddress).toBeNull();
   });
 });
 
@@ -281,42 +376,51 @@ describe('serializeOwnerAccount', () => {
       name: 'Ada',
       username: 'ada',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
+      lightningAddress: null,
       lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null,
       viewKey: 'a'.repeat(64),
-      setup: 'rules',
-      missing: ['rules'],
+      setup: 'lightning-address',
+      missing: ['lightning-address', 'rules'],
       hasPosted: false,
       aboutMe: null,
       aboutMeHasPhoto: false,
       aboutMessageId: null,
       notificationLevel: 'all',
+      notifyHearts: true,
       amountUnit: 'btc',
       locale: null,
       fiat: null,
       funding: null,
       walletRequired: false,
       walletBackupSeenAt: null,
+      walletIntroSeen: false,
+      hadExternalWallet: false,
+      sparkPubkey: null,
+      sparkWalletVerified: false,
       passkeyCredentialId: null,
       passkeyRenewFailed: false,
       passkeyRenewClosed: false,
       passkeyRenewPrfUnsupported: false,
+      socialRecoverySetUp: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
-    expect(json.setup).toBe('rules');
-    expect(json.missing).toEqual(['rules']);
+    expect(json.setup).toBe('lightning-address');
+    expect(json.missing).toEqual(['lightning-address', 'rules']);
     expect(json.hasPosted).toBe(false);
     expect(json.aboutMe).toBeNull();
     expect(json.aboutMeHasPhoto).toBe(false);
     expect(json.notificationLevel).toBe('all');
+    expect(json.notifyHearts).toBe(true);
     expect(json.amountUnit).toBe('btc');
     expect(json.locale).toBeNull();
     expect(json.fiat).toBeNull();
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
+    expect(json.sparkPubkey).toBeNull();
+    expect(json.sparkWalletVerified).toBe(false);
     expect(json.passkeyCredentialId).toBeNull();
     expect(json.passkeyRenewFailed).toBe(false);
     expect(json).not.toHaveProperty('isPlatform');
@@ -342,14 +446,42 @@ describe('serializeOwnerAccount', () => {
     );
     expect(json.walletRequired).toBe(true);
     expect(json.walletBackupSeenAt).toBe(9);
-    expect(json.setup).toBe('rules');
-    expect(json.missing).toEqual(['rules']);
+    expect(json.setup).toBe('lightning-address');
+    expect(json.missing).toEqual(['lightning-address', 'rules']);
+  });
+
+  it('includes walletIntroSeen and hadExternalWallet on owner JSON', () => {
+    const json = serializeOwnerAccount(
+      { ...account, walletIntroSeen: true, hadExternalWallet: true },
+      false,
+      null,
+      false,
+    );
+    expect(json.walletIntroSeen).toBe(true);
+    expect(json.hadExternalWallet).toBe(true);
   });
 
   it('defaults omitted wallet fields on owner JSON', () => {
     const json = serializeOwnerAccount(account, false, null, false);
     expect(json.walletRequired).toBe(false);
     expect(json.walletBackupSeenAt).toBeNull();
+    expect(json.sparkPubkey).toBeNull();
+    expect(json.sparkWalletVerified).toBe(false);
+  });
+
+  it('includes sparkPubkey and sparkWalletVerified for claimed and verified wallets', () => {
+    const pubkey = `02${'a'.repeat(64)}`;
+    const claimed = serializeOwnerAccount({ ...account, sparkPubkey: pubkey }, false, null, false);
+    expect(claimed.sparkPubkey).toBe(pubkey);
+    expect(claimed.sparkWalletVerified).toBe(false);
+    const verified = serializeOwnerAccount(
+      { ...account, sparkPubkey: pubkey, sparkPubkeyVerifiedAt: 42 },
+      false,
+      null,
+      false,
+    );
+    expect(verified.sparkPubkey).toBe(pubkey);
+    expect(verified.sparkWalletVerified).toBe(true);
   });
 
   it('includes a stored notificationLevel on owner JSON', () => {
@@ -360,6 +492,16 @@ describe('serializeOwnerAccount', () => {
       false,
     );
     expect(json.notificationLevel).toBe('active');
+  });
+
+  it('includes notifyHearts on owner JSON and defaults omitted to true', () => {
+    expect(serializeOwnerAccount(account, false, null, false).notifyHearts).toBe(true);
+    expect(
+      serializeOwnerAccount({ ...account, notifyHearts: false }, false, null, false).notifyHearts,
+    ).toBe(false);
+    expect(
+      serializeOwnerAccount({ ...account, notifyHearts: true }, false, null, false).notifyHearts,
+    ).toBe(true);
   });
 
   it('includes a stored amountUnit on owner JSON', () => {
@@ -903,6 +1045,7 @@ describe('serializeOwnerAccountWithPosts', () => {
           hasUnacknowledgedPasskeyRenewFailure: async () => false,
           hasAcknowledgedPasskeyRenewFailure: async () => true,
           latestUnacknowledgedPasskeyRenewErrorName: async () => null,
+          hasRecoveryShareForVerifiedWallet: async () => false,
         },
       },
     );
@@ -1005,43 +1148,215 @@ describe('serializeOwnerAccountWithPosts', () => {
   });
 });
 
+describe('socialRecoverySetUp', () => {
+  const noPosts = {
+    accountHasLivePost: async (): Promise<boolean> => false,
+    getById: async (): Promise<undefined> => undefined,
+  };
+
+  function lookup(authStore: InMemoryAuthStore): {
+    store: InMemoryFundingStore;
+    nowMs: number;
+    authStore: InMemoryAuthStore;
+  } {
+    return { store: new InMemoryFundingStore(), nowMs: 1, authStore };
+  }
+
+  it('is the trailing serializeOwnerAccount argument', () => {
+    expect(serializeOwnerAccount(wallet, false, null, false).socialRecoverySetUp).toBe(false);
+    expect(
+      serializeOwnerAccount(
+        wallet,
+        false,
+        null,
+        false,
+        null,
+        null,
+        false,
+        false,
+        false,
+        undefined,
+        true,
+      ).socialRecoverySetUp,
+    ).toBe(true);
+  });
+
+  it('is true only for a share on the current verified wallet key', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPinnedAccount(authStore);
+    const stored = await authStore.getAccount(PINNED.accountId);
+    expect(
+      (await serializeOwnerAccountWithPosts(stored!, noPosts, lookup(authStore)))
+        .socialRecoverySetUp,
+    ).toBe(false);
+    await storeRecoveryShare(authStore, PINNED.accountId, PINNED.oldSparkPubkey);
+    expect(
+      (await serializeOwnerAccountWithPosts(stored!, noPosts, lookup(authStore)))
+        .socialRecoverySetUp,
+    ).toBe(true);
+  });
+
+  it('is false when the only share belongs to a previous wallet', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPinnedAccount(authStore);
+    await storeRecoveryShare(authStore, PINNED.accountId, PINNED.oldSparkPubkey);
+    await stagePendingRecovery(authStore, { createdAt: 10, forwardedAt: 11 });
+    expect(
+      await authStore.commitRecovery({
+        accountId: PINNED.accountId,
+        newSparkPubkey: PINNED.newSparkPubkey,
+        now: 12,
+      }),
+    ).toBe('committed');
+    const moved = await authStore.getAccount(PINNED.accountId);
+    expect(moved?.sparkPubkey).toBe(PINNED.newSparkPubkey);
+    const json = await serializeOwnerAccountWithPosts(moved!, noPosts, lookup(authStore));
+    expect(json.sparkWalletVerified).toBe(true);
+    expect(json.socialRecoverySetUp).toBe(false);
+  });
+
+  it('is false for an unverified wallet claim', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({ ...account, walletRequired: true });
+    await authStore.claimSparkPubkey('acc', PINNED.oldSparkPubkey);
+    expect(
+      await authStore.putRecoveryShare({
+        accountId: 'acc',
+        sparkPubkey: PINNED.oldSparkPubkey,
+        ciphertext: Uint8Array.of(1),
+        now: 1,
+      }),
+    ).toBe('changed');
+    const claimed = await authStore.getAccount('acc');
+    const json = await serializeOwnerAccountWithPosts(claimed!, noPosts, lookup(authStore));
+    expect(json.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+    expect(json.socialRecoverySetUp).toBe(false);
+  });
+
+  it('is false without a funding lookup and does not read the share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPinnedAccount(authStore);
+    await storeRecoveryShare(authStore, PINNED.accountId, PINNED.oldSparkPubkey);
+    const read = vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet');
+    const stored = await authStore.getAccount(PINNED.accountId);
+    const json = await serializeOwnerAccountWithPosts(stored!, noPosts);
+    expect(json.socialRecoverySetUp).toBe(false);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('reads the share of the re-read account', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPinnedAccount(authStore);
+    await storeRecoveryShare(authStore, PINNED.accountId, PINNED.oldSparkPubkey);
+    const read = vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet');
+    const stale = { ...(await authStore.getAccount(PINNED.accountId))!, sparkPubkey: null };
+    const json = await serializeOwnerAccountWithPosts(stale, noPosts, lookup(authStore));
+    expect(read).toHaveBeenCalledWith(PINNED.accountId);
+    expect(json.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+    expect(json.socialRecoverySetUp).toBe(true);
+  });
+});
+
 describe('serializeViewProfile', () => {
-  it('emits exactly ten public profile fields', () => {
+  it('emits the public profile card and keeps owner settings off it', () => {
     const json = serializeViewProfile(account, false, null, false);
     expect(json).toEqual({
+      id: 'acc',
       name: 'Ada',
       username: 'ada',
       location: null,
-      lightningAddress: 'ada@walletofsatoshi.com',
+      role: 'basis',
+      lightningAddress: null,
       lightningAddressVerified: false,
       createdAt: 1,
       hasPasskey: false,
       aboutMe: null,
       aboutMeHasPhoto: false,
       aboutMessageId: null,
+      postCount: 0,
+      replyCount: 0,
+      shopCount: 0,
+      creditCount: 0,
+      fundingReviewedAt: null,
+      fundingReviewedByName: null,
+      profileMessage: null,
     });
-    expect(json).not.toHaveProperty('id');
     expect(json).not.toHaveProperty('linkingKey');
-    expect(json).not.toHaveProperty('role');
     expect(json).not.toHaveProperty('viewKey');
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('notificationLevel');
+    expect(json).not.toHaveProperty('notifyHearts');
     expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');
     expect(json).not.toHaveProperty('staffTag');
-    expect(Object.keys(json)).toHaveLength(10);
+    expect(Object.keys(json)).toHaveLength(19);
   });
 
-  it('omits staffTag even when the account has the label', () => {
+  it('includes staffTag and the passed counts when they are set', () => {
     const json = serializeViewProfile(
       { ...account, staffTag: 'software_developer' },
       false,
       null,
       false,
+      undefined,
+      {
+        postCount: 2,
+        replyCount: 1,
+        shopCount: 0,
+        creditCount: 3,
+        fundingReviewedAt: 9,
+        fundingReviewedByName: 'Bea',
+      },
     );
-    expect(json).not.toHaveProperty('staffTag');
+    expect(json.staffTag).toBe('software_developer');
+    expect(json.postCount).toBe(2);
+    expect(json.replyCount).toBe(1);
+    expect(json.creditCount).toBe(3);
+    expect(json.fundingReviewedAt).toBe(9);
+    expect(json.fundingReviewedByName).toBe('Bea');
+    expect(json.profileMessage).toBeNull();
+  });
+
+  it('copies the profile note when one is passed', () => {
+    const profileMessage = {
+      id: 'note-1',
+      name: 'Ada',
+      text: 'Hello',
+      createdAt: '1970-01-01T00:00:00.001Z',
+      sats: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+      shopNpub: null,
+      payable: false,
+      authorCanReceive: false,
+      hasPhoto: false,
+      photoCount: 0,
+      photoTakenAts: [],
+      hasVideo: false,
+      videoContentType: null,
+      heartCount: 1,
+      hearted: false,
+    };
+    const json = serializeViewProfile(
+      account,
+      false,
+      'Hello',
+      false,
+      undefined,
+      undefined,
+      profileMessage,
+    );
+    expect(json.profileMessage).toBe(profileMessage);
+  });
+
+  it('maps a missing username to null', () => {
+    const { username: _omit, ...withoutUsername } = account;
+    void _omit;
+    expect(serializeViewProfile(withoutUsername, false, null, false).username).toBeNull();
   });
 
   it('passes through hasPasskey and aboutMe', () => {
