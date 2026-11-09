@@ -163,8 +163,8 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  *   `fundingStore` forwarded into `settleInvoiceManually` for platform-note
  *   compose (same `eligibleToday` gate as `POST /messages`) and used by
  *   `POST /spend-ping`; `conversationStore`, `trustStore`, and `giftStore`
- *   for the window replay. Does not take `postLimiter`; DEBUG_TOKEN settle is not the shared
- *   post burst limiter.
+ *   for the window replay. Does not take `postLimiter` or `replyLimiter`; DEBUG_TOKEN settle
+ *   is not the shared top-level or reply note limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
  *   successful settle resumed), zap-ingest list, and `POST /spend-ping`: with
  *   `{ messageId }`, replay one qualifying top-level post onto that post's UTC
