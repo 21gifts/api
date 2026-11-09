@@ -3455,6 +3455,110 @@ describe('PostgresWalletTransferStore verified counterparty ownership', () => {
 });
 
 describe('PostgresWalletStore', () => {
+  test('findPaymentSenders matches only completed outgoing payments addressed to the receiver', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateWalletSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const receiver = crypto.randomUUID();
+      const senderA = crypto.randomUUID();
+      const senderB = crypto.randomUUID();
+      const other = crypto.randomUUID();
+      for (const id of [receiver, senderA, senderB, other]) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username: `sender_${id.replaceAll('-', '')}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`,
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+      const store = new PostgresWalletStore(client);
+      const time = new Date();
+      const prefix = crypto.randomUUID();
+      const hash = `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const row: WalletPaymentRecord = {
+        accountId: senderA,
+        paymentId: `${prefix}-base`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 1,
+        feeSats: 0,
+        paidAt: time,
+        method: 'spark',
+        paymentHash: null,
+        invoice: `${prefix}-shared`,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'member',
+        counterpartyAccountId: receiver,
+        firstSeenAt: time,
+        updatedAt: time,
+      };
+      await store.upsertPayments([
+        row,
+        { ...row, paymentId: `${prefix}-duplicate` },
+        { ...row, accountId: senderB, paymentId: `${prefix}-other-sender` },
+        {
+          ...row,
+          paymentId: `${prefix}-hash-row`,
+          invoice: null,
+          paymentHash: hash.toUpperCase(),
+        },
+        { ...row, paymentId: `${prefix}-in`, invoice: `${prefix}-in`, direction: 'in' },
+        {
+          ...row,
+          paymentId: `${prefix}-pending`,
+          invoice: `${prefix}-pending`,
+          status: 'pending',
+        },
+        { ...row, paymentId: `${prefix}-failed`, invoice: `${prefix}-failed`, status: 'failed' },
+        {
+          ...row,
+          paymentId: `${prefix}-foreign`,
+          invoice: `${prefix}-foreign`,
+          counterpartyAccountId: other,
+        },
+        { ...row, accountId: receiver, paymentId: `${prefix}-self`, invoice: `${prefix}-self` },
+        { ...row, paymentId: `${prefix}-payment-only`, invoice: `${prefix}-different` },
+      ]);
+      const found = await store.findPaymentSenders(receiver, [
+        { id: 'invoice', invoice: `${prefix}-shared`, paymentHash: null },
+        { id: 'hash', invoice: null, paymentHash: hash.toUpperCase() },
+        ...['in', 'pending', 'failed', 'foreign', 'self', 'absent'].map((id) => ({
+          id,
+          invoice: `${prefix}-${id}`,
+          paymentHash: null,
+        })),
+        { id: `${prefix}-payment-only`, invoice: `${prefix}-unmatched`, paymentHash: null },
+      ]);
+      expect(found.size).toBe(2);
+      expect(found.get('invoice')).toEqual([senderA, senderB].sort());
+      expect(found.get('hash')).toEqual([senderA]);
+      for (const id of [
+        'in',
+        'pending',
+        'failed',
+        'foreign',
+        'self',
+        'absent',
+        `${prefix}-payment-only`,
+      ]) {
+        expect(found.has(id)).toBe(false);
+      }
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
   test('migrate twice, balance, guarded upsert, order, db_change, and secrets', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {

@@ -162,6 +162,58 @@ describe('wallet schema', () => {
 });
 
 describe('InMemoryWalletStore', () => {
+  it('finds only completed outgoing matches to the receiver, with distinct sorted accounts', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([
+      payment({ accountId: 'z', paymentId: 'one', status: 'completed' }),
+      payment({ accountId: 'z', paymentId: 'two', status: 'completed' }),
+      payment({
+        accountId: 'a',
+        paymentId: 'three',
+        status: 'completed',
+        paymentHash: 'A'.repeat(64),
+      }),
+      payment({ accountId: 'in', direction: 'in', status: 'completed' }),
+      payment({ accountId: 'wrong', counterpartyAccountId: 'elsewhere', status: 'completed' }),
+      payment({ accountId: 'other', status: 'completed' }),
+      payment({ accountId: 'pending' }),
+      payment({ accountId: 'failed', status: 'failed' }),
+    ]);
+    const found = await store.findPaymentSenders('other', [
+      { id: 'invoice', invoice: 'lnbc', paymentHash: null },
+      { id: 'hash', invoice: null, paymentHash: 'a'.repeat(64) },
+      { id: 'one', invoice: 'missing', paymentHash: null },
+    ]);
+    expect([...found]).toEqual([
+      ['invoice', ['a', 'z']],
+      ['hash', ['a', 'z']],
+    ]);
+  });
+
+  it('binds text arrays in one Postgres query', async () => {
+    const sql = new MockSql();
+    sql.rows = [
+      { id: '0', account_id: 'a' },
+      { id: '0', account_id: 'b' },
+      { id: '1', account_id: 'c' },
+    ];
+    const result = await new PostgresWalletStore(sql).findPaymentSenders('receiver', [
+      { id: 'i', invoice: 'lnbc', paymentHash: null },
+      { id: 'h', invoice: null, paymentHash: 'a'.repeat(64) },
+    ]);
+    expect([...result]).toEqual([
+      ['i', ['a', 'b']],
+      ['h', ['c']],
+    ]);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.params).toEqual([
+      'receiver',
+      '{"0","1"}',
+      '{"lnbc",""}',
+      `{"","${'a'.repeat(64)}"}`,
+    ]);
+    expect(sql.queries[0]?.text).toContain('lower(p.payment_hash)');
+  });
   it('records snapshots, returns newest with id tie-break, filters accounts, and copies dates', async () => {
     const store = new InMemoryWalletStore();
     expect(await store.latestBalance('account', null)).toBeUndefined();

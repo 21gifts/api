@@ -148,3 +148,4 @@ ALTER TABLE wallet_token_transaction DROP CONSTRAINT IF EXISTS wallet_token_tran
 ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_type_check CHECK (type IN ('create', 'mint', 'transfer', 'unknown'));
 
 CREATE INDEX IF NOT EXISTS wallet_token_transaction_wallet_created_idx ON wallet_token_transaction (account_id, wallet_pubkey, transaction_created_at DESC, transaction_hash);
+CREATE INDEX IF NOT EXISTS wallet_payment_counterparty_idx ON wallet_payment (counterparty_account_id) WHERE direction = 'out';
