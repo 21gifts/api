@@ -1391,6 +1391,45 @@ describe('POST /fond/payouts/:id/proof', () => {
     expect(await res.json()).toEqual({ error: 'Not invoiced' });
   });
 
+  it('returns paid when a concurrent proof wins the markPaid race', async () => {
+    const { app, payouts } = await makeApp();
+    await invoicedRow(payouts);
+    const markPaid = payouts.markPaid.bind(payouts);
+    vi.spyOn(payouts, 'markPaid').mockImplementation(async (id) => {
+      await markPaid(id);
+      return undefined;
+    });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'paid', id: ROW_ID });
+    expect((await payouts.get(ROW_ID))?.status).toBe('paid');
+  });
+
+  it('returns 409 Not invoiced when the re-read row is missing or mismatched', async () => {
+    for (const outcome of ['missing', 'other-hash'] as const) {
+      const { app, payouts } = await makeApp();
+      await invoicedRow(payouts);
+      const invoiced = await payouts.get(ROW_ID);
+      const reRead =
+        invoiced === undefined || outcome === 'missing'
+          ? undefined
+          : { ...invoiced, status: 'paid' as const, paymentHash: HASH };
+      vi.spyOn(payouts, 'get').mockResolvedValueOnce(invoiced).mockResolvedValueOnce(reRead);
+      vi.spyOn(payouts, 'markPaid').mockResolvedValue(undefined);
+      const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Not invoiced' });
+    }
+  });
+
   it('returns 503 when markPaid throws after the gift is recorded', async () => {
     const events = captureEvents();
     const records: GiftRecord[] = [];

@@ -424,7 +424,10 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         try {
           const stored = await deps.fondPayoutStore.markPaid(row.id);
           if (stored === undefined) {
-            return c.json({ error: 'Not invoiced' }, 409);
+            const current = await deps.fondPayoutStore.get(row.id);
+            if (current?.status !== 'paid' || current.paymentHash !== row.paymentHash) {
+              return c.json({ error: 'Not invoiced' }, 409);
+            }
           }
         } catch {
           logEvent('fond.proof.failed');
