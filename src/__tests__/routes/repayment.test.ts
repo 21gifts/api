@@ -50,12 +50,15 @@ async function readyCredit(options?: {
   walletGiver?: boolean;
   /** Test-only repayment limiter override. */
   repaymentLimiter?: InvoiceRateLimiter;
+  /** Credit message id; defaults to `CREDIT`. */
+  messageId?: string;
 }): Promise<{
   app: Hono;
   messages: InMemoryMessageStore;
   auth: InMemoryAuthStore;
   seen: SeenRequest[];
 }> {
+  const creditId = options?.messageId ?? CREDIT;
   const kek = parseNostrKek('11'.repeat(32));
   const authorId = options?.authorId ?? 'acc';
   const auth = new InMemoryAuthStore();
@@ -100,7 +103,7 @@ async function readyCredit(options?: {
   }
   const messages = new InMemoryMessageStore();
   await messages.create({
-    id: CREDIT,
+    id: creditId,
     accountId: authorId,
     name: 'Ada',
     text: 'need a ticket',
@@ -121,7 +124,7 @@ async function readyCredit(options?: {
           goalAmount: options.goalAmount === undefined ? '0.21' : options.goalAmount,
         }),
   });
-  await messages.recordZapReceipt('r1', CREDIT, 21, null);
+  await messages.recordZapReceipt('r1', creditId, 21, null);
   await messages.updateZapReceiptGift('r1', { payerAccountId: GIVER });
   const lnurlFetch = async (input: string | URL | Request): Promise<Response> => {
     const url = String(input);
@@ -223,7 +226,7 @@ describe('credit repayment', () => {
     expect(badId.status).toBe(404);
   });
 
-  it('starts a credit filled before November 16, 2026 on 2026-11-16', async () => {
+  it('starts a non-exempt credit filled before November 16, 2026 on 2026-11-16', async () => {
     const { app } = await readyCredit({ fundedAt: new Date(Date.UTC(2026, 9, 9, 6)) });
     const res = await app.request(`/messages/${CREDIT}/repayment`);
     expect(res.status).toBe(200);
@@ -233,6 +236,22 @@ describe('credit repayment', () => {
     };
     expect(body.startsOn).toBe('2026-11-16');
     expect(body.repayments[0]?.dueOn).toBe('2026-11-16');
+  });
+
+  it('starts an operator-approved credit the day after it filled', async () => {
+    const id = '399feee2-e84a-4f2f-94e2-21c04928298c';
+    const { app } = await readyCredit({
+      messageId: id,
+      fundedAt: new Date(Date.UTC(2026, 10, 9, 14, 12, 13, 130)),
+    });
+    const res = await app.request(`/messages/${id}/repayment`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      startsOn: string | null;
+      repayments: { dueOn: string | null }[];
+    };
+    expect(body.startsOn).toBe('2026-11-10');
+    expect(body.repayments[0]?.dueOn).toBe('2026-11-10');
   });
 
   it('shows the due share and invoices the giver wallet address', async () => {
@@ -978,6 +997,9 @@ describe('repayment from the in-app wallet', () => {
   const WALLET_GIVER = '22222222-2222-4222-8222-222222222222';
   const NO_WALLET = '33333333-3333-4333-8333-333333333333';
   const SECOND_CREDIT = '66666666-6666-4666-8666-666666666666';
+  const EXEMPT_CREDIT = 'bcc5b230-f446-4724-8e50-df0339657bf9';
+  const FILLED_EARLY = new Date('2026-11-09T14:12:13.130Z');
+  const DAY_ZERO = Date.UTC(2026, 10, 10, 12);
   /** Monday 2027-03-01 12:00 UTC: a credit funded 2027-02-27 has days 0 and 1 due. */
   const MONDAY = Date.UTC(2027, 2, 1, 12);
   const SUNDAY = Date.UTC(2027, 1, 28, 12);
@@ -1018,6 +1040,8 @@ describe('repayment from the in-app wallet', () => {
 
   async function loanSetup(options?: {
     givers?: Giver[];
+    /** Credit message id; defaults to `CREDIT`. */
+    messageId?: string;
     now?: number;
     termDays?: number;
     fundedAt?: Date | null;
@@ -1038,6 +1062,7 @@ describe('repayment from the in-app wallet', () => {
     clock: { now: number };
     fetched: string[];
   }> {
+    const creditId = options?.messageId ?? CREDIT;
     const clock = { now: options?.now ?? MONDAY };
     const fetched: string[] = [];
     const now = (): number => clock.now;
@@ -1086,7 +1111,7 @@ describe('repayment from the in-app wallet', () => {
     const messages = new InMemoryMessageStore();
     const total = givers.reduce((sum, giver) => sum + giver.sats, 0);
     await messages.create({
-      id: CREDIT,
+      id: creditId,
       accountId: AUTHOR,
       name: 'Ada',
       text: `${'x'.repeat(170)}`,
@@ -1108,7 +1133,7 @@ describe('repayment from the in-app wallet', () => {
           }),
     });
     for (const giver of givers) {
-      await messages.recordZapReceipt(`r-${giver.id}`, CREDIT, giver.sats, null);
+      await messages.recordZapReceipt(`r-${giver.id}`, creditId, giver.sats, null);
       await messages.updateZapReceiptGift(`r-${giver.id}`, { payerAccountId: giver.id });
     }
     const goalRateDay =
@@ -1375,6 +1400,101 @@ describe('repayment from the in-app wallet', () => {
     const bills = await post(app, `/messages/${CREDIT}/repayment/due`);
     expect(bills.status).toBe(200);
     expect(((await bills.json()) as { bills: unknown[] }).bills).toEqual([]);
+  });
+
+  it('bills day 0 for an exempt credit before 2026-11-16', async () => {
+    await withNip57(async () => {
+      const { app } = await loanSetup({
+        messageId: EXEMPT_CREDIT,
+        now: DAY_ZERO,
+        fundedAt: FILLED_EARLY,
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 300, wallet: true }],
+      });
+      const res = await post(app, `/messages/${EXEMPT_CREDIT}/repayment/due`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        bills: { dayIndex: number; amountSats: number }[];
+        waiting: unknown[];
+      };
+      expect(body.bills).toHaveLength(1);
+      expect(body.bills[0]).toMatchObject({ dayIndex: 0, amountSats: 300 });
+      expect(body.waiting).toEqual([]);
+    });
+  });
+
+  it('returns day 0 as the next due share for an exempt credit before 2026-11-16', async () => {
+    await withNip57(async () => {
+      const { app, messages } = await loanSetup({
+        messageId: EXEMPT_CREDIT,
+        now: DAY_ZERO,
+        fundedAt: FILLED_EARLY,
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 300, wallet: true }],
+      });
+      const res = await post(app, `/messages/${EXEMPT_CREDIT}/repayment`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 300, sparkInvoice: null });
+      const [attempt] = await messages.listInvoiceAttempts(5);
+      expect(attempt?.description).toBe(`repay:0:${WALLET_GIVER}`);
+    });
+  });
+
+  it('shows an exempt credit due and behind from 2026-11-10', async () => {
+    const { app, clock } = await loanSetup({
+      messageId: EXEMPT_CREDIT,
+      now: DAY_ZERO,
+      fundedAt: FILLED_EARLY,
+      termDays: 3,
+      givers: [{ id: WALLET_GIVER, sats: 300, wallet: true }],
+    });
+    const first = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(first).toMatchObject({
+      messageId: EXEMPT_CREDIT,
+      daysDue: 1,
+      due: { behindDays: 0 },
+      next: { dueOn: '2026-11-11', sats: 100, amount: null },
+    });
+    clock.now = Date.UTC(2026, 10, 11, 12);
+    const behind = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(behind).toMatchObject({
+      daysDue: 2,
+      due: { behindDays: 1 },
+      next: { dueOn: '2026-11-12', sats: 100, amount: null },
+    });
+    const ledger = (await (await app.request(`/messages/${EXEMPT_CREDIT}/repayment`)).json()) as {
+      startsOn: string | null;
+      repayments: { dayIndex: number; dueOn: string | null }[];
+      next: { dayIndex: number } | null;
+    };
+    expect(ledger.startsOn).toBe('2026-11-10');
+    expect(ledger.repayments.find((line) => line.dayIndex === 0)?.dueOn).toBe('2026-11-10');
+    expect(ledger.next?.dayIndex).toBe(0);
+  });
+
+  it('has nothing due for a non-exempt credit before 2026-11-16', async () => {
+    const { app } = await loanSetup({
+      now: DAY_ZERO,
+      fundedAt: FILLED_EARLY,
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 300, wallet: true }],
+    });
+    const bills = await post(app, `/messages/${CREDIT}/repayment/due`);
+    expect(bills.status).toBe(200);
+    expect(await bills.json()).toEqual({ bills: [], waiting: [] });
+    const share = await post(app, `/messages/${CREDIT}/repayment`);
+    expect(share.status).toBe(400);
+    expect(await share.json()).toEqual({ error: 'Nothing is due' });
+    const loan = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(loan).toMatchObject({
+      messageId: CREDIT,
+      daysDue: 0,
+      due: { behindDays: 0 },
+      next: { dueOn: '2026-11-16' },
+    });
   });
 
   it('bills every payable share at once and lists the shares that wait', async () => {
