@@ -7,6 +7,7 @@ import { payRoutes } from '@/routes/pay';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { PosCharge } from '@/lib/pos-charge';
 import { ShopPayments, type ShopCreation } from '@/lib/shop-payment';
+import type { OrchestraClient, OrchestraRoutesResult } from '@/lib/orchestra';
 import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryShopPaymentStore, type ShopPayment } from '@/lib/shop-payment-store';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
@@ -1479,13 +1480,191 @@ describe('POST /pay/:username/payment', () => {
     );
   });
 
-  it('orders 7 and 9: 503 stablecoin_unavailable when the creation is refused or commits no pair', async () => {
-    for (const creation of [{ kind: 'unavailable' }, { kind: 'skipped' }] as ShopCreation[]) {
-      const { app } = await paymentApp({ shop: stubShop(creation) });
-      const res = await post(app, { amountSats: 21 });
-      expect(res.status).toBe(503);
-      expect(await res.json()).toEqual(STABLECOIN_UNAVAILABLE);
+  it('order 7: 503 stablecoin_unavailable when a creation counter refuses the creation', async () => {
+    const creation: ShopCreation = { kind: 'unavailable' };
+    const { app } = await paymentApp({ shop: stubShop(creation) });
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual(STABLECOIN_UNAVAILABLE);
+  });
+
+  it('a failed route list or no committing pair answers 200 with a Lightning-only payment', async () => {
+    for (const routes of [
+      { ok: false },
+      { ok: true, assets: [], validForMs: 0 },
+    ] as OrchestraRoutesResult[]) {
+      const auth = new InMemoryAuthStore();
+      await auth.createAccount(createAccount());
+      await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+      await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+      const posStore = new InMemoryPosStore();
+      const orchestra = {
+        routes: async () => routes,
+        quote: async () => {
+          throw new Error('no quote with no pair');
+        },
+        quoteBudgetLeft: () => 0,
+      } as unknown as OrchestraClient;
+      const shop = new ShopPayments({
+        store: new InMemoryShopPaymentStore(posStore),
+        posStore,
+        auth,
+        lnurlServer: LNURL_SERVER,
+        config: {
+          orchestraBaseUrl: 'https://orchestration.test',
+          orchestraApiKey: 'fn_test',
+          evmRpc: new Map(),
+          refundAddress: '0x00000000000000000000000000000000000000ff',
+        },
+        orchestra,
+        fxSpot: new InMemoryFxSpotStore(),
+        fetchImpl: async (input: string | URL | Request) => {
+          const url = String(input);
+          return url.includes('/.well-known/lnurlp/')
+            ? metadataResponse(1000, WIDE_MAX_SENDABLE)
+            : invoiceResponse();
+        },
+        now: () => NOW_MS,
+      });
+      const { app } = await paymentApp({ shop, posStore, maxSendable: WIDE_MAX_SENDABLE });
+      const res = await post(app, { amountSats: PR_SATS });
+      expect(res.status, JSON.stringify(routes)).toBe(200);
+      const body = (await res.json()) as { payment: string };
+      expect(typeof body.payment).toBe('string');
     }
+  });
+
+  it('valid routes whose quotes all fail or fail the offer checks answer 200 with a Lightning-only payment', async () => {
+    for (const outcome of ['fail', 'offer-check'] as const) {
+      const auth = new InMemoryAuthStore();
+      await auth.createAccount(createAccount());
+      await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+      await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+      const posStore = new InMemoryPosStore();
+      const routes = vi.fn(async () => ({
+        ok: true as const,
+        validForMs: 60_000,
+        assets: [
+          {
+            chain: 'polygon',
+            asset: 'USDT',
+            contractAddress: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
+            decimals: 6,
+            exactOutToLightning: true,
+          },
+        ],
+      }));
+      const quote = vi.fn(async () =>
+        outcome === 'fail'
+          ? { ok: false as const, reason: 'unavailable' as const, sent: true }
+          : {
+              ok: true as const,
+              quote: {
+                quoteId: 'oq-bad-offer',
+                depositAddress: '0x00000000000000000000000000000000000000aa',
+                amountIn: '1',
+                requiredAmountIn: '1',
+                maxAcceptedAmountIn: '1',
+                targetAmountOut: String(PR_SATS),
+                expiresAt: new Date(NOW_MS + 120_000).toISOString(),
+                transaction: {
+                  chainId: 1,
+                  to: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
+                  data: '0x',
+                  value: '0',
+                },
+              },
+            },
+      );
+      const orchestra = {
+        routes,
+        quote,
+        quoteBudgetLeft: () => 240,
+      } as unknown as OrchestraClient;
+      const store = new InMemoryShopPaymentStore(posStore);
+      const shop = new ShopPayments({
+        store,
+        posStore,
+        auth,
+        lnurlServer: LNURL_SERVER,
+        config: {
+          orchestraBaseUrl: 'https://orchestration.test',
+          orchestraApiKey: 'fn_test',
+          evmRpc: new Map([[137, 'https://rpc.test/137']]),
+          refundAddress: '0x00000000000000000000000000000000000000ff',
+        },
+        orchestra,
+        fxSpot: new InMemoryFxSpotStore({
+          asOf: new Date(NOW_MS - 1_000).toISOString(),
+          source: 'test',
+          rates: { USD: '100000' },
+        }),
+        fetchImpl: async (input: string | URL | Request) => {
+          const url = String(input);
+          return url.includes('/.well-known/lnurlp/')
+            ? metadataResponse(1000, WIDE_MAX_SENDABLE)
+            : invoiceResponse();
+        },
+        now: () => NOW_MS,
+      });
+      const { app } = await paymentApp({ shop, posStore, maxSendable: WIDE_MAX_SENDABLE });
+      const res = await post(app, { amountSats: PR_SATS });
+      expect(res.status, outcome).toBe(200);
+      const body = (await res.json()) as { payment: string };
+      await vi.waitFor(() => expect(quote).toHaveBeenCalledTimes(1));
+      const quotes = await store.transaction((tx) => tx.quotesOf(body.payment));
+      expect(quotes).toHaveLength(1);
+      expect(quotes[0]!.transferAmounts.map((entry) => entry.method)).toEqual(['Lightning']);
+    }
+  });
+
+  it('answers 200 before a never-answering Orchestra; the first quote is Lightning-only', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    const posStore = new InMemoryPosStore();
+    const routes = vi.fn(() => new Promise<OrchestraRoutesResult>(() => undefined));
+    const orchestra = {
+      routes,
+      quote: async () => {
+        throw new Error('no quote before the route list answers');
+      },
+      quoteBudgetLeft: () => 240,
+    } as unknown as OrchestraClient;
+    const store = new InMemoryShopPaymentStore(posStore);
+    const shop = new ShopPayments({
+      store,
+      posStore,
+      auth,
+      lnurlServer: LNURL_SERVER,
+      config: {
+        orchestraBaseUrl: 'https://orchestration.test',
+        orchestraApiKey: 'fn_test',
+        evmRpc: new Map(),
+        refundAddress: '0x00000000000000000000000000000000000000ff',
+      },
+      orchestra,
+      fxSpot: new InMemoryFxSpotStore(),
+      fetchImpl: async (input: string | URL | Request) => {
+        const url = String(input);
+        return url.includes('/.well-known/lnurlp/')
+          ? metadataResponse(1000, WIDE_MAX_SENDABLE)
+          : invoiceResponse();
+      },
+      now: () => NOW_MS,
+    });
+    const { app } = await paymentApp({ shop, posStore, maxSendable: WIDE_MAX_SENDABLE });
+    const res = await post(app, { amountSats: PR_SATS });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { payment: string };
+    // The route list is still pending: the answer did not await it.
+    expect(routes).toHaveBeenCalled();
+    const payment = await store.transaction((tx) => tx.getPayment(body.payment));
+    expect(payment).not.toBeNull();
+    const quotes = await store.transaction((tx) => tx.quotesOf(body.payment));
+    expect(quotes).toHaveLength(1);
+    expect(quotes[0]!.transferAmounts.map((entry) => entry.method)).toEqual(['Lightning']);
   });
 
   it('keeps POST /pay/:username/invoice on the shared body and range checks', async () => {

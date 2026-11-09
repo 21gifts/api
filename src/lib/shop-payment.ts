@@ -76,15 +76,8 @@ export const SHOP_CREATION_INSERT_LIMIT_MS = 16_000;
 export const SHOP_CREATION_BUDGET_MS =
   SHOP_ROUTES_TIMEOUT_MS + SHOP_MINT_TIMEOUT_MS + SHOP_QUOTES_TIMEOUT_MS;
 /**
- * A pay-link fetch for a pending charge without a shop payment waits for the
- * creation at most until this long after the fetch arrived, lock waits
- * included. As long as {@link SHOP_CREATION_BUDGET_MS} and separate from it:
- * the budget limits the procedure's calls, this limits the fetch.
- */
-export const SHOP_PAY_LINK_CREATION_WAIT_MS = 8_000;
-/**
- * Whole replacement (route list, quotes, and its transaction), and the
- * longest a fetch waits for one.
+ * Whole replacement (route list, quotes, and its transaction). No request
+ * waits for it; the budget bounds its external calls in the background.
  */
 export const SHOP_REPLACEMENT_BUDGET_MS = 4_000;
 /**
@@ -1617,12 +1610,24 @@ interface ShopCurrentQuote {
 }
 
 /**
- * The in-flight quote replacement of one payment: its outcome, and when it
- * took the account's creation lock (`null` while it is still queued).
+ * Whether a run that started from `startQuoteId` may still insert its offers
+ * quote. A Lightning-only row is not newer for this check: a fetch's
+ * Lightning-only fallback written while the run was in flight is not an
+ * Orchestra answer. A counted Lightning-only replacement is refused by the
+ * replacement's `replacements` compare-and-set, and a Lightning-only quote is
+ * never replaced.
+ *
+ * @param startQuoteId - The quote the run read when it started.
+ * @param newest - The payment's newest quote now.
+ * @returns `true` when the run still owns the next quote.
  */
+function stillNewestQuote(startQuoteId: string, newest: ShopQuote): boolean {
+  return newest.id === startQuoteId || newest.transferAmounts.length === 1;
+}
+
+/** The in-flight quote replacement of one payment: its outcome. */
 interface ShopReplacement {
   readonly promise: Promise<ShopCurrentQuote | null>;
-  startMs: number | null;
 }
 
 /**
@@ -1644,7 +1649,8 @@ export class ShopPayments {
   readonly #chargeCreations = new Map<string, Promise<ShopCreation>>();
   /**
    * The in-flight quote replacement of each payment, by payment id, from the
-   * moment it is queued until it ends. A second fetch joins it.
+   * moment it is queued until it ends. The offers fill of a payer-opened
+   * payment is registered here too. A second fetch joins either one.
    */
   readonly #replacements = new Map<string, ShopReplacement>();
   readonly #noPairUntil = new Map<string, number>();
@@ -1714,7 +1720,9 @@ export class ShopPayments {
 
   /**
    * Run `run` under the account's in-process creation lock. A second caller
-   * waits for the first and then runs.
+   * waits for the first and then runs. `run` must never wait for an Orchestra
+   * call (route list, quote, or gas price); the lock covers local checks and
+   * commit sections only.
    *
    * @param accountId - Account id.
    * @param run - Work.
@@ -1945,7 +1953,8 @@ export class ShopPayments {
    * @param tx - Transaction.
    * @param payment - The payment.
    * @param offers - Offers to insert (any `quoteId`).
-   * @param nowMs - Clock.
+   * @param nowMs - Creation instant; callers advance it past the current
+   *   newest quote when they append a row in the same clock millisecond.
    * @returns The stored quote.
    */
   async #insertQuote(
@@ -2106,93 +2115,66 @@ export class ShopPayments {
   }
 
   /**
-   * Steps 1 to 8 of the creation procedure. Step 1 queues the run behind the
-   * account's creation lock (a creation or a quote replacement); the run
-   * starts when it takes the lock.
+   * Steps 1 to 8 of the creation procedure. The account's in-process creation
+   * lock covers the re-check, the local availability checks, and the insert,
+   * never an Orchestra call: route list, mint, and quotes run outside the
+   * lock. A second caller waits only for those short local sections and then
+   * re-reads.
    *
    * @param input - Charge or payer creation.
    * @returns The outcome.
    */
-  #create(input: ShopCreationInput): Promise<ShopCreation> {
-    return this.#withLock(input.account.id, async () =>
-      this.#createLocked(input, this.#deps.now()),
-    );
-  }
-
-  /**
-   * Steps 2 to 8 of the creation procedure, under the account's creation lock.
-   *
-   * @param input - Charge or payer creation.
-   * @param startMs - When the procedure took the lock; its budgets count from here.
-   * @returns The outcome.
-   */
-  async #createLocked(input: ShopCreationInput, startMs: number): Promise<ShopCreation> {
+  async #create(input: ShopCreationInput): Promise<ShopCreation> {
     const { account } = input;
-    // Step 2: re-check under the lock. Lock order (States): the account row,
-    // then the charge rows (the creation's charge, or the account's overdue
-    // pending charges `pendingCharge` expires), then the lapsed payment's
-    // row, as the settlement step and the charge watch take them.
-    const recheck = await this.#deps.store.transaction(async (tx) => {
-      await tx.lockAccount(account.id);
-      const charge = input.kind === 'charge' ? await tx.lockCharge(input.charge.id) : null;
-      const pending = input.kind === 'payer' ? await tx.pendingCharge(account.id, startMs) : null;
-      const open = await tx.openPayment(account.id);
-      if (open !== null && open.windowEndsAt.getTime() <= startMs) {
-        await endPayment(tx, open, 'window', startMs);
+    const recheckStartMs = this.#deps.now();
+    const recheck = await this.#withLock(account.id, async () => {
+      const state = await this.#recheckCreation(input, recheckStartMs);
+      if (state !== null) {
+        return state;
       }
-      if (input.kind === 'charge') {
-        const existing = await tx.paymentForCharge(input.charge.id);
-        if (existing !== null) {
-          return { kind: 'payment', payment: existing } as const;
-        }
-        if (
-          charge === null ||
-          charge.status !== 'pending' ||
-          charge.expiresAt.getTime() <= startMs
-        ) {
-          return { kind: 'skipped' } as const;
-        }
-        return null;
+      if (!this.offersStablecoins(input.username)) {
+        return { kind: 'unavailable' } as const;
       }
-      return pending === null ? null : ({ kind: 'pending_charge' } as const);
+      const waitUntil = this.#noPairUntil.get(account.id);
+      if (waitUntil !== undefined && recheckStartMs < waitUntil) {
+        return { kind: 'unavailable' } as const;
+      }
+      // Order 7: api-wide counter first, then the account counter.
+      if (
+        !this.#apiCreations.allow('api', recheckStartMs) ||
+        !this.#accountCreations.allow(account.id, recheckStartMs)
+      ) {
+        return { kind: 'unavailable' } as const;
+      }
+      return null;
     });
     if (recheck !== null) {
       return recheck;
-    }
-    if (!this.offersStablecoins(input.username)) {
-      return { kind: 'unavailable' };
-    }
-    const waitUntil = this.#noPairUntil.get(account.id);
-    if (waitUntil !== undefined && startMs < waitUntil) {
-      return { kind: 'unavailable' };
-    }
-    // Order 7: api-wide counter first, then the account counter.
-    if (
-      !this.#apiCreations.allow('api', startMs) ||
-      !this.#accountCreations.allow(account.id, startMs)
-    ) {
-      return { kind: 'unavailable' };
     }
     const config = this.#deps.config;
     /* v8 ignore next 3 -- offersStablecoins checked the config */
     if (config === null) {
       return { kind: 'unavailable' };
     }
-    // The payment's id is chosen before step 3, so every log line of the
-    // procedure carries it.
     const paymentId = this.#newId();
-    // Step 3: route list.
-    const routes = await this.#routeList(startMs + SHOP_ROUTES_TIMEOUT_MS, paymentId);
-    if (routes === null) {
-      // No stablecoin until a route-list fetch succeeds; the next creation fetches again.
-      return { kind: 'unavailable' };
+    let pairs: ShopPair[] = [];
+    if (input.kind === 'charge') {
+      // Step 3: route list. A payer's creation opens Lightning-first and
+      // fills the offers in the background after step 8. This external call
+      // runs without the creation lock.
+      const routes = await this.#routeList(recheckStartMs + SHOP_ROUTES_TIMEOUT_MS, paymentId);
+      if (routes === null) {
+        // No stablecoin until a route-list fetch succeeds; the next creation fetches again.
+        return { kind: 'unavailable' };
+      }
+      pairs = candidatePairs(routes, config.evmRpc, paymentId);
+      if (pairs.length === 0) {
+        this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
+        return { kind: 'unavailable' };
+      }
     }
-    const pairs = candidatePairs(routes, config.evmRpc, paymentId);
-    if (pairs.length === 0) {
-      this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
-      return { kind: 'unavailable' };
-    }
-    // Step 4: mint.
+    // Step 4: mint. The LNURL server is ours, so the mint may also run while
+    // a short local lock section runs; no Orchestra call is involved.
     const minted = await this.#mint(account, input.amountSats, paymentId);
     if (minted === null) {
       return { kind: 'mint_failed' };
@@ -2253,24 +2235,221 @@ export class ShopPayments {
         return { kind: 'mint_failed' };
       }
     }
-    // Steps 5 and 6: quotes and offer checks.
+    if (input.kind === 'charge') {
+      // Steps 5 and 6: quotes and offer checks, without the creation lock.
+      const { offers } = await this.#requestOffers(
+        pairs,
+        {
+          paymentId,
+          amountSats: input.amountSats,
+          bolt11: minted.bolt11,
+          bolt11ExpiresAtMs: minted.expiresAtMs,
+        },
+        this.#deps.now() + SHOP_QUOTES_TIMEOUT_MS,
+      );
+      // Step 7: no committed pair.
+      if (offers.length === 0) {
+        this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
+        return { kind: 'unavailable' };
+      }
+      // Step 8: insert under the short creation lock.
+      return this.#withLock(account.id, async () =>
+        this.#insertPayment(input, paymentId, minted, offers, recordedByUs),
+      );
+    }
+    // Step 8 for a payer: the payment opens at once with a Lightning-only
+    // first quote. The offers fill runs in the background after the insert.
+    const created = await this.#withLock(account.id, async () =>
+      this.#insertPayment(input, paymentId, minted, [], false),
+    );
+    if (created.kind === 'payment' && created.payment.id === paymentId) {
+      const first = await this.#readCurrent(created.payment.id);
+      if (first === null) {
+        return created;
+      }
+      // Only a first (Lightning-only) quote is filled; a winner that already
+      // carries offers is served as it stands.
+      if (first.quote.transferAmounts.length === 1) {
+        this.#startOffersFill(account.id, config, created.payment.id, first.quote.id, {
+          replacements: first.payment.replacements,
+          amountSats: input.amountSats,
+          bolt11: minted.bolt11,
+          bolt11ExpiresAtMs: minted.expiresAtMs,
+        });
+      }
+    }
+    return created;
+  }
+
+  /**
+   * Step 2: re-check under the creation lock. Lock order (States): the
+   * account row, then the charge rows (the creation's charge, or the
+   * account's overdue pending charges `pendingCharge` expires), then the
+   * lapsed payment's row, as the settlement step and the charge watch take
+   * them.
+   *
+   * @param input - Charge or payer creation.
+   * @param startMs - When the re-check started; its local checks count from here.
+   * @returns A final outcome, or `null` to go on with the external calls.
+   */
+  async #recheckCreation(input: ShopCreationInput, startMs: number): Promise<ShopCreation | null> {
+    const { account } = input;
+    return this.#deps.store.transaction(async (tx) => {
+      await tx.lockAccount(account.id);
+      const charge = input.kind === 'charge' ? await tx.lockCharge(input.charge.id) : null;
+      const pending = input.kind === 'payer' ? await tx.pendingCharge(account.id, startMs) : null;
+      const open = await tx.openPayment(account.id);
+      if (open !== null && open.windowEndsAt.getTime() <= startMs) {
+        await endPayment(tx, open, 'window', startMs);
+      }
+      if (input.kind === 'charge') {
+        const existing = await tx.paymentForCharge(input.charge.id);
+        if (existing !== null) {
+          return { kind: 'payment', payment: existing } as const;
+        }
+        if (
+          charge === null ||
+          charge.status !== 'pending' ||
+          charge.expiresAt.getTime() <= startMs
+        ) {
+          return { kind: 'skipped' } as const;
+        }
+        return null;
+      }
+      return pending === null ? null : ({ kind: 'pending_charge' } as const);
+    });
+  }
+
+  /**
+   * Start the offers fill of a payer-opened payment in the background: route
+   * list, quotes, and offer checks, then one quote with the passing offers.
+   * Its Orchestra work runs without the account's in-process creation lock;
+   * only its short re-read and commit take the lock. A concurrent fetch joins
+   * the registered run instead of starting another one. No handler awaits it;
+   * a throw logs `shop.creation.failed` once.
+   *
+   * @param accountId - Shop account id.
+   * @param config - Orchestra, RPC, and refund configuration.
+   * @param paymentId - The payment that just opened Lightning-only.
+   * @param firstQuoteId - Its Lightning-only first quote.
+   * @param target - Its `replacements`, sats, BOLT11, and its expiry.
+   */
+  #startOffersFill(
+    accountId: string,
+    config: ShopPaymentConfig,
+    paymentId: string,
+    firstQuoteId: string,
+    target: {
+      replacements: number;
+      amountSats: number;
+      bolt11: string;
+      bolt11ExpiresAtMs: number;
+    },
+  ): void {
+    // Registered in the same synchronous step that queues the run, so a
+    // concurrent fetch joins it instead of starting a replacement.
+    if (this.#replacements.has(paymentId)) {
+      return;
+    }
+    const promise = this.#fillOffers(accountId, config, paymentId, firstQuoteId, target)
+      .then((): Promise<ShopCurrentQuote | null> => this.#readCurrent(paymentId))
+      .catch((error: unknown) => {
+        logEvent('shop.creation.failed', {
+          accountId,
+          paymentId,
+          ...errorLogFields(error),
+        });
+        return null;
+      })
+      .finally(() => {
+        this.#replacements.delete(paymentId);
+      });
+    this.#replacements.set(paymentId, { promise });
+    void promise;
+  }
+
+  /**
+   * The offers fill of a payer-opened payment: steps 3, 5, and 6 for the
+   * payment's sats and BOLT11, then one transaction under the account row
+   * lock that inserts a quote with the passing offers only while the payment
+   * is still `open`, at least {@link SHOP_REPLACE_BEFORE_MS} remain before
+   * `window_ends_at`, and its newest quote is still the Lightning-only first
+   * quote (or a fallback row that is not newer, {@link stillNewestQuote}).
+   * A counted replacement changes `replacements`, so the same check fails.
+   * It never increments `replacements`; no passing offer writes nothing and
+   * sets the account's no-pair wait.
+   *
+   * @param accountId - Shop account id.
+   * @param config - Orchestra, RPC, and refund configuration.
+   * @param paymentId - Payment id.
+   * @param firstQuoteId - The payment's Lightning-only first quote.
+   * @param target - The payment's `replacements` when it opened, sats, BOLT11,
+   *   and its expiry.
+   * @returns Nothing; the transaction inserts the quote or nothing.
+   */
+  async #fillOffers(
+    accountId: string,
+    config: ShopPaymentConfig,
+    paymentId: string,
+    firstQuoteId: string,
+    target: {
+      replacements: number;
+      amountSats: number;
+      bolt11: string;
+      bolt11ExpiresAtMs: number;
+    },
+  ): Promise<void> {
+    const startMs = this.#deps.now();
+    const routes = await this.#routeList(startMs + SHOP_ROUTES_TIMEOUT_MS, paymentId);
+    if (routes === null) {
+      return;
+    }
+    const pairs = candidatePairs(routes, config.evmRpc, paymentId);
+    if (pairs.length === 0) {
+      // No candidate pair starts the account's no-pair wait, as a creation does.
+      this.#noPairUntil.set(accountId, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
+      return;
+    }
     const { offers } = await this.#requestOffers(
       pairs,
       {
         paymentId,
-        amountSats: input.amountSats,
-        bolt11: minted.bolt11,
-        bolt11ExpiresAtMs: minted.expiresAtMs,
+        amountSats: target.amountSats,
+        bolt11: target.bolt11,
+        bolt11ExpiresAtMs: target.bolt11ExpiresAtMs,
       },
       this.#deps.now() + SHOP_QUOTES_TIMEOUT_MS,
     );
-    // Step 7: no committed pair.
     if (offers.length === 0) {
-      this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
-      return { kind: 'unavailable' };
+      this.#noPairUntil.set(accountId, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
+      return;
     }
-    // Step 8: insert under the account row lock.
-    return this.#insertPayment(input, paymentId, minted, offers, recordedByUs);
+    await this.#withLock(accountId, async () => {
+      await this.#deps.store.transaction(async (tx) => {
+        await tx.lockAccount(accountId);
+        const nowMs = this.#deps.now();
+        const locked = await tx.lockPayment(paymentId);
+        if (
+          locked === null ||
+          locked.status !== 'open' ||
+          locked.windowEndsAt.getTime() - nowMs < SHOP_REPLACE_BEFORE_MS ||
+          locked.replacements !== target.replacements
+        ) {
+          return;
+        }
+        const quotes = await tx.quotesOf(paymentId);
+        const newest = quotes[quotes.length - 1];
+        if (newest === undefined || !stillNewestQuote(firstQuoteId, newest)) {
+          return;
+        }
+        await this.#insertQuote(
+          tx,
+          locked,
+          offers,
+          Math.max(nowMs, newest.createdAt.getTime() + 1),
+        );
+      });
+    });
   }
 
   /**
@@ -2546,10 +2725,8 @@ export class ShopPayments {
    * @param username - Its username.
    * @param metadata - Metadata of today's pay request.
    * @param query - `timeout`, `method`, `asset`, and repeated keys.
-   * @param arrivedMs - When the api received the pay-link fetch; the wait for
-   *   a charge's creation ends {@link SHOP_PAY_LINK_CREATION_WAIT_MS} after it,
-   *   and a charge creation this fetch starts counts step 8's 16 s limit
-   *   from here.
+   * @param arrivedMs - When the api received the pay-link fetch; a charge
+   *   creation this fetch starts counts step 8's 16 s limit from here.
    * @returns Today's request (with an optional pin) or a full response.
    */
   async payLink(
@@ -2594,23 +2771,10 @@ export class ShopPayments {
     }
     if (state.kind === 'charge' && state.payment === null && this.offersStablecoins(username)) {
       // The request starts or joins the charge's in-flight creation and
-      // waits until it ends, at most until 8 s after the fetch arrived,
-      // whatever the creation is still waiting for, lock waits included. A
-      // creation that outlasts the wait goes on in the background, and a
-      // throw is answered from the state like any other outcome.
-      const creation = this.#chargeCreation(account, username, state.charge, arrivedMs).catch(
-        () => null,
-      );
-      const waitMs = arrivedMs + SHOP_PAY_LINK_CREATION_WAIT_MS - this.#deps.now();
-      if (waitMs > 0) {
-        await Promise.race([creation, this.#sleep(waitMs)]);
-        // Whatever the outcome (a payment, a charge cancelled, expired, or
-        // paid meanwhile, or the end of the wait), answer from the state now.
-        state = await this.#linkState(account.id, this.#deps.now());
-      }
-      // A request that reaches this point 8 s or more after it arrived (a
-      // `timeout` wait) started or joined the creation but does not wait for
-      // it: it answers today's pinned request from the charge it found.
+      // answers at once from the state it read: Orchestra never delays
+      // Lightning. The creation goes on in the background, and a later scan
+      // finds the payment.
+      this.#chargeCreation(account, username, state.charge, arrivedMs).catch(() => undefined);
     }
     if (state.kind === 'open') {
       return this.#openAmountAnswer(account, username, name, metadata, state.payment, query);
@@ -2690,7 +2854,8 @@ export class ShopPayments {
 
   /**
    * The current quote of an open payment, after the replacement rule and the
-   * Lightning-only fallback for an expired quote.
+   * Lightning-only fallback for an expired quote. The replacement starts or
+   * joins in the background; no fetch waits for it or for Orchestra.
    *
    * @param account - Shop account.
    * @param username - Its username.
@@ -2703,38 +2868,20 @@ export class ShopPayments {
     username: string,
     payment: ShopPayment,
   ): Promise<{ payment: ShopPayment; quote: ShopQuote } | null> {
-    let read = await this.#readCurrent(payment.id);
+    const read = await this.#readCurrent(payment.id);
     if (read === null) {
       return null;
     }
     if (
-      this.#replaceable(read.payment, read.quote, this.#deps.now()) &&
+      (this.#replacements.has(read.payment.id) ||
+        this.#replaceable(read.payment, read.quote, this.#deps.now())) &&
       this.offersStablecoins(username)
     ) {
-      // The fetch starts or joins the payment's replacement and waits until
-      // it ends, at most until the earlier of 4 s after this fetch reached
-      // this step and 4 s after the replacement took the account's lock. A
-      // replacement still queued (behind a creation or a stalled holder)
-      // takes the lock at or after the arrival, so its budget never ends
-      // earlier. The replacement's external calls end
-      // SHOP_REPLACEMENT_COMMIT_MARGIN_MS before its 4 s, so its transaction
-      // normally commits inside this wait. A replacement that outlasts the
-      // wait (one that took the lock after the arrival, or whose transaction
-      // queues on the account row) goes on in the background, and the fetch
-      // answers from the state now.
-      const arrivalMs = this.#deps.now();
-      const replacement = this.#replacement(account, read.payment.id);
-      const outcome = replacement.promise.then(
-        (value) => ({ value }),
-        () => null,
-      );
-      const waitMs = (replacement.startMs ?? arrivalMs) + SHOP_REPLACEMENT_BUDGET_MS - arrivalMs;
-      const ended =
-        waitMs > 0 ? await Promise.race([outcome, this.#sleep(waitMs).then(() => null)]) : null;
-      read = ended === null ? await this.#readCurrent(payment.id) : ended.value;
-      if (read === null) {
-        return null;
-      }
+      // The fetch joins an offers fill or replacement already in flight, or
+      // starts a replacement in the background, and answers from the state it
+      // read: Orchestra never delays Lightning. Only the run's re-read and
+      // commit wait for the account's creation lock.
+      void this.#replacement(account, read.payment.id).promise;
     }
     if (read.quote.expiresAt.getTime() > this.#deps.now()) {
       return read;
@@ -2751,7 +2898,12 @@ export class ShopPayments {
       if (latest !== undefined && latest.expiresAt.getTime() > nowMs) {
         return { payment: locked, quote: latest };
       }
-      const quote = await this.#insertQuote(tx, locked, [], nowMs);
+      const quote = await this.#insertQuote(
+        tx,
+        locked,
+        [],
+        Math.max(nowMs, latest!.createdAt.getTime() + 1),
+      );
       return { payment: locked, quote };
     });
   }
@@ -2805,8 +2957,9 @@ export class ShopPayments {
   /**
    * The payment's in-flight replacement: the one already queued or running,
    * or a new run queued now and registered until it ends (also on a throw).
-   * A run that throws logs `shop.creation.failed` once (`accountId`,
-   * `paymentId`, and the error) and rejects every caller.
+   * The run is never awaited by a handler. A run that throws logs
+   * `shop.creation.failed` once (`accountId`, `paymentId`, and the error) and
+   * answers that in-flight run with `null`.
    *
    * @param account - Shop account.
    * @param paymentId - Payment id.
@@ -2818,17 +2971,14 @@ export class ShopPayments {
       return running;
     }
     const entry: ShopReplacement = {
-      startMs: null,
-      promise: this.#replace(account, paymentId, (startMs) => {
-        entry.startMs = startMs;
-      })
+      promise: this.#replace(account, paymentId)
         .catch((error: unknown) => {
           logEvent('shop.creation.failed', {
             accountId: account.id,
             paymentId,
             ...errorLogFields(error),
           });
-          throw error;
+          return null;
         })
         .finally(() => {
           this.#replacements.delete(paymentId);
@@ -2839,13 +2989,14 @@ export class ShopPayments {
   }
 
   /**
-   * Replace the current quote under the creation lock: route list, quotes,
-   * and offer checks for the same sats and BOLT11 until
+   * Replace the current quote: route list, quotes, and offer checks run
+   * without the creation lock for the same sats and BOLT11 until
    * {@link SHOP_REPLACEMENT_COMMIT_MARGIN_MS} before the 4 s are up, then one
-   * transaction that, under the account lock and only while the quote read
-   * at the start is still the payment's newest, increments `replacements`
-   * conditionally and inserts the quote (Lightning-only when no offer
-   * passes); otherwise it inserts nothing and answers the current quote.
+   * short creation-lock section runs a transaction under the account row lock.
+   * Only while the quote read at the start is still the payment's newest, it
+   * increments `replacements` conditionally and inserts the quote
+   * (Lightning-only when no offer passes); otherwise it inserts nothing and
+   * answers the current quote.
    * When no quote request was sent (no route list, no candidate pair, no
    * fresh spot, or no budget), the same conditional update leaves
    * `replacements` as it is, because a Lightning-only row made without an
@@ -2857,50 +3008,49 @@ export class ShopPayments {
    * @returns The current payment and quote afterwards, or `null` when the
    *   payment is no longer open.
    */
-  #replace(
-    account: Account,
-    paymentId: string,
-    onStart: (startMs: number) => void,
-  ): Promise<ShopCurrentQuote | null> {
-    return this.#withLock(account.id, async () => {
-      const startMs = this.#deps.now();
-      onStart(startMs);
-      const read = await this.#readCurrent(paymentId);
-      if (read === null || !this.#replaceable(read.payment, read.quote, startMs)) {
-        return read;
-      }
-      // The external calls end early enough that the transaction below
-      // normally commits inside a fetch's 4 s wait.
-      const deadlineMs = startMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS;
-      const config = this.#deps.config;
-      /* v8 ignore next 3 -- callers checked offersStablecoins */
-      if (config === null) {
-        return read;
-      }
-      const routes = await this.#routeList(
-        Math.min(deadlineMs, startMs + SHOP_ROUTES_TIMEOUT_MS),
-        paymentId,
-      );
-      const pairs = routes === null ? [] : candidatePairs(routes, config.evmRpc, paymentId);
-      const { offers, sent } =
-        pairs.length === 0
-          ? { offers: [], sent: false }
-          : await this.#requestOffers(
-              pairs,
-              {
-                paymentId,
-                amountSats: read.payment.amountSats,
-                bolt11: read.payment.bolt11,
-                bolt11ExpiresAtMs: read.payment.bolt11ExpiresAt.getTime(),
-              },
-              deadlineMs,
-            );
-      return this.#deps.store.transaction(async (tx) => {
+  async #replace(account: Account, paymentId: string): Promise<ShopCurrentQuote | null> {
+    const startMs = this.#deps.now();
+    const read = await this.#readCurrent(paymentId);
+    if (read === null || !this.#replaceable(read.payment, read.quote, startMs)) {
+      return read;
+    }
+    // The external calls end early enough that the transaction below
+    // commits inside the run's own 4 s budget. They run without the creation
+    // lock: no handler waits for Orchestra.
+    const deadlineMs = startMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS;
+    const config = this.#deps.config;
+    /* v8 ignore next 3 -- callers checked offersStablecoins */
+    if (config === null) {
+      return read;
+    }
+    const routes = await this.#routeList(
+      Math.min(deadlineMs, startMs + SHOP_ROUTES_TIMEOUT_MS),
+      paymentId,
+    );
+    const pairs = routes === null ? [] : candidatePairs(routes, config.evmRpc, paymentId);
+    const { offers, sent } =
+      pairs.length === 0
+        ? { offers: [], sent: false }
+        : await this.#requestOffers(
+            pairs,
+            {
+              paymentId,
+              amountSats: read.payment.amountSats,
+              bolt11: read.payment.bolt11,
+              bolt11ExpiresAtMs: read.payment.bolt11ExpiresAt.getTime(),
+            },
+            deadlineMs,
+          );
+    return this.#withLock(account.id, async () =>
+      this.#deps.store.transaction(async (tx) => {
         await tx.lockAccount(account.id);
         const nowMs = this.#deps.now();
-        // A quote inserted since the read (a fetch's Lightning-only fallback,
-        // or another container's replacement) is the current one: it is
-        // answered as it stands and never replaced here.
+        // A quote with offers inserted since the read (another container's
+        // replacement) is the current one: it is answered as it stands and
+        // never replaced here. A Lightning-only fallback row written after
+        // the read is not newer, so this run's offers quote still lands, with
+        // the same conditions. With no quote request sent, a fallback row is
+        // answered as it stands instead of a second Lightning-only row.
         const quotes = await tx.quotesOf(paymentId);
         const newest = quotes[quotes.length - 1];
         const where = {
@@ -2911,7 +3061,8 @@ export class ShopPayments {
         // Only a replacement that sent a quote request counts; a
         // Lightning-only row made without one is not a replacement.
         const counted =
-          newest !== undefined && newest.id === read.quote.id
+          newest !== undefined &&
+          (newest.id === read.quote.id || (sent && newest.transferAmounts.length === 1))
             ? await tx.updatePayment(
                 paymentId,
                 where,
@@ -2933,10 +3084,15 @@ export class ShopPayments {
           }
           return { payment, quote: newest };
         }
-        const quote = await this.#insertQuote(tx, counted, offers, nowMs);
+        const quote = await this.#insertQuote(
+          tx,
+          counted,
+          offers,
+          Math.max(nowMs, newest!.createdAt.getTime() + 1),
+        );
         return { payment: counted, quote };
-      });
-    });
+      }),
+    );
   }
 
   // ─── Callback ───────────────────────────────────────────────────────────
