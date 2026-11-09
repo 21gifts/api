@@ -188,7 +188,7 @@ describe('diagnosticsRoutes', () => {
     expect((await accept('\t\t'))?.fields).toEqual({});
   });
 
-  it('accepts a non-IP cf-connecting-ip as 204 without a per-IP bucket', async () => {
+  it('accepts a non-IP cf-connecting-ip as 204', async () => {
     const store = new InMemoryDiagnosticStore();
     const app = mount(store, now);
     const res = await post(app, { 'cf-connecting-ip': 'not an ip' });
@@ -196,41 +196,39 @@ describe('diagnosticsRoutes', () => {
     expect((await store.listLatest(1))[0]?.source).toBe('client');
   });
 
-  it('rate-limits per IP without filling that bucket for missing or invalid IPs', async () => {
+  it('accepts more than 60 reports from one cf-connecting-ip in one window', async () => {
     const store = new InMemoryDiagnosticStore();
     const app = mount(store, now);
-    const ip = { 'cf-connecting-ip': '1.2.3.4' };
-    for (let i = 0; i < 60; i++) {
+    const ip = { 'cf-connecting-ip': '192.0.2.1' };
+    for (let i = 0; i < 100; i++) {
       expect((await post(app, ip)).status).toBe(204);
     }
-    const limited = await post(app, ip);
-    expect(limited.status).toBe(429);
-    expect(await limited.json()).toEqual({ error: 'Too many diagnostics' });
-    expect((await post(app)).status).toBe(204);
+    const rows = await store.listLatest(200);
+    expect(rows.filter((row) => row.source === 'client')).toHaveLength(100);
+    expect(rows.filter((row) => row.event === 'diagnostics.rate_limited')).toHaveLength(0);
   });
 
   it('records one diagnostics.rate_limited row per window and another after the window', async () => {
     const store = new InMemoryDiagnosticStore();
     const app = mount(store, now);
-    const ip = { 'cf-connecting-ip': '1.2.3.4' };
-    for (let i = 0; i < 60; i++) {
-      expect((await post(app, ip)).status).toBe(204);
+    for (let i = 0; i < 600; i++) {
+      expect((await post(app)).status).toBe(204);
     }
-    expect((await post(app, ip)).status).toBe(429);
-    expect((await post(app, ip)).status).toBe(429);
-    const first = await store.listLatest(200);
-    expect(first.filter((row) => row.source === 'client')).toHaveLength(60);
+    expect((await post(app)).status).toBe(429);
+    expect((await post(app)).status).toBe(429);
+    const first = await store.listLatest(2000);
+    expect(first.filter((row) => row.source === 'client')).toHaveLength(600);
     expect(first.filter((row) => row.event === 'diagnostics.rate_limited')).toHaveLength(1);
     clock += 60_000;
-    for (let i = 0; i < 60; i++) {
-      expect((await post(app, ip)).status).toBe(204);
+    for (let i = 0; i < 600; i++) {
+      expect((await post(app)).status).toBe(204);
     }
-    expect((await post(app, ip)).status).toBe(429);
-    const second = await store.listLatest(200);
+    expect((await post(app)).status).toBe(429);
+    const second = await store.listLatest(2000);
     expect(second.filter((row) => row.event === 'diagnostics.rate_limited')).toHaveLength(2);
   });
 
-  it('rate-limits the global window without an IP header', async () => {
+  it('rate-limits the global window across addresses', async () => {
     const store = new InMemoryDiagnosticStore();
     const app = mount(store, now);
     for (let i = 0; i < 600; i++) {
@@ -244,26 +242,17 @@ describe('diagnosticsRoutes', () => {
     expect((await post(app, { 'cf-connecting-ip': '9.9.9.9' })).status).toBe(204);
   });
 
-  it('releases a no-IP slot when the insert throws', async () => {
-    const store = new RecordingStore();
-    store.failFirstClient = true;
-    const app = mount(store, now);
-    expect((await post(app)).status).toBe(500);
-    expect((await post(app)).status).toBe(204);
-  });
-
   it('does not consume a rate-limit slot when the client append throws', async () => {
     const store = new RecordingStore();
     store.failFirstClient = true;
     const app = mount(store, now);
-    const ip = { 'cf-connecting-ip': '1.2.3.4' };
-    const failed = await post(app, ip);
+    const failed = await post(app);
     expect(failed.status).toBe(500);
     expect(await failed.json()).toEqual({ error: 'Log is unavailable' });
-    for (let i = 0; i < 60; i++) {
-      expect((await post(app, ip)).status).toBe(204);
+    for (let i = 0; i < 600; i++) {
+      expect((await post(app)).status).toBe(204);
     }
-    expect((await post(app, ip)).status).toBe(429);
+    expect((await post(app)).status).toBe(429);
   });
 
   it('keeps the reserved slot while an insert is still in flight', async () => {
@@ -284,25 +273,24 @@ describe('diagnosticsRoutes', () => {
       listLatest: async () => [],
     };
     const app = mount(store, now);
-    const ip = { 'cf-connecting-ip': '9.9.9.9' };
-    for (let i = 0; i < 59; i++) {
-      expect((await post(app, ip)).status).toBe(204);
+    for (let i = 0; i < 599; i++) {
+      expect((await post(app)).status).toBe(204);
     }
     holdClients = true;
     hold = new Promise<void>((resolve) => {
       releaseHold = resolve;
     });
     try {
-      const first = post(app, ip);
-      for (let i = 0; i < 50 && entered < 60; i++) {
+      const first = post(app);
+      for (let i = 0; i < 50 && entered < 600; i++) {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
-      expect(entered).toBe(60);
-      const second = post(app, ip);
-      for (let i = 0; i < 50 && entered < 61; i++) {
+      expect(entered).toBe(600);
+      const second = post(app);
+      for (let i = 0; i < 50 && entered < 601; i++) {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
-      expect(entered).toBe(60);
+      expect(entered).toBe(600);
       releaseHold();
       expect((await second).status).toBe(429);
       expect((await first).status).toBe(204);
@@ -311,7 +299,7 @@ describe('diagnosticsRoutes', () => {
     }
   });
 
-  it('keeps a newer address bucket when an older insert fails after the window', async () => {
+  it('keeps a newer slot when an older insert fails after the window', async () => {
     let releaseHold: () => void = () => undefined;
     let gate = Promise.resolve();
     let entered = 0;
@@ -321,7 +309,7 @@ describe('diagnosticsRoutes', () => {
           return;
         }
         entered += 1;
-        if (entered === 60) {
+        if (entered === 600) {
           await gate;
           throw new Error('disk');
         }
@@ -329,31 +317,30 @@ describe('diagnosticsRoutes', () => {
       listLatest: async () => [],
     };
     const app = mount(store, now);
-    const ip = { 'cf-connecting-ip': '1.2.3.4' };
-    for (let i = 0; i < 59; i++) {
-      expect((await post(app, ip)).status).toBe(204);
+    for (let i = 0; i < 599; i++) {
+      expect((await post(app)).status).toBe(204);
     }
     gate = new Promise<void>((resolve) => {
       releaseHold = resolve;
     });
     try {
-      const first = post(app, ip);
-      for (let i = 0; i < 50 && entered < 60; i++) {
+      const first = post(app);
+      for (let i = 0; i < 50 && entered < 600; i++) {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
-      expect(entered).toBe(60);
+      expect(entered).toBe(600);
       clock += 60_000;
-      expect((await post(app, ip)).status).toBe(204);
+      expect((await post(app)).status).toBe(204);
       releaseHold();
       expect((await first).status).toBe(500);
       let accepted = 0;
-      for (let i = 0; i < 61; i++) {
-        if ((await post(app, ip)).status !== 204) {
+      for (let i = 0; i < 601; i++) {
+        if ((await post(app)).status !== 204) {
           break;
         }
         accepted += 1;
       }
-      expect(accepted).toBe(59);
+      expect(accepted).toBe(599);
     } finally {
       releaseHold();
     }
@@ -380,57 +367,43 @@ describe('diagnosticsRoutes', () => {
       listLatest: (limit) => store.listLatest(limit),
     };
     const app = mount(gated, now);
-    const firstIp = { 'cf-connecting-ip': '1.1.1.1' };
-    const secondIp = { 'cf-connecting-ip': '2.2.2.2' };
-    for (let i = 0; i < 60; i++) {
-      expect((await post(app, firstIp)).status).toBe(204);
+    for (let i = 0; i < 600; i++) {
+      expect((await post(app)).status).toBe(204);
     }
     try {
-      const first = post(app, firstIp);
+      const first = post(app);
       for (let i = 0; i < 50 && rateLimited < 1; i++) {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
       expect(rateLimited).toBe(1);
       clock += 60_001;
-      for (let i = 0; i < 60; i++) {
-        expect((await post(app, secondIp)).status).toBe(204);
+      for (let i = 0; i < 600; i++) {
+        expect((await post(app)).status).toBe(204);
       }
-      expect((await post(app, secondIp)).status).toBe(429);
+      expect((await post(app)).status).toBe(429);
       expect(rateLimited).toBe(2);
       releaseHold();
       expect((await first).status).toBe(429);
-      expect((await post(app, secondIp)).status).toBe(429);
-      const rows = await store.listLatest(200);
+      expect((await post(app)).status).toBe(429);
+      const rows = await store.listLatest(2000);
       expect(rows.filter((row) => row.event === 'diagnostics.rate_limited')).toHaveLength(1);
     } finally {
       releaseHold();
     }
   });
 
-  it('drops an expired address bucket when a later request starts a new minute', async () => {
-    const store = new InMemoryDiagnosticStore();
-    const app = mount(store, now);
-    expect((await post(app, { 'cf-connecting-ip': '1.1.1.1' })).status).toBe(204);
-    clock += 30_000;
-    expect((await post(app, { 'cf-connecting-ip': '2.2.2.2' })).status).toBe(204);
-    clock += 30_001;
-    expect((await post(app, { 'cf-connecting-ip': '3.3.3.3' })).status).toBe(204);
-    expect((await post(app, { 'cf-connecting-ip': '1.1.1.1' })).status).toBe(204);
-  });
-
   it('does not remember lastRateLimitedAt when the rate-limited append throws', async () => {
     const store = new RecordingStore();
     const app = mount(store, now);
-    const ip = { 'cf-connecting-ip': '1.2.3.4' };
-    for (let i = 0; i < 60; i++) {
-      expect((await post(app, ip)).status).toBe(204);
+    for (let i = 0; i < 600; i++) {
+      expect((await post(app)).status).toBe(204);
     }
     store.rejectRateLimited = true;
-    expect((await post(app, ip)).status).toBe(429);
-    expect((await post(app, ip)).status).toBe(429);
+    expect((await post(app)).status).toBe(429);
+    expect((await post(app)).status).toBe(429);
     expect(store.rateLimitedCalls).toBe(2);
-    const rows = await store.listLatest(200);
-    expect(rows.filter((row) => row.source === 'client')).toHaveLength(60);
+    const rows = await store.listLatest(2000);
+    expect(rows.filter((row) => row.source === 'client')).toHaveLength(600);
     expect(rows.filter((row) => row.event === 'diagnostics.rate_limited')).toHaveLength(0);
   });
 });
