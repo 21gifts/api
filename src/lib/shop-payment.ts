@@ -1603,12 +1603,6 @@ function duplicateInvoiceFields(
   };
 }
 
-/** An open payment with its newest quote. */
-interface ShopCurrentQuote {
-  readonly payment: ShopPayment;
-  readonly quote: ShopQuote;
-}
-
 /**
  * Whether a run that started from `startQuoteId` may still insert its offers
  * quote. A Lightning-only row is not newer for this check: a fetch's
@@ -1623,11 +1617,6 @@ interface ShopCurrentQuote {
  */
 function stillNewestQuote(startQuoteId: string, newest: ShopQuote): boolean {
   return newest.id === startQuoteId || newest.transferAmounts.length === 1;
-}
-
-/** The in-flight quote replacement of one payment: its outcome. */
-interface ShopReplacement {
-  readonly promise: Promise<ShopCurrentQuote | null>;
 }
 
 /**
@@ -1652,7 +1641,7 @@ export class ShopPayments {
    * moment it is queued until it ends. The offers fill of a payer-opened
    * payment is registered here too. A second fetch joins either one.
    */
-  readonly #replacements = new Map<string, ShopReplacement>();
+  readonly #replacements = new Map<string, Promise<void>>();
   readonly #noPairUntil = new Map<string, number>();
   readonly #apiCreations = new IpRateLimiter(SHOP_API_CREATIONS_PER_MINUTE);
   readonly #accountCreations = new IpRateLimiter(SHOP_ACCOUNT_CREATIONS_PER_MINUTE);
@@ -2352,19 +2341,17 @@ export class ShopPayments {
       return;
     }
     const promise = this.#fillOffers(accountId, config, paymentId, firstQuoteId, target)
-      .then((): Promise<ShopCurrentQuote | null> => this.#readCurrent(paymentId))
       .catch((error: unknown) => {
         logEvent('shop.creation.failed', {
           accountId,
           paymentId,
           ...errorLogFields(error),
         });
-        return null;
       })
       .finally(() => {
         this.#replacements.delete(paymentId);
       });
-    this.#replacements.set(paymentId, { promise });
+    this.#replacements.set(paymentId, promise);
     void promise;
   }
 
@@ -2881,7 +2868,7 @@ export class ShopPayments {
       // starts a replacement in the background, and answers from the state it
       // read: Orchestra never delays Lightning. Only the run's re-read and
       // commit wait for the account's creation lock.
-      void this.#replacement(account, read.payment.id).promise;
+      void this.#replacement(account, read.payment.id);
     }
     if (read.quote.expiresAt.getTime() > this.#deps.now()) {
       return read;
@@ -2958,34 +2945,30 @@ export class ShopPayments {
    * The payment's in-flight replacement: the one already queued or running,
    * or a new run queued now and registered until it ends (also on a throw).
    * The run is never awaited by a handler. A run that throws logs
-   * `shop.creation.failed` once (`accountId`, `paymentId`, and the error) and
-   * answers that in-flight run with `null`.
+   * `shop.creation.failed` once (`accountId`, `paymentId`, and the error).
    *
    * @param account - Shop account.
    * @param paymentId - Payment id.
-   * @returns The in-flight replacement.
+   * @returns The in-flight replacement, which resolves with no value.
    */
-  #replacement(account: Account, paymentId: string): ShopReplacement {
+  #replacement(account: Account, paymentId: string): Promise<void> {
     const running = this.#replacements.get(paymentId);
     if (running !== undefined) {
       return running;
     }
-    const entry: ShopReplacement = {
-      promise: this.#replace(account, paymentId)
-        .catch((error: unknown) => {
-          logEvent('shop.creation.failed', {
-            accountId: account.id,
-            paymentId,
-            ...errorLogFields(error),
-          });
-          return null;
-        })
-        .finally(() => {
-          this.#replacements.delete(paymentId);
-        }),
-    };
-    this.#replacements.set(paymentId, entry);
-    return entry;
+    const promise = this.#replace(account, paymentId)
+      .catch((error: unknown) => {
+        logEvent('shop.creation.failed', {
+          accountId: account.id,
+          paymentId,
+          ...errorLogFields(error),
+        });
+      })
+      .finally(() => {
+        this.#replacements.delete(paymentId);
+      });
+    this.#replacements.set(paymentId, promise);
+    return promise;
   }
 
   /**
@@ -2995,8 +2978,7 @@ export class ShopPayments {
    * short creation-lock section runs a transaction under the account row lock.
    * Only while the quote read at the start is still the payment's newest, it
    * increments `replacements` conditionally and inserts the quote
-   * (Lightning-only when no offer passes); otherwise it inserts nothing and
-   * answers the current quote.
+   * (Lightning-only when no offer passes); otherwise it inserts nothing.
    * When no quote request was sent (no route list, no candidate pair, no
    * fresh spot, or no budget), the same conditional update leaves
    * `replacements` as it is, because a Lightning-only row made without an
@@ -3005,14 +2987,13 @@ export class ShopPayments {
    *
    * @param account - Shop account.
    * @param paymentId - Payment id.
-   * @returns The current payment and quote afterwards, or `null` when the
-   *   payment is no longer open.
+   * @returns Nothing; the transaction inserts the quote or nothing.
    */
-  async #replace(account: Account, paymentId: string): Promise<ShopCurrentQuote | null> {
+  async #replace(account: Account, paymentId: string): Promise<void> {
     const startMs = this.#deps.now();
     const read = await this.#readCurrent(paymentId);
     if (read === null || !this.#replaceable(read.payment, read.quote, startMs)) {
-      return read;
+      return;
     }
     // The external calls end early enough that the transaction below
     // commits inside the run's own 4 s budget. They run without the creation
@@ -3021,7 +3002,7 @@ export class ShopPayments {
     const config = this.#deps.config;
     /* v8 ignore next 3 -- callers checked offersStablecoins */
     if (config === null) {
-      return read;
+      return;
     }
     const routes = await this.#routeList(
       Math.min(deadlineMs, startMs + SHOP_ROUTES_TIMEOUT_MS),
@@ -3041,16 +3022,15 @@ export class ShopPayments {
             },
             deadlineMs,
           );
-    return this.#withLock(account.id, async () =>
+    await this.#withLock(account.id, async () =>
       this.#deps.store.transaction(async (tx) => {
         await tx.lockAccount(account.id);
         const nowMs = this.#deps.now();
         // A quote with offers inserted since the read (another container's
-        // replacement) is the current one: it is answered as it stands and
-        // never replaced here. A Lightning-only fallback row written after
-        // the read is not newer, so this run's offers quote still lands, with
-        // the same conditions. With no quote request sent, a fallback row is
-        // answered as it stands instead of a second Lightning-only row.
+        // replacement) wins and is never replaced here. A Lightning-only
+        // fallback row written after the read is not newer, so this run's
+        // offers quote still lands, with the same conditions. With no quote
+        // request sent, a fallback row prevents a second Lightning-only row.
         const quotes = await tx.quotesOf(paymentId);
         const newest = quotes[quotes.length - 1];
         const where = {
@@ -3070,27 +3050,14 @@ export class ShopPayments {
               )
             : null;
         if (counted === null) {
-          const payment = await tx.getPayment(paymentId);
-          if (
-            payment === null ||
-            payment.status !== 'open' ||
-            nowMs >= payment.windowEndsAt.getTime()
-          ) {
-            return null;
-          }
-          /* v8 ignore next 3 -- every payment has its first quote */
-          if (newest === undefined) {
-            return null;
-          }
-          return { payment, quote: newest };
+          return;
         }
-        const quote = await this.#insertQuote(
+        await this.#insertQuote(
           tx,
           counted,
           offers,
           Math.max(nowMs, newest!.createdAt.getTime() + 1),
         );
-        return { payment: counted, quote };
       }),
     );
   }

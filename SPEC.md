@@ -1246,10 +1246,12 @@ with `accountId` and `paymentId`. One transaction under the account row
 lock inserts a quote with the passing offers only when the payment is still
 `open`, at least 45 s remain before `window_ends_at`, and the payment's
 newest quote is still the Lightning-only first quote. A Lightning-only row
-written by a fetch after the run read its starting quote is not newer. No
-passing offer, no route list, no candidate pair, no fresh spot, or no quote
-budget inserts nothing; no candidate pair or no passing offer also sets the
-60 s no-pair wait. The fill does not increment `replacements`.
+written by a fetch after the run read its starting quote is not newer. The
+fill inserts no quote when the route list fails, there is no candidate pair,
+there is no fresh spot, there is no quote budget, or no offer passes. No
+candidate pair, no fresh spot, no quote budget, and no passing offer start the
+60 s no-pair wait. A failed route list does not start the wait. The fill does
+not increment `replacements`.
 
 **States.** `shop_payment.status` is `open`, `accepted`, `paid`, or
 `ended`; every change is one conditional update. `open` → `ended` when the

@@ -755,11 +755,12 @@ inserts a quote with the passing offers only when the payment is still
 `open`, at least 45 s remain before `window_ends_at`, and the payment's
 newest quote is still the Lightning-only first quote. A Lightning-only
 row written by a fetch after the fill read its starting quote does not
-make the fill lose, with the same conditions otherwise. No passing
-offer, no route list, no candidate pair, no spot, or no quote budget
-writes nothing. A run that finds no candidate pair, or no passing offer,
-sets the account's 60 s no-pair wait as a creation does. The fill does
-not increment `replacements`; it is not a replacement.
+make the fill lose, with the same conditions otherwise. The fill inserts
+no quote when the route list fails, there is no candidate pair, there is
+no fresh spot, there is no quote budget, or no offer passes. No candidate
+pair, no fresh spot, no quote budget, and no passing offer start the
+account's 60 s no-pair wait. A failed route list does not start the wait.
+The fill does not increment `replacements`; it is not a replacement.
 
 ### Payment hash claim
 

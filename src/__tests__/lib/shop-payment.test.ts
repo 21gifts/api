@@ -2533,9 +2533,18 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(json['transferAmounts']).toEqual([lightningTransferAmount(SATS)]);
     expect(h.orchestra.routesCalls).toEqual([1_000]);
     // Releasing the route list lets the fill commit its offers quote.
+    let paymentReads = 0;
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      paymentReads += 1;
+      return tx.getPayment(...(args as unknown as [string]));
+    };
     releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
     await vi.waitFor(async () => expect(await quotesOf(h, payment!.id)).toHaveLength(2));
+    delete h.store.hooks.getPayment;
     const quotes = await quotesOf(h, payment!.id);
+    // The fill's observable result is the offers quote; it does not re-read
+    // the payment afterwards to build an unused result.
+    expect(paymentReads).toBe(0);
     expect(quotes[1]!.transferAmounts.length).toBeGreaterThan(1);
     expect((await readPayment(h, payment!.id)).replacements).toBe(0);
     expect(h.orchestra.quoteCalls).toHaveLength(12);
@@ -4930,11 +4939,20 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
         await tx.insertQuote(newer);
       });
     };
+    let paymentReads = 0;
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      paymentReads += 1;
+      return tx.getPayment(...(args as unknown as [string]));
+    };
     clock = T0 + 50_000;
     h.svc.currentQuote(h.account, USER, payment);
     await settle();
+    delete h.store.hooks.getPayment;
     const quotes = await quotesOf(h, payment.id);
     expect(quotes.map((quote) => quote.id)).toEqual([initial!.id, started!.id, newer.id]);
+    // One read serves the fetch and one starts the replacement. Losing the
+    // commit race needs no result-building read afterwards.
+    expect(paymentReads).toBe(2);
     expect((await readPayment(h, payment.id)).replacements).toBe(1);
   });
 
