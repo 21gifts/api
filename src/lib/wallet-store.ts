@@ -61,16 +61,21 @@ export interface WalletPaymentCursor {
 /** Persistence contract for wallet report data. */
 export interface WalletStore {
   /**
-   * Find distinct accounts with completed outgoing payments to the receiver matching either key.
+   * Find distinct counterparties of completed outgoing payments matching either lookup key.
    *
-   * @param receiverAccountId - Account receiving the payments.
-   * @param keys - Client correlation ids and nullable invoice and hash lookup keys.
-   * @returns Matching sender account ids sorted by id, keyed by correlation id; absent ids have no matches.
+   * @param receiverAccountId - Caller account id.
+   * @param keys - Client correlation ids, directions, and nullable invoice and hash lookup keys.
+   * @returns Matching counterparty account ids sorted by id, keyed by correlation id; absent ids have no matches.
    * @throws Propagates storage failures.
    */
-  findPaymentSenders(
+  findPaymentCounterparties(
     receiverAccountId: string,
-    keys: readonly { id: string; invoice: string | null; paymentHash: string | null }[],
+    keys: readonly {
+      id: string;
+      direction: 'in' | 'out';
+      invoice: string | null;
+      paymentHash: string | null;
+    }[],
   ): Promise<Map<string, string[]>>;
   /**
    * Append one balance snapshot.
@@ -402,14 +407,19 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
-   * Find distinct senders of completed outgoing payments to the receiver.
-   * @param receiverAccountId - Receiver account id.
-   * @param keys - Correlation ids with invoice and hash keys.
+   * Find distinct counterparties of completed outgoing payments.
+   * @param receiverAccountId - Caller account id.
+   * @param keys - Correlation ids with direction, invoice and hash keys.
    * @returns Matching sorted account ids by correlation id.
    */
-  findPaymentSenders(
+  findPaymentCounterparties(
     receiverAccountId: string,
-    keys: readonly { id: string; invoice: string | null; paymentHash: string | null }[],
+    keys: readonly {
+      id: string;
+      direction: 'in' | 'out';
+      invoice: string | null;
+      paymentHash: string | null;
+    }[],
   ): Promise<Map<string, string[]>> {
     const result = new Map<string, string[]>();
     for (const key of keys) {
@@ -418,13 +428,24 @@ export class InMemoryWalletStore implements WalletStore {
         if (
           row.direction === 'out' &&
           row.status === 'completed' &&
-          row.counterpartyAccountId === receiverAccountId &&
-          row.accountId !== receiverAccountId &&
           ((key.invoice !== null && row.invoice === key.invoice) ||
             (key.paymentHash !== null &&
               row.paymentHash?.toLowerCase() === key.paymentHash.toLowerCase()))
         ) {
-          senders.add(row.accountId);
+          if (key.direction === 'in') {
+            if (
+              row.counterpartyAccountId === receiverAccountId &&
+              row.accountId !== receiverAccountId
+            ) {
+              senders.add(row.accountId);
+            }
+          } else if (
+            row.accountId === receiverAccountId &&
+            row.counterpartyAccountId !== null &&
+            row.counterpartyAccountId !== receiverAccountId
+          ) {
+            senders.add(row.counterpartyAccountId);
+          }
         }
       }
       if (senders.size > 0) result.set(key.id, [...senders].sort());
@@ -798,29 +819,44 @@ export class PostgresWalletStore implements WalletStore {
   constructor(private readonly sql: SqlClient) {}
 
   /**
-   * Find distinct senders of completed outgoing payments to the receiver in one query.
-   * @param receiverAccountId - Receiver account id.
-   * @param keys - Correlation ids with invoice and hash keys.
+   * Find distinct counterparties of completed outgoing payments in one query.
+   * @param receiverAccountId - Caller account id.
+   * @param keys - Correlation ids with direction, invoice and hash keys.
    * @returns Matching sorted account ids by correlation id.
    * @throws Propagates SQL failures.
    */
-  async findPaymentSenders(
+  async findPaymentCounterparties(
     receiverAccountId: string,
-    keys: readonly { id: string; invoice: string | null; paymentHash: string | null }[],
+    keys: readonly {
+      id: string;
+      direction: 'in' | 'out';
+      invoice: string | null;
+      paymentHash: string | null;
+    }[],
   ): Promise<Map<string, string[]>> {
     const rows = await this.sql.query<{ id: string; account_id: string }>(
-      `SELECT DISTINCT k.id, p.account_id
-FROM unnest($2::text[], $3::text[], $4::text[]) AS k(id, invoice, payment_hash)
-JOIN wallet_payment p ON p.direction = 'out' AND p.counterparty_account_id = $1
-  AND p.account_id <> $1 AND p.status = 'completed'
+      `WITH k AS (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS t(id, invoice, payment_hash, direction)),
+matches AS (
+SELECT k.id, p.account_id
+FROM k JOIN wallet_payment p ON k.direction = 'in' AND p.direction = 'out'
+  AND p.counterparty_account_id = $1 AND p.account_id <> $1 AND p.status = 'completed'
   AND ((NULLIF(k.invoice, '') IS NOT NULL AND p.invoice = k.invoice)
     OR (NULLIF(k.payment_hash, '') IS NOT NULL AND lower(p.payment_hash) = lower(k.payment_hash)))
-ORDER BY k.id, p.account_id`,
+UNION
+SELECT k.id, p.counterparty_account_id AS account_id
+FROM k JOIN wallet_payment p ON k.direction = 'out' AND p.direction = 'out'
+  AND p.account_id = $1 AND p.counterparty_account_id IS NOT NULL
+  AND p.counterparty_account_id <> $1 AND p.status = 'completed'
+  AND ((NULLIF(k.invoice, '') IS NOT NULL AND p.invoice = k.invoice)
+    OR (NULLIF(k.payment_hash, '') IS NOT NULL AND lower(p.payment_hash) = lower(k.payment_hash)))
+)
+SELECT id, account_id FROM matches ORDER BY id, account_id`,
       [
         receiverAccountId,
         postgresTextArrayLiteral(keys.map((_, index) => String(index))),
         postgresTextArrayLiteral(keys.map((key) => key.invoice ?? '')),
         postgresTextArrayLiteral(keys.map((key) => key.paymentHash ?? '')),
+        postgresTextArrayLiteral(keys.map((key) => key.direction)),
       ],
     );
     const result = new Map<string, string[]>();
