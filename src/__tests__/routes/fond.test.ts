@@ -1174,7 +1174,8 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(events).toContain('fond.invoice.failed');
   });
 
-  it('returns 409 Not payable when the row stopped being payable during issue', async () => {
+  it('returns 503 when the row stopped being payable during issue', async () => {
+    const events = captureEvents();
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());
     mockedIssue.mockResolvedValue({ ok: true, invoice: invoice() });
@@ -1183,9 +1184,10 @@ describe('POST /fond/payouts/:id/invoice', () => {
       method: 'POST',
       headers: authHeader(),
     });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Not payable' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
     expect((await payouts.get(ROW_ID))?.status).toBe('issuing');
+    expect(events).toContain('fond.invoice.failed');
   });
 
   it('returns 503 when setInvoiced throws and leaves the row issuing', async () => {

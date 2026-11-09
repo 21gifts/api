@@ -378,7 +378,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         });
         if (stored === undefined) {
           logEvent('fond.invoice.failed');
-          return c.json({ error: 'Not payable' }, 409);
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
         }
       } catch {
         logEvent('fond.invoice.failed');
