@@ -127,7 +127,7 @@ async function verifyWallet(authStore: InMemoryAuthStore, share = true): Promise
 
 async function seedPasskeyAccount(
   authStore: InMemoryAuthStore,
-  role: 'verified' | 'basis' | 'fond' = 'verified',
+  role: 'verified' | 'basis' = 'verified',
   share = true,
 ): Promise<void> {
   await authStore.createAccount({
@@ -342,24 +342,6 @@ describe('POST /spend/daily-instruction', () => {
   it('returns not_eligible for a basis account without reading a grant', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore, 'basis');
-    const fundingStore = admittedStore();
-    const getGrant = vi.spyOn(fundingStore, 'getByAccountId');
-    const res = await createSpendApp({
-      authStore,
-      messageStore: await liveMediaPostStore(),
-      fundingStore,
-    }).request(
-      '/spend/daily-instruction',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
-    expect(getGrant).not.toHaveBeenCalled();
-  });
-
-  it('returns not_eligible for a fond account without reading a grant, like basis', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore, 'fond');
     const fundingStore = admittedStore();
     const getGrant = vi.spyOn(fundingStore, 'getByAccountId');
     const res = await createSpendApp({

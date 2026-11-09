@@ -668,27 +668,6 @@ describe('replayPayoutWindow', () => {
     expect(result.totals).toMatchObject({ events: 5, skipped: 4, failed: 1 });
   });
 
-  it('reports a fond member with an earlier-day trial as grant, like basis', async () => {
-    const h = await harness({
-      grants: [
-        { ...admitted(id(7)), status: 'trial', trialUtcDate: '2026-10-28', admittedAt: null },
-      ],
-    });
-    await h.member(id(7), 'cy', 'fond');
-    await h.post(id(1), id(7), '2026-10-29T23:03:00.000Z');
-
-    const result = await h.run();
-    expect(result.events).toEqual([
-      expect.objectContaining({
-        eventId: id(1),
-        status: 'skipped',
-        reason: 'not_eligible',
-        detail: 'grant',
-      }),
-    ]);
-    expect(h.spend.pingOnDay).not.toHaveBeenCalled();
-  });
-
   it('reads every feed page and every moderator-group page that reaches the window', async () => {
     const h = await harness({ grants: [admitted(ADA)] });
     await h.member(ADA, 'ada', 'moderator');

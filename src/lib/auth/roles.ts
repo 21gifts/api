@@ -1,59 +1,48 @@
 import type { AccountRole } from '@/lib/auth/store';
 
-/**
- * Roles that carry a rank on the product hierarchy. `fond` is a payer role
- * for one member and has no rank: it is never more than any minimum.
- */
-export type RankRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'founder';
-
-/** Identity list of live roles (not the rank). `fond` is last. */
+/** Identity list of live roles in hierarchy order. */
 export const ROLE_ORDER: readonly AccountRole[] = [
   'basis',
   'verified',
   'moderator',
+  'fond',
   'initiator',
   'founder',
-  'fond',
 ];
 
-const ROLE_RANK: Record<RankRole, number> = {
+const ROLE_RANK: Record<AccountRole, number> = {
   basis: 0,
   verified: 1,
   moderator: 2,
-  initiator: 2,
-  founder: 3,
+  fond: 3,
+  initiator: 4,
+  founder: 5,
 };
 
 /**
  * Rank of `role` from the rank map (basis 0, verified 1, moderator 2,
- * initiator 2, founder 3). {@link ROLE_ORDER} is the identity list, not
- * the rank. `fond` has no rank and is not a {@link RankRole}.
+ * fond 3, initiator 4, founder 5). {@link ROLE_ORDER} is the identity list.
  *
- * @param role - Ranked account role.
- * @returns Integer rank 0–3.
+ * @param role - Live account role.
+ * @returns Integer rank 0–5.
  */
-export function roleRank(role: RankRole): number {
+export function roleRank(role: AccountRole): number {
   return ROLE_RANK[role];
 }
 
 /**
- * Whether `role` meets a minimum on the product hierarchy. Initiator has
- * the same rank as moderator. A higher rank can do everything a lower
- * rank can; equal ranks can do the same things. Every permission check
- * names a minimum role — an equality test on the caller's role is a
- * defect. A `fond` role never meets a minimum. Subject rank equality uses
- * {@link sameRoleRank} (state, not permission). The named permissions that
- * are not rank checks are {@link canEditDailyPayoutRoster} and
- * {@link canSignFondPayouts}.
+ * Whether `role` meets a minimum on the product hierarchy. A higher rank
+ * can do everything a lower rank can; equal ranks can do the same things.
+ * Every permission check names a minimum role — an equality test on the
+ * caller's role is a defect. Subject rank equality uses
+ * {@link sameRoleRank} (state, not permission). The named permission that
+ * is not a rank check is {@link canEditDailyPayoutRoster}.
  *
  * @param role - Caller's live role.
- * @param min - Minimum ranked role that may proceed.
- * @returns `false` for `fond`; otherwise whether {@link roleRank} of `role` is ≥ that of `min`.
+ * @param min - Minimum role that may proceed.
+ * @returns Whether {@link roleRank} of `role` is ≥ that of `min`.
  */
-export function roleAtLeast(role: AccountRole, min: RankRole): boolean {
-  if (role === 'fond') {
-    return false;
-  }
+export function roleAtLeast(role: AccountRole, min: AccountRole): boolean {
   return roleRank(role) >= roleRank(min);
 }
 
@@ -61,26 +50,21 @@ export function roleAtLeast(role: AccountRole, min: RankRole): boolean {
  * Whether two roles share a numeric rank.
  *
  * Subject-state checks use this. Caller permission checks stay on
- * {@link roleAtLeast}. Founder is not the moderator rank. `fond` has no
- * rank, so either side being `fond` is never equal.
+ * {@link roleAtLeast}. Founder is not the moderator rank.
  *
  * @param role - Live role.
  * @param other - Role whose rank is the comparison.
- * @returns `true` when both roles are ranked and {@link roleRank} values are equal.
+ * @returns `true` when {@link roleRank} values are equal.
  */
 export function sameRoleRank(role: AccountRole, other: AccountRole): boolean {
-  if (role === 'fond' || other === 'fond') {
-    return false;
-  }
   return roleRank(role) === roleRank(other);
 }
 
 /**
  * Whether an account may sign payouts for the one configured Fond account.
  *
- * Not a rank check: `fond` has no rank, so {@link roleAtLeast} cannot express
- * it. True only for role `fond`, the configured username after trim and
- * lower-case, and not the platform account.
+ * True only for an account at least `fond`, the configured username after
+ * trim and lower-case, and not the platform account.
  *
  * @param account - Role, platform flag, and optional username.
  * @param fondUsername - Configured `FOND_USERNAME`.
@@ -91,7 +75,7 @@ export function canSignFondPayouts(
   fondUsername: string,
 ): boolean {
   if (
-    account.role !== 'fond' ||
+    !roleAtLeast(account.role, 'fond') ||
     account.isPlatform === true ||
     account.username === null ||
     account.username === undefined
@@ -106,7 +90,6 @@ export function canSignFondPayouts(
  *
  * Every account that is at least a moderator does. The platform account is a
  * house identity, not a person in the staff room, whatever role it carries.
- * A `fond` account is never in the group.
  *
  * @param account - Role plus optional platform flag.
  * @returns `true` for a non-platform account that is at least a moderator.
@@ -121,11 +104,9 @@ export function isModeratorGroupMember(account: {
 /**
  * Whether the caller may read and edit the daily payout roster.
  *
- * Not a rank check. Initiator and moderator share rank 2, so
- * {@link roleAtLeast} cannot close the surface to moderators. True only
- * for `initiator` and `founder`. Together with {@link canSignFondPayouts}
- * this is one of the named non-rank permissions; rank permissions stay on
- * {@link roleAtLeast}. `fond` is false.
+ * Not a rank check. True only for `initiator` and `founder`; moderators and
+ * `fond` are false. This is the single named non-rank permission; rank
+ * permissions stay on {@link roleAtLeast}.
  *
  * @param role - Caller's live role.
  * @returns `true` for `initiator` and `founder` only.

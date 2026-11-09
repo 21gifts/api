@@ -799,7 +799,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (subject.id === staff.caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
-      if (!roleAtLeast(subject.role, 'verified')) {
+      if (subject.role === 'basis') {
         return c.json({ error: 'Conflict' }, 409);
       }
       const nowMs = deps.now();
@@ -850,7 +850,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (subject.id === staff.caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
-      if (!roleAtLeast(subject.role, 'verified')) {
+      if (subject.role === 'basis') {
         return c.json({ error: 'Conflict' }, 409);
       }
       const nowMs = deps.now();

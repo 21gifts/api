@@ -381,12 +381,12 @@ describe('fondRoutes switch and auth', () => {
     expect(await res.json()).toEqual({ error: 'Fond only' });
   });
 
-  it('returns 403 for the configured username without fond or on the platform', async () => {
+  it('returns 403 below fond rank or on the platform, and admits fond and above', async () => {
     const { app, auth } = await makeApp({ seedFond: false });
     await auth.createAccount({
       id: 'not-fond',
       linkingKey: null,
-      role: 'founder',
+      role: 'moderator',
       name: 'Not Fond',
       forumLawsDismissed: false,
       location: null,
@@ -403,6 +403,21 @@ describe('fondRoutes switch and auth', () => {
     expect(
       (await app.request('/fond/payouts', { headers: authHeader('not-fond-session') })).status,
     ).toBe(403);
+
+    for (const role of ['fond', 'initiator', 'founder'] as const) {
+      const admitted = await makeApp({ seedFond: false });
+      await fondAccount(admitted.auth, {
+        id: `admitted-${role}`,
+        role,
+        username: FOND,
+        sessionToken: `${role}-session`,
+        viewKey: 'b'.repeat(64),
+      });
+      const res = await admitted.app.request('/fond/payouts', {
+        headers: authHeader(`${role}-session`),
+      });
+      expect(res.status).toBe(200);
+    }
 
     const platformAuth = new InMemoryAuthStore();
     await platformAuth.createAccount({

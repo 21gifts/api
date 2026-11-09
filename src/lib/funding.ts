@@ -1,5 +1,4 @@
 import type { AccountRole } from '@/lib/auth/store';
-import { roleAtLeast } from '@/lib/auth/roles';
 import { isUtcDay } from '@/lib/gift';
 
 /**
@@ -37,7 +36,7 @@ export interface FundingGrant {
   note: string | null;
 }
 
-/** Owner-facing funding JSON on `GET /me` / passkey finish (at least `verified`). */
+/** Owner-facing funding JSON on `GET /me` / passkey finish (`role !== 'basis'`). */
 export interface OwnerFundingJson {
   /** Effective status; never omit. `'none'` when there is no row. */
   status: EffectiveFundingStatus;
@@ -244,10 +243,10 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
 /**
  * Whether the account may receive a spend ping / spend invoice today.
  *
- * `basis` and `fond` are always false. Before
- * {@link FUNDING_REQUIRED_FROM_UTC}, every role at least `verified` is true
- * (passkey and living-room post still gate issue). From
- * that UTC day, true iff {@link inGrantProgramToday} and, once
+ * `basis` is always false; `fond` is eligible. Before
+ * {@link FUNDING_REQUIRED_FROM_UTC}, every other role is true (passkey and
+ * living-room post still gate issue). From that UTC day, true iff
+ * {@link inGrantProgramToday} and, once
  * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
  * rejected, and missing grants are then false, and so is a grant without a
  * required share.
@@ -268,7 +267,7 @@ export function eligibleToday(
   recoveryShareStored: boolean,
   recoveryShareRequiredFrom: string | null,
 ): boolean {
-  if (!roleAtLeast(role, 'verified')) {
+  if (role === 'basis') {
     return false;
   }
   if (!fundingGrantRequired(nowMs)) {
@@ -316,15 +315,15 @@ export function dailyPayoutStoppedNotice(
 }
 
 /**
- * Owner `funding` field: `null` for `basis` and `fond` (do not leak grants),
- * else always an object (`none` when there is no row).
+ * Owner `funding` field: `null` for `basis` (do not leak grants), else
+ * always an object (`none` when there is no row).
  *
  * @param role - Live account role.
  * @param grant - Observed grant (lazy-persisted), or `undefined`.
  * @param nowMs - Epoch milliseconds.
  * @param reviewerName - Live `decidedBy` name; used only when admitted.
  * @param accountId - Subject account id for {@link dailyPayoutStoppedNotice}.
- * @returns Owner funding JSON, or `null` for `basis` and `fond`.
+ * @returns Owner funding JSON, or `null` for `basis`.
  */
 export function serializeOwnerFunding(
   role: AccountRole,
@@ -333,7 +332,7 @@ export function serializeOwnerFunding(
   reviewerName: string | null,
   accountId: string,
 ): OwnerFundingJson | null {
-  if (!roleAtLeast(role, 'verified')) {
+  if (role === 'basis') {
     return null;
   }
   const status = effectiveStatus(grant, nowMs);

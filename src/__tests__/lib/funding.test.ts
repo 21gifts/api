@@ -137,14 +137,6 @@ describe('eligibleToday', () => {
     expect(eligibleToday('basis', trial(GATE_TODAY), GATE_MS, true, SHARE_FROM)).toBe(false);
   });
 
-  it('is always false for fond, including before the gate day and with a share', () => {
-    expect(eligibleToday('fond', undefined, BEFORE_GATE_MS, true, SHARE_FROM)).toBe(false);
-    expect(eligibleToday('fond', grant({ status: 'admitted' }), GATE_MS, true, SHARE_FROM)).toBe(
-      false,
-    );
-    expect(eligibleToday('fond', trial(GATE_TODAY), GATE_MS, true, SHARE_FROM)).toBe(false);
-  });
-
   it('is false when the grant is missing, from the gate day, even with a share', () => {
     expect(eligibleToday(NON_BASIS, undefined, GATE_MS, true, SHARE_FROM)).toBe(false);
     expect(
@@ -282,12 +274,6 @@ describe('serializeOwnerFunding', () => {
   it('is null for basis', () => {
     expect(
       serializeOwnerFunding('basis', grant({ status: 'admitted' }), NOW_MS, 'Mod', NOTICE_IDS[0]),
-    ).toBeNull();
-  });
-
-  it('is null for fond, like basis', () => {
-    expect(
-      serializeOwnerFunding('fond', grant({ status: 'admitted' }), NOW_MS, 'Mod', NOTICE_IDS[0]),
     ).toBeNull();
   });
 

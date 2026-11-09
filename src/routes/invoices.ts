@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Account, AuthStore } from '@/lib/auth/store';
-import { roleAtLeast } from '@/lib/auth/roles';
 import { decodeBolt11 } from '@/lib/bolt11';
 import {
   GIFT_INVOICE_MAX_MSAT,
@@ -1009,7 +1008,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       }
 
       const account = await receiverOf(deps, address);
-      if (account === undefined || !roleAtLeast(account.role, 'verified')) {
+      if (account === undefined || account.role === 'basis') {
         return c.json({ eligible: false, status: 'none' }, 200);
       }
       const nowMs = deps.now();
