@@ -1,13 +1,15 @@
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import { InMemoryFondPayoutStore, type FondPayoutEnqueue } from '@/lib/fond-payout-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
+import type { GiftRecord, GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
-import { issueGiftInvoice, proveGiftInvoice } from '@/routes/invoices';
 import { fondRoutes } from '@/routes/fond';
+import { issueGiftInvoice } from '@/routes/invoices';
 
 vi.mock('@/lib/btc-usd-spot', () => ({
   fetchBtcUsdSpot: vi.fn(async () => '100000'),
@@ -18,13 +20,11 @@ vi.mock('@/routes/invoices', async (importOriginal) => {
   return {
     ...actual,
     issueGiftInvoice: vi.fn(),
-    proveGiftInvoice: vi.fn(),
   };
 });
 
 const mockedSpot = vi.mocked(fetchBtcUsdSpot);
 const mockedIssue = vi.mocked(issueGiftInvoice);
-const mockedProve = vi.mocked(proveGiftInvoice);
 
 const NOW = Date.parse('2026-11-09T12:00:00.000Z');
 const TODAY = '2026-11-09';
@@ -34,6 +34,8 @@ const INVOICE_ID = 'inv-1';
 const HASH = 'aa'.repeat(32);
 const BOLT11 = 'lnbc1fond';
 const ROW_ID = '11111111-1111-4111-8111-111111111111';
+const PREIMAGE = 'a'.repeat(64);
+const PREIMAGE_HASH = createHash('sha256').update(Buffer.from(PREIMAGE, 'hex')).digest('hex');
 
 function rowInput(partial: Partial<FondPayoutEnqueue> = {}): FondPayoutEnqueue {
   return {
@@ -95,6 +97,7 @@ interface AppOptions {
   seedFond?: boolean;
   actionsStore?: InMemoryInvoiceStore;
   payoutStore?: InMemoryFondPayoutStore;
+  giftRecorder?: GiftRecorder;
 }
 
 async function makeApp(options: AppOptions = {}): Promise<{
@@ -125,6 +128,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
         now: () => NOW,
         fetchImpl: async () => new Response(null, { status: 500 }),
         fundingStore: new InMemoryFundingStore(),
+        ...(options.giftRecorder === undefined ? {} : { giftRecorder: options.giftRecorder }),
       },
     }),
   );
@@ -139,7 +143,6 @@ beforeEach(() => {
   mockedSpot.mockReset();
   mockedSpot.mockResolvedValue('100000');
   mockedIssue.mockReset();
-  mockedProve.mockReset();
 });
 
 describe('fondRoutes switch and auth', () => {
@@ -329,14 +332,21 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns 409 Not payable for another day, paid, or failed rows', async () => {
+  it('returns 409 Not payable for another-day owed, paid, or failed rows', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput({ id: 'old', utcDay: '2026-11-08' }));
     await payouts.enqueue(rowInput({ id: 'paid' }));
-    await payouts.setInvoiced('paid', { invoiceId: 'x', paymentHash: 'h', bolt11: 'b' });
-    await payouts.setPaid('paid');
+    await payouts.claimForInvoice('paid', TODAY);
+    await payouts.setInvoiced('paid', {
+      invoiceId: 'x',
+      paymentHash: 'h',
+      bolt11: 'b',
+      amountMsat: 1000,
+    });
+    await payouts.markPaid('paid');
     await payouts.enqueue(rowInput({ id: 'failed', address: 'fail@example.com' }));
-    await payouts.setFailed('failed', 'Passkey required');
+    await payouts.claimForInvoice('failed', TODAY);
+    await payouts.markFailed('failed', 'Passkey required');
     for (const id of ['old', 'paid', 'failed']) {
       const res = await app.request(`/fond/payouts/${id}/invoice`, {
         method: 'POST',
@@ -347,15 +357,35 @@ describe('POST /fond/payouts/:id/invoice', () => {
     }
   });
 
-  it('returns the live invoice idempotently', async () => {
-    const { app, payouts, invoices } = await makeApp();
-    await payouts.enqueue(rowInput());
+  it('returns a stored invoice for an invoiced row of another day', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ utcDay: '2026-11-08' }));
+    await payouts.claimForInvoice(ROW_ID, '2026-11-08');
     await payouts.setInvoiced(ROW_ID, {
       invoiceId: INVOICE_ID,
       paymentHash: HASH,
-      bolt11: 'stale-bolt11',
+      bolt11: BOLT11,
+      amountMsat: 1_000_000,
     });
-    invoices.put(invoice());
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: ROW_ID, bolt11: BOLT11, paymentHash: HASH });
+  });
+
+  it('returns the stored invoice after restart without the invoice store', async () => {
+    const { app, payouts, invoices } = await makeApp();
+    await payouts.enqueue(rowInput());
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    await payouts.setInvoiced(ROW_ID, {
+      invoiceId: INVOICE_ID,
+      paymentHash: HASH,
+      bolt11: BOLT11,
+      amountMsat: 1_000_000,
+    });
+    invoices.sweep(NOW + 10_000_000);
     const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
       method: 'POST',
       headers: authHeader(),
@@ -365,57 +395,163 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(mockedIssue).not.toHaveBeenCalled();
   });
 
-  it('reissues when the stored live invoice has expired', async () => {
-    const { app, payouts, invoices } = await makeApp();
+  it('returns 409 Not payable for an invoiced row with a missing stored field', async () => {
+    for (const field of ['bolt11', 'paymentHash'] as const) {
+      const { app, payouts } = await makeApp();
+      await payouts.enqueue(rowInput());
+      await payouts.claimForInvoice(ROW_ID, TODAY);
+      await payouts.setInvoiced(ROW_ID, {
+        invoiceId: INVOICE_ID,
+        paymentHash: HASH,
+        bolt11: BOLT11,
+        amountMsat: 1_000_000,
+      });
+      const row = (await payouts.get(ROW_ID)) as NonNullable<
+        Awaited<ReturnType<typeof payouts.get>>
+      >;
+      vi.spyOn(payouts, 'get').mockResolvedValueOnce(
+        field === 'bolt11' ? { ...row, bolt11: null } : { ...row, paymentHash: null },
+      );
+      const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+        method: 'POST',
+        headers: authHeader(),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Not payable' });
+    }
+  });
+
+  it('returns 409 Invoice in progress for an issuing row and never reissues it', async () => {
+    const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Invoice in progress' });
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it('re-reads a lost claim and returns the stored invoice', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    const owed = await payouts.get(ROW_ID);
+    await payouts.claimForInvoice(ROW_ID, TODAY);
     await payouts.setInvoiced(ROW_ID, {
       invoiceId: INVOICE_ID,
       paymentHash: HASH,
       bolt11: BOLT11,
+      amountMsat: 1_000_000,
     });
-    invoices.put(invoice({ expiresAt: NOW - 1 }));
-    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice({ id: 'inv-2', pr: 'lnbc2' }) });
+    const invoiced = await payouts.get(ROW_ID);
+    vi.spyOn(payouts, 'claimForInvoice').mockResolvedValueOnce(null);
+    vi.spyOn(payouts, 'get').mockResolvedValueOnce(owed).mockResolvedValueOnce(invoiced);
     const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
       method: 'POST',
       headers: authHeader(),
     });
     expect(res.status).toBe(200);
-    expect(mockedIssue).toHaveBeenCalledTimes(1);
-    expect((await payouts.get(ROW_ID))?.invoiceId).toBe('inv-2');
+    expect(await res.json()).toEqual({ id: ROW_ID, bolt11: BOLT11, paymentHash: HASH });
+    expect(mockedIssue).not.toHaveBeenCalled();
   });
 
-  it('reissues when the stored invoice is no longer known', async () => {
+  it('re-reads a lost claim whose stored invoice lacks a field as Not payable', async () => {
+    const missingFields = [
+      { bolt11: null, paymentHash: HASH },
+      { bolt11: BOLT11, paymentHash: null },
+    ] as const;
+    for (const missing of missingFields) {
+      const { app, payouts } = await makeApp();
+      await payouts.enqueue(rowInput());
+      const owed = await payouts.get(ROW_ID);
+      await payouts.claimForInvoice(ROW_ID, TODAY);
+      await payouts.setInvoiced(ROW_ID, {
+        invoiceId: INVOICE_ID,
+        paymentHash: HASH,
+        bolt11: BOLT11,
+        amountMsat: 1_000_000,
+      });
+      const row = (await payouts.get(ROW_ID)) as NonNullable<
+        Awaited<ReturnType<typeof payouts.get>>
+      >;
+      vi.spyOn(payouts, 'claimForInvoice').mockResolvedValueOnce(null);
+      vi.spyOn(payouts, 'get')
+        .mockResolvedValueOnce(owed)
+        .mockResolvedValueOnce({ ...row, ...missing });
+      const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+        method: 'POST',
+        headers: authHeader(),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Not payable' });
+    }
+  });
+
+  it('re-reads a lost claim and returns 409 Invoice in progress', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());
-    await payouts.setInvoiced(ROW_ID, {
-      invoiceId: INVOICE_ID,
-      paymentHash: HASH,
-      bolt11: BOLT11,
-    });
-    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice({ id: 'inv-2', pr: 'lnbc2' }) });
+    const owed = await payouts.get(ROW_ID);
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    const issuing = await payouts.get(ROW_ID);
+    vi.spyOn(payouts, 'claimForInvoice').mockResolvedValueOnce(null);
+    vi.spyOn(payouts, 'get').mockResolvedValueOnce(owed).mockResolvedValueOnce(issuing);
     const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
       method: 'POST',
       headers: authHeader(),
     });
-    expect(res.status).toBe(200);
-    expect(mockedIssue).toHaveBeenCalledTimes(1);
-    expect((await payouts.get(ROW_ID))?.invoiceId).toBe('inv-2');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Invoice in progress' });
   });
 
-  it('returns 503 Price unavailable when the spot is missing or below one sat', async () => {
+  it('re-reads a lost claim and returns 409 Not payable for another state', async () => {
     const { app, payouts } = await makeApp();
-    await payouts.enqueue(rowInput({ amountUsd: '0.01' }));
+    await payouts.enqueue(rowInput());
+    const owed = await payouts.get(ROW_ID);
+    vi.spyOn(payouts, 'claimForInvoice').mockResolvedValueOnce(null);
+    vi.spyOn(payouts, 'get')
+      .mockResolvedValueOnce(owed)
+      .mockResolvedValueOnce(owed === undefined ? owed : { ...owed, status: 'paid' });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Not payable' });
+  });
+
+  it('releases the claim and returns 503 Price unavailable when the spot fails', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
     mockedSpot.mockResolvedValueOnce(null);
-    let res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
       method: 'POST',
       headers: authHeader(),
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Price unavailable' });
     expect((await payouts.get(ROW_ID))?.status).toBe('owed');
+  });
 
+  it('releases the claim and returns 409 Amount below one sat', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ amountUsd: '0.01' }));
     mockedSpot.mockResolvedValueOnce('1000000000000');
-    res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Amount below one sat' });
+    expect((await payouts.get(ROW_ID))?.status).toBe('owed');
+  });
+
+  it('releases the claim and returns 503 when the spot fetch throws', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    mockedSpot.mockRejectedValueOnce(new Error('down'));
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
       method: 'POST',
       headers: authHeader(),
     });
@@ -459,6 +595,7 @@ describe('POST /fond/payouts/:id/invoice', () => {
       invoiceId: INVOICE_ID,
       paymentHash: HASH,
       bolt11: BOLT11,
+      amountMsat: 1_000_000,
     });
   });
 
@@ -510,6 +647,18 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect((await payouts.get(ROW_ID))?.status).toBe('owed');
   });
 
+  it('releases the claim and returns 503 when issue throws', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    mockedIssue.mockRejectedValue(new Error('down'));
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(503);
+    expect((await payouts.get(ROW_ID))?.status).toBe('owed');
+  });
+
   it('returns 409 Not payable when the row stopped being payable during issue', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());
@@ -521,11 +670,60 @@ describe('POST /fond/payouts/:id/invoice', () => {
     });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Not payable' });
+    expect((await payouts.get(ROW_ID))?.status).toBe('issuing');
+  });
+
+  it('returns 503 when claiming throws', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    vi.spyOn(payouts, 'claimForInvoice').mockRejectedValueOnce(new Error('down'));
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 503 when re-reading a lost claim throws', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    const owed = await payouts.get(ROW_ID);
+    vi.spyOn(payouts, 'claimForInvoice').mockResolvedValueOnce(null);
+    vi.spyOn(payouts, 'get').mockResolvedValueOnce(owed).mockRejectedValueOnce(new Error('down'));
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(503);
   });
 });
 
 describe('POST /fond/payouts/:id/proof', () => {
-  const preimage = { preimage: 'a'.repeat(64) };
+  const preimage = { preimage: PREIMAGE };
+
+  async function invoicedRow(
+    payouts: InMemoryFondPayoutStore,
+    partial: { kind?: 'daily' | 'moderator' | 'welcome'; amountMsat?: number } = {},
+  ): Promise<void> {
+    await payouts.enqueue(
+      rowInput(
+        partial.kind === undefined
+          ? {}
+          : {
+              kind: partial.kind,
+              messageId: partial.kind === 'moderator' ? null : rowInput().messageId,
+              groupMessageId: partial.kind === 'moderator' ? 'group-id' : null,
+            },
+      ),
+    );
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    await payouts.setInvoiced(ROW_ID, {
+      invoiceId: INVOICE_ID,
+      paymentHash: PREIMAGE_HASH,
+      bolt11: BOLT11,
+      amountMsat: partial.amountMsat ?? 1_000_000,
+    });
+  }
 
   it('returns 503 when the row cannot be read', async () => {
     const { app, payouts } = await makeApp();
@@ -561,12 +759,15 @@ describe('POST /fond/payouts/:id/proof', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns 409 Not invoiced for owed and failed rows', async () => {
+  it('returns 409 Not invoiced for owed, issuing, and failed rows', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());
+    await payouts.enqueue(rowInput({ id: 'issuing', address: 'i@example.com' }));
+    await payouts.claimForInvoice('issuing', TODAY);
     await payouts.enqueue(rowInput({ id: 'failed', address: 'f@example.com' }));
-    await payouts.setFailed('failed', 'x');
-    for (const id of [ROW_ID, 'failed']) {
+    await payouts.claimForInvoice('failed', TODAY);
+    await payouts.markFailed('failed', 'x');
+    for (const id of [ROW_ID, 'issuing', 'failed']) {
       const res = await app.request(`/fond/payouts/${id}/proof`, {
         method: 'POST',
         headers: authHeader(),
@@ -577,15 +778,16 @@ describe('POST /fond/payouts/:id/proof', () => {
     }
   });
 
-  it('returns paid idempotently for a paid row', async () => {
-    const { app, payouts } = await makeApp();
-    await payouts.enqueue(rowInput());
-    await payouts.setInvoiced(ROW_ID, { invoiceId: INVOICE_ID, paymentHash: HASH, bolt11: BOLT11 });
-    await payouts.setPaid(ROW_ID);
-    mockedProve.mockResolvedValue({
-      ok: true,
-      body: { status: 'paid', id: INVOICE_ID, paymentHash: HASH },
-    });
+  it('proves from the durable row, persists the gift, and marks the row paid', async () => {
+    const records: GiftRecord[] = [];
+    const giftRecorder: GiftRecorder = {
+      recordOutbound: async (record) => {
+        records.push(record);
+      },
+    };
+    const { app, payouts, invoices } = await makeApp({ giftRecorder });
+    await invoicedRow(payouts);
+    invoices.sweep(NOW + 10_000_000);
     const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
       method: 'POST',
       headers: authHeader(),
@@ -593,45 +795,88 @@ describe('POST /fond/payouts/:id/proof', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: 'paid', id: ROW_ID });
-    expect(mockedProve).toHaveBeenCalledTimes(1);
+    expect((await payouts.get(ROW_ID))?.status).toBe('paid');
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      amountSats: 1000,
+      recipientWosUser: 'ada',
+      lightningInvoice: BOLT11,
+      description: '21gifts daily',
+      kind: 'daily',
+      sourceWallet: FOND,
+      fiat: { usd: '1.00' },
+    });
+    expect(records[0]?.paidAt).toEqual(new Date(NOW));
   });
 
-  it('proves the invoice with the fond username and marks the row paid', async () => {
+  it('accepts the preimage in upper case and compares lower-case hashes', async () => {
     const { app, payouts } = await makeApp();
-    await payouts.enqueue(rowInput());
-    await payouts.setInvoiced(ROW_ID, { invoiceId: INVOICE_ID, paymentHash: HASH, bolt11: BOLT11 });
-    mockedProve.mockResolvedValue({
-      ok: true,
-      body: { status: 'paid', id: INVOICE_ID, paymentHash: HASH },
-    });
+    await invoicedRow(payouts);
     const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
       method: 'POST',
       headers: authHeader(),
-      body: JSON.stringify(preimage),
+      body: JSON.stringify({ preimage: PREIMAGE.toUpperCase() }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: 'paid', id: ROW_ID });
-    expect(mockedProve).toHaveBeenCalledWith(expect.anything(), {
-      id: INVOICE_ID,
-      preimage: preimage.preimage,
-      sourceWallet: FOND,
-    });
     expect((await payouts.get(ROW_ID))?.status).toBe('paid');
   });
 
-  it('passes the proof error status and text through', async () => {
-    const { app, payouts } = await makeApp();
-    await payouts.enqueue(rowInput());
-    await payouts.setInvoiced(ROW_ID, { invoiceId: INVOICE_ID, paymentHash: HASH, bolt11: BOLT11 });
-    mockedProve.mockResolvedValue({
-      ok: false,
-      status: 400,
-      error: 'Proof does not match invoice',
+  it('uses the durable row kind and amount for the persisted gift', async () => {
+    const records: GiftRecord[] = [];
+    const { app, payouts } = await makeApp({
+      giftRecorder: {
+        recordOutbound: async (record) => {
+          records.push(record);
+        },
+      },
     });
+    await invoicedRow(payouts, { kind: 'moderator', amountMsat: 2_345_000 });
     const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
       method: 'POST',
       headers: authHeader(),
       body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(200);
+    expect(records[0]).toMatchObject({
+      amountSats: 2345,
+      description: '21gifts moderator',
+      kind: 'moderator',
+    });
+  });
+
+  it('returns paid idempotently for a paid row and relies on recorder idempotency', async () => {
+    const records: GiftRecord[] = [];
+    const byInvoice = new Map<string, GiftRecord>();
+    const giftRecorder: GiftRecorder = {
+      recordOutbound: async (record) => {
+        if (!byInvoice.has(record.lightningInvoice)) {
+          byInvoice.set(record.lightningInvoice, record);
+          records.push(record);
+        }
+      },
+    };
+    const { app, payouts } = await makeApp({ giftRecorder });
+    await invoicedRow(payouts);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'paid', id: ROW_ID });
+    }
+    expect(records).toHaveLength(1);
+    expect((await payouts.get(ROW_ID))?.status).toBe('paid');
+  });
+
+  it('returns 400 Proof does not match invoice and leaves the row invoiced', async () => {
+    const { app, payouts } = await makeApp();
+    await invoicedRow(payouts);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify({ preimage: 'b'.repeat(64) }),
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Proof does not match invoice' });
@@ -640,13 +885,8 @@ describe('POST /fond/payouts/:id/proof', () => {
 
   it('returns 409 Not invoiced when the row stops being invoiced during proof', async () => {
     const { app, payouts } = await makeApp();
-    await payouts.enqueue(rowInput());
-    await payouts.setInvoiced(ROW_ID, { invoiceId: INVOICE_ID, paymentHash: HASH, bolt11: BOLT11 });
-    mockedProve.mockResolvedValue({
-      ok: true,
-      body: { status: 'paid', id: INVOICE_ID, paymentHash: HASH },
-    });
-    vi.spyOn(payouts, 'setPaid').mockResolvedValue(undefined);
+    await invoicedRow(payouts);
+    vi.spyOn(payouts, 'markPaid').mockResolvedValue(undefined);
     const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
       method: 'POST',
       headers: authHeader(),
@@ -654,5 +894,57 @@ describe('POST /fond/payouts/:id/proof', () => {
     });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Not invoiced' });
+  });
+
+  it('returns 409 Not invoiced for an invoiced row with a missing durable field', async () => {
+    const missingFields = [
+      { invoiceId: null, paymentHash: PREIMAGE_HASH, bolt11: BOLT11, amountMsat: 1_000_000 },
+      { invoiceId: INVOICE_ID, paymentHash: null, bolt11: BOLT11, amountMsat: 1_000_000 },
+      { invoiceId: INVOICE_ID, paymentHash: PREIMAGE_HASH, bolt11: null, amountMsat: 1_000_000 },
+      { invoiceId: INVOICE_ID, paymentHash: PREIMAGE_HASH, bolt11: BOLT11, amountMsat: null },
+    ] as const;
+    for (const missing of missingFields) {
+      const { app, payouts } = await makeApp();
+      await invoicedRow(payouts);
+      const row = (await payouts.get(ROW_ID)) as NonNullable<
+        Awaited<ReturnType<typeof payouts.get>>
+      >;
+      vi.spyOn(payouts, 'get').mockResolvedValueOnce({ ...row, ...missing });
+      const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Not invoiced' });
+    }
+  });
+
+  it('persists the decided USD string exactly on the gift', async () => {
+    const records: GiftRecord[] = [];
+    const { app, payouts } = await makeApp({
+      giftRecorder: {
+        recordOutbound: async (record) => {
+          records.push(record);
+        },
+      },
+    });
+    await payouts.enqueue(rowInput({ amountUsd: '0.004' }));
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    await payouts.setInvoiced(ROW_ID, {
+      invoiceId: INVOICE_ID,
+      paymentHash: PREIMAGE_HASH,
+      bolt11: BOLT11,
+      amountMsat: 4000,
+    });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(200);
+    expect(records[0]).toMatchObject({
+      fiat: { usd: '0.004', chf: null, eur: null, php: null },
+    });
   });
 });

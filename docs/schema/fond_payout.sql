@@ -13,14 +13,19 @@ CREATE TABLE IF NOT EXISTS fond_payout (
   comment text NOT NULL,
   message_id text,
   group_message_id text,
-  status text NOT NULL CHECK (status IN ('owed', 'invoiced', 'paid', 'failed')),
+  status text NOT NULL CHECK (status IN ('owed', 'issuing', 'invoiced', 'paid', 'failed')),
   failure text,
   invoice_id text,
   payment_hash text,
   bolt11 text,
+  amount_msat bigint,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE fond_payout DROP CONSTRAINT IF EXISTS fond_payout_status_check;
+ALTER TABLE fond_payout ADD CONSTRAINT fond_payout_status_check
+  CHECK (status IN ('owed', 'issuing', 'invoiced', 'paid', 'failed'));
+ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS amount_msat bigint;
 CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
   ON fond_payout (utc_day, kind, address)
   WHERE kind IN ('daily', 'moderator');

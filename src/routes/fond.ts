@@ -12,20 +12,22 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Account, AuthStore } from '@/lib/auth/store';
-import { isFondRole } from '@/lib/auth/roles';
+import { canSignFondPayouts } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { LnurlServerConfig, PayoutSigner } from '@/lib/config';
 import type { FondPayoutRow, FondPayoutStore } from '@/lib/fond-payout-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
+import type { FiatAmounts } from '@/lib/money';
+import { preimageMatchesHash } from '@/lib/proof';
 import { bearerToken } from '@/routes/me';
 import {
+  GIFT_PROOF_MISMATCH,
   issueGiftInvoice,
-  proveGiftInvoice,
+  persistProvenGift,
   type GiftActionDeps,
   type IssueGiftInvoiceResult,
-  type ProveGiftInvoiceResult,
 } from '@/routes/invoices';
 
 /** Body schema for `POST /fond/payouts/:id/proof`. */
@@ -59,27 +61,17 @@ interface FondPayoutListRow {
   utcDay: string;
 }
 
-/** `503` body when the spot cannot price at least one sat. */
+/** `503` body when the spot is missing or unusable. */
 export const FOND_PRICE_UNAVAILABLE = 'Price unavailable';
+
+/** `409` body when the priced amount rounds below one sat. */
+export const FOND_AMOUNT_BELOW_ONE_SAT = 'Amount below one sat';
+
+/** `409` body while another request owns the `issuing` claim. */
+export const FOND_INVOICE_IN_PROGRESS = 'Invoice in progress';
 
 /** `403` body for a session that is not the Fond account. */
 export const FOND_ONLY = 'Fond only';
-
-/**
- * Whether `account` may use the `/fond/*` routes: role `fond`, the configured
- * username, and not the platform account.
- *
- * @param account - Authenticated account.
- * @param fondUsername - Configured `FOND_USERNAME`.
- * @returns `true` only for the Fond payer.
- */
-function isFondPayer(account: Account, fondUsername: string): boolean {
-  return (
-    isFondRole(account.role) &&
-    account.isPlatform !== true &&
-    (account.username ?? '').trim().toLowerCase() === fondUsername
-  );
-}
 
 /**
  * Resolve the session account for a `/fond` request.
@@ -109,21 +101,20 @@ function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
-/** Convert a USD amount string at the spot to whole sats, or `null` when unusable. */
-function usdToSats(amountUsd: string, spot: string): number | null {
+/** Convert a USD amount string at the spot to millisatoshis, or `null` when unusable. */
+function usdToMsat(amountUsd: string, spot: string): number | null {
   const usd = Number(amountUsd);
   const usdPerBtc = Number(spot);
-  if (!(usd > 0) || !(usdPerBtc > 0)) {
+  if (!Number.isFinite(usd) || !Number.isFinite(usdPerBtc) || !(usd > 0) || !(usdPerBtc > 0)) {
     return null;
   }
-  const sats = Math.round((usd / usdPerBtc) * 1e8);
-  return sats >= 1 ? sats : null;
+  return Math.round((usd / usdPerBtc) * 1e8) * 1000;
 }
 
 /**
  * Map an issue result refusal to the queue: an issue-side 4xx text is stored
- * as `failed` and returned as 409; transport/configuration failures leave the
- * row untouched and keep their status.
+ * as `failed` and returned as 409; transport/configuration failures release
+ * the claim back to `owed` and keep their status.
  *
  * @param deps - Route collaborators.
  * @param id - Payout row id.
@@ -136,9 +127,10 @@ async function refusedInvoice(
   result: Extract<IssueGiftInvoiceResult, { ok: false }>,
 ): Promise<{ status: 400 | 403 | 409 | 502 | 503; error: string }> {
   if (result.status < 500) {
-    await deps.fondPayoutStore.setFailed(id, result.error);
+    await deps.fondPayoutStore.markFailed(id, result.error);
     return { status: 409, error: result.error };
   }
+  await deps.fondPayoutStore.releaseClaim(id);
   return { status: result.status, error: result.error };
 }
 
@@ -157,7 +149,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
     if (account === undefined) {
       return { status: 401, error: 'Unauthorized' };
     }
-    if (!isFondPayer(account, deps.fondUsername)) {
+    if (!canSignFondPayouts(account, deps.fondUsername)) {
       return { status: 403, error: FOND_ONLY };
     }
     return null;
@@ -200,30 +192,85 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (row === undefined) {
         return c.json({ error: 'Not found' }, 404);
       }
-      if (row.utcDay !== utcDay(deps.now()) || row.status === 'paid' || row.status === 'failed') {
+      if (row.status === 'invoiced') {
+        if (row.bolt11 === null || row.paymentHash === null) {
+          return c.json({ error: 'Not payable' }, 409);
+        }
+        return c.json({ id: row.id, bolt11: row.bolt11, paymentHash: row.paymentHash }, 200);
+      }
+      if (row.status === 'issuing') {
+        return c.json({ error: FOND_INVOICE_IN_PROGRESS }, 409);
+      }
+      if (row.status !== 'owed') {
         return c.json({ error: 'Not payable' }, 409);
       }
-      if (row.status === 'invoiced' && row.invoiceId !== null) {
-        const live = deps.actions.store.get(row.invoiceId);
-        if (live !== undefined && deps.now() < live.expiresAt) {
-          return c.json({ id: row.id, bolt11: live.pr, paymentHash: live.paymentHash }, 200);
-        }
+      if (row.utcDay !== utcDay(deps.now())) {
+        return c.json({ error: 'Not payable' }, 409);
       }
 
-      const spot = await fetchBtcUsdSpot(deps.fetchImpl);
-      const sats = spot === null ? null : usdToSats(row.amountUsd, spot);
-      if (sats === null) {
+      let claimed: FondPayoutRow | null;
+      try {
+        claimed = await deps.fondPayoutStore.claimForInvoice(row.id, utcDay(deps.now()));
+      } catch {
+        logEvent('fond.invoice.failed');
+        return c.json({ error: 'Payouts are unavailable' }, 503);
+      }
+      if (claimed === null) {
+        let current: FondPayoutRow | undefined;
+        try {
+          current = await deps.fondPayoutStore.get(row.id);
+        } catch {
+          logEvent('fond.invoice.failed');
+          return c.json({ error: 'Payouts are unavailable' }, 503);
+        }
+        if (
+          current?.status === 'invoiced' &&
+          current.bolt11 !== null &&
+          current.paymentHash !== null
+        ) {
+          return c.json(
+            { id: current.id, bolt11: current.bolt11, paymentHash: current.paymentHash },
+            200,
+          );
+        }
+        if (current?.status === 'issuing') {
+          return c.json({ error: FOND_INVOICE_IN_PROGRESS }, 409);
+        }
+        return c.json({ error: 'Not payable' }, 409);
+      }
+      row = claimed;
+
+      let spot: string | null;
+      try {
+        spot = await fetchBtcUsdSpot(deps.fetchImpl);
+      } catch {
+        spot = null;
+      }
+      const amountMsat = spot === null ? null : usdToMsat(row.amountUsd, spot);
+      if (amountMsat === null) {
+        await deps.fondPayoutStore.releaseClaim(row.id);
         return c.json({ error: FOND_PRICE_UNAVAILABLE }, 503);
       }
+      if (amountMsat < 1000) {
+        await deps.fondPayoutStore.releaseClaim(row.id);
+        return c.json({ error: FOND_AMOUNT_BELOW_ONE_SAT }, 409);
+      }
 
-      const result = await issueGiftInvoice(deps.actions, {
-        address: row.address,
-        amountMsat: sats * 1000,
-        comment: row.comment,
-        ...(row.messageId === null ? {} : { messageId: row.messageId }),
-        ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
-        amountUsd: row.amountUsd,
-      });
+      let result: IssueGiftInvoiceResult;
+      try {
+        result = await issueGiftInvoice(deps.actions, {
+          address: row.address,
+          amountMsat,
+          comment: row.comment,
+          ...(row.messageId === null ? {} : { messageId: row.messageId }),
+          ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
+          amountUsd: row.amountUsd,
+        });
+      } catch {
+        await deps.fondPayoutStore.releaseClaim(row.id);
+        logEvent('fond.invoice.failed');
+        return c.json({ error: 'Payouts are unavailable' }, 503);
+      }
       if (!result.ok) {
         const refusal = await refusedInvoice(deps, row.id, result);
         return c.json({ error: refusal.error }, refusal.status);
@@ -232,8 +279,10 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         invoiceId: result.invoice.id,
         paymentHash: result.invoice.paymentHash,
         bolt11: result.invoice.pr,
+        amountMsat,
       });
       if (stored === undefined) {
+        logEvent('fond.invoice.failed');
         return c.json({ error: 'Not payable' }, 409);
       }
       return c.json(
@@ -274,19 +323,42 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (row === undefined) {
         return c.json({ error: 'Not found' }, 404);
       }
-      if ((row.status !== 'invoiced' && row.status !== 'paid') || row.invoiceId === null) {
+      if (
+        (row.status !== 'invoiced' && row.status !== 'paid') ||
+        row.invoiceId === null ||
+        row.paymentHash === null ||
+        row.bolt11 === null ||
+        row.amountMsat === null
+      ) {
         return c.json({ error: 'Not invoiced' }, 409);
       }
-      const result: ProveGiftInvoiceResult = await proveGiftInvoice(deps.actions, {
-        id: row.invoiceId,
-        preimage: parsed.data.preimage,
-        sourceWallet: deps.fondUsername,
-      });
-      if (!result.ok) {
-        return c.json({ error: result.error }, result.status);
+      if (!preimageMatchesHash(parsed.data.preimage, row.paymentHash)) {
+        return c.json({ error: GIFT_PROOF_MISMATCH }, 400);
       }
+      const paidAt = deps.now();
+      const fiat: FiatAmounts = { usd: row.amountUsd, chf: null, eur: null, php: null };
+      await persistProvenGift(
+        deps.actions,
+        {
+          id: row.invoiceId,
+          address: row.address,
+          pr: row.bolt11,
+          paymentHash: row.paymentHash,
+          amountMsat: row.amountMsat,
+          createdAt: paidAt,
+          expiresAt: paidAt,
+          comment: row.comment,
+          ...(row.messageId === null ? {} : { messageId: row.messageId }),
+          ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
+          amountUsd: row.amountUsd,
+        },
+        paidAt,
+        fiat,
+        deps.fondUsername,
+        row.kind,
+      );
       if (row.status !== 'paid') {
-        const stored = await deps.fondPayoutStore.setPaid(row.id);
+        const stored = await deps.fondPayoutStore.markPaid(row.id);
         if (stored === undefined) {
           return c.json({ error: 'Not invoiced' }, 409);
         }

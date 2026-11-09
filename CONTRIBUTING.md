@@ -87,7 +87,7 @@ update stuff
 - **No `console.log`** in committed code — `console.warn` / `console.error` only, for legitimate operator-facing output
 - **Named exports**, no default exports
 - **Path alias `@/`** points at `src/` (configured in `tsconfig.json` and `vitest.config.ts`)
-- **Permission checks** — caller/viewer role uses `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role (`role === '...'` / `role !== '...'`) is a defect. The single named exception is `canEditDailyPayoutRoster`: initiator and moderator share rank 2, so `roleAtLeast` cannot exclude moderators; true only for initiator and founder
+- **Permission checks** — caller/viewer role uses `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role (`role === '...'` / `role !== '...'`) is a defect. The named exceptions are `canEditDailyPayoutRoster`: initiator and moderator share rank 2, so `roleAtLeast` cannot exclude moderators; true only for initiator and founder, and `canSignFondPayouts`: `fond` has no rank, so `roleAtLeast` cannot express it; true only for the one configured fond account.
 
 ### TSDoc
 

@@ -1678,7 +1678,7 @@ describe('HttpPayoutSink', () => {
 });
 
 describe('FondQueueSink', () => {
-  it('writes one owed row and coalesces the amount to a two-decimal string', async () => {
+  it('writes one owed row and stores String(number) without rounding', async () => {
     const store = new InMemoryFondPayoutStore(() => Date.parse('2026-11-09T12:00:00.000Z'));
     const sink = new FondQueueSink({ store });
     expect(
@@ -1695,7 +1695,7 @@ describe('FondQueueSink', () => {
     expect(rows[0]).toMatchObject({
       kind: 'daily',
       address: ADDRESS,
-      amountUsd: '2.00',
+      amountUsd: '2',
       comment: 'thanks',
       messageId: MESSAGE_ID,
       groupMessageId: null,
@@ -1725,41 +1725,67 @@ describe('FondQueueSink', () => {
     expect(rows.find((row) => row.kind === 'moderator')).toMatchObject({
       messageId: null,
       groupMessageId: MESSAGE_ID,
-      amountUsd: '3.00',
+      amountUsd: '3',
     });
     expect(rows.find((row) => row.kind === 'welcome')).toMatchObject({
       messageId: MESSAGE_ID,
       groupMessageId: null,
-      amountUsd: '1.00',
+      amountUsd: '1',
     });
   });
 
-  it('falls back to 0.00 and an empty comment for a non-string body', async () => {
+  it('fails without inserting when amount or comment is invalid', async () => {
     const store = new InMemoryFondPayoutStore();
     const sink = new FondQueueSink({ store });
-    await sink.deliver(ADDRESS, { address: ADDRESS, day: '2026-11-09' });
-    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({
-      amountUsd: '0.00',
-      comment: '',
-      messageId: null,
-    });
+    for (const body of [
+      { address: ADDRESS, day: '2026-11-09', comment: 'thanks' },
+      { address: ADDRESS, day: '2026-11-09', amountUsd: 0, comment: 'thanks' },
+      { address: ADDRESS, day: '2026-11-09', amountUsd: Number.NaN, comment: 'thanks' },
+      { address: ADDRESS, day: '2026-11-09', amountUsd: '0.00', comment: 'thanks' },
+      { address: ADDRESS, day: '2026-11-09', amountUsd: 'abc', comment: 'thanks' },
+      { address: ADDRESS, day: '2026-11-09', amountUsd: 1 },
+      { address: ADDRESS, day: '2026-11-09', amountUsd: 1, comment: 7 },
+    ]) {
+      expect(await sink.deliver(ADDRESS, body)).toBe('failed');
+    }
+    expect(await store.listOpen('2026-11-09')).toEqual([]);
   });
 
-  it('rounds a positive amount below half a cent to 0.00 and keeps a normal amount', async () => {
+  it('keeps a positive amount below half a cent and a decimal string exactly', async () => {
     const store = new InMemoryFondPayoutStore();
     const sink = new FondQueueSink({ store });
     await sink.deliver(ADDRESS, {
       address: ADDRESS,
       amountUsd: 0.004,
+      comment: 'thanks',
       day: '2026-11-09',
     });
     await sink.deliver(ADDRESS, {
       address: ADDRESS,
-      amountUsd: 1.23,
+      amountUsd: '1.230',
+      comment: 'thanks',
       day: '2026-11-10',
     });
-    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({ amountUsd: '0.00' });
-    expect((await store.listOpen('2026-11-10'))[0]).toMatchObject({ amountUsd: '1.23' });
+    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({ amountUsd: '0.004' });
+    expect((await store.listOpen('2026-11-10'))[0]).toMatchObject({ amountUsd: '1.230' });
+  });
+
+  it('returns failed when the store reports an unconfirmed conflict', async () => {
+    const sink = new FondQueueSink({
+      store: {
+        enqueue: async () => 'failed',
+        listOpen: async () => [],
+        get: async () => undefined,
+        claimForInvoice: async () => null,
+        setInvoiced: async () => undefined,
+        markFailed: async () => undefined,
+        releaseClaim: async () => undefined,
+        markPaid: async () => undefined,
+      },
+    });
+    expect(await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'x' })).toBe(
+      'failed',
+    );
   });
 
   it('returns skipped with reason paid when the existing row is paid', async () => {
@@ -1774,12 +1800,14 @@ describe('FondQueueSink', () => {
       messageId: MESSAGE_ID,
       groupMessageId: null,
     });
+    await store.claimForInvoice('existing', '2026-11-09');
     await store.setInvoiced('existing', {
       invoiceId: 'i',
       paymentHash: 'h',
       bolt11: 'b',
+      amountMsat: 2_000_000,
     });
-    await store.setPaid('existing');
+    await store.markPaid('existing');
     const sink = new FondQueueSink({ store });
     expect(
       await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 2, comment: 'thanks' }),
@@ -1795,12 +1823,16 @@ describe('FondQueueSink', () => {
         },
         listOpen: async () => [],
         get: async () => undefined,
+        claimForInvoice: async () => null,
         setInvoiced: async () => undefined,
-        setFailed: async () => undefined,
-        setPaid: async () => undefined,
+        markFailed: async () => undefined,
+        releaseClaim: async () => undefined,
+        markPaid: async () => undefined,
       },
     });
-    expect(await sink.deliver(ADDRESS, { day: '2026-11-09' })).toBe('failed');
+    expect(
+      await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'thanks' }),
+    ).toBe('failed');
     expect(sink.lastSkipReason()).toBe('');
   });
 });

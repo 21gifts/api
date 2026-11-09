@@ -45,7 +45,11 @@ describe('FOND_PAYOUT_SCHEMA_SQL', () => {
     expect(all).toContain('CREATE TABLE IF NOT EXISTS fond_payout');
     expect(all).toContain("kind text NOT NULL CHECK (kind IN ('daily', 'moderator', 'welcome'))");
     expect(all).toContain(
-      "status text NOT NULL CHECK (status IN ('owed', 'invoiced', 'paid', 'failed'))",
+      "status text NOT NULL CHECK (status IN ('owed', 'issuing', 'invoiced', 'paid', 'failed'))",
+    );
+    expect(all).toContain('amount_msat bigint');
+    expect(all).toContain(
+      'ALTER TABLE fond_payout DROP CONSTRAINT IF EXISTS fond_payout_status_check',
     );
     expect(all).toMatch(/CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx/);
     expect(all).toMatch(/\(utc_day, kind, address\)\s+WHERE kind IN \('daily', 'moderator'\)/);
@@ -97,36 +101,54 @@ describe('InMemoryFondPayoutStore', () => {
     expect(await store.listOpen('2026-11-10')).toHaveLength(0);
   });
 
-  it('writes invoice fields, failure, and paid with guarded transitions', async () => {
+  it('claims, writes, releases, fails, and pays with guarded transitions', async () => {
     const store = new InMemoryFondPayoutStore(() => NOW);
     const { id } = enqueue();
     await store.enqueue(enqueue());
-    expect(await store.setPaid(id)).toBeUndefined();
+    expect(await store.markPaid(id)).toBeUndefined();
+    expect(await store.claimForInvoice(id, '2026-11-08')).toBeNull();
+    expect(
+      await store.setInvoiced(id, {
+        invoiceId: 'inv-0',
+        paymentHash: 'aa'.repeat(32),
+        bolt11: 'lnbc0',
+        amountMsat: 1_000_000,
+      }),
+    ).toBeUndefined();
+    expect(await store.claimForInvoice(id, '2026-11-09')).toMatchObject({ status: 'issuing' });
+    expect(await store.claimForInvoice(id, '2026-11-09')).toBeNull();
+    expect(await store.releaseClaim(id)).toMatchObject({ status: 'owed' });
+    expect(await store.releaseClaim(id)).toBeUndefined();
+    await store.claimForInvoice(id, '2026-11-09');
     const invoiced = await store.setInvoiced(id, {
       invoiceId: 'inv-1',
       paymentHash: 'aa'.repeat(32),
       bolt11: 'lnbc1',
+      amountMsat: 1_000_000,
     });
     expect(invoiced).toMatchObject({
       status: 'invoiced',
       invoiceId: 'inv-1',
       paymentHash: 'aa'.repeat(32),
       bolt11: 'lnbc1',
+      amountMsat: 1_000_000,
     });
-    expect(await store.setPaid(id)).toMatchObject({ status: 'paid', failure: null });
-    expect(await store.setFailed(id, 'Passkey required')).toBeUndefined();
-    expect(await store.setPaid(id)).toBeUndefined();
+    expect(await store.markPaid(id)).toMatchObject({ status: 'paid', failure: null });
+    expect(await store.markFailed(id, 'Passkey required')).toBeUndefined();
+    expect(await store.markPaid(id)).toBeUndefined();
   });
 
-  it('marks an owed row failed and refuses paid on it', async () => {
+  it('marks only an issuing row failed and refuses paid on it', async () => {
     const store = new InMemoryFondPayoutStore(() => NOW);
     const { id } = enqueue();
     await store.enqueue(enqueue());
-    expect(await store.setFailed(id, 'Passkey required')).toMatchObject({
+    expect(await store.markFailed(id, 'Passkey required')).toBeUndefined();
+    await store.claimForInvoice(id, '2026-11-09');
+    expect(await store.markFailed(id, 'Passkey required')).toMatchObject({
       status: 'failed',
       failure: 'Passkey required',
     });
-    expect(await store.setPaid(id)).toBeUndefined();
+    expect(await store.markPaid(id)).toBeUndefined();
   });
 
   it('lists open rows of one day oldest first and hides paid/failed/other days', async () => {
@@ -139,13 +161,16 @@ describe('InMemoryFondPayoutStore', () => {
     await store.enqueue(enqueue({ id: 'c', address: 'cy@example.com' }));
     clock = NOW + 3000;
     await store.enqueue(enqueue({ id: 'other', utcDay: '2026-11-08', kind: 'welcome' }));
+    await store.claimForInvoice('a', '2026-11-09');
     await store.setInvoiced('a', {
       invoiceId: 'inv-a',
       paymentHash: 'aa'.repeat(32),
       bolt11: 'lnbc1',
+      amountMsat: 1_000_000,
     });
-    await store.setPaid('a');
-    await store.setFailed('b', 'x');
+    await store.markPaid('a');
+    await store.claimForInvoice('b', '2026-11-09');
+    await store.markFailed('b', 'x');
     expect((await store.listOpen('2026-11-09')).map((row) => row.id)).toEqual(['c']);
     expect((await store.listOpen('2026-11-08')).map((row) => row.id)).toEqual(['other']);
   });
@@ -175,6 +200,12 @@ describe('InMemoryFondPayoutStore', () => {
     const row = await store.get(id);
     row?.createdAt.setTime(0);
     expect((await store.get(id))?.createdAt.getTime()).toBe(NOW);
+  });
+
+  it('returns null for a claim and undefined for a transition on an unknown id', async () => {
+    const store = new InMemoryFondPayoutStore(() => NOW);
+    expect(await store.claimForInvoice('missing', '2026-11-09')).toBeNull();
+    expect(await store.markPaid('missing')).toBeUndefined();
   });
 });
 
@@ -215,11 +246,11 @@ describe('PostgresFondPayoutStore', () => {
     expect(sql.queries[1]?.params).toEqual(['ada@example.com']);
   });
 
-  it('treats a missing conflict row as accepted', async () => {
+  it('treats a missing conflict row as failed', async () => {
     const sql = new MockSql();
     sql.queryResults = [[], []];
     const store = new PostgresFondPayoutStore(sql);
-    expect(await store.enqueue(enqueue())).toBe('accepted');
+    expect(await store.enqueue(enqueue())).toBe('failed');
   });
 
   it('lists open rows and maps driver values', async () => {
@@ -240,6 +271,7 @@ describe('PostgresFondPayoutStore', () => {
           invoice_id: null,
           payment_hash: null,
           bolt11: null,
+          amount_msat: null,
           created_at: new Date(NOW),
           updated_at: NOW,
         },
@@ -262,6 +294,7 @@ describe('PostgresFondPayoutStore', () => {
       invoiceId: null,
       paymentHash: null,
       bolt11: null,
+      amountMsat: null,
       createdAt: new Date(NOW),
       updatedAt: new Date(NOW),
     });
@@ -285,6 +318,7 @@ describe('PostgresFondPayoutStore', () => {
           invoice_id: 'i',
           payment_hash: 'h',
           bolt11: 'b',
+          amount_msat: '1000000',
           created_at: NOW,
           updated_at: NOW,
         },
@@ -296,7 +330,7 @@ describe('PostgresFondPayoutStore', () => {
     expect(await store.get('missing')).toBeUndefined();
   });
 
-  it('updates invoice, failure, and paid with guarded WHERE clauses', async () => {
+  it('claims, updates invoice, releases, fails, and pays with guarded WHERE clauses', async () => {
     const sql = new MockSql();
     const store = new PostgresFondPayoutStore(sql);
     const driver = {
@@ -313,24 +347,45 @@ describe('PostgresFondPayoutStore', () => {
       invoice_id: 'i',
       payment_hash: 'h',
       bolt11: 'b',
+      amount_msat: 1_000_000,
       created_at: NOW,
       updated_at: NOW,
     };
-    sql.queryResults = [[driver], [driver], [driver], [], [], []];
+    sql.queryResults = [[driver], [driver], [driver], [driver], [driver], [], [], [], []];
+    expect(await store.claimForInvoice('row', '2026-11-09')).toMatchObject({ status: 'invoiced' });
+    expect(sql.queries[0]?.text).toContain("WHERE id = $1 AND utc_day = $2 AND status = 'owed'");
+    expect(sql.queries[0]?.params).toEqual(['row', '2026-11-09']);
     expect(
-      await store.setInvoiced('row', { invoiceId: 'i', paymentHash: 'h', bolt11: 'b' }),
+      await store.setInvoiced('row', {
+        invoiceId: 'i',
+        paymentHash: 'h',
+        bolt11: 'b',
+        amountMsat: 1_000_000,
+      }),
     ).toMatchObject({ status: 'invoiced' });
-    expect(sql.queries[0]?.text).toContain("status IN ('owed', 'invoiced')");
-    expect(sql.queries[0]?.params).toEqual(['row', 'i', 'h', 'b']);
-    expect(await store.setFailed('row', 'Passkey required')).toMatchObject({ status: 'invoiced' });
-    expect(sql.queries[1]?.params).toEqual(['row', 'Passkey required']);
-    expect(await store.setPaid('row')).toMatchObject({ status: 'invoiced' });
-    expect(sql.queries[2]?.text).toContain("status = 'invoiced'");
-    expect(sql.queries[2]?.params).toEqual(['row']);
+    expect(sql.queries[1]?.text).toContain("WHERE id = $1 AND status = 'issuing'");
+    expect(sql.queries[1]?.params).toEqual(['row', 'i', 'h', 'b', 1_000_000]);
+    expect(await store.markFailed('row', 'Passkey required')).toMatchObject({
+      status: 'invoiced',
+    });
+    expect(sql.queries[2]?.params).toEqual(['row', 'Passkey required']);
+    expect(await store.releaseClaim('row')).toMatchObject({ status: 'invoiced' });
+    expect(sql.queries[3]?.text).toContain("WHERE id = $1 AND status = 'issuing'");
+    expect(sql.queries[3]?.params).toEqual(['row']);
+    expect(await store.markPaid('row')).toMatchObject({ status: 'invoiced' });
+    expect(sql.queries[4]?.text).toContain("status = 'invoiced'");
+    expect(sql.queries[4]?.params).toEqual(['row']);
     expect(
-      await store.setInvoiced('row', { invoiceId: 'i', paymentHash: 'h', bolt11: 'b' }),
+      await store.setInvoiced('row', {
+        invoiceId: 'i',
+        paymentHash: 'h',
+        bolt11: 'b',
+        amountMsat: 1_000_000,
+      }),
     ).toBeUndefined();
-    expect(await store.setFailed('row', 'x')).toBeUndefined();
-    expect(await store.setPaid('row')).toBeUndefined();
+    expect(await store.claimForInvoice('row', '2026-11-09')).toBeNull();
+    expect(await store.markFailed('row', 'x')).toBeUndefined();
+    expect(await store.releaseClaim('row')).toBeUndefined();
+    expect(await store.markPaid('row')).toBeUndefined();
   });
 });

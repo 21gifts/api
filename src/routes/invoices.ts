@@ -10,7 +10,7 @@ import {
   type LnurlServerConfig,
 } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { WELCOME_GIFT_DESCRIPTION } from '@/lib/gift';
+import { WELCOME_GIFT_DESCRIPTION, type GiftKind } from '@/lib/gift';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { GiftStore } from '@/lib/gift-store';
 import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
@@ -133,6 +133,9 @@ export interface InvoiceRouteDeps {
    */
   fiatRates?: FiatRateBook;
 }
+
+/** `400` body when a preimage does not hash to the invoice payment hash. */
+export const GIFT_PROOF_MISMATCH = 'Proof does not match invoice';
 
 /** 502 text when the recipient Lightning Address did not issue an invoice. */
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
@@ -429,15 +432,25 @@ async function paymentFiat(invoice: GiftInvoice): Promise<FiatAmounts | null> {
  * @param paidAtMs - Proof clock.
  * @param fiat - Snapshot for the gift row.
  * @param sourceWallet - Paying wallet label (`lightning.space` or the fond username).
+ * @param kindOverride - Decided kind that overrides the invoice-derived kind.
+ * @returns Resolves after the recorder call; recorder failures are logged and swallowed.
  */
-async function persistProvenGift(
+export async function persistProvenGift(
   deps: GiftActionDeps,
   invoice: GiftInvoice,
   paidAtMs: number,
   fiat: FiatAmounts | null,
   sourceWallet: string,
+  kindOverride?: GiftKind,
 ): Promise<void> {
   const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
+  const kind =
+    kindOverride ??
+    (invoice.groupMessageId !== undefined
+      ? 'moderator'
+      : invoice.comment === 'Welcome'
+        ? 'welcome'
+        : 'daily');
   try {
     await giftRecorder.recordOutbound({
       paidAt: new Date(paidAtMs),
@@ -446,17 +459,12 @@ async function persistProvenGift(
       recipientWosUser: recipientHandleFromAddress(invoice.address),
       lightningInvoice: invoice.pr,
       description:
-        invoice.groupMessageId !== undefined
+        kind === 'moderator'
           ? '21gifts moderator'
-          : invoice.comment === 'Welcome'
+          : kind === 'welcome'
             ? WELCOME_GIFT_DESCRIPTION
             : '21gifts daily',
-      kind:
-        invoice.groupMessageId !== undefined
-          ? 'moderator'
-          : invoice.comment === 'Welcome'
-            ? 'welcome'
-            : 'daily',
+      kind,
       sourceWallet,
       fiat,
     });
@@ -932,7 +940,7 @@ export async function proveGiftInvoice(
   if (now >= invoice.expiresAt) {
     return { ok: false, status: 409, error: 'Invoice expired' };
   }
-  return { ok: false, status: 400, error: 'Proof does not match invoice' };
+  return { ok: false, status: 400, error: GIFT_PROOF_MISMATCH };
 }
 
 /**

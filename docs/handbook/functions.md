@@ -3744,14 +3744,14 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: roleAtLeast
 
-- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. Initiator has the same rank as moderator; founder stays strictly above. True when `roleRank(role)` is ≥ `roleRank(min)`. Every permission names a minimum role; an equality test on the caller's role is a defect. Subject rank equality uses `sameRoleRank`, not this caller check. The single permission that is not a rank check is `canEditDailyPayoutRoster`.
+- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. Initiator has the same rank as moderator; founder stays strictly above. True when `roleRank(role)` is ≥ `roleRank(min)`. Every permission names a minimum role; an equality test on the caller's role is a defect. Subject rank equality uses `sameRoleRank`, not this caller check. The named permissions that are not rank checks are `canEditDailyPayoutRoster` and `canSignFondPayouts`.
 - **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`.
 
 ## Function: canEditDailyPayoutRoster
 
-- **Purpose:** Whether the caller may read and edit the daily payout roster. Not a rank check: initiator and moderator share rank 2, so `roleAtLeast` cannot close the surface to moderators. True only for `initiator` and `founder`. This is the single non-rank permission; rank permissions stay on `roleAtLeast`.
+- **Purpose:** Whether the caller may read and edit the daily payout roster. Not a rank check: initiator and moderator share rank 2, so `roleAtLeast` cannot close the surface to moderators. True only for `initiator` and `founder`. Together with `canSignFondPayouts` this is one of the named non-rank permissions; rank permissions stay on `roleAtLeast`.
 - **Inputs:** `role` (caller's live `AccountRole`).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `fundingRoutes` daily-roster routes.
@@ -5279,11 +5279,11 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Returns / side effects:** `Shop` = `{ npub, messageId, name, description, place: { lat, lng, label, address } | null, photos: [{ url, width, height }], payUsername, nip05, createdAt }`. `address` is null unless every structured part is non-blank. Photo URLs are absolute from `resolvePublicApiBase` (path only when empty); dimensions from `imageHeaderSize`. `payUsername` is the till account's username when it has a username and a receiving address (`receivingAddress`: a verified wallet with the LNURL server configured), otherwise `null`; `nip05` is `null` without `nip05Domain`. `Cache-Control: public, max-age=60` on 200, 301, 404 and 410; `no-store` on 503. No session; a bearer changes nothing.
 - **Used by:** `createApp`.
 
-## Function: isFondRole
+## Function: canSignFondPayouts
 
-- **Purpose:** Identity check for the dedicated payer role. `fond` has no rank, so this is not a permission check and never grants a rank minimum.
-- **Inputs:** `role` (`AccountRole`).
-- **Returns / side effects:** `true` only for `fond`. No I/O.
+- **Purpose:** Named non-rank permission for the one configured Fond payer. `fond` has no rank, so `roleAtLeast` cannot express it. True only for role `fond`, a username equal to `FOND_USERNAME` after trim and lower-case, and not the platform account. A `null` or missing username is explicitly false.
+- **Inputs:** `account` (`{ role, isPlatform?, username? }`) and `fondUsername`.
+- **Returns / side effects:** `true` only for the configured non-platform Fond account; otherwise `false`. No I/O.
 - **Used by:** `fondRoutes`.
 
 ## Function: resolvePayoutSigner
@@ -5302,21 +5302,21 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 
 ## Function: migrateFondPayoutSchema
 
-- **Purpose:** Apply `FOND_PAYOUT_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS fond_payout` with `text` + CHECK `kind` and `status` columns (no ENUM types), the partial unique index on `(utc_day, kind, address)` for `daily`/`moderator`, and the partial unique index on `(kind, address)` for `welcome`.
+- **Purpose:** Apply `FOND_PAYOUT_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS fond_payout` with `text` + CHECK `kind` and `status` columns (no ENUM types), the `status` CHECK replacement that adds `issuing`, `amount_msat bigint`, the partial unique index on `(utc_day, kind, address)` for `daily`/`moderator`, and the partial unique index on `(kind, address)` for `welcome`.
 - **Inputs:** `sql` (`SqlClient`).
 - **Returns / side effects:** Resolves after every statement executed. Idempotent. Propagates SQL failures.
 - **Used by:** `openBootStores`, after `migrateDailyRosterSchema` and before `migrateApiLogSchema`.
 
 ## Function: InMemoryFondPayoutStore
 
-- **Purpose:** Process-local `FondPayoutStore`. `enqueue` inserts an `owed` row unless a dedupe key exists; a conflict returns `'paid'` when the existing row is `paid`, else `'accepted'`. `listOpen` returns one UTC day's `owed`/`invoiced` rows oldest first. `setInvoiced`, `setFailed`, and `setPaid` are guarded transitions that return `undefined` when the row is missing or not in a permitted source status.
-- **Inputs:** Constructor optional `now` clock (default `Date.now`). `enqueue(FondPayoutEnqueue)`, `listOpen(utcDay)`, `get(id)`, `setInvoiced(id, invoice)`, `setFailed(id, failure)`, `setPaid(id)`.
-- **Returns / side effects:** Caller-owned copies. No I/O.
+- **Purpose:** Process-local `FondPayoutStore`. `enqueue` inserts an `owed` row unless a dedupe key exists; a conflict returns `'paid'` when the existing row is `paid`, else `'accepted'`. `listOpen` returns one UTC day's `owed`/`invoiced` rows oldest first. `claimForInvoice(id, utcDay)` is a compare-and-set from `owed` to `issuing` (null when another caller won or the row is another day); `setInvoiced`, `markFailed`, and `releaseClaim` only leave `issuing`; `markPaid` only leaves `invoiced`. A claimed row that no caller ever transitions stays `issuing` and is never reissued automatically.
+- **Inputs:** Constructor optional `now` clock (default `Date.now`). `enqueue(FondPayoutEnqueue)`, `listOpen(utcDay)`, `get(id)`, `claimForInvoice(id, utcDay)`, `setInvoiced(id, invoice)`, `markFailed(id, failure)`, `releaseClaim(id)`, `markPaid(id)`.
+- **Returns / side effects:** Caller-owned copies. Rows carry the invoiced `amountMsat`. No I/O.
 - **Used by:** Tests, `createApp` memory boots, `openBootStores`.
 
 ## Function: PostgresFondPayoutStore
 
-- **Purpose:** `FondPayoutStore` against `fond_payout`. `enqueue` is `INSERT … ON CONFLICT DO NOTHING`; on a conflict it reads the existing row (by `utc_day, kind, address` for daily/moderator, by `kind, address` for welcome) and returns `'paid'` only when that status is `paid`. The transition methods are conditional `UPDATE … WHERE id = $1 AND status …` statements with `updated_at = now()`.
+- **Purpose:** `FondPayoutStore` against `fond_payout`. `enqueue` is `INSERT … ON CONFLICT DO NOTHING`; on a conflict it reads the existing row (by `utc_day, kind, address` for daily/moderator, by `kind, address` for welcome) and returns `'paid'` only when that status is `paid`, `'accepted'` for every other found status, and `'failed'` when no row is found. `claimForInvoice` is one `UPDATE … SET status = 'issuing' WHERE id = $1 AND utc_day = $2 AND status = 'owed' RETURNING *`; the other transitions are conditional `UPDATE … WHERE id = $1 AND status …` statements with `updated_at = now()`. A claimed row that no caller ever transitions stays `issuing` and is never reissued automatically.
 - **Inputs:** `sql` (`SqlClient`).
 - **Returns / side effects:** Rows mapped from driver values (`date` → `YYYY-MM-DD`, timestamps → `Date`). Propagates SQL failures.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
@@ -5330,9 +5330,9 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 
 ## Function: FondQueueSink
 
-- **Purpose:** Write one `fond_payout` row from a decided instruction. The body `kind` (default daily) selects the row kind; the body `day` is the UTC day, otherwise the clock UTC day. `amountUsd` becomes a two-decimal string (`2` → `2.00`), the comment is copied, and `messageId`/`groupMessageId` are stored only for their kind. The queue dedupe is spend's: daily/moderator per day, welcome once ever per address.
+- **Purpose:** Write one `fond_payout` row from a decided instruction. The body `kind` (default daily) selects the row kind; the body `day` is the UTC day, otherwise the clock UTC day. A finite positive numeric `amountUsd` is stored as `String(number)`; a non-empty decimal string is stored exactly as decided. A missing, non-finite, non-positive, or non-numeric amount, or a missing/non-string comment, writes nothing and returns `'failed'`. `messageId`/`groupMessageId` are stored only for their kind. The queue dedupe is spend's: daily/moderator per day, welcome once ever per address.
 - **Inputs:** Constructor `{ store, now? }`. `deliver(address, body)`.
-- **Returns / side effects:** `'accepted'` for a new or already-queued row; `'skipped'` with reason `paid` when the existing row is paid; `'failed'` when the store throws. Never throws.
+- **Returns / side effects:** `'accepted'` for a new or already-queued row; `'skipped'` with reason `paid` when the existing row is paid; `'failed'` for invalid input, an unconfirmed conflict, or a store throw. Never throws.
 - **Used by:** `resolveSpendPing` when `PAYOUT_SIGNER=fond`.
 
 ## Function: issueGiftInvoice
@@ -5342,16 +5342,23 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Returns / side effects:** `{ ok: true, invoice }`, or `{ ok: false, status, error }` with the exact route texts (`Passkey required`, `Funding grant required`, `Forum post required`, `Wallet required`, `Lightning Address did not issue an invoice`, …). Logs the same `invoice.*` events as before.
 - **Used by:** `POST /invoices` and `POST /fond/payouts/:id/invoice`.
 
+## Function: persistProvenGift
+
+- **Purpose:** Persist one proven outbound gift through the configured `GiftRecorder` (default no-op). It derives description and kind from the invoice unless an explicit kind is supplied. A recorder failure logs `gifts.record_failed` and does not throw, because the Lightning payment already settled. Idempotency is the recorder's `lightning_invoice` conflict rule.
+- **Inputs:** `GiftActionDeps`, proven `GiftInvoice`, paid-at epoch milliseconds, fiat snapshot, `sourceWallet`, and an optional `kind` override.
+- **Returns / side effects:** Resolves after the recorder call. No preimage or BOLT11 is logged.
+- **Used by:** `POST /invoices/proof` through `finishPaid`, and `POST /fond/payouts/:id/proof` with the durable row.
+
 ## Function: proveGiftInvoice
 
 - **Purpose:** Reusable proof logic extracted from `POST /invoices/proof`, unchanged: unknown invoice 404, idempotent repeat with the same preimage runs the paid side effects again, a matching preimage marks the invoice paid and runs the paid side effects, a non-matching preimage is 400, and an expired unpaid invoice is 409. The paid side effects record the gift row with the caller's `sourceWallet`, attach the platform forum reply, and attach the moderator-group stipend.
 - **Inputs:** `GiftActionDeps` and `{ id, preimage, sourceWallet }`.
 - **Returns / side effects:** `{ ok: true, body: { status: 'paid', id, paymentHash } }`, or `{ ok: false, status, error }`. Logs the same `invoice.paid` and gift-side events as before.
-- **Used by:** `POST /invoices/proof` (`lightning.space`) and `POST /fond/payouts/:id/proof` (the fond username).
+- **Used by:** `POST /invoices/proof` (`lightning.space`).
 
 ## Function: fondRoutes
 
-- **Purpose:** Member-session routes for the single Fond payer. Mounted always at `/fond`; every route first answers 404 unless `PAYOUT_SIGNER=fond`, then 401 without a session, then 403 `Fond only` unless the account has role `fond`, the configured `FOND_USERNAME`, and is not the platform account. `GET /payouts` lists today's `owed`/`invoiced` rows as `{ id, kind, status, utcDay }`. `POST /payouts/:id/invoice` prices the stored USD at the BTC/USD spot (`round(usd / spot * 1e8)` sats, at least one sat) and calls `issueGiftInvoice`; an issue refusal stores `failed` and answers 409, a transport failure leaves the row owed. `POST /payouts/:id/proof` calls `proveGiftInvoice` with `sourceWallet` = `FOND_USERNAME` and marks the row paid.
+- **Purpose:** Member-session routes for the single Fond payer. Mounted always at `/fond`; every route first answers 404 unless `PAYOUT_SIGNER=fond`, then 401 without a session, then 403 `Fond only` unless `canSignFondPayouts` accepts the account. `GET /payouts` lists today's `owed`/`invoiced` rows as `{ id, kind, status, utcDay }`. `POST /payouts/:id/invoice` returns an `invoiced` row's stored BOLT11/payment hash without reading the process-local invoice store. An `owed` row is atomically claimed as `issuing`; spot failure releases it and answers 503, a sub-sat amount releases it and answers 409 `Amount below one sat`, an issue refusal marks it `failed` and answers 409, and a transport/configuration failure releases it. A row left `issuing` is never reissued automatically; an operator must inspect it. `POST /payouts/:id/proof` verifies `sha256(preimage)` against the durable row's payment hash, records the gift from the row with `sourceWallet` = `FOND_USERNAME` and the decided USD as the USD snapshot (null crosses), and marks the row paid.
 - **Inputs:** `FondRouteDeps` (`authStore`, `fondPayoutStore`, `payoutSigner`, `fondUsername`, `now`, `fetchImpl`, optional `lnurlServer`, and `actions: GiftActionDeps`).
-- **Returns / side effects:** A Hono app. Never logs addresses, preimages, or invoices. Spot missing or `< 1 sat` → 503 `Price unavailable` with the row unchanged. Unknown id → 404; another day, `paid`, or `failed` → 409 `Not payable`; not `invoiced` → 409 `Not invoiced`; a paid row's proof repeats 200.
+- **Returns / side effects:** A Hono app. Never logs addresses, preimages, or invoices. Unknown id → 404; non-invoiced row of another day, `paid`, or `failed` → 409 `Not payable`; concurrent or stuck `issuing` → 409 `Invoice in progress`; wrong preimage → 400 `Proof does not match invoice`; not invoiced → 409 `Not invoiced`; a paid row's matching proof repeats 200 idempotently without a second gift. An `invoiced` row returns its stored invoice regardless of the current UTC day.
 - **Used by:** `createApp`.

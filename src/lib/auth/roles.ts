@@ -42,8 +42,9 @@ export function roleRank(role: RankRole): number {
  * rank can; equal ranks can do the same things. Every permission check
  * names a minimum role — an equality test on the caller's role is a
  * defect. A `fond` role never meets a minimum. Subject rank equality uses
- * {@link sameRoleRank} (state, not permission). The single permission that
- * is not a rank check is {@link canEditDailyPayoutRoster}.
+ * {@link sameRoleRank} (state, not permission). The named permissions that
+ * are not rank checks are {@link canEditDailyPayoutRoster} and
+ * {@link canSignFondPayouts}.
  *
  * @param role - Caller's live role.
  * @param min - Minimum ranked role that may proceed.
@@ -75,14 +76,29 @@ export function sameRoleRank(role: AccountRole, other: AccountRole): boolean {
 }
 
 /**
- * Whether `role` is the dedicated payer role. This is a role identity, not a
- * rank permission: `fond` has no rank and is never more than any minimum.
+ * Whether an account may sign payouts for the one configured Fond account.
  *
- * @param role - Live account role.
- * @returns `true` only for `fond`.
+ * Not a rank check: `fond` has no rank, so {@link roleAtLeast} cannot express
+ * it. True only for role `fond`, the configured username after trim and
+ * lower-case, and not the platform account.
+ *
+ * @param account - Role, platform flag, and optional username.
+ * @param fondUsername - Configured `FOND_USERNAME`.
+ * @returns `true` only for the one configured, non-platform Fond account.
  */
-export function isFondRole(role: AccountRole): boolean {
-  return role === 'fond';
+export function canSignFondPayouts(
+  account: { role: AccountRole; isPlatform?: boolean; username?: string | null },
+  fondUsername: string,
+): boolean {
+  if (
+    account.role !== 'fond' ||
+    account.isPlatform === true ||
+    account.username === null ||
+    account.username === undefined
+  ) {
+    return false;
+  }
+  return account.username.trim().toLowerCase() === fondUsername.trim().toLowerCase();
 }
 
 /**
@@ -107,8 +123,9 @@ export function isModeratorGroupMember(account: {
  *
  * Not a rank check. Initiator and moderator share rank 2, so
  * {@link roleAtLeast} cannot close the surface to moderators. True only
- * for `initiator` and `founder`. This is the single non-rank permission;
- * rank permissions stay on {@link roleAtLeast}. `fond` is false.
+ * for `initiator` and `founder`. Together with {@link canSignFondPayouts}
+ * this is one of the named non-rank permissions; rank permissions stay on
+ * {@link roleAtLeast}. `fond` is false.
  *
  * @param role - Caller's live role.
  * @returns `true` for `initiator` and `founder` only.

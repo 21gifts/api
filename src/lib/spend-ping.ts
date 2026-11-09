@@ -173,7 +173,11 @@ export class FondQueueSink implements PayoutSink {
     const kind =
       body['kind'] === 'moderator' ? 'moderator' : body['kind'] === 'welcome' ? 'welcome' : 'daily';
     const day = typeof body['day'] === 'string' ? body['day'] : utcDay(this.#now());
-    const amountUsd = twoDecimalUsd(body['amountUsd']);
+    const amountUsd = decidedUsd(body['amountUsd']);
+    const comment = body['comment'];
+    if (amountUsd === null || typeof comment !== 'string') {
+      return 'failed';
+    }
     const messageId = kind === 'moderator' ? null : textOrNull(body['messageId']);
     const groupMessageId = kind === 'moderator' ? textOrNull(body['groupMessageId']) : null;
     try {
@@ -183,7 +187,7 @@ export class FondQueueSink implements PayoutSink {
         kind,
         address,
         amountUsd,
-        comment: typeof body['comment'] === 'string' ? body['comment'] : '',
+        comment,
         messageId,
         groupMessageId,
       });
@@ -191,7 +195,7 @@ export class FondQueueSink implements PayoutSink {
         this.#skipReason = 'paid';
         return 'skipped';
       }
-      return 'accepted';
+      return result;
     } catch {
       return 'failed';
     }
@@ -212,13 +216,21 @@ function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
-/** The decided USD amount as a two-decimal string (`2` → `2.00`); `0.00` when unusable. */
-function twoDecimalUsd(raw: string | number | undefined): string {
-  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
-    return '0.00';
+/**
+ * The decided USD value exactly as received: a finite positive number via
+ * `String(number)`, or a non-empty decimal string.
+ *
+ * @param raw - Body value from the decided instruction.
+ * @returns The stored string, or `null` when unusable.
+ */
+function decidedUsd(raw: string | number | undefined): string | null {
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw > 0 ? String(raw) : null;
   }
-  const cents = Math.round(raw * 100);
-  return cents < 1 ? '0.00' : `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
+  if (typeof raw === 'string') {
+    return /^\d+(?:\.\d+)?$/.test(raw) && Number(raw) > 0 ? raw : null;
+  }
+  return null;
 }
 
 /** A string body value, or `null`. */

@@ -13,7 +13,7 @@ import type { SqlClient } from '@/lib/auth/sql';
 export type FondPayoutKind = 'daily' | 'moderator' | 'welcome';
 
 /** Row lifecycle. Matches the `status` CHECK constraint. */
-export type FondPayoutStatus = 'owed' | 'invoiced' | 'paid' | 'failed';
+export type FondPayoutStatus = 'owed' | 'issuing' | 'invoiced' | 'paid' | 'failed';
 
 /** One queued payout. Never logged with its address. */
 export interface FondPayoutRow {
@@ -43,6 +43,8 @@ export interface FondPayoutRow {
   paymentHash: string | null;
   /** Invoice BOLT11, or `null`. */
   bolt11: string | null;
+  /** Invoice amount in millisatoshis, or `null` before `setInvoiced`. */
+  amountMsat: number | null;
   /** Enqueue time. */
   createdAt: Date;
   /** Last status or invoice change. */
@@ -77,6 +79,8 @@ export interface FondPayoutInvoice {
   paymentHash: string;
   /** Invoice BOLT11. */
   bolt11: string;
+  /** Invoice amount in millisatoshis. */
+  amountMsat: number;
 }
 
 /**
@@ -91,9 +95,10 @@ export interface FondPayoutStore {
    *
    * @param row - Decided instruction.
    * @returns `'accepted'` for a new or already-queued row; `'paid'` when the
-   *   existing row is already `paid`.
+   *   existing row is already `paid`; `'failed'` when a conflict is reported
+   *   but the existing row cannot be read back.
    */
-  enqueue(row: FondPayoutEnqueue): Promise<'accepted' | 'paid'>;
+  enqueue(row: FondPayoutEnqueue): Promise<'accepted' | 'paid' | 'failed'>;
 
   /**
    * Rows of `utcDay` with status `owed` or `invoiced`, oldest first.
@@ -112,23 +117,41 @@ export interface FondPayoutStore {
   get(id: string): Promise<FondPayoutRow | undefined>;
 
   /**
-   * Store the issued invoice and move an `owed`/`invoiced` row to `invoiced`.
-   * A row of any other status is left unchanged.
+   * Atomically move one `owed` row of `utcDay` to `issuing` before any
+   * invoice is requested. A row of any other status or day is unchanged.
+   *
+   * @param id - Row id.
+   * @param utcDay - UTC day key the row must belong to.
+   * @returns The claimed row, or `null` when another caller won or the row is not payable.
+   */
+  claimForInvoice(id: string, utcDay: string): Promise<FondPayoutRow | null>;
+
+  /**
+   * Store the issued invoice and move an `issuing` row to `invoiced`. A row
+   * of any other status is left unchanged.
    *
    * @param id - Row id.
    * @param invoice - Invoice fields from the issue logic.
-   * @returns The updated row, or `undefined` when the row is missing or not payable.
+   * @returns The updated row, or `undefined` when the row is missing or not issuing.
    */
   setInvoiced(id: string, invoice: FondPayoutInvoice): Promise<FondPayoutRow | undefined>;
 
   /**
-   * Move an `owed`/`invoiced` row to `failed` with a short reason.
+   * Move an `issuing` row to `failed` with a short reason.
    *
    * @param id - Row id.
    * @param failure - Client-facing issue error text.
-   * @returns The updated row, or `undefined` when the row is missing or not payable.
+   * @returns The updated row, or `undefined` when the row is missing or not issuing.
    */
-  setFailed(id: string, failure: string): Promise<FondPayoutRow | undefined>;
+  markFailed(id: string, failure: string): Promise<FondPayoutRow | undefined>;
+
+  /**
+   * Move an `issuing` row back to `owed` when no invoice exists.
+   *
+   * @param id - Row id.
+   * @returns The updated row, or `undefined` when the row is missing or not issuing.
+   */
+  releaseClaim(id: string): Promise<FondPayoutRow | undefined>;
 
   /**
    * Move an `invoiced` row to `paid`.
@@ -136,7 +159,7 @@ export interface FondPayoutStore {
    * @param id - Row id.
    * @returns The updated row, or `undefined` when the row is missing or not invoiced.
    */
-  setPaid(id: string): Promise<FondPayoutRow | undefined>;
+  markPaid(id: string): Promise<FondPayoutRow | undefined>;
 }
 
 /** Idempotent DDL (matches `docs/schema/fond_payout.sql`). */
@@ -150,14 +173,19 @@ export const FOND_PAYOUT_SCHEMA_SQL: readonly string[] = [
   comment text NOT NULL,
   message_id text,
   group_message_id text,
-  status text NOT NULL CHECK (status IN ('owed', 'invoiced', 'paid', 'failed')),
+  status text NOT NULL CHECK (status IN ('owed', 'issuing', 'invoiced', 'paid', 'failed')),
   failure text,
   invoice_id text,
   payment_hash text,
   bolt11 text,
+  amount_msat bigint,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 )`,
+  `ALTER TABLE fond_payout DROP CONSTRAINT IF EXISTS fond_payout_status_check`,
+  `ALTER TABLE fond_payout ADD CONSTRAINT fond_payout_status_check
+    CHECK (status IN ('owed', 'issuing', 'invoiced', 'paid', 'failed'))`,
+  `ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS amount_msat bigint`,
   `CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
     ON fond_payout (utc_day, kind, address)
     WHERE kind IN ('daily', 'moderator')`,
@@ -208,7 +236,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
    * @param row - Decided instruction.
    * @returns `'accepted'` for a new or already-queued row; `'paid'` when the existing row is paid.
    */
-  async enqueue(row: FondPayoutEnqueue): Promise<'accepted' | 'paid'> {
+  async enqueue(row: FondPayoutEnqueue): Promise<'accepted' | 'paid' | 'failed'> {
     const key = dedupeKey({ utcDay: row.utcDay, kind: row.kind, address: row.address });
     const existing = [...this.#rows.values()].find(
       (item) => dedupeKey({ utcDay: item.utcDay, kind: item.kind, address: item.address }) === key,
@@ -224,6 +252,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       invoiceId: null,
       paymentHash: null,
       bolt11: null,
+      amountMsat: null,
       createdAt: at,
       updatedAt: at,
     });
@@ -261,35 +290,71 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
   }
 
   /**
-   * Store the invoice and move a payable row to `invoiced`.
+   * Atomically claim an owed row of one UTC day for invoice issue.
+   *
+   * @param id - Row id.
+   * @param utcDay - UTC day key the row must belong to.
+   * @returns The claimed copy, or `null` when not owed on that day.
+   */
+  async claimForInvoice(id: string, utcDay: string): Promise<FondPayoutRow | null> {
+    const current = this.#rows.get(id);
+    if (current === undefined || current.utcDay !== utcDay || current.status !== 'owed') {
+      return null;
+    }
+    const next = {
+      ...current,
+      status: 'issuing' as const,
+      updatedAt: new Date(this.#now()),
+    };
+    this.#rows.set(id, next);
+    return copyRow(next);
+  }
+
+  /**
+   * Store the invoice and move an `issuing` row to `invoiced`.
    *
    * @param id - Row id.
    * @param invoice - Invoice fields.
-   * @returns The updated copy, or `undefined` when not payable.
+   * @returns The updated copy, or `undefined` when not issuing.
    */
   async setInvoiced(id: string, invoice: FondPayoutInvoice): Promise<FondPayoutRow | undefined> {
-    return this.#transition(id, ['owed', 'invoiced'], (row) => ({
+    return this.#transition(id, ['issuing'], (row) => ({
       ...row,
       status: 'invoiced',
       failure: null,
       invoiceId: invoice.invoiceId,
       paymentHash: invoice.paymentHash,
       bolt11: invoice.bolt11,
+      amountMsat: invoice.amountMsat,
     }));
   }
 
   /**
-   * Move a payable row to `failed`.
+   * Move an `issuing` row to `failed`.
    *
    * @param id - Row id.
    * @param failure - Short reason.
-   * @returns The updated copy, or `undefined` when not payable.
+   * @returns The updated copy, or `undefined` when not issuing.
    */
-  async setFailed(id: string, failure: string): Promise<FondPayoutRow | undefined> {
-    return this.#transition(id, ['owed', 'invoiced'], (row) => ({
+  async markFailed(id: string, failure: string): Promise<FondPayoutRow | undefined> {
+    return this.#transition(id, ['issuing'], (row) => ({
       ...row,
       status: 'failed',
       failure,
+    }));
+  }
+
+  /**
+   * Move an `issuing` row back to `owed` when issuing produced no invoice.
+   *
+   * @param id - Row id.
+   * @returns The updated copy, or `undefined` when not issuing.
+   */
+  async releaseClaim(id: string): Promise<FondPayoutRow | undefined> {
+    return this.#transition(id, ['issuing'], (row) => ({
+      ...row,
+      status: 'owed',
+      failure: null,
     }));
   }
 
@@ -299,7 +364,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
    * @param id - Row id.
    * @returns The updated copy, or `undefined` when not invoiced.
    */
-  async setPaid(id: string): Promise<FondPayoutRow | undefined> {
+  async markPaid(id: string): Promise<FondPayoutRow | undefined> {
     return this.#transition(id, ['invoiced'], (row) => ({
       ...row,
       status: 'paid',
@@ -337,12 +402,14 @@ interface FondPayoutSqlRow {
   invoice_id: string | null;
   payment_hash: string | null;
   bolt11: string | null;
+  amount_msat: number | string | bigint | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
 
 const FOND_PAYOUT_SELECT = `id, utc_day, kind, address, amount_usd, comment, message_id,
-  group_message_id, status, failure, invoice_id, payment_hash, bolt11, created_at, updated_at`;
+  group_message_id, status, failure, invoice_id, payment_hash, bolt11, amount_msat,
+  created_at, updated_at`;
 
 /** Date-only text for a driver `date` value. */
 function isoDay(value: string | Date): string {
@@ -352,6 +419,14 @@ function isoDay(value: string | Date): string {
 /** Timestamp for a driver value. */
 function timestamp(value: string | Date): Date {
   return value instanceof Date ? value : new Date(value);
+}
+
+/** Integer millisatoshis from a driver bigint, number, or string. */
+function millisatoshis(value: number | string | bigint | null): number | null {
+  if (value === null) {
+    return null;
+  }
+  return Number(value);
 }
 
 /** Map one driver row. */
@@ -370,6 +445,7 @@ function mapRow(row: FondPayoutSqlRow): FondPayoutRow {
     invoiceId: row.invoice_id,
     paymentHash: row.payment_hash,
     bolt11: row.bolt11,
+    amountMsat: millisatoshis(row.amount_msat),
     createdAt: timestamp(row.created_at),
     updatedAt: timestamp(row.updated_at),
   };
@@ -388,13 +464,14 @@ export class PostgresFondPayoutStore implements FondPayoutStore {
 
   /**
    * Insert with `ON CONFLICT DO NOTHING`. On a conflict, read the existing
-   * row's status: `paid` returns `'paid'`, every other status `'accepted'`.
+   * row's status: `paid` returns `'paid'`, every other status `'accepted'`,
+   * and a missing row returns `'failed'`.
    *
    * @param row - Decided instruction.
-   * @returns `'accepted'` or `'paid'`.
+   * @returns `'accepted'`, `'paid'`, or `'failed'`.
    * @throws Propagates SQL failures.
    */
-  async enqueue(row: FondPayoutEnqueue): Promise<'accepted' | 'paid'> {
+  async enqueue(row: FondPayoutEnqueue): Promise<'accepted' | 'paid' | 'failed'> {
     const inserted = await this.#sql.query<{ id: string }>(
       `INSERT INTO fond_payout
   (id, utc_day, kind, address, amount_usd, comment, message_id, group_message_id, status)
@@ -425,7 +502,11 @@ RETURNING id`,
             `SELECT status FROM fond_payout WHERE utc_day = $1 AND kind = $2 AND address = $3`,
             [row.utcDay, row.kind, row.address],
           );
-    return existing[0]?.status === 'paid' ? 'paid' : 'accepted';
+    const status = existing[0]?.status;
+    if (status === undefined) {
+      return 'failed';
+    }
+    return status === 'paid' ? 'paid' : 'accepted';
   }
 
   /**
@@ -463,41 +544,80 @@ ORDER BY created_at ASC, id ASC`,
   }
 
   /**
-   * Store the invoice and move an `owed`/`invoiced` row to `invoiced`.
+   * Atomically move one `owed` row of `utcDay` to `issuing`.
+   *
+   * @param id - Row id.
+   * @param utcDay - UTC day key the row must belong to.
+   * @returns The claimed row, or `null` when another caller won or the row is not payable.
+   * @throws Propagates SQL failures.
+   */
+  async claimForInvoice(id: string, utcDay: string): Promise<FondPayoutRow | null> {
+    const rows = await this.#sql.query<FondPayoutSqlRow>(
+      `UPDATE fond_payout
+SET status = 'issuing', updated_at = now()
+WHERE id = $1 AND utc_day = $2 AND status = 'owed'
+RETURNING ${FOND_PAYOUT_SELECT}`,
+      [id, utcDay],
+    );
+    const row = rows[0];
+    return row === undefined ? null : mapRow(row);
+  }
+
+  /**
+   * Store the invoice and move an `issuing` row to `invoiced`.
    *
    * @param id - Row id.
    * @param invoice - Invoice fields.
-   * @returns The updated row, or `undefined` when not payable.
+   * @returns The updated row, or `undefined` when not issuing.
    * @throws Propagates SQL failures.
    */
   async setInvoiced(id: string, invoice: FondPayoutInvoice): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
 SET status = 'invoiced', failure = NULL,
-    invoice_id = $2, payment_hash = $3, bolt11 = $4, updated_at = now()
-WHERE id = $1 AND status IN ('owed', 'invoiced')
+    invoice_id = $2, payment_hash = $3, bolt11 = $4, amount_msat = $5, updated_at = now()
+WHERE id = $1 AND status = 'issuing'
 RETURNING ${FOND_PAYOUT_SELECT}`,
-      [id, invoice.invoiceId, invoice.paymentHash, invoice.bolt11],
+      [id, invoice.invoiceId, invoice.paymentHash, invoice.bolt11, invoice.amountMsat],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapRow(row);
   }
 
   /**
-   * Move an `owed`/`invoiced` row to `failed`.
+   * Move an `issuing` row to `failed`.
    *
    * @param id - Row id.
    * @param failure - Short reason.
-   * @returns The updated row, or `undefined` when not payable.
+   * @returns The updated row, or `undefined` when not issuing.
    * @throws Propagates SQL failures.
    */
-  async setFailed(id: string, failure: string): Promise<FondPayoutRow | undefined> {
+  async markFailed(id: string, failure: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
 SET status = 'failed', failure = $2, updated_at = now()
-WHERE id = $1 AND status IN ('owed', 'invoiced')
+WHERE id = $1 AND status = 'issuing'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id, failure],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapRow(row);
+  }
+
+  /**
+   * Move an `issuing` row back to `owed` when issuing produced no invoice.
+   *
+   * @param id - Row id.
+   * @returns The updated row, or `undefined` when not issuing.
+   * @throws Propagates SQL failures.
+   */
+  async releaseClaim(id: string): Promise<FondPayoutRow | undefined> {
+    const rows = await this.#sql.query<FondPayoutSqlRow>(
+      `UPDATE fond_payout
+SET status = 'owed', failure = NULL, updated_at = now()
+WHERE id = $1 AND status = 'issuing'
+RETURNING ${FOND_PAYOUT_SELECT}`,
+      [id],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapRow(row);
@@ -510,7 +630,7 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
    * @returns The updated row, or `undefined` when not invoiced.
    * @throws Propagates SQL failures.
    */
-  async setPaid(id: string): Promise<FondPayoutRow | undefined> {
+  async markPaid(id: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
 SET status = 'paid', failure = NULL, updated_at = now()

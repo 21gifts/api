@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ROLE_ORDER,
   canEditDailyPayoutRoster,
-  isFondRole,
+  canSignFondPayouts,
   isModeratorGroupMember,
   roleAtLeast,
   roleRank,
@@ -121,10 +121,25 @@ describe('canEditDailyPayoutRoster', () => {
   });
 });
 
-describe('isFondRole', () => {
-  it('is true only for fond', () => {
+describe('canSignFondPayouts', () => {
+  it('is true only for the configured non-platform fond account', () => {
+    expect(canSignFondPayouts({ role: 'fond', username: ' Tondo-Fond ' }, 'tondo-fond')).toBe(true);
+    expect(canSignFondPayouts({ role: 'fond', username: 'tondo-fond' }, 'tondo-fond')).toBe(true);
+    expect(canSignFondPayouts({ role: 'fond', username: 'tondo-fond' }, ' Tondo-Fond ')).toBe(true);
+    expect(canSignFondPayouts({ role: 'fond', username: 'other' }, 'tondo-fond')).toBe(false);
+    expect(
+      canSignFondPayouts({ role: 'fond', username: 'tondo-fond', isPlatform: true }, 'tondo-fond'),
+    ).toBe(false);
+  });
+
+  it('is explicitly false for null, missing, or non-fond accounts', () => {
+    expect(canSignFondPayouts({ role: 'fond', username: null }, 'tondo-fond')).toBe(false);
+    expect(canSignFondPayouts({ role: 'fond' }, 'tondo-fond')).toBe(false);
     for (const role of roles) {
-      expect(isFondRole(role)).toBe(role === 'fond');
+      if (role === 'fond') {
+        continue;
+      }
+      expect(canSignFondPayouts({ role, username: 'tondo-fond' }, 'tondo-fond')).toBe(false);
     }
   });
 });

@@ -4807,6 +4807,11 @@ test('Function: proveGiftInvoice — POST /invoices/proof unconfigured is 503', 
   expect(res.status()).toBe(503);
 });
 
+test('Function: persistProvenGift — default boot serves HTTP', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: HttpPayoutSink — default boot has no SPEND_URL', async ({ request }) => {
   const res = await request.get('/info');
   expect(res.status()).toBe(200);
@@ -4850,7 +4855,7 @@ test('Function: InMemoryFondPayoutStore — GET /fond/payouts is 404 when PAYOUT
   expect(res.status()).toBe(404);
 });
 
-test('Function: isFondRole — default boot serves HTTP', async ({ request }) => {
+test('Function: canSignFondPayouts — default boot serves HTTP', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
