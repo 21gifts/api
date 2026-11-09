@@ -1,4 +1,5 @@
 import type { AccountRole } from '@/lib/auth/store';
+import { isUtcDay } from '@/lib/gift';
 
 /**
  * Funding-program grant domain.
@@ -101,25 +102,80 @@ export function effectiveStatus(
  */
 export const FUNDING_REQUIRED_FROM_UTC = '2026-10-01';
 
-/** Usernames that may POST /funding/apply while applications are paused. */
-export const APPLICATION_PAUSE_EXEMPT_USERNAMES: readonly string[] = [
-  'joey-rosima',
-  'vincent',
-  'jewel-bacolbas',
-];
+/** One admission round of the grant program. */
+export interface GrantRound {
+  /** Round number shown to members, starting at 1. */
+  number: number;
+  /** Admissions with `admittedAt` at or after this instant (epoch ms) count toward the round. */
+  startsAtMs: number;
+  /** How many people moderators may admit in this round. */
+  places: number;
+  /** Active-shop goal (`GET /funding/goal` `qualifyingShops`) that opens the next round. */
+  nextGoalShops: number;
+}
 
 /**
- * Whether this username may apply while applications are paused.
- * Exact match. Null, omitted, and every other username are not exempt.
- *
- * @param username - Account username, or null or undefined when it is unset.
- * @returns `true` only for `joey-rosima`, `vincent`, and `jewel-bacolbas`.
+ * The open admission round. Round 1 opened on UTC 2026-10-16, the day the
+ * 10-active-shop goal was reached: moderators may admit 10 people. The next
+ * round opens when 20 shops are active; its size is set when it opens.
  */
-export function applicationPauseExempt(username: string | null | undefined): boolean {
-  return (
-    typeof username === 'string' &&
-    (APPLICATION_PAUSE_EXEMPT_USERNAMES as readonly string[]).includes(username)
-  );
+export const CURRENT_GRANT_ROUND: GrantRound = {
+  number: 1,
+  startsAtMs: Date.parse('2026-10-16T00:00:00.000Z'),
+  places: 10,
+  nextGoalShops: 20,
+};
+
+/** Public JSON of `GET /funding/places`. */
+export interface GrantPlacesJson {
+  /** Round number, starting at 1. */
+  round: number;
+  /** ISO-8601 start of the round. */
+  startsAt: string;
+  /** Places in the round. */
+  places: number;
+  /** People admitted in the round so far. */
+  admitted: number;
+  /** `places - admitted`, never below 0. */
+  placesLeft: number;
+  /** Active-shop goal that opens the next round. */
+  nextGoalShops: number;
+}
+
+/**
+ * How many stored grants are admissions of `round`: status `admitted` and
+ * `admittedAt` at or after `round.startsAtMs`. Admissions before the round
+ * start (earlier rounds) do not count.
+ *
+ * @param grants - Stored grants.
+ * @param round - Admission round.
+ * @returns The number of admissions in the round.
+ */
+export function countRoundAdmissions(grants: readonly FundingGrant[], round: GrantRound): number {
+  return grants.filter(
+    (grant) =>
+      grant.status === 'admitted' &&
+      grant.admittedAt !== null &&
+      grant.admittedAt >= round.startsAtMs,
+  ).length;
+}
+
+/**
+ * Public places JSON for a round and its admission count.
+ *
+ * @param round - Admission round.
+ * @param admitted - Admissions counted by {@link countRoundAdmissions}.
+ * @returns `{ round, startsAt, places, admitted, placesLeft, nextGoalShops }`.
+ */
+export function grantPlaces(round: GrantRound, admitted: number): GrantPlacesJson {
+  return {
+    round: round.number,
+    startsAt: new Date(round.startsAtMs).toISOString(),
+    places: round.places,
+    admitted,
+    placesLeft: Math.max(0, round.places - admitted),
+    nextGoalShops: round.nextGoalShops,
+  };
 }
 
 /**
@@ -133,29 +189,15 @@ export function fundingGrantRequired(nowMs: number): boolean {
 }
 
 /**
- * Whether the account may receive a spend ping / spend invoice today.
+ * Whether the member is in the grant program on this UTC day: admitted, or
+ * on trial with `trialUtcDate === utcDayKey(nowMs)`. Expired or future
+ * trials, pending, rejected, and missing grants are not.
  *
- * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
- * other role is true (passkey and living-room post still gate issue). From
- * that UTC day, true iff admitted OR (trial AND `trialUtcDate === utcDayKey(nowMs)`).
- * Expired trial, pending, rejected, and missing grants are then false.
- *
- * @param role - Live account role.
  * @param grant - Stored grant, or `undefined` when no row.
  * @param nowMs - Epoch milliseconds (UTC day).
- * @returns `true` when money paths may proceed today.
+ * @returns `true` for an admitted grant or today's trial.
  */
-export function eligibleToday(
-  role: AccountRole,
-  grant: FundingGrant | undefined,
-  nowMs: number,
-): boolean {
-  if (role === 'basis') {
-    return false;
-  }
-  if (!fundingGrantRequired(nowMs)) {
-    return true;
-  }
+export function inGrantProgramToday(grant: FundingGrant | undefined, nowMs: number): boolean {
   if (grant === undefined) {
     return false;
   }
@@ -163,6 +205,77 @@ export function eligibleToday(
     return true;
   }
   return grant.status === 'trial' && grant.trialUtcDate === utcDayKey(nowMs);
+}
+
+/**
+ * Read `RECOVERY_SHARE_REQUIRED_FROM`: the first UTC day a payout needs the
+ * 21.gifts recovery share.
+ *
+ * @param env - Process environment.
+ * @returns The trimmed `YYYY-MM-DD` day, or `null` when unset or blank (not required yet).
+ * @throws Error when the variable is set to anything but a real calendar day.
+ */
+export function resolveRecoveryShareRequiredFrom(
+  env: Record<string, string | undefined>,
+): string | null {
+  const raw = (env['RECOVERY_SHARE_REQUIRED_FROM'] ?? '').trim();
+  if (raw === '') {
+    return null;
+  }
+  if (!isUtcDay(raw)) {
+    throw new Error('RECOVERY_SHARE_REQUIRED_FROM must be an ISO date (YYYY-MM-DD)');
+  }
+  return raw;
+}
+
+/**
+ * Whether a payout needs the 21.gifts recovery share on this UTC day.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @param requiredFrom - Result of {@link resolveRecoveryShareRequiredFrom}.
+ * @returns `true` when the grant gate is in force and the day is on or after
+ *   `requiredFrom`; `false` when `requiredFrom` is `null`.
+ */
+export function recoveryShareRequired(nowMs: number, requiredFrom: string | null): boolean {
+  return requiredFrom !== null && fundingGrantRequired(nowMs) && utcDayKey(nowMs) >= requiredFrom;
+}
+
+/**
+ * Whether the account may receive a spend ping / spend invoice today.
+ *
+ * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
+ * other role is true (passkey and living-room post still gate issue). From
+ * that UTC day, true iff {@link inGrantProgramToday} and, once
+ * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
+ * rejected, and missing grants are then false, and so is a grant without a
+ * required share.
+ *
+ * @param role - Live account role.
+ * @param grant - Stored grant, or `undefined` when no row.
+ * @param nowMs - Epoch milliseconds (UTC day).
+ * @param recoveryShareStored - Whether a 21.gifts recovery share is stored for
+ *   the account's current verified wallet
+ *   (`AuthStore.hasRecoveryShareForVerifiedWallet`).
+ * @param recoveryShareRequiredFrom - Result of {@link resolveRecoveryShareRequiredFrom}.
+ * @returns `true` when money paths may proceed today.
+ */
+export function eligibleToday(
+  role: AccountRole,
+  grant: FundingGrant | undefined,
+  nowMs: number,
+  recoveryShareStored: boolean,
+  recoveryShareRequiredFrom: string | null,
+): boolean {
+  if (role === 'basis') {
+    return false;
+  }
+  if (!fundingGrantRequired(nowMs)) {
+    return true;
+  }
+  return (
+    inGrantProgramToday(grant, nowMs) &&
+    (recoveryShareStored || !recoveryShareRequired(nowMs, recoveryShareRequiredFrom))
+  );
 }
 
 /**

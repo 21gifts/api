@@ -1,4 +1,10 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import {
+  AES_GCM_ENVELOPE_VERSION,
+  AES_GCM_NONCE_BYTES,
+  AES_GCM_TAG_BYTES,
+  sealAesGcmEnvelope,
+} from '@/lib/aes-gcm-envelope';
 import type { AuthStore, NostrKeyRecord } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 
@@ -8,17 +14,11 @@ import { logEvent } from '@/lib/log';
  * Plaintext secrets exist only briefly; HTTP and `Account` never carry them.
  */
 
-/** Envelope version byte for the v1 layout. */
-export const NOSTR_ENVELOPE_VERSION = 0x01;
+/** Envelope version byte for the v1 layout (the shared AES-GCM envelope version). */
+export const NOSTR_ENVELOPE_VERSION = AES_GCM_ENVELOPE_VERSION;
 
 /** v1 KEK id written into every new envelope. */
 export const NOSTR_KEK_ID_V1 = 1;
-
-/** AES-GCM nonce length in bytes. */
-const NONCE_BYTES = 12;
-
-/** AES-GCM auth tag length in bytes (Web Crypto appends to ciphertext). */
-const TAG_BYTES = 16;
 
 /** Port for secret generation so tests can inject fixed keys. */
 export interface NostrKeygen {
@@ -46,7 +46,7 @@ export function publicKeyHexFromSecret(secret: Uint8Array): string {
 }
 
 /**
- * Encrypt a 32-byte Nostr secret into the v1 envelope.
+ * Encrypt a 32-byte Nostr secret into the v1 envelope ({@link sealAesGcmEnvelope}).
  *
  * Layout: `version(1) || kek_id uint32 BE || nonce(12) || ciphertext+tag`.
  * AAD is UTF-8 `accountId`: an account id, or `shop:{messageId}` for a shop key.
@@ -56,6 +56,7 @@ export function publicKeyHexFromSecret(secret: Uint8Array): string {
  * @param accountId - AAD string: account UUID, or `shop:{messageId}` for a shop key.
  * @param kekId - Key id stored in the envelope (v1 = 1).
  * @returns Envelope bytes.
+ * @throws When the secret or the KEK is not 32 bytes.
  */
 export async function encryptNostrSecret(
   secret: Uint8Array,
@@ -66,22 +67,7 @@ export async function encryptNostrSecret(
   if (secret.length !== 32) {
     throw new Error('Nostr secret must be 32 bytes');
   }
-  if (kek.length !== 32) {
-    throw new Error('KEK must be 32 bytes');
-  }
-  const nonce = crypto.getRandomValues(new Uint8Array(NONCE_BYTES));
-  const key = await crypto.subtle.importKey('raw', kek, { name: 'AES-GCM' }, false, ['encrypt']);
-  const aad = new TextEncoder().encode(accountId);
-  const encrypted = new Uint8Array(
-    await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, key, secret),
-  );
-  const envelope = new Uint8Array(1 + 4 + NONCE_BYTES + encrypted.length);
-  envelope[0] = NOSTR_ENVELOPE_VERSION;
-  const view = new DataView(envelope.buffer);
-  view.setUint32(1, kekId, false);
-  envelope.set(nonce, 5);
-  envelope.set(encrypted, 5 + NONCE_BYTES);
-  return envelope;
+  return sealAesGcmEnvelope(secret, kek, new TextEncoder().encode(accountId), kekId);
 }
 
 /**
@@ -99,7 +85,7 @@ export async function decryptNostrSecret(
   kek: Uint8Array,
   accountId: string,
 ): Promise<Uint8Array> {
-  if (envelope.length < 1 + 4 + NONCE_BYTES + TAG_BYTES) {
+  if (envelope.length < 1 + 4 + AES_GCM_NONCE_BYTES + AES_GCM_TAG_BYTES) {
     throw new Error('Nostr envelope too short');
   }
   if (envelope[0] !== NOSTR_ENVELOPE_VERSION) {
@@ -114,8 +100,8 @@ export async function decryptNostrSecret(
   if (kek.length !== 32) {
     throw new Error('KEK must be 32 bytes');
   }
-  const nonce = envelope.subarray(5, 5 + NONCE_BYTES);
-  const ciphertext = envelope.subarray(5 + NONCE_BYTES);
+  const nonce = envelope.subarray(5, 5 + AES_GCM_NONCE_BYTES);
+  const ciphertext = envelope.subarray(5 + AES_GCM_NONCE_BYTES);
   const key = await crypto.subtle.importKey('raw', kek, { name: 'AES-GCM' }, false, ['decrypt']);
   const aad = new TextEncoder().encode(accountId);
   const plain = new Uint8Array(

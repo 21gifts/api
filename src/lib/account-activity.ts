@@ -1,9 +1,13 @@
 /**
- * Read-only account activity: donation given/received sats only.
+ * Read-only account activity: donation given/received sats, plus outstanding
+ * loan balances on the same JSON object.
  *
- * Counts confirmed forum zaps on non-loan notes, plus house gifts of kind
- * daily and welcome. Loans (`goalRepayable === true`), repayment invoices, and
- * moderator stipends are omitted. Public JSON never includes invoices, payment
+ * Donation series count confirmed forum zaps on non-loan notes, plus house
+ * gifts of kind daily and welcome. Loans (`goalRepayable === true`), repayment
+ * invoices, and moderator stipends stay out of `donatedSats` / `receivedSats`.
+ * Loan series are not `buildGiftStats`: balances can fall, only movement days
+ * are emitted, and every fiat field is JSON `null` because a loan movement
+ * stores no fiat figure. Public JSON never includes invoices, payment
  * hashes, or nsec. Does not change `GET /gifts/stats` (that route remains house
  * outbound only).
  */
@@ -20,15 +24,22 @@ import {
   type SpendDay,
 } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
-import { logEvent } from '@/lib/log';
-import { usdCentsToString } from '@/lib/money';
-import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
-import { InMemoryFiatStore, type FiatCross, type FiatRateBook } from '@/lib/usd-fiat-store';
+import { satsToBtcString, usdCentsToString } from '@/lib/money';
+import type {
+  LoanLedgerMovement,
+  MessageInvoiceAttempt,
+  MessageStore,
+  ZapIngestRow,
+} from '@/lib/message-store';
+import type { FiatRateBook } from '@/lib/usd-fiat-store';
 
 const PAYMENT_HASH_RE = /^[0-9a-f]{64}$/;
 const FALLBACK_RECIPIENT = 'zap';
 
-/** Donated and received sats with UTC spend series and FX metadata. */
+/**
+ * Donated and received sats with UTC spend series, FX metadata, and
+ * outstanding loan balances (`owedSats` / `creditSats` and their series).
+ */
 export interface AccountActivity {
   /** Confirmed given donation zaps (and platform daily/welcome outbound) in whole sats. */
   donatedSats: number;
@@ -41,6 +52,14 @@ export interface AccountActivity {
   donatedOverTime: SpendDay[];
   /** UTC daily received series. */
   receivedOverTime: SpendDay[];
+  /** Sats this account still owes on credits it received. */
+  owedSats: number;
+  /** Sats other people still owe this account (Guthaben). */
+  creditSats: number;
+  /** UTC days with an owed movement; cumulative may fall; no gap days. */
+  owedOverTime: SpendDay[];
+  /** UTC days with a credit movement; cumulative may fall; no gap days. */
+  creditOverTime: SpendDay[];
   /** Quote metadata (always present, including empty activity). */
   fx: GiftStatsFx;
 }
@@ -143,7 +162,8 @@ export function matchConfirmedGivenZaps(
 }
 
 /**
- * Aggregate donation given and received sats for one account.
+ * Aggregate donation given/received sats and outstanding loan balances for one
+ * account.
  *
  * Given: confirmed forum zaps this account paid on notes that are not loans,
  * excluding `repay:` repayment invoices, plus outbound house gifts of kind
@@ -154,20 +174,22 @@ export function matchConfirmedGivenZaps(
  * ingest amounts on **top-level** non-loan notes (a loan note is omitted
  * entirely, including a hidden one; gift-as-reply `sats` do not inflate the
  * payer's Received), plus house gifts of kind daily and welcome whose recipient
- * handle matches the account Lightning Address. A loan is a note with
+ * handle matches the local part of the account's receiving address (its
+ * username, once the in-app wallet is verified). A loan is a note with
  * `goalRepayable === true`. Self-zaps on a non-loan note count on both sides.
- * Does not change `GET /gifts/stats`. Empty input is zeros without Coinbase and
- * without Frankfurter. Missing BTC-USD throws the same `fx.rate.missing` as
- * {@link buildGiftStats}. Missing CHF/EUR/PHP is JSON `null`, never a throw;
- * when fiat `ensureDays` throws, log `account.activity.fiat_failed` and continue
- * with an empty fiat map. Series (`donatedOverTime` / `receivedOverTime`) are
- * the same `spendOverTime` day objects as `GET /gifts/stats`, including additive
- * CHF/EUR/PHP.
+ * Loan series come from `listLoanLedger`: grants raise a side, repayments lower
+ * it, balances are not clamped, and only movement days are emitted. A loan
+ * movement stores no fiat figure, so every loan USD/CHF/EUR/PHP field is JSON
+ * `null`; loan series carry sats and BTC only. Does not change
+ * `GET /gifts/stats`. Empty input (no donations and no loan movements) is
+ * zeros. Amounts are the stored figures. A missing stored amount stays null
+ * and is not priced from a daily close. Donation series (`donatedOverTime` /
+ * `receivedOverTime`) are the same `spendOverTime` day objects as
+ * `GET /gifts/stats`.
  *
  * @param args - Account, stores, BTC-USD rate book, optional USD→CHF/EUR/PHP
- *   book, and clock.
+ *   book, and clock. The books are not read.
  * @returns Activity totals and series.
- * @throws `Error('fx.rate.missing')` when a gift day has no BTC-USD rate.
  */
 export async function buildAccountActivity(args: {
   account: Account;
@@ -176,15 +198,15 @@ export async function buildAccountActivity(args: {
   rates: BtcUsdRateBook;
   now: () => number;
   /**
-   * USD→CHF/EUR/PHP book. Default empty `InMemoryFiatStore`.
-   * Missing fiat is JSON null, never a throw.
+   * Accepted so existing callers still type-check. Not read.
+   * A missing stored amount stays null.
    */
   fiatRates?: FiatRateBook;
 }): Promise<AccountActivity> {
   const outbound = await args.gifts.listOutbound();
   const house = outbound.filter((row) => row.kind !== 'moderator');
-  const handle = args.account.lightningAddress;
-  const receivedHouse = handle ? giftsForRecipient(house, handle) : [];
+  const handle = walletHandle(args.account);
+  const receivedHouse = handle === null ? [] : giftsForRecipient(house, handle);
   const givenHouse = args.account.isPlatform === true ? house : [];
   const invoices = await args.messages.listInvoiceAttemptsForPayer(args.account.id);
   const indexed = await args.messages.listIndexedZapIngests();
@@ -195,55 +217,132 @@ export async function buildAccountActivity(args: {
   const receivedZaps = await receivedZapsForAccount(args.account, args.messages, indexed);
   const givenRows = givenZaps.concat(givenHouse);
   const receivedRows = receivedZaps.concat(receivedHouse);
-  const fiatRates = args.fiatRates ?? new InMemoryFiatStore();
+  const ledger = await args.messages.listLoanLedger(args.account.id);
 
-  if (givenRows.length === 0 && receivedRows.length === 0) {
+  if (givenRows.length === 0 && receivedRows.length === 0 && ledger.length === 0) {
     const empty = buildGiftStats([], new Map());
     return {
       donatedSats: 0,
       receivedSats: 0,
       donatedOverTime: [],
       receivedOverTime: [],
+      owedSats: 0,
+      creditSats: 0,
+      owedOverTime: [],
+      creditOverTime: [],
       fx: empty.fx,
     };
   }
 
-  const legacyDays = [
-    ...new Set(
-      givenRows
-        .concat(receivedRows)
-        .filter((row) => row.amountUsd === undefined)
-        .map((row) => row.paidAt.toISOString().slice(0, 10)),
-    ),
-  ];
-  let rateMap: ReadonlyMap<string, string> = new Map();
-  if (legacyDays.length > 0) {
-    rateMap = await args.rates.ensureDays(legacyDays, args.now());
-    for (const day of legacyDays) {
-      if (!rateMap.has(day)) {
-        throw new Error('fx.rate.missing');
-      }
-    }
-  }
-
-  let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
-  try {
-    if (legacyDays.length > 0) {
-      fiatMap = await fiatRates.ensureDays(legacyDays, args.now());
-    }
-  } catch {
-    logEvent('account.activity.fiat_failed');
-  }
-
-  const givenStats = buildGiftStats(givenRows, rateMap, fiatMap);
-  const receivedStats = buildGiftStats(receivedRows, rateMap, fiatMap);
+  const sortedLedger = [...ledger].sort(compareLoanMovements);
+  const owedSeries = buildLoanSide(sortedLedger, 'owed');
+  const creditSeries = buildLoanSide(sortedLedger, 'credit');
+  const givenStats = buildGiftStats(givenRows, new Map());
+  const receivedStats = buildGiftStats(receivedRows, new Map());
   return {
     donatedSats: givenStats.totalSats,
     receivedSats: receivedStats.totalSats,
     donatedOverTime: givenStats.spendOverTime,
     receivedOverTime: receivedStats.spendOverTime,
+    owedSats: owedSeries.balance,
+    creditSats: creditSeries.balance,
+    owedOverTime: owedSeries.overTime,
+    creditOverTime: creditSeries.overTime,
     fx: givenRows.length > 0 ? givenStats.fx : receivedStats.fx,
   };
+}
+
+/**
+ * Stable rank so same-timestamp grants sort before repayments.
+ *
+ * @param kind - Movement kind.
+ * @returns `0` for grant, `1` for repayment.
+ */
+function loanKindRank(kind: 'grant' | 'repayment'): number {
+  return kind === 'grant' ? 0 : 1;
+}
+
+/**
+ * Order loan ledger rows by time, then grant before repayment.
+ *
+ * @param a - Left movement.
+ * @param b - Right movement.
+ * @returns Negative when `a` comes first, zero when equal, positive when `b` first.
+ */
+function compareLoanMovements(a: LoanLedgerMovement, b: LoanLedgerMovement): number {
+  const byTime = a.at.getTime() - b.at.getTime();
+  if (byTime !== 0) {
+    return byTime;
+  }
+  if (a.kind === b.kind) {
+    return 0;
+  }
+  return loanKindRank(a.kind) - loanKindRank(b.kind);
+}
+
+/**
+ * Outstanding balance series for one loan side.
+ *
+ * A movement stores no fiat figure, so every USD/CHF/EUR/PHP field is `null`.
+ *
+ * @param ledger - Sorted grant/repayment movements.
+ * @param side - `owed` or `credit` flag on each row.
+ * @returns Final balance and movement-day SpendDay rows.
+ */
+function buildLoanSide(
+  ledger: readonly LoanLedgerMovement[],
+  side: 'owed' | 'credit',
+): { balance: number; overTime: SpendDay[] } {
+  let balance = 0;
+  const byDay = new Map<string, { net: number; count: number; balanceAfter: number }>();
+  for (const movement of ledger) {
+    const onSide = side === 'owed' ? movement.owed : movement.credit;
+    if (!onSide) {
+      continue;
+    }
+    const signed = movement.kind === 'grant' ? movement.sats : -movement.sats;
+    balance += signed;
+    const day = movement.at.toISOString().slice(0, 10);
+    const bucket = byDay.get(day) ?? { net: 0, count: 0, balanceAfter: 0 };
+    bucket.net += signed;
+    bucket.count += 1;
+    bucket.balanceAfter = balance;
+    byDay.set(day, bucket);
+  }
+  const overTime: SpendDay[] = [];
+  for (const [day, bucket] of byDay) {
+    overTime.push({
+      day,
+      giftCount: bucket.count,
+      officialCount: 0,
+      sats: bucket.net,
+      cumulativeSats: bucket.balanceAfter,
+      btc: signedBtcString(bucket.net),
+      cumulativeBtc: signedBtcString(bucket.balanceAfter),
+      usd: null,
+      cumulativeUsd: null,
+      chf: null,
+      cumulativeChf: null,
+      eur: null,
+      cumulativeEur: null,
+      php: null,
+      cumulativePhp: null,
+    });
+  }
+  return { balance, overTime };
+}
+
+/**
+ * Format a possibly negative sat amount as an eight-decimal BTC string.
+ *
+ * @param sats - Integer sats (may be negative).
+ * @returns BTC string; negatives get a `-` prefix on the absolute value.
+ */
+function signedBtcString(sats: number): string {
+  if (sats < 0) {
+    return `-${satsToBtcString(-sats)}`;
+  }
+  return satsToBtcString(sats);
 }
 
 /**
@@ -312,7 +411,7 @@ async function receivedZapsForAccount(
   const rows: GiftRow[] = [];
   const creditedByMessageId = new Map<string, number>();
   const creditedFiatByMessageId = new Map<string, FiatCents>();
-  const recipientWosUser = recipientHandle(account.lightningAddress);
+  const recipientWosUser = walletHandle(account) ?? FALLBACK_RECIPIENT;
   for (const ingest of oldestFirst) {
     if (seenReceipts.has(ingest.receiptId)) {
       continue;
@@ -337,7 +436,7 @@ async function receivedZapsForAccount(
     });
     const prev = creditedByMessageId.get(ingest.messageId) ?? 0;
     creditedByMessageId.set(ingest.messageId, prev + ingest.amountSats);
-    const prevFiat = creditedFiatByMessageId.get(ingest.messageId) ?? ZERO_FIAT;
+    const prevFiat = creditedFiatByMessageId.get(ingest.messageId) ?? null;
     creditedFiatByMessageId.set(ingest.messageId, addFiat(prevFiat, fiatCents(ingest)));
   }
   for (const message of authored) {
@@ -352,9 +451,9 @@ async function receivedZapsForAccount(
     }
     const credited = creditedByMessageId.get(message.id) ?? 0;
     if (message.sats > credited) {
-      const creditedFiat = creditedFiatByMessageId.get(message.id) ?? ZERO_FIAT;
+      const creditedFiat = creditedFiatByMessageId.get(message.id);
       const fiat =
-        credited === 0
+        creditedFiat === undefined
           ? storedGiftFiat(message)
           : fiatFromCents(subtractFiat(fiatCents(message), creditedFiat));
       rows.push({
@@ -367,6 +466,21 @@ async function receivedZapsForAccount(
     }
   }
   return rows;
+}
+
+/**
+ * Local part of the account's receiving address: its lower-case username when
+ * the in-app wallet is verified, else `null` (the account cannot receive).
+ *
+ * @param account - Account wallet and username fields.
+ * @returns The handle, or `null`.
+ */
+function walletHandle(account: Account): string | null {
+  const username = account.username?.trim().toLowerCase() ?? '';
+  if (typeof account.sparkPubkeyVerifiedAt !== 'number' || username === '') {
+    return null;
+  }
+  return username;
 }
 
 /**
@@ -429,8 +543,6 @@ interface FiatCents {
   php: number | null;
 }
 
-const ZERO_FIAT: FiatCents = { usd: 0, chf: 0, eur: 0, php: 0 };
-
 /** Parse a stored two-decimal amount. Anything else is missing. */
 function storedCents(value: string | null | undefined): number | null {
   if (value === undefined || value === null || !/^\d+\.\d{2}$/.test(value)) {
@@ -453,21 +565,42 @@ function fiatCents(row: {
   };
 }
 
-function addFiat(left: FiatCents, right: FiatCents): FiatCents {
+function addFiat(left: FiatCents | null, right: FiatCents): FiatCents {
+  if (left === null) {
+    return right;
+  }
+  const sum = (acc: number | null, next: number | null): number | null => {
+    if (acc === null) {
+      return next;
+    }
+    if (next === null) {
+      return acc;
+    }
+    return acc + next;
+  };
   return {
-    usd: left.usd === null || right.usd === null ? null : left.usd + right.usd,
-    chf: left.chf === null || right.chf === null ? null : left.chf + right.chf,
-    eur: left.eur === null || right.eur === null ? null : left.eur + right.eur,
-    php: left.php === null || right.php === null ? null : left.php + right.php,
+    usd: sum(left.usd, right.usd),
+    chf: sum(left.chf, right.chf),
+    eur: sum(left.eur, right.eur),
+    php: sum(left.php, right.php),
   };
 }
 
 function subtractFiat(left: FiatCents, right: FiatCents): FiatCents {
+  const rest = (kept: number | null, taken: number | null): number | null => {
+    if (taken === null) {
+      return kept;
+    }
+    if (kept === null) {
+      return null;
+    }
+    return kept - taken;
+  };
   return {
-    usd: left.usd === null || right.usd === null ? null : left.usd - right.usd,
-    chf: left.chf === null || right.chf === null ? null : left.chf - right.chf,
-    eur: left.eur === null || right.eur === null ? null : left.eur - right.eur,
-    php: left.php === null || right.php === null ? null : left.php - right.php,
+    usd: rest(left.usd, right.usd),
+    chf: rest(left.chf, right.chf),
+    eur: rest(left.eur, right.eur),
+    php: rest(left.php, right.php),
   };
 }
 

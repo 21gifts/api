@@ -1,12 +1,13 @@
 /**
- * Gift-day ask conversion used when a forum note freezes a currency goal.
+ * Gift-day proportion used when a repayment share is priced.
  *
- * Same float math as the app composer (`Math.round`, not BigInt spot helpers).
- * Payment snapshots stay on the gift-day pin; this module does not call
- * Coinbase or fiatFromSats.
+ * A forum ask does not freeze from this proportion. Same float math as the
+ * app composer (`Math.round`, not BigInt spot helpers). This module does not
+ * call Coinbase or fiatFromSats.
  */
 
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { canonicalDecimal } from '@/lib/decimal';
 
 /** Whole-sat ceiling for a frozen ask (`GIFT_INVOICE_MAX_MSAT / 1000`). */
 export const GOAL_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
@@ -35,28 +36,19 @@ export interface GoalRateDay {
 }
 
 /**
- * Edit a typed ask amount into the canonical stored string.
+ * Edit a BTC ask amount into the whole-sat stored string.
  *
  * Trim, then accept comma or dot with at most eight fractional digits.
- * The result is a dot decimal with no exponent, no leading zeros, and no
- * trailing fractional zeros (`00010.10` → `10.1`, `0.10` → `0.1`, `10.` → `10`).
- * String editing only — not `parseFloat`.
+ * The result drops trailing fractional zeros (`10.0` → `10`). A fiat ask
+ * does not use this function; it keeps the typed fraction.
+ * String editing only — not `parseFloat`; the trimming is
+ * {@link canonicalDecimal} with eight decimals.
  *
- * @param raw - JSON or multipart `goalAmount`.
+ * @param raw - JSON or multipart BTC `goalAmount`.
  * @returns The canonical string, or `null` when the grammar fails.
  */
 export function canonicalGoalAmount(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!/^\d+([.,]\d{0,8})?$/.test(trimmed)) {
-    return null;
-  }
-  const normalized = trimmed.replace(',', '.');
-  const dot = normalized.indexOf('.');
-  const wholeRaw = dot === -1 ? normalized : normalized.slice(0, dot);
-  const fracRaw = dot === -1 ? '' : normalized.slice(dot + 1);
-  const whole = wholeRaw.replace(/^0+(?=\d)/, '');
-  const frac = fracRaw.replace(/0+$/, '');
-  return frac === '' ? whole : `${whole}.${frac}`;
+  return canonicalDecimal(raw, 8);
 }
 
 /** A day is usable when it is present, `sats` is finite, and `sats > 0`. */

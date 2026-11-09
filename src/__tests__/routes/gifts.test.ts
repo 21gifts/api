@@ -109,14 +109,28 @@ describe('GET /gifts', () => {
     expect(body.gifts[0]?.amountSats).toBe(500);
   });
 
-  it('returns 503 when a listed gift day has no rate', async () => {
+  it('returns 200 with null fiat when a listed gift stores none', async () => {
     const res = await createApp({
       giftStore: new InMemoryGiftStore([ALICE]),
       btcUsdRates: new InMemoryBtcUsdStore(),
     }).request('/gifts?day=2026-06-01');
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.day.fx_incomplete')).toBe(true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      totalSats: number;
+      totalUsd: string | null;
+      totalChf: string | null;
+      totalEur: string | null;
+      totalPhp: string | null;
+      gifts: Array<{ amountUsd: string | null; amountChf: string | null }>;
+    };
+    expect(body.totalSats).toBe(1000);
+    expect(body.totalUsd).toBeNull();
+    expect(body.totalChf).toBeNull();
+    expect(body.totalEur).toBeNull();
+    expect(body.totalPhp).toBeNull();
+    expect(body.gifts[0]?.amountUsd).toBeNull();
+    expect(body.gifts[0]?.amountChf).toBeNull();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.day.fx_incomplete')).toBe(false);
   });
 
   it('returns 503 when the store throws', async () => {
@@ -131,7 +145,7 @@ describe('GET /gifts', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.day.failed')).toBe(true);
   });
 
-  it('converts CHF/EUR/PHP from a seeded fiat book', async () => {
+  it('leaves CHF/EUR/PHP null when the gift stores none and a fiat book is seeded', async () => {
     const res = await createApp({
       giftStore: new InMemoryGiftStore([ALICE]),
       btcUsdRates: new InMemoryBtcUsdStore({ '2026-06-01': '100000' }),
@@ -141,15 +155,15 @@ describe('GET /gifts', () => {
     }).request('/gifts?day=2026-06-01');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      totalUsd: string;
+      totalUsd: string | null;
       totalChf: string | null;
       totalEur: string | null;
       totalPhp: string | null;
     };
-    expect(body.totalUsd).toBe('1.00');
-    expect(body.totalChf).toBe('0.80');
-    expect(body.totalEur).toBe('0.90');
-    expect(body.totalPhp).toBe('50.00');
+    expect(body.totalUsd).toBeNull();
+    expect(body.totalChf).toBeNull();
+    expect(body.totalEur).toBeNull();
+    expect(body.totalPhp).toBeNull();
   });
 
   it('returns 200 with null fiat totals when fiat ensureDays throws', async () => {
@@ -165,16 +179,16 @@ describe('GET /gifts', () => {
     }).request('/gifts?day=2026-06-01');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      totalUsd: string;
+      totalUsd: string | null;
       totalChf: string | null;
       totalEur: string | null;
       totalPhp: string | null;
     };
-    expect(body.totalUsd).toBe('1.00');
+    expect(body.totalUsd).toBeNull();
     expect(body.totalChf).toBeNull();
     expect(body.totalEur).toBeNull();
     expect(body.totalPhp).toBeNull();
-    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.day.fiat_failed')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.day.fiat_failed')).toBe(false);
   });
 
   it('does not call fiat ensureDays for an empty day', async () => {

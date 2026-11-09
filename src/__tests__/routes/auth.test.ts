@@ -1,11 +1,25 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type PasskeyRenewAttemptInput } from '@/lib/auth/store';
-import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
+import { RECOVERY_SETTLE_AFTER_MS } from '@/lib/auth/recovery';
+import { CHALLENGE_TTL_MS } from '@/lib/config';
+import type { FetchFn } from '@/lib/lnurlp';
+import { LOGINS_CLOSED_CODE, LOGINS_CLOSED_ERROR, LoginGate } from '@/lib/login-gate';
+import { InMemoryLoginGateStore } from '@/lib/login-gate-store';
 import { authRoutes } from '@/routes/auth';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
+import {
+  PINNED,
+  RECOVERY_USERNAME,
+  lookupHolds,
+  lookupUserNotFound,
+  scriptedLnurlFetch,
+  seedPinnedAccount,
+  stagePendingRecovery,
+} from '@/__tests__/helpers/recovery';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 import { meRoutes } from '@/routes/me';
 
 const now = (): number => 1_000_000;
@@ -111,8 +125,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: 'Ada',
-        lightningAddress: 'guest@walletofsatoshi.com',
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey,
@@ -157,8 +169,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: 'Ada',
-        lightningAddress: 'guest@walletofsatoshi.com',
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey,
@@ -320,8 +330,6 @@ describe('auth routes', () => {
           store,
           messages: new InMemoryMessageStore(),
           now,
-          payer: new UnconfiguredInvoicePayer(),
-          fetchImpl: globalThis.fetch,
         }),
       );
       const me = await meApp.request('/me', { headers: { authorization: `Bearer ${body.token}` } });
@@ -366,8 +374,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey,
@@ -529,8 +535,6 @@ describe('auth routes', () => {
         role: 'basis',
         name: 'Ada',
         username: 'ada',
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'e'.repeat(64),
@@ -655,8 +659,6 @@ describe('auth routes', () => {
         role: 'basis',
         name: 'Ada',
         username: 'ada',
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'd'.repeat(64),
@@ -708,8 +710,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: 'Ada',
-        lightningAddress: 'guest@walletofsatoshi.com',
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey,
@@ -1013,8 +1013,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'a'.repeat(64),
@@ -1320,8 +1318,6 @@ describe('auth routes', () => {
         linkingKey: null,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: 'a'.repeat(64),
@@ -1880,6 +1876,512 @@ describe('auth routes', () => {
       const finish = await app.request('/auth/passkey/seed/finish', { method: 'POST' });
       expect(finish.status).toBe(500);
       expect(store.inserts).toEqual([]);
+    });
+  });
+});
+
+describe('social recovery routes', () => {
+  const LOOKUP = { signature: 'ab'.repeat(36), timestamp: 1_700_000_000 };
+  const T0 = 1_000_000;
+  const UNAVAILABLE = { error: 'Lightning address service is unavailable' };
+  const FINISH_BODY_ERROR =
+    'Expected a JSON body with challengeId, credential, newSparkPubkey and signature';
+  const BEGIN_BODY_ERROR = 'Expected a JSON body with sparkPubkey and lookup';
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function recoveryApp(
+    store: InMemoryAuthStore,
+    options: {
+      fetchImpl?: FetchFn;
+      lnurl?: boolean;
+      rpId?: string;
+      loginsOpen?: boolean;
+      clock?: () => number;
+    } = {},
+  ): Hono {
+    return new Hono().route(
+      '/auth',
+      authRoutes({
+        store,
+        now: options.clock ?? (() => T0),
+        allowedOrigins: [ORIGIN],
+        webAuthnRpId: options.rpId ?? 'localhost',
+        webAuthnRpName: undefined,
+        passkeyCeremony: new FakePasskeyCeremony({ challenge: PINNED.challenge }),
+        messages: new InMemoryMessageStore(),
+        ...(options.lnurl === false ? {} : { lnurlServer: LNURL_SERVER }),
+        ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
+        ...(options.loginsOpen === undefined
+          ? {}
+          : { loginGate: new LoginGate(new InMemoryLoginGateStore(), options.loginsOpen) }),
+      }),
+    );
+  }
+
+  function post(app: Hono, path: string, body?: unknown, headers: Record<string, string> = {}) {
+    return app.request(path, {
+      method: 'POST',
+      headers: {
+        origin: ORIGIN,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...headers,
+      },
+      ...(body === undefined
+        ? {}
+        : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
+    });
+  }
+
+  function beginBody(sparkPubkey: string = PINNED.oldSparkPubkey): unknown {
+    return { sparkPubkey, lookup: LOOKUP };
+  }
+
+  function finishBody(challengeId: string, overrides: Record<string, unknown> = {}): unknown {
+    return {
+      challengeId,
+      credential: { test: 'recovery', id: PINNED.credentialId },
+      newSparkPubkey: PINNED.newSparkPubkey,
+      signature: { pubkey: PINNED.oldSparkPubkey, signature: PINNED.signature },
+      ...overrides,
+    };
+  }
+
+  function recoveryFails(): Array<Record<string, unknown>> {
+    return parsedEvents(warn).filter((e) => e['event'] === 'auth.passkey.recovery.fail');
+  }
+
+  function expectNoSecretsLogged(): void {
+    const logged = JSON.stringify(parsedEvents(warn));
+    expect(logged).not.toContain(PINNED.oldSparkPubkey);
+    expect(logged).not.toContain(PINNED.newSparkPubkey);
+    expect(logged).not.toContain(PINNED.signature);
+    expect(logged).not.toContain(LOOKUP.signature);
+    expect(logged).not.toContain(String(LOOKUP.timestamp));
+  }
+
+  async function begun(
+    store: InMemoryAuthStore,
+    options: Parameters<typeof recoveryApp>[1] = {},
+  ): Promise<{ app: Hono; challengeId: string }> {
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    const app = recoveryApp(store, { fetchImpl, ...options });
+    const res = await post(app, '/auth/passkey/recovery/begin', beginBody());
+    expect(res.status).toBe(200);
+    return { app, challengeId: ((await res.json()) as { challengeId: string }).challengeId };
+  }
+
+  describe('POST /auth/passkey/recovery/begin', () => {
+    it('answers 200 with the challenge, options, account id, and username', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      const { fetchImpl, calls } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+      const res = await post(
+        recoveryApp(store, { fetchImpl }),
+        '/auth/passkey/recovery/begin',
+        beginBody(` ${PINNED.oldSparkPubkey.toUpperCase()} `),
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(Object.keys(body).sort()).toEqual(['accountId', 'challengeId', 'options', 'username']);
+      expect(body['accountId']).toBe(PINNED.accountId);
+      expect(body['username']).toBe(RECOVERY_USERNAME);
+      expect((body['options'] as { challenge: string }).challenge).toBe(PINNED.challenge);
+      expect(calls).toEqual([
+        expect.objectContaining({
+          route: 'recover',
+          pubkey: PINNED.oldSparkPubkey,
+          body: JSON.stringify(LOOKUP),
+        }),
+      ]);
+      expectNoSecretsLogged();
+    });
+
+    it('answers 500 when WebAuthn is not configured', async () => {
+      const res = await post(
+        recoveryApp(new InMemoryAuthStore(), { rpId: '' }),
+        '/auth/passkey/recovery/begin',
+        beginBody(),
+      );
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'Server auth is not configured' });
+      expect(recoveryFails()).toEqual([
+        expect.objectContaining({ stage: 'begin', error: 'Server auth is not configured' }),
+      ]);
+    });
+
+    it('answers 503 when the LNURL server is off', async () => {
+      const res = await post(
+        recoveryApp(new InMemoryAuthStore(), { lnurl: false }),
+        '/auth/passkey/recovery/begin',
+        beginBody(),
+      );
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual(UNAVAILABLE);
+    });
+
+    it('answers 400 for invalid JSON and for a body that is not the begin shape', async () => {
+      const app = recoveryApp(new InMemoryAuthStore());
+      const invalid = await post(app, '/auth/passkey/recovery/begin', '{');
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ error: 'Begin body is not valid JSON' });
+      for (const body of [
+        undefined,
+        [],
+        { sparkPubkey: PINNED.oldSparkPubkey },
+        { ...(beginBody() as object), extra: 1 },
+        { sparkPubkey: 'nope', lookup: LOOKUP },
+        { sparkPubkey: PINNED.oldSparkPubkey, lookup: { ...LOOKUP, signature: 'AB'.repeat(36) } },
+        { sparkPubkey: PINNED.oldSparkPubkey, lookup: { ...LOOKUP, signature: 'ab' } },
+        { sparkPubkey: PINNED.oldSparkPubkey, lookup: { ...LOOKUP, timestamp: -1 } },
+        { sparkPubkey: PINNED.oldSparkPubkey, lookup: { ...LOOKUP, timestamp: 1.5 } },
+        { sparkPubkey: PINNED.oldSparkPubkey, lookup: { ...LOOKUP, extra: true } },
+      ]) {
+        const res = await post(app, '/auth/passkey/recovery/begin', body);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: BEGIN_BODY_ERROR });
+      }
+      expect(recoveryFails()[0]).toEqual(
+        expect.objectContaining({ stage: 'begin', json: 'invalid', bodyBytes: 1 }),
+      );
+      expect(recoveryFails()[1]).toEqual(
+        expect.objectContaining({ stage: 'begin', json: 'absent', error: BEGIN_BODY_ERROR }),
+      );
+    });
+
+    it('maps each refusal', async () => {
+      const store = new InMemoryAuthStore();
+      const holds = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+      const notFound = await post(
+        recoveryApp(store, { fetchImpl: holds.fetchImpl }),
+        '/auth/passkey/recovery/begin',
+        beginBody(),
+      );
+      expect(notFound.status).toBe(404);
+      expect(await notFound.json()).toEqual({ error: 'Not found' });
+
+      await seedPinnedAccount(store);
+      const operator = await post(
+        recoveryApp(store, {
+          fetchImpl: scriptedLnurlFetch({ recover: () => lookupHolds('bob') }).fetchImpl,
+        }),
+        '/auth/passkey/recovery/begin',
+        beginBody(),
+      );
+      expect(operator.status).toBe(409);
+      expect(await operator.json()).toEqual({
+        error: 'This account needs an operator to recover it',
+        code: 'recovery_operator',
+      });
+
+      const unverified = await post(
+        recoveryApp(store, {
+          fetchImpl: scriptedLnurlFetch({ recover: () => new Response('', { status: 400 }) })
+            .fetchImpl,
+        }),
+        '/auth/passkey/recovery/begin',
+        beginBody(),
+      );
+      expect(unverified.status).toBe(503);
+      expect(await unverified.json()).toEqual(UNAVAILABLE);
+
+      const closed = await post(
+        recoveryApp(store, { fetchImpl: holds.fetchImpl, loginsOpen: false }),
+        '/auth/passkey/recovery/begin',
+        beginBody(),
+      );
+      expect(closed.status).toBe(503);
+      expect(await closed.json()).toEqual({ error: LOGINS_CLOSED_ERROR, code: LOGINS_CLOSED_CODE });
+
+      await store.setSessionRefused(PINNED.accountId, true);
+      const refused = await post(
+        recoveryApp(store, { fetchImpl: holds.fetchImpl }),
+        '/auth/passkey/recovery/begin',
+        beginBody(),
+      );
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+
+      expect(recoveryFails().map((e) => e['error'])).toEqual([
+        'not_found',
+        'operator',
+        'unavailable',
+        'logins_closed',
+        'wrong_account',
+      ]);
+      expect(recoveryFails().filter((e) => e['error'] === 'operator')).toEqual([
+        expect.objectContaining({ accountId: PINNED.accountId }),
+      ]);
+      expectNoSecretsLogged();
+    });
+
+    it('answers 409 recovery_done once a forwarded recovery commits through the lookup', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      await stagePendingRecovery(store, { createdAt: T0, forwardedAt: T0 });
+      const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupUserNotFound() });
+      const app = recoveryApp(store, {
+        fetchImpl,
+        clock: () => T0 + RECOVERY_SETTLE_AFTER_MS + 1,
+      });
+      const res = await post(app, '/auth/passkey/recovery/begin', beginBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'This account was already recovered. Sign in with the new passkey.',
+        code: 'recovery_done',
+      });
+    });
+
+    it('answers 503 and logs the error kind when the store throws', async () => {
+      const store = new InMemoryAuthStore();
+      vi.spyOn(store, 'getAccountByVerifiedSparkPubkey').mockRejectedValue(
+        Object.assign(new Error('db detail'), { code: 'ECONNRESET' }),
+      );
+      const res = await post(recoveryApp(store), '/auth/passkey/recovery/begin', beginBody());
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual(UNAVAILABLE);
+      expect(recoveryFails()).toEqual([
+        expect.objectContaining({ stage: 'begin', name: 'Error', code: 'ECONNRESET' }),
+      ]);
+      expect(JSON.stringify(recoveryFails())).not.toContain('db detail');
+    });
+
+    it('answers 429 after 30 begins a minute from one address', async () => {
+      const store = new InMemoryAuthStore();
+      const app = recoveryApp(store, { fetchImpl: scriptedLnurlFetch({}).fetchImpl });
+      const headers = { 'cf-connecting-ip': '198.51.100.7' };
+      for (let i = 0; i < 30; i += 1) {
+        expect((await post(app, '/auth/passkey/recovery/begin', beginBody(), headers)).status).toBe(
+          404,
+        );
+      }
+      const limited = await post(app, '/auth/passkey/recovery/begin', beginBody(), headers);
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toEqual({ error: 'Too many requests' });
+    });
+  });
+
+  describe('POST /auth/passkey/recovery/finish', () => {
+    it('answers 200 pending without a session', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      const { app, challengeId } = await begun(store);
+      const res = await post(app, '/auth/passkey/recovery/finish', finishBody(challengeId));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: 'pending' });
+      expect((await store.getPendingRecovery(PINNED.accountId, T0))?.newSparkPubkey).toBe(
+        PINNED.newSparkPubkey,
+      );
+      expect(await store.listSessions()).toEqual([]);
+      const repeat = await post(app, '/auth/passkey/recovery/finish', finishBody(challengeId));
+      expect(repeat.status).toBe(200);
+      expectNoSecretsLogged();
+    });
+
+    it('normalizes both wallet keys', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      const { app, challengeId } = await begun(store);
+      const res = await post(
+        app,
+        '/auth/passkey/recovery/finish',
+        finishBody(challengeId, {
+          newSparkPubkey: ` ${PINNED.newSparkPubkey.toUpperCase()}`,
+          signature: { pubkey: PINNED.oldSparkPubkey.toUpperCase(), signature: PINNED.signature },
+        }),
+      );
+      expect(res.status).toBe(200);
+    });
+
+    it('answers 500 when WebAuthn is not configured', async () => {
+      const res = await post(
+        recoveryApp(new InMemoryAuthStore(), { rpId: '' }),
+        '/auth/passkey/recovery/finish',
+      );
+      expect(res.status).toBe(500);
+      expect(recoveryFails()).toEqual([
+        expect.objectContaining({ stage: 'finish', error: 'Server auth is not configured' }),
+      ]);
+    });
+
+    it('answers 400 for an absent body, invalid JSON, or the wrong shape', async () => {
+      const app = recoveryApp(new InMemoryAuthStore(), { lnurl: false });
+      const absent = await post(app, '/auth/passkey/recovery/finish');
+      expect(absent.status).toBe(400);
+      expect(await absent.json()).toEqual({ error: FINISH_BODY_ERROR });
+      const invalid = await post(app, '/auth/passkey/recovery/finish', 'nope');
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ error: 'Finish body is not valid JSON' });
+      const id = 'a'.repeat(64);
+      const withoutCredential = { ...(finishBody(id) as Record<string, unknown>) };
+      delete withoutCredential['credential'];
+      for (const body of [
+        withoutCredential,
+        { ...(finishBody(id) as object), extra: 1 },
+        finishBody(id, { newSparkPubkey: 'nope' }),
+        finishBody(id, { signature: { pubkey: 'nope', signature: PINNED.signature } }),
+        finishBody(id, { signature: { pubkey: PINNED.oldSparkPubkey } }),
+        finishBody(id, {
+          signature: { pubkey: PINNED.oldSparkPubkey, signature: PINNED.signature, x: 1 },
+        }),
+        finishBody(id, { challengeId: 7 }),
+      ]) {
+        const res = await post(app, '/auth/passkey/recovery/finish', body);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: FINISH_BODY_ERROR });
+      }
+      const shapes = recoveryFails();
+      expect(shapes[0]).toEqual(expect.objectContaining({ stage: 'finish', json: 'absent' }));
+      expect(shapes[1]).toEqual(expect.objectContaining({ json: 'invalid' }));
+      expect(shapes[2]).toEqual(
+        expect.objectContaining({ json: 'parsed', hasCredential: false, challengeId: id }),
+      );
+      expectNoSecretsLogged();
+    });
+
+    it('answers 400 for ceremony refusals', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      const { app, challengeId } = await begun(store);
+      const noOrigin = await app.request('/auth/passkey/recovery/finish', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(finishBody(challengeId)),
+      });
+      expect(noOrigin.status).toBe(400);
+      expect(await noOrigin.json()).toEqual({ error: 'Invalid origin' });
+      const unknown = await post(app, '/auth/passkey/recovery/finish', finishBody('b'.repeat(64)));
+      expect(unknown.status).toBe(400);
+      expect(await unknown.json()).toEqual({ error: 'Unknown or expired challenge' });
+      const badPasskey = await post(
+        app,
+        '/auth/passkey/recovery/finish',
+        finishBody(challengeId, { credential: { test: 'nope' } }),
+      );
+      expect(badPasskey.status).toBe(400);
+      expect(await badPasskey.json()).toEqual({ error: 'Invalid passkey' });
+      const badSignature = await post(
+        app,
+        '/auth/passkey/recovery/finish',
+        finishBody(challengeId, {
+          signature: { pubkey: PINNED.oldSparkPubkey, signature: PINNED.signatureHighS },
+        }),
+      );
+      expect(badSignature.status).toBe(400);
+      expect(await badSignature.json()).toEqual({ error: 'Invalid recovery signature' });
+      expect(recoveryFails().at(-1)).toEqual(
+        expect.objectContaining({
+          stage: 'finish',
+          error: 'Invalid recovery signature',
+          challengeId,
+          accountId: PINNED.accountId,
+        }),
+      );
+      expectNoSecretsLogged();
+    });
+
+    it('answers 400 Challenge expired after the challenge window', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      let clock = T0;
+      const { app, challengeId } = await begun(store, { clock: () => clock });
+      clock = T0 + CHALLENGE_TTL_MS + 1;
+      const res = await post(app, '/auth/passkey/recovery/finish', finishBody(challengeId));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Challenge expired' });
+    });
+
+    it('answers 409 for a key in use and a pending recovery', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      const { app, challengeId } = await begun(store);
+      const sameKey = await post(
+        app,
+        '/auth/passkey/recovery/finish',
+        finishBody(challengeId, { newSparkPubkey: PINNED.oldSparkPubkey }),
+      );
+      expect(sameKey.status).toBe(409);
+      expect(await sameKey.json()).toEqual({ error: 'Wallet key is already in use' });
+      vi.spyOn(store, 'storePendingRecovery').mockResolvedValueOnce('pending');
+      const pending = await post(app, '/auth/passkey/recovery/finish', finishBody(challengeId));
+      expect(pending.status).toBe(409);
+      expect(await pending.json()).toEqual({ error: 'A recovery is already pending' });
+    });
+
+    it('answers 403 for a session-refused account and 503 while logins are closed', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      const { challengeId } = await begun(store);
+      const closed = await post(
+        recoveryApp(store, { loginsOpen: false }),
+        '/auth/passkey/recovery/finish',
+        finishBody(challengeId),
+      );
+      expect(closed.status).toBe(503);
+      expect(await closed.json()).toEqual({ error: LOGINS_CLOSED_ERROR, code: LOGINS_CLOSED_CODE });
+      await store.setSessionRefused(PINNED.accountId, true);
+      const refused = await post(
+        recoveryApp(store),
+        '/auth/passkey/recovery/finish',
+        finishBody(challengeId),
+      );
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
+    });
+
+    it('answers 503 when the store throws, including a unique violation', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      const { app, challengeId } = await begun(store);
+      vi.spyOn(store, 'storePendingRecovery').mockRejectedValue(
+        Object.assign(new Error('duplicate key value'), { code: '23505' }),
+      );
+      const res = await post(app, '/auth/passkey/recovery/finish', finishBody(challengeId));
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual(UNAVAILABLE);
+      expect(recoveryFails().at(-1)).toEqual(
+        expect.objectContaining({ stage: 'finish', code: '23505', challengeId }),
+      );
+    });
+
+    it('answers 429 after 30 finishes a minute from one address', async () => {
+      const app = recoveryApp(new InMemoryAuthStore());
+      const headers = { 'cf-connecting-ip': '198.51.100.8' };
+      for (let i = 0; i < 30; i += 1) {
+        expect((await post(app, '/auth/passkey/recovery/finish', undefined, headers)).status).toBe(
+          400,
+        );
+      }
+      expect((await post(app, '/auth/passkey/recovery/finish', undefined, headers)).status).toBe(
+        429,
+      );
+    });
+  });
+
+  describe('POST /auth/passkey/authenticate/finish with a pending recovery passkey', () => {
+    it('answers 409 recovery_pending', async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      await stagePendingRecovery(store, { createdAt: T0 });
+      const app = recoveryApp(store);
+      const begin = await post(app, '/auth/passkey/authenticate/begin');
+      const { challengeId } = (await begin.json()) as { challengeId: string };
+      const res = await post(app, '/auth/passkey/authenticate/finish', {
+        challengeId,
+        credential: { test: 'ok', id: PINNED.credentialId },
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        error: 'Recovery is not finished',
+        code: 'recovery_pending',
+      });
     });
   });
 });
