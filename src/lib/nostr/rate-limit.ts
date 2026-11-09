@@ -1,33 +1,76 @@
+import { roleAtLeast } from '@/lib/auth/roles';
+import { staffTagOf, type Account } from '@/lib/auth/store';
+
 /**
- * In-process per-account rate limits for forum posts, note invoices, and hearts.
+ * In-process per-account rate limits for forum posts, replies, note invoices,
+ * and hearts.
  *
- * Mixed windows: sliding 10s / 1h; calendar UTC day for posts. Idle keys
- * (no hits for 48h) are evicted so the map stays bounded. Single-process
- * only — two containers during deploy can double the cap.
+ * Mixed windows: sliding 1s / 1h; calendar UTC day for posts and replies.
+ * Idle keys (no hits for 48h) are evicted so the map stays bounded.
+ * Single-process only — two containers during deploy can double the cap.
  */
 
-/** Sliding 10-second window for posts (cap 1). */
-export const POST_BURST_WINDOW_MS = 10_000;
+/** Sliding 1-second burst window for top-level notes and replies (cap 1). */
+export const POST_BURST_WINDOW_MS = 1_000;
 
-/** Sliding 1-hour window for posts (cap 6). */
+/** Sliding 1-hour window for top-level notes and replies. */
 export const POST_HOUR_WINDOW_MS = 60 * 60 * 1000;
 
-/** Max posts per sliding 10s. */
+/** Max top-level notes per sliding second. */
 export const POST_BURST_CAP = 1;
 
-/** Max posts per sliding hour. */
+/** Max top-level notes per sliding hour. */
 export const POST_HOUR_CAP = 6;
 
-/** Max posts per UTC calendar day. */
+/** Max top-level notes per UTC calendar day. */
 export const POST_DAY_CAP = 20;
 
-/** Sliding 10-second window for invoices (cap 1). */
-export const INVOICE_BURST_WINDOW_MS = 10_000;
+/** Max replies per sliding second. */
+export const REPLY_BURST_CAP = 1;
+
+/** Max replies per sliding hour. */
+export const REPLY_HOUR_CAP = 30;
+
+/** Max replies per UTC calendar day. */
+export const REPLY_DAY_CAP = 100;
+
+/** Per-account caps of one forum note limiter. */
+export interface PostRateCaps {
+  /** Max notes per sliding second. */
+  burstCap: number;
+  /** Max notes per sliding hour. */
+  hourCap: number;
+  /** Max notes per UTC calendar day. */
+  dayCap: number;
+}
+
+/** Caps for top-level notes (1/s, 6/h, 20/UTC-day). */
+export const TOP_LEVEL_POST_CAPS: PostRateCaps = {
+  burstCap: POST_BURST_CAP,
+  hourCap: POST_HOUR_CAP,
+  dayCap: POST_DAY_CAP,
+};
+
+/** Caps for replies, a budget of their own (1/s, 30/h, 100/UTC-day). */
+export const REPLY_POST_CAPS: PostRateCaps = {
+  burstCap: REPLY_BURST_CAP,
+  hourCap: REPLY_HOUR_CAP,
+  dayCap: REPLY_DAY_CAP,
+};
+
+/**
+ * Which window refused an attempt: `burst` (the 1-second window, or a heart's
+ * per-note cooldown), `hour` (sliding hour), or `day` (UTC calendar day).
+ */
+export type RateRefusal = 'burst' | 'hour' | 'day';
+
+/** Sliding 1-second burst window for invoices (cap 1). */
+export const INVOICE_BURST_WINDOW_MS = 1_000;
 
 /** Sliding 1-hour window for invoices (cap 20). */
 export const INVOICE_HOUR_WINDOW_MS = 60 * 60 * 1000;
 
-/** Max invoices per sliding 10s. */
+/** Max invoices per sliding second. */
 export const INVOICE_BURST_CAP = 1;
 
 /** Max invoices per sliding hour. */
@@ -35,7 +78,7 @@ export const INVOICE_HOUR_CAP = 20;
 
 /** Per-account invoice caps. */
 export interface InvoiceRateCaps {
-  /** Max invoices per sliding 10s. */
+  /** Max invoices per sliding second. */
   burstCap: number;
   /** Max invoices per sliding hour. */
   hourCap: number;
@@ -47,8 +90,8 @@ const TEST_INVOICE_CAP_MAX = 100_000;
 /** Bind hosts that may honour `TEST_INVOICE_*_CAP`. */
 const LOOPBACK_BIND_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
-/** Per-note cooldown for hearts: one heart per account and note per 10 s. */
-export const HEART_NOTE_COOLDOWN_MS = 10_000;
+/** Per-note cooldown for hearts: one heart per account and note per 1 s. */
+export const HEART_NOTE_COOLDOWN_MS = 1_000;
 
 /** Sliding 1-hour window for hearts (cap 60). */
 export const HEART_HOUR_WINDOW_MS = 60 * 60 * 1000;
@@ -65,7 +108,7 @@ interface AccountHits {
   bursts: number[];
   /** Sliding-hour timestamps (ms). */
   hours: number[];
-  /** UTC day key `YYYY-MM-DD` → count (posts only). */
+  /** UTC day key `YYYY-MM-DD` → count (posts and replies only). */
   days: Map<string, number>;
   /** Last successful check time (for idle eviction). */
   lastHitAt: number;
@@ -82,10 +125,35 @@ export function utcDayKey(nowMs: number): string {
 }
 
 /**
- * In-process rate limiter for forum posts (1/10s, 6/h, 20/UTC-day).
+ * Whether an account skips the forum rate limits: top-level notes, replies,
+ * note invoices, and hearts. True for a founder and for the staff tag
+ * `software_developer`. Callers check this before the limiter, so an exempt
+ * attempt is never recorded. IP-based limiters and the conversation,
+ * repayment, and habit invoice limiters do not use it.
+ *
+ * @param account - Live role and stored staff tag.
+ * @returns `true` when no forum limiter applies to the account.
+ */
+export function forumRateLimitExempt(account: Pick<Account, 'role' | 'staffTag'>): boolean {
+  return roleAtLeast(account.role, 'founder') || staffTagOf(account.staffTag) !== null;
+}
+
+/**
+ * In-process rate limiter for forum notes. One instance is one budget:
+ * top-level notes use {@link TOP_LEVEL_POST_CAPS} (1/s, 6/h, 20/UTC-day),
+ * replies a separate instance with {@link REPLY_POST_CAPS} (1/s, 30/h,
+ * 100/UTC-day).
  */
 export class PostRateLimiter {
   readonly #byAccount = new Map<string, AccountHits>();
+  readonly #caps: PostRateCaps;
+
+  /**
+   * @param caps - Per-account caps (default {@link TOP_LEVEL_POST_CAPS}).
+   */
+  constructor(caps: PostRateCaps = TOP_LEVEL_POST_CAPS) {
+    this.#caps = caps;
+  }
 
   /**
    * Check and record a post attempt.
@@ -95,18 +163,32 @@ export class PostRateLimiter {
    * @returns `true` when allowed; `false` when over limit (not recorded).
    */
   allow(accountId: string, nowMs: number): boolean {
+    return this.check(accountId, nowMs) === null;
+  }
+
+  /**
+   * Check and record a post attempt, naming the window that refused it.
+   *
+   * @param accountId - Account id.
+   * @param nowMs - Current time (epoch ms).
+   * @returns `null` when allowed (recorded); otherwise the refusing window
+   *   (not recorded). The burst window wins over the hour, the hour over the day.
+   */
+  check(accountId: string, nowMs: number): RateRefusal | null {
     this.#evictIdle(nowMs);
     const hits = this.#hits(accountId);
     const day = utcDayKey(nowMs);
     const bursts = hits.bursts.filter((t) => nowMs - t < POST_BURST_WINDOW_MS);
     const hours = hits.hours.filter((t) => nowMs - t < POST_HOUR_WINDOW_MS);
     const dayCount = hits.days.get(day) ?? 0;
-    if (
-      bursts.length >= POST_BURST_CAP ||
-      hours.length >= POST_HOUR_CAP ||
-      dayCount >= POST_DAY_CAP
-    ) {
-      return false;
+    if (bursts.length >= this.#caps.burstCap) {
+      return 'burst';
+    }
+    if (hours.length >= this.#caps.hourCap) {
+      return 'hour';
+    }
+    if (dayCount >= this.#caps.dayCap) {
+      return 'day';
     }
     bursts.push(nowMs);
     hours.push(nowMs);
@@ -114,7 +196,7 @@ export class PostRateLimiter {
     hits.hours = hours;
     hits.days.set(day, dayCount + 1);
     hits.lastHitAt = nowMs;
-    return true;
+    return null;
   }
 
   #hits(accountId: string): AccountHits {
@@ -142,7 +224,7 @@ export class PostRateLimiter {
 }
 
 /**
- * In-process rate limiter for note invoices (1/10s, 20/h by default).
+ * In-process rate limiter for note invoices (1/s, 20/h by default).
  */
 export class InvoiceRateLimiter {
   readonly #byAccount = new Map<string, AccountHits>();
@@ -164,19 +246,34 @@ export class InvoiceRateLimiter {
    * @returns `true` when allowed; `false` when over limit (not recorded).
    */
   allow(accountId: string, nowMs: number): boolean {
+    return this.check(accountId, nowMs) === null;
+  }
+
+  /**
+   * Check and record an invoice attempt, naming the window that refused it.
+   *
+   * @param accountId - Account id.
+   * @param nowMs - Current time (epoch ms).
+   * @returns `null` when allowed (recorded); otherwise `burst` or `hour`
+   *   (not recorded). The burst window wins over the hour.
+   */
+  check(accountId: string, nowMs: number): RateRefusal | null {
     this.#evictIdle(nowMs);
     const hits = this.#hits(accountId);
     const bursts = hits.bursts.filter((t) => nowMs - t < INVOICE_BURST_WINDOW_MS);
     const hours = hits.hours.filter((t) => nowMs - t < INVOICE_HOUR_WINDOW_MS);
-    if (bursts.length >= this.#caps.burstCap || hours.length >= this.#caps.hourCap) {
-      return false;
+    if (bursts.length >= this.#caps.burstCap) {
+      return 'burst';
+    }
+    if (hours.length >= this.#caps.hourCap) {
+      return 'hour';
     }
     bursts.push(nowMs);
     hours.push(nowMs);
     hits.bursts = bursts;
     hits.hours = hours;
     hits.lastHitAt = nowMs;
-    return true;
+    return null;
   }
 
   #hits(accountId: string): AccountHits {
@@ -279,7 +376,7 @@ interface HeartHits {
 }
 
 /**
- * In-process rate limiter for 1-sat hearts (one per note per 10 s, 60/h per
+ * In-process rate limiter for 1-sat hearts (one per note per 1 s, 60/h per
  * account). Separate from {@link InvoiceRateLimiter}: a heart neither checks
  * nor consumes the gift budget.
  */
@@ -295,6 +392,19 @@ export class HeartRateLimiter {
    * @returns `true` when allowed; `false` when over limit (not recorded).
    */
   allow(accountId: string, noteId: string, nowMs: number): boolean {
+    return this.check(accountId, noteId, nowMs) === null;
+  }
+
+  /**
+   * Check and record a heart attempt, naming the window that refused it.
+   *
+   * @param accountId - Payer account id.
+   * @param noteId - Note the heart is for.
+   * @param nowMs - Current time (epoch ms).
+   * @returns `null` when allowed (recorded); `burst` for the per-note cooldown
+   *   or `hour` for the hourly cap (not recorded). The cooldown wins.
+   */
+  check(accountId: string, noteId: string, nowMs: number): RateRefusal | null {
     this.#evictIdle(nowMs);
     const hits = this.#hits(accountId);
     for (const [id, at] of hits.lastByNote) {
@@ -304,13 +414,16 @@ export class HeartRateLimiter {
     }
     const hours = hits.hours.filter((t) => nowMs - t < HEART_HOUR_WINDOW_MS);
     hits.hours = hours;
-    if (hits.lastByNote.has(noteId) || hours.length >= HEART_HOUR_CAP) {
-      return false;
+    if (hits.lastByNote.has(noteId)) {
+      return 'burst';
+    }
+    if (hours.length >= HEART_HOUR_CAP) {
+      return 'hour';
     }
     hits.lastByNote.set(noteId, nowMs);
     hours.push(nowMs);
     hits.lastHitAt = nowMs;
-    return true;
+    return null;
   }
 
   #hits(accountId: string): HeartHits {

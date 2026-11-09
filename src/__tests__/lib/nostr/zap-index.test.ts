@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type MockInstance } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
 import { repaymentDescription } from '@/lib/credit-repayment';
@@ -37,7 +37,7 @@ import {
   manualReceiptIdForPaymentHash,
   settleInvoiceManually,
 } from '@/lib/nostr/zap-index';
-import { PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { PostRateLimiter, REPLY_POST_CAPS } from '@/lib/nostr/rate-limit';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import type { LnurlServerConfig } from '@/lib/config';
@@ -13607,4 +13607,211 @@ describe('wallet-backed receipt ingest', () => {
       { dayIndex: 0, recipientAccountId: giver, dueSats: 21, paidAt: new Date(5) },
     ]);
   });
+});
+
+describe('platform-note compose fee picks the note limiter', () => {
+  const PARENT = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
+  const NESTED = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2';
+
+  /**
+   * Fee note owned by the platform, a top-level parent with a nested reply,
+   * and a payer `manual-payer` with a verified wallet and the given patch.
+   */
+  async function composeSetup(
+    payerPatch: Partial<Account> = {},
+  ): Promise<{ store: InMemoryMessageStore; auth: InMemoryAuthStore }> {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const feeId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    await store.create({
+      id: PARENT,
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await store.create({
+      id: NESTED,
+      accountId: 'manual-author',
+      name: 'Ada',
+      text: 'nested',
+      createdAt: new Date('2026-08-28T00:00:01.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: PARENT,
+    });
+    const platform = await auth.getAccount('manual-author');
+    await auth.updateAccount({ ...platform!, isPlatform: true, profileMessageId: feeId });
+    await auth.createAccount({
+      id: 'manual-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      walletRequired: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-payer'),
+      createdAt: 2,
+      rulesAgreedAt: 1,
+    });
+    await verifyWallet(auth, 'manual-payer', 'ada');
+    const payer = await auth.getAccount('manual-payer');
+    await auth.updateAccount({ ...payer!, ...payerPatch });
+    return { store, auth };
+  }
+
+  async function settleCompose(args: {
+    store: InMemoryMessageStore;
+    auth: InMemoryAuthStore;
+    content: string;
+    seed: string;
+    postLimiter: PostRateLimiter;
+    replyLimiter: PostRateLimiter;
+  }): Promise<void> {
+    const preimage = args.seed.repeat(32);
+    const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+    await seedManualInvoice(args.store, paymentHash, {
+      conversationId: null,
+      zapRequest: { content: args.content },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await settleInvoiceManually({
+      store: args.store,
+      auth: args.auth,
+      now: () => 1_800,
+      paymentHash,
+      note: 'compose fee',
+      preimage,
+      postLimiter: args.postLimiter,
+      replyLimiter: args.replyLimiter,
+    });
+    warn.mockRestore();
+    expect(result.ok).toBe(true);
+  }
+
+  function limiters(): {
+    postLimiter: PostRateLimiter;
+    replyLimiter: PostRateLimiter;
+    post: MockInstance<PostRateLimiter['allow']>;
+    reply: MockInstance<PostRateLimiter['allow']>;
+  } {
+    const postLimiter = new PostRateLimiter();
+    const replyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
+    return {
+      postLimiter,
+      replyLimiter,
+      post: vi.spyOn(postLimiter, 'allow'),
+      reply: vi.spyOn(replyLimiter, 'allow'),
+    };
+  }
+
+  it('counts a top-level compose against the top-level limiter only', async () => {
+    const { store, auth } = await composeSetup();
+    const l = limiters();
+    await settleCompose({ store, auth, content: 'A new post', seed: 'a1', ...l });
+    expect(l.post).toHaveBeenCalledTimes(1);
+    expect(l.reply).not.toHaveBeenCalled();
+    expect((await store.listLatest(20)).find((row) => row.text === 'A new post')?.parentId).toBe(
+      null,
+    );
+  });
+
+  it('counts a reply compose against the reply limiter only', async () => {
+    const { store, auth } = await composeSetup();
+    const l = limiters();
+    await settleCompose({ store, auth, content: `inReplyTo:${PARENT}\nThanks`, seed: 'a2', ...l });
+    expect(l.reply).toHaveBeenCalledTimes(1);
+    expect(l.post).not.toHaveBeenCalled();
+    const own = (await store.listReplies(PARENT)).filter((row) => row.accountId === 'manual-payer');
+    expect(own.map((row) => row.text)).toEqual(['Thanks']);
+  });
+
+  it('counts a compose whose target is reset to top-level against the top-level limiter', async () => {
+    const { store, auth } = await composeSetup();
+    const l = limiters();
+    await settleCompose({
+      store,
+      auth,
+      content: `inReplyTo:${NESTED}\nUnnested`,
+      seed: 'a3',
+      ...l,
+    });
+    expect(l.post).toHaveBeenCalledTimes(1);
+    expect(l.reply).not.toHaveBeenCalled();
+    expect((await store.listLatest(20)).find((row) => row.text === 'Unnested')?.parentId).toBe(
+      null,
+    );
+  });
+
+  it('still creates a reply when the top-level budget is spent', async () => {
+    const { store, auth } = await composeSetup();
+    const l = limiters();
+    expect(l.postLimiter.allow('manual-payer', 1_800)).toBe(true);
+    await settleCompose({ store, auth, content: `inReplyTo:${PARENT}\nStill`, seed: 'a4', ...l });
+    const own = (await store.listReplies(PARENT)).filter((row) => row.accountId === 'manual-payer');
+    expect(own.map((row) => row.text)).toEqual(['Still']);
+  });
+
+  it('dequeues a reply compose the reply limiter refuses', async () => {
+    const { store, auth } = await composeSetup();
+    const l = limiters();
+    expect(l.replyLimiter.allow('manual-payer', 1_800)).toBe(true);
+    await settleCompose({ store, auth, content: `inReplyTo:${PARENT}\nRefused`, seed: 'a5', ...l });
+    const own = (await store.listReplies(PARENT)).filter((row) => row.accountId === 'manual-payer');
+    expect(own).toEqual([]);
+  });
+
+  it.each([
+    ['founder', 'top-level', { role: 'founder' as const }],
+    ['founder', 'reply', { role: 'founder' as const }],
+    [
+      'software_developer',
+      'top-level',
+      { role: 'basis' as const, staffTag: 'software_developer' as const },
+    ],
+    [
+      'software_developer',
+      'reply',
+      { role: 'basis' as const, staffTag: 'software_developer' as const },
+    ],
+  ])('lets a %s %s compose past a refusing limiter without asking it', async (_l, kind, patch) => {
+    const { store, auth } = await composeSetup(patch);
+    const l = limiters();
+    l.post.mockReturnValue(false);
+    l.reply.mockReturnValue(false);
+    const content = kind === 'reply' ? `inReplyTo:${PARENT}\nExempt` : 'Exempt';
+    await settleCompose({ store, auth, content, seed: 'b1', ...l });
+    expect(l.post).not.toHaveBeenCalled();
+    expect(l.reply).not.toHaveBeenCalled();
+    const created = [...(await store.listLatest(20)), ...(await store.listReplies(PARENT))].find(
+      (row) => row.text === 'Exempt' && row.accountId === 'manual-payer',
+    );
+    expect(created?.parentId ?? null).toBe(kind === 'reply' ? PARENT : null);
+    l.post.mockRestore();
+    l.reply.mockRestore();
+    // Nothing was recorded for the exempt payer.
+    expect(l.postLimiter.check('manual-payer', 1_800)).toBeNull();
+    expect(l.replyLimiter.check('manual-payer', 1_800)).toBeNull();
+  });
+
+  it.each(['basis', 'verified', 'moderator', 'initiator'] as const)(
+    'still limits a compose by a %s payer without the staff tag',
+    async (role) => {
+      const { store, auth } = await composeSetup({ role, staffTag: null });
+      const l = limiters();
+      expect(l.postLimiter.allow('manual-payer', 1_800)).toBe(true);
+      await settleCompose({ store, auth, content: 'Limited', seed: 'c1', ...l });
+      expect(l.post).toHaveBeenCalledTimes(2);
+      const texts = (await store.listLatest(20)).map((row) => row.text);
+      expect(texts).not.toContain('Limited');
+    },
+  );
 });

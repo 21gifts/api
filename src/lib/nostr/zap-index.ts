@@ -33,7 +33,7 @@ import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { notifyForumPost, notifyForumReply, notifyHeart, notifyZap } from '@/lib/notification';
-import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { forumRateLimitExempt, type PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { NotificationStore } from '@/lib/notification-store';
 import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
@@ -534,7 +534,7 @@ function zapIngestRow(args: {
  * as a compose post/reply (`insertGiftReply`).
  *
  * @param args - Stores, clock, payment hash, operator note, optional preimage,
- *   and optional `spendPing`, `postLimiter`, `fundingStore`,
+ *   and optional `spendPing`, `postLimiter`, `replyLimiter`, `fundingStore`,
  *   `recoveryShareRequiredFrom`, `conversations`, and `lnurlServer` (the spend ping's receiving address) for platform-note compose.
  * @returns The credited receipt details and resume status, or the first
  *   validation/lookup failure.
@@ -553,6 +553,7 @@ export async function settleInvoiceManually(args: {
   notificationStore?: NotificationStore;
   spendPing?: SpendPing;
   postLimiter?: PostRateLimiter;
+  replyLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
   recoveryShareRequiredFrom?: string | null;
   conversations?: ConversationStore;
@@ -782,6 +783,7 @@ export async function settleInvoiceManually(args: {
           : { notificationStore: args.notificationStore }),
         ...(args.spendPing === undefined ? {} : { spendPing: args.spendPing }),
         ...(args.postLimiter === undefined ? {} : { postLimiter: args.postLimiter }),
+        ...(args.replyLimiter === undefined ? {} : { replyLimiter: args.replyLimiter }),
         ...(args.fundingStore === undefined ? {} : { fundingStore: args.fundingStore }),
         ...(args.recoveryShareRequiredFrom === undefined
           ? {}
@@ -998,7 +1000,7 @@ export async function indexZapReceipt(args: {
  *   optional `eventIds` / `since` for hot mode; optional `pushStore`,
  *   `notificationStore`, and `conversations` (PN invoices append here;
  *   omitted → `rejected`/`conversation`); optional `spendPing`, `postLimiter`,
- *   `fundingStore`, and `recoveryShareRequiredFrom` for platform-note compose (`spendPing` only when
+ *   `replyLimiter`, `fundingStore`, and `recoveryShareRequiredFrom` for platform-note compose (`spendPing` only when
  *   `eligibleToday`, same gate as `POST /messages`); optional `lnurlServer`
  *   for wallet-backed recipients.
  * @returns Resolves when the ingest pass finishes.
@@ -1022,8 +1024,10 @@ export async function indexOpenZapReceipts(args: {
   conversations?: ConversationStore;
   /** Optional spend ping after a platform-note compose creates a top-level post. */
   spendPing?: SpendPing;
-  /** Optional post limiter; platform-note compose counts against the same caps as `POST /messages`. */
+  /** Optional top-level note limiter; a top-level platform-note compose counts against the same caps as `POST /messages`. */
   postLimiter?: PostRateLimiter;
+  /** Optional reply limiter; a reply platform-note compose counts against the same caps as a `POST /messages` reply. */
+  replyLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
   recoveryShareRequiredFrom?: string | null;
@@ -1152,6 +1156,7 @@ async function queryAndIngestZapReceipts(
     conversations?: ConversationStore;
     spendPing?: SpendPing;
     postLimiter?: PostRateLimiter;
+    replyLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
     recoveryShareRequiredFrom?: string | null;
     fiatRates?: FiatRateBook;
@@ -1264,6 +1269,7 @@ async function ingestOneReceipt(
     conversations?: ConversationStore;
     spendPing?: SpendPing;
     postLimiter?: PostRateLimiter;
+    replyLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
     recoveryShareRequiredFrom?: string | null;
     /** Accepted by callers. An unpinned zap does not read the rate book. */
@@ -1977,6 +1983,7 @@ interface BaseGiftReplyDeps {
   conversations?: ConversationStore;
   spendPing?: SpendPing;
   postLimiter?: PostRateLimiter;
+  replyLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
   recoveryShareRequiredFrom?: string | null;
   lnurlServer?: LnurlServerConfig;
@@ -2400,8 +2407,10 @@ async function insertExternalGiftReply(
  * `tryEnsureGiftReply` / `retryGiftReplies` log `nostr.zap.gift_reply.failed`.
  * Gift-replies on a member note do not call `notifyForumReply`; zap ingest
  * already called `notifyZap` after indexing. A member/invoice zap on the
- * platform profile note is a compose fee: `forum.post` + `postLimiter` gate
- * the create, then `notifyForumPost` / `notifyForumReply` (not `notifyZap`)
+ * platform profile note is a compose fee: `forum.post` + the note limiter
+ * gate the create (`postLimiter` when the resulting note is top-level,
+ * including a reply target reset to top-level; `replyLimiter` when it is a
+ * reply; neither for a {@link forumRateLimitExempt} payer), then `notifyForumPost` / `notifyForumReply` (not `notifyZap`)
  * and a top-level `spendPing` only when `eligibleToday` (same gate as
  * `POST /messages`; otherwise `spend.ping.skipped` / `not_eligible`). When
  * the parent is itself a reply, sets `payerAccountId`
@@ -2456,7 +2465,12 @@ async function insertGiftReply(
       await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
       return;
     }
-    if (args.postLimiter !== undefined && !args.postLimiter.allow(args.payer.id, args.now())) {
+    const limiter = parentId === null ? args.postLimiter : args.replyLimiter;
+    if (
+      limiter !== undefined &&
+      !forumRateLimitExempt(args.payer) &&
+      !limiter.allow(args.payer.id, args.now())
+    ) {
       logEvent('messages.rate_limited', { accountId: args.payer.id });
       await args.store.updateZapReceiptGift(args.receiptEventId, { payerAccountId: null });
       return;

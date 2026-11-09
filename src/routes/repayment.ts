@@ -50,7 +50,7 @@ export interface RepaymentDeps {
   sparkInvoices?: SparkInvoiceStore;
   /**
    * Test-only override of the process-wide invoice limiter. Omitted → the
-   * module limiter (1/10s, 20/h).
+   * module limiter (1/s, 20/h).
    */
   repaymentLimiter?: InvoiceRateLimiter;
 }

@@ -10,7 +10,7 @@ import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
 import { InMemoryPushStore, PostgresPushStore } from '@/lib/push-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
-import { PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { PostRateLimiter, REPLY_POST_CAPS } from '@/lib/nostr/rate-limit';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
 import type { ShopPayments } from '@/lib/shop-payment';
@@ -89,6 +89,12 @@ describe('createApp', () => {
 
   it('accepts an injected postLimiter', async () => {
     const app = createApp({ postLimiter: new PostRateLimiter() });
+    const res = await app.request('/healthz');
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts an injected replyLimiter', async () => {
+    const app = createApp({ replyLimiter: new PostRateLimiter(REPLY_POST_CAPS) });
     const res = await app.request('/healthz');
     expect(res.status).toBe(200);
   });
@@ -1444,7 +1450,7 @@ describe('LNURL server wiring', () => {
     const { app, token, noteId } = await giftInvoiceApp({ burstCap: 5, hourCap: 20 });
     expect(await postGiftInvoice(app, token, noteId)).toBe(200);
     expect(await postGiftInvoice(app, token, noteId)).toBe(200);
-    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=20/h');
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/1s hour=20/h');
   });
 
   it('rate-limits repayment invoices at the default caps', async () => {
@@ -1464,7 +1470,7 @@ describe('LNURL server wiring', () => {
     const { app, token, noteIds } = await repayInvoiceApp({ burstCap: 5, hourCap: 20 });
     expect((await postRepaymentInvoice(app, token, noteIds[0])).status).toBe(200);
     expect((await postRepaymentInvoice(app, token, noteIds[1])).status).toBe(200);
-    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=20/h');
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/1s hour=20/h');
   });
 
   it('resolves test invoice caps from env on a loopback boot', async () => {
@@ -1477,7 +1483,7 @@ describe('LNURL server wiring', () => {
       },
     });
     expect((await app.request('/healthz')).status).toBe(200);
-    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/10s hour=40/h');
+    expect(warn).toHaveBeenCalledWith('test invoice rate caps burst=5/1s hour=40/h');
   });
 
   it('throws at boot when test invoice caps are malformed on a loopback boot', () => {
