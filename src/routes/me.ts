@@ -21,6 +21,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { errorLogFields, logEvent } from '@/lib/log';
 import {
   MESSAGE_MAX_LENGTH,
+  POSITIVE_SATS_BODY_ERROR,
   decodeForumPhoto,
   forumPhotoResponse,
   normalizeForumText,
@@ -296,9 +297,6 @@ const amountUnitBody = z.object({
 const heartSatsBody = z.object({
   sats: z.number().int().min(1).max(HEART_SATS_MAX),
 });
-
-/** 400 copy for a missing or invalid heart-amount body. */
-const HEART_SATS_ERROR = `Expected a JSON body with a whole "sats" number from 1 to ${HEART_SATS_MAX}`;
 
 /** Body schema for setting the owner UI language. */
 const localeBody = z.object({
@@ -1064,7 +1062,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       }
       const parsed = heartSatsBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
-        return c.json({ error: HEART_SATS_ERROR }, 400);
+        return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
       const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */

@@ -4162,7 +4162,7 @@ Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 Invalid body → **Response** `400`:
 
 ```json
-{ "error": "Expected a JSON body with a whole \"sats\" number from 1 to 10000000" }
+{ "error": "Expected a JSON body with a positive \"sats\" integer" }
 ```
 
 Success → **Response** `200` with the updated account (same owner JSON as

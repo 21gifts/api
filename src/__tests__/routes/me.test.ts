@@ -1318,7 +1318,7 @@ describe('POST /me/amount-unit', () => {
 
 describe('POST /me/heart-sats', () => {
   const invalid = [0, -1, 1.5, '21', HEART_SATS_MAX + 1];
-  const error = `Expected a JSON body with a whole "sats" number from 1 to ${HEART_SATS_MAX}`;
+  const error = 'Expected a JSON body with a positive "sats" integer';
 
   it('returns 401 without a valid session', async () => {
     const res = await mount(new InMemoryAuthStore()).request('/me/heart-sats', {

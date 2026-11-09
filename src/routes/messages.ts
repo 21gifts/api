@@ -41,6 +41,7 @@ import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
   MESSAGE_PHOTO_MAX_BYTES,
+  POSITIVE_SATS_BODY_ERROR,
   decodeForumPhoto,
   decodeMessageFeedCursor,
   encodeMessageFeedCursor,
@@ -3511,7 +3512,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
+        return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
       const amountMsat = parsed.data.sats * 1000;
       const invoiceText = normalizeForumText(parsed.data.text ?? '');
@@ -3558,7 +3559,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
+        return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
       const row = await deps.store.getById(messageIdParam);
       if (row === undefined || row.deletedAt !== null) {
