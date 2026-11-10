@@ -2857,6 +2857,7 @@ describe('PostgresWalletStore', () => {
       await store.upsertPayments([
         row,
         { ...row, accountId: receiver, direction: 'in' },
+        { ...row, accountId: senderB, direction: 'in' },
         { ...row, paymentId: `${prefix}-ambiguous` },
         { ...row, paymentId: `${prefix}-ambiguous`, accountId: senderB },
         { ...row, paymentId: `${prefix}-ambiguous`, accountId: receiver, direction: 'in' },
@@ -2875,6 +2876,7 @@ describe('PostgresWalletStore', () => {
         { ...row, paymentId: `${prefix}-self-only`, accountId: receiver, direction: 'in' },
         { ...row, paymentId: `${prefix}-no-own` },
         { ...row, paymentId: `${prefix}-out`, accountId: receiver, counterpartyAccountId: senderA },
+        { ...row, paymentId: `${prefix}-out`, accountId: senderB },
         { ...row, paymentId: `${prefix}-null`, accountId: receiver },
         {
           ...row,
