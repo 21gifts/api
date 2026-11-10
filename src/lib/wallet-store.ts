@@ -233,6 +233,8 @@ export class InMemoryWalletStore implements WalletStore {
   readonly #accountKind: (accountId: string) => Promise<WalletAccountKind>;
 
   /**
+   * Create an empty in-memory wallet store.
+   *
    * @param accountKind - Names the account on the resolved side of a paired transfer (default:
    *   every account is a `member`); `createApp` passes `walletAccountKind`.
    */

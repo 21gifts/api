@@ -4414,8 +4414,9 @@ apps reported it, the two rows share `payment_hash` (Lightning) or `invoice`
 (Spark invoice). A total over all members must keep one row per payment, for
 example by deduplicating on `payment_hash` or `invoice`; summing every row counts
 such a payment twice. An internal Spark transfer has the same `payment_id` on both
-rows; pairing fills a side reported without details, so both rows then carry a
-category and name each other, and both still count when summing.
+rows; pairing fills a side reported without details with a category and the
+other account as counterparty, leaves the other row as stored, and both rows still
+count when summing.
 
 ### `GET /debug/accounts`
 
