@@ -1187,11 +1187,11 @@ local sections and then re-reads:
    and returns `recorded`, `this_charge`, `other_payment`, or `not_open`:
    `other_payment` stops as a failed mint with the alert, `not_open` stops
    quietly, and the other two go on. When `recordInvoice` fails with an
-   error, `pos.invoice.record_failed` is logged and nothing is written, so
+   error, `pos.invoice.record_failed` is logged and that claim writes nothing, so
    a fetch answers today's pinned Lightning request. A payer creation never
    records against a charge; it reads `findChargeForPayment({ paymentHash })`
-   instead: a hit stops as a failed mint with the alert, and an error writes
-   nothing and answers order 9.
+   instead: a hit stops as a failed mint with the alert. An error makes no write of its own,
+   skips the insert, and answers order 9.
 5. For a charge, gas prices and Orchestra quotes share a 3 s external-call
    deadline that starts when the quote step starts and also covers its
    stored-spot read. Read `eth_gasPrice` per chain and request one Orchestra
@@ -1215,13 +1215,13 @@ local sections and then re-reads:
    and the check runs in BigInt with no rounding,
    `amountIn × 10^16 × 100 ≤ sats × rate × 10^decimals × 105`. Without a
    fresh rate the check fails. A quote whose chain's gas price
-   could not be read is not kept either. A failed check logs
+   could not be read is not kept either; offers on other chains are unaffected. A failed check logs
    `shop.offer.rejected` with the check name. A quote that failed logs it
    too: `check` `body` for an HTTP 200 whose body does not parse, `http`
    for a request sent without an HTTP 200 answer (another 2xx included),
    and `budget` when no request could be sent.
-7. For a charge, none kept → stop and start the 60 s no-pair wait. For a
-   pending charge, the pay link stays pinned and
+7. For a charge, none kept after the offer and gas-price checks → stop and start the 60 s no-pair
+   wait. For a pending charge, the pay link stays pinned and
    `POST /pay/:username/payment` answers order 4. Order 7 applies during the
    wait only when no charge is pending. For a payer, none kept is not an
    error: the payment is already open Lightning-only, and the offers fill
@@ -1249,7 +1249,10 @@ local sections and then re-reads:
    transaction back, logs `shop.alert.duplicate_invoice`, deletes the
    charge invoice row only when step 4 of this attempt inserted it, and
    ends as a failed mint, so nothing else is written and an `open` payment
-   stays `open`. Otherwise an `open` payment of the account ends (`window`
+   stays `open`. This no-write result is limited to the insert transaction. The re-check in step 1
+   has already committed, so a lapsed payment ended with `window` and overdue payer charges expired
+   there stay changed even when a later hash check fails. Otherwise an `open` payment of the
+   account ends (`window`
    when its window passed, else `superseded` for a charge or `replaced` for
    a payer), then the payment is inserted with its first quote and offers.
    A payer's first quote is Lightning-only: its `transferAmounts` has only
@@ -1289,11 +1292,11 @@ lock inserts a quote with the passing offers only when the payment is still
 `open`, at least 45 s remain before `window_ends_at`, and the payment's
 newest quote is still the Lightning-only first quote. A Lightning-only row
 written by a fetch after the run read its starting quote is not newer. The
-fill inserts no quote when the route list fails, there is no candidate pair,
-there is no fresh spot, there is no quote budget, or no offer passes. No
-candidate pair, no fresh spot, no quote budget, and no passing offer start the
-60 s no-pair wait. A failed route list does not start the wait. The fill does
-not increment `replacements`.
+fill inserts no quote when the route list fails, there is no candidate pair, or no offer remains
+after the offer and gas-price checks. An unreadable gas price drops only offers on that chain;
+other retained offers are written. No candidate pair, no fresh spot, no quote budget, and no
+retained offer start the 60 s no-pair wait. A failed route list does not start the wait. The fill
+does not increment `replacements`.
 
 **States.** `shop_payment.status` is `open`, `accepted`, `paid`, or
 `ended`; every change is one conditional update. `open` → `ended` when the
@@ -2116,16 +2119,19 @@ answer of order 2: the page cannot tell whether a payment opened, so it
 repeats the request as after any other 5xx.
 The offers fill runs after the payer's insert, in the background. The
 route does not wait for it. A failed route list, no candidate pair, no
-fresh spot, no quote budget, and no passing offer leave the answer at
-200: the payment is already open Lightning-only. A `findChargeForPayment`
+fresh spot, no quote budget, and no offer retained after offer and gas-price checks leave the
+answer at 200: the payment is already open Lightning-only. An unreadable gas price drops only
+offers on that chain; another retained offer is still written. A `findChargeForPayment`
 error, the insert at 16 s or later, and a disconnected client still
 answer order 9.
 The api-wide counter is asked first and the account counter only when it
 allows. Orders 7 and 9 do not depend on the client address.
 
-An `open` payer-opened payment of the account is always replaced: it ends
-with `end_reason` `replaced` and the new payment is created. Its window
-ends five minutes after creation.
+The re-check commits before mint. It ends a lapsed `open` payment with `window` and expires
+overdue payer charges even if a later held-hash check returns order 8. Inside the insert
+transaction, a held hash leaves a still-open payment open. With no hash conflict, a still-open
+payer payment ends with `replaced` and the new payment is created. Its window ends five minutes
+after creation.
 
 **Response** `200`:
 

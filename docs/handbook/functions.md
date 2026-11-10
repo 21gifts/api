@@ -4801,17 +4801,18 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   For a charge, `posStore.recordInvoice` runs in its own claim transaction, outside any shop
   transaction. `other_payment` is `mint_failed` with the alert, `not_open` is `skipped` without
   it, and `recorded` or `this_charge` continues. An error logs `pos.invoice.record_failed` with
-  `accountId` and `paymentId`, writes nothing, and is `skipped`, so a fetch answers today's pinned
-  request. For a payer, `posStore.findChargeForPayment({ paymentHash })` returns `mint_failed`
-  with the alert on a hit. An error returns `unavailable`, writes nothing, and makes the payer
-  route answer order 9.
+  `accountId` and `paymentId`; its claim writes nothing and is `skipped`, so a fetch answers
+  today's pinned request. For a payer, `posStore.findChargeForPayment({ paymentHash })` returns
+  `mint_failed` with the alert on a hit. An error makes no write of its own, skips the insert,
+  returns `unavailable`, and makes the payer route answer order 9.
 
   For a charge, the stored spot comes from `fxSpot.latest()`, never a fetch. Without a USD rate
   whose `asOf` is younger than `SHOP_SPOT_MAX_AGE_MS` (10 minutes), no gas price or quote is
   requested. Each pair allowed by `quoteBudgetLeft()` logs `shop.offer.rejected` with `check`
   `price`. Otherwise gas prices and Orchestra quotes run in parallel under a 3 s external-call
   deadline for as many pairs as `quoteBudgetLeft()` allows. A quote is kept only when
-  `checkOffer` passes with a still-fresh rate and its chain's gas price is readable. `minFee` is
+  `checkOffer` passes with a still-fresh rate and its chain's gas price is readable. An unreadable
+  gas price drops only offers on that chain; offers on other chains remain. `minFee` is
   `recommendedMinFee`. A failed quote logs `shop.offer.rejected` with `check` `body` for an HTTP
   200 body that does not parse, `http` for a request sent without an HTTP 200, or `budget` when no
   request could be sent. No retained offer returns `unavailable` and starts the 60 s wait.
@@ -4829,6 +4830,10 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   the insert before anything is ended or inserted. It returns `mint_failed` and logs
   `shop.alert.duplicate_invoice`. A payer then checks `pendingCharge` and returns
   `pending_charge` before any payment is ended.
+
+  These no-write results cover only the insert transaction. The earlier `#recheckCreation`
+  transaction has already committed: a lapsed payment ended with `window` and overdue payer charges
+  expired there stay changed if a later hash check returns `mint_failed`.
 
   Before every `endPayment`, `hashHolder` reads the payment holding the BOLT11 hash. This charge's
   own payment is used. Any other holder throws `HashHeldError` before anything is ended, so the
@@ -4852,8 +4857,10 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   route-list, candidate-pair, spot, gas-price, quote, and offer checks outside the creation lock.
   Only its short re-read and quote commit take that lock. A failed route list leaves the open
   Lightning-only payment and 200 response unchanged and starts no wait. No candidate pair or no
-  retained offer also leaves them unchanged, but starts the 60 s no-pair wait. Any other fill
-  failure leaves the payment and response unchanged.
+  offer retained after `checkOffer` and gas-price filtering also leaves them unchanged, but starts
+  the 60 s no-pair wait. One unreadable gas price drops only offers on that chain; other retained
+  offers are written and prevent the wait. Any other fill failure leaves the payment and response
+  unchanged.
 
   `startForCharge(account, charge, requestArrivedMs)` runs the charge creation in the background
   through `createForCharge`, so it registers the charge's in-flight creation and a scan right

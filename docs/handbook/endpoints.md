@@ -145,21 +145,22 @@
   `{ payment, expiresAt }` without awaiting any Orchestra call, while the background offers fill
   may already have started. The fill's route list has a 1 s external-call budget. Gas prices and
   quotes have a 3 s external-call deadline that starts when the fill's quote step starts and
-  covers its stored-spot read. It keeps quotes only when they pass `checkOffer` and the chain's
-  gas price is readable. It sets `minFee` to `recommendedMinFee`. It inserts a second quote with
-  the retained offers only when the payment is still `open`, at least 45 s remain in its window,
-  and its newest quote is still that first quote or a Lightning-only row written after the fill
-  read it. The fill's external calls run outside the creation lock. The lock covers only its
-  short re-read and commit, which can wait longer than those budgets. The fill does not increment
-  `replacements`. It inserts no quote when the route list fails, there is no candidate pair,
-  there is no fresh spot, there is no quote budget, no offer passes, or a passing quote has no
-  readable gas price. All those outcomes except a failed route list start the 60 s no-pair wait.
-  An `open` payer-opened payment of the account ends with `replaced` (`window` when its window
-  passed); when the BOLT11's payment hash is already held by another shop payment or recorded
-  against a charge, creation stops before anything is written, so that `open` payment stays
-  `open`. 200 `{ payment, expiresAt }` where `expiresAt` is the window end, five
-  minutes after creation. The route group is always mounted; a payment opens only when
-  `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve.
+  covers its stored-spot read. It keeps quotes only when they pass `checkOffer`, then drops each
+  offer whose chain's gas price is unreadable. It sets `minFee` to `recommendedMinFee`. It inserts
+  a second quote with every retained offer only when the payment is still `open`, at least 45 s
+  remain in its window, and its newest quote is still that first quote or a Lightning-only row
+  written after the fill read it. The fill's external calls run outside the creation lock. The
+  lock covers only its short re-read and commit, which can wait longer than those budgets. The
+  fill does not increment `replacements`. A failed route list inserts no quote and starts no wait.
+  No candidate pair, or no offer left after `checkOffer` and gas-price filtering, inserts no quote
+  and starts the 60 s no-pair wait. No fresh spot or quote budget leaves no offer. An unreadable
+  gas price drops only offers on that chain; other retained offers are written and prevent the
+  wait. The creation re-check commits before mint: it ends a lapsed `open` payment with `window`
+  and expires overdue payer charges. Those changes remain when a later hash check stops creation. In
+  the insert transaction, `hashHolder` and `chargeIdForInvoice` write nothing and do not end a
+  still-open payment when the hash is held. 200 `{ payment, expiresAt }` where `expiresAt` is the
+  window end, five minutes after creation. The route group is always mounted; a payment opens
+  only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve.
 - **Errors:** The route and creation checks begin in this order: 404 `{ error: 'Not found' }` for
   an invalid username, unknown account, or no receiving address (no verified wallet, or the
   LNURL server is not configured);
@@ -180,8 +181,9 @@
   `hashHolder` checks again in the insert transaction. `findChargeForPayment` before the insert
   and `chargeIdForInvoice` in the insert transaction check for the charge invoice. These failures
   log `pay.invoice_failed`; a held hash also logs `shop.alert.duplicate_invoice`. A
-  `findChargeForPayment` error answers 503 `stablecoin_unavailable` and writes nothing. Inside the
-  insert transaction, after its locks, the checks are: first a request at least 16 s old or a
+  `findChargeForPayment` error answers 503 `stablecoin_unavailable`. That check writes nothing,
+  and the insert is skipped. Inside the insert transaction, after its locks, the checks are: first
+  a request at least 16 s old or a
   disconnected client (order 9, 503, nothing written), then another charge's
   `pos_charge_invoice` row (502), then a pending charge (409 `payment_open`). A failed route list,
   no candidate pair, no fresh spot, no quote budget, and no retained offer leave that 200 in

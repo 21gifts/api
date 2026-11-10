@@ -612,11 +612,11 @@ minute and the api up to 120. No money depends on it, and a shared
 counter would add a database write before every Orchestra call. They do not depend on the client address, because the web app's
 proxy forwards none.
 
-An `open` payer-opened payment is always replaced: it ends with
-`end_reason` `replaced`, and the new payment is created. A stranger's
-amount therefore stays on the sticker only until the next payer enters
-an amount. A payer whose payment was replaced while sending still gets
-their transfer confirmed: the proof moves the `ended` payment to
+The creation re-check commits before mint. It ends a lapsed `open` payment with `window` and
+expires overdue payer charges even if a later held-hash check returns order 8. Inside the insert
+transaction, a held hash does not end a still-open payment. With no hash conflict, that payment
+ends with `replaced` and the new payment is created. A payer whose payment was replaced while
+sending still gets their transfer confirmed: the proof moves the `ended` payment to
 `accepted`, and the Tether settlement poll sees a different
 `quote.payment` and reports settled.
 
@@ -642,8 +642,8 @@ One procedure creates a shop payment, for a charge or for a payer:
    the same account waits only for those short local sections and then
    re-reads.
    `translate-note.ts` keeps in-flight work in a map the same way.
-2. Re-check the state under the lock: end a lapsed `open` payment of the
-   account with `end_reason` `window`, stop when the payment to create
+2. Re-check the state under the lock: expire overdue charges for a payer, end a lapsed `open`
+   payment of the account with `end_reason` `window`, stop when the payment to create
    already exists, stop for a charge that is no longer pending, and for a
    payer stop with order 4 when a charge is now pending.
 3. For a charge, read the route list and select the candidate pairs
@@ -672,12 +672,15 @@ One procedure creates a shop payment, for a charge or for a payer:
    `shop.alert.duplicate_invoice`. On `recorded` or `this_charge` it goes
    on. On `not_open` the charge was no longer open at the issue time, and the procedure ends as step 8 ends for such a charge, without that
    alert. When `recordInvoice` fails with an error, the api logs
-   `pos.invoice.record_failed`, as the invoice routes do, and writes nothing; a fetch then answers today's pinned Lightning request.
+   `pos.invoice.record_failed`, as the invoice routes do, and that call writes nothing; a fetch
+   then answers today's pinned Lightning request.
    A payer creation never records against a charge, also not against one
    that appeared after step 2. It reads instead whether the hash is
    already recorded against a charge, with
    `posStore.findChargeForPayment({ paymentHash })`; a hit stops it as a
-   failed mint (order 8) with `shop.alert.duplicate_invoice`, so that one settlement can never confirm both a charge and a payer's payment. When `findChargeForPayment` fails with an error, the payer creation writes nothing and answers order 9. These reads
+   failed mint (order 8) with `shop.alert.duplicate_invoice`, so that one settlement can never
+   confirm both a charge and a payer's payment. When `findChargeForPayment` fails, that check
+   writes nothing, the insert is skipped, and the payer creation answers order 9. These reads
    run before the insert; the [Payment hash claim](#payment-hash-claim)
    closes the moment between them and the insert, across both
    containers.
@@ -688,9 +691,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    that deadline has time left. Pairs beyond what the quote share of the
    Orchestra budget allows are skipped, in the order of
    [Methods](#methods).
-6. For a charge, keep each quote that commits and passes
-   [Offer checks](#offer-checks).
-7. For a charge, when none is kept, write nothing, and the account's next
+6. For a charge, keep each quote that commits, passes [Offer checks](#offer-checks), and has a
+   readable gas price for its chain. An unreadable gas price drops only offers on that chain.
+7. For a charge, when none is kept after those checks, write nothing, and the account's next
    creation in this container waits 60 s; the other container of a deploy
    keeps its own wait, so during a deploy an account can see two creations
    in 60 s. While the charge stays pending, the pay link stays pinned and
@@ -717,7 +720,8 @@ One procedure creates a shop payment, for a charge or for a payer:
      payment is ended with `end_reason` `replaced` before the insert,
      after the hash claim found no
      other payment holding the hash, so a `payment_hash` conflict ends
-     nothing.
+     nothing in this insert transaction. The re-check in step 2 has already committed, so its
+     expired payer charges and a lapsed payment ended with `window` stay changed.
 
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
@@ -788,11 +792,11 @@ inserts a quote with the passing offers only when the payment is still
 newest quote is still the Lightning-only first quote. A Lightning-only
 row written by a fetch after the fill read its starting quote still lets
 the fill insert its offers quote, when the other conditions still hold.
-The fill inserts no quote when the route list fails, there is no candidate
-pair, there is no fresh spot, there is no quote budget, or no offer passes.
-No candidate pair, no fresh spot, no quote budget, and no passing offer
-start the account's 60 s no-pair wait. A failed route list does not start
-the wait.
+The fill inserts no quote when the route list fails, there is no candidate pair, or no offer
+remains after the offer and gas-price checks. An unreadable gas price drops only offers on that
+chain; other retained offers are written. No candidate pair, no fresh spot, no quote budget, and
+no retained offer start the account's 60 s no-pair wait. A failed route list does not start the
+wait.
 The fill does not increment `replacements`; it is not a replacement.
 
 ### Payment hash claim
@@ -966,6 +970,9 @@ An Orchestra quote becomes an offer only when every check holds:
 A failed check means the pair is not offered. The api logs
 `shop.offer.rejected` with the name of the check. A shared deposit
 address also logs `shop.alert.shared_deposit_address`.
+
+After these checks, the offer also needs a readable gas price for its chain to set `minFee`.
+Failure drops only offers on that chain. Offers on other chains are still retained.
 
 ## Callback
 
