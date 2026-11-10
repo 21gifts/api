@@ -5156,6 +5156,7 @@ describe('indexOpenZapReceipts', () => {
       recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
         base.recordInvoiceAttempt(...args),
       heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
+      heartSenders: (id: string) => base.heartSenders(id),
       listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
       listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
         base.listRecentOkInvoiceAttempts(since, limit),
@@ -5444,6 +5445,7 @@ describe('indexOpenZapReceipts', () => {
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
           base.recordInvoiceAttempt(...args),
         heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
+        heartSenders: (id: string) => base.heartSenders(id),
         listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
         listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
           base.listRecentOkInvoiceAttempts(since, limit),
@@ -6283,6 +6285,7 @@ describe('indexOpenZapReceipts', () => {
         recordInvoiceAttempt: (...args: Parameters<InMemoryMessageStore['recordInvoiceAttempt']>) =>
           base.recordInvoiceAttempt(...args),
         heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
+        heartSenders: (id: string) => base.heartSenders(id),
         listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
         listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
           base.listRecentOkInvoiceAttempts(since, limit),
@@ -9022,7 +9025,7 @@ describe('indexOpenZapReceipts', () => {
       messageId: parentId,
       payerAccountId: 'payer-heart',
       authorAccountId: 'acc-heart-parent',
-      amountSats: 1,
+      amountSats: 21,
       lightningAddress: null,
       zapRequest: { content: 'heart' },
       result: 'ok',
@@ -9048,7 +9051,7 @@ describe('indexOpenZapReceipts', () => {
         ],
       },
     ];
-    mockedDecode.mockReturnValue({ paymentHash: 'dd'.repeat(32), amountMsat: 1000 });
+    mockedDecode.mockReturnValue({ paymentHash: 'dd'.repeat(32), amountMsat: 21_000 });
     await ingest({
       store,
       auth,
@@ -9059,12 +9062,12 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
       notificationStore: notifications,
     });
-    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect((await store.getById(parentId))?.sats).toBe(21);
     expect(await store.listReplies(parentId)).toHaveLength(0);
     const forAuthor = await notifications.listByRecipient('acc-heart-parent', 10);
     expect(forAuthor).toHaveLength(1);
     expect(forAuthor[0]?.type).toBe('heart');
-    expect(forAuthor[0]?.text).toBe('1');
+    expect(forAuthor[0]?.text).toBe('21');
     expect(forAuthor[0]?.actorAccountId).toBe('payer-heart');
     expect(await notifications.listByRecipient('bystander-heart', 10)).toEqual([]);
     expect(await notifications.listByRecipient('payer-heart', 10)).toEqual([]);
@@ -9593,7 +9596,7 @@ describe('indexOpenZapReceipts', () => {
     const paymentHash = 'c2'.repeat(32);
     await seedManualInvoice(store, paymentHash, {
       heart: true,
-      amountSats: 1,
+      amountSats: 21,
       zapRequest: { content: 'heart' },
     });
     const notifications = new InMemoryNotificationStore();
@@ -9617,13 +9620,13 @@ describe('indexOpenZapReceipts', () => {
       fiatRates: new InMemoryFiatStore(),
     });
     expect(result.ok).toBe(true);
-    expect((await store.getById('manual-message'))?.sats).toBe(1);
+    expect((await store.getById('manual-message'))?.sats).toBe(21);
     expect(await store.listReplies('manual-message')).toHaveLength(0);
     const forAuthor = await notifications.listByRecipient('manual-author', 10);
     expect(forAuthor).toHaveLength(1);
     expect(forAuthor[0]?.type).toBe('heart');
     expect(forAuthor[0]?.name).toBe('Ada');
-    expect(forAuthor[0]?.text).toBe('1');
+    expect(forAuthor[0]?.text).toBe('21');
     expect(await notifications.listByRecipient('manual-payer', 10)).toEqual([]);
     const claimed = await pushStore.claimPending(10, 1, 60_000);
     expect(claimed).toHaveLength(1);

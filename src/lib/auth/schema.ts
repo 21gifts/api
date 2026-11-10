@@ -1,3 +1,5 @@
+import { HEART_SATS_MAX } from '@/lib/config';
+
 /**
  * Idempotent DDL for the auth tables. Applied once at process boot when
  * `DATABASE_URL` is set. `CREATE TABLE IF NOT EXISTS` is safe to re-run;
@@ -5,7 +7,7 @@
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
  * `wallet_backup_seen_at`, `staff_tag`, `spark_pubkey`, `spark_pubkey_verified_at`,
- * `notify_hearts`, `wallet_intro_seen`, `spark_address`, and `passkey_challenge.requested_name` on databases created before those
+ * `notify_hearts`, `heart_sats`, `wallet_intro_seen`, `spark_address`, and `passkey_challenge.requested_name` on databases created before those
  * columns existed. `spark_address` values are filled by `backfillSparkAddresses`, not here.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows), and the social recovery tables
@@ -190,6 +192,10 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS account_spark_pubkey_verified_uidx
   ON account (spark_pubkey) WHERE spark_pubkey_verified_at IS NOT NULL`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS heart_sats integer NOT NULL DEFAULT 1`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_heart_sats_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_heart_sats_chk
+  CHECK (heart_sats >= 1 AND heart_sats <= ${HEART_SATS_MAX})`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_address text`,
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_address_chk`,
   `ALTER TABLE account ADD CONSTRAINT account_spark_address_chk

@@ -1516,6 +1516,7 @@ describe('notifyHeart', () => {
       receiptId: ZAP_RECEIPT_ID,
       nowMs: NOW.getTime(),
       payerAccountId: 'payer',
+      amountSats: 21,
       payerName: 'Bob',
     });
     const listed = await notifications.listByRecipient('author', 10);
@@ -1523,7 +1524,7 @@ describe('notifyHeart', () => {
     expect(listed[0]?.type).toBe('heart');
     expect(listed[0]?.parentId).toBe('note-1');
     expect(listed[0]?.replyId).toBe(ZAP_REPLY_ID);
-    expect(listed[0]?.text).toBe('1');
+    expect(listed[0]?.text).toBe('21');
     expect(listed[0]?.actorAccountId).toBe('payer');
     expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
     const claimed = await pushStore.claimPending(10, NOW.getTime(), 60_000);

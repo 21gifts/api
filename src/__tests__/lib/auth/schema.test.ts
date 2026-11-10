@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
+import { HEART_SATS_MAX } from '@/lib/config';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 
 describe('AUTH_SCHEMA_SQL', () => {
@@ -147,14 +148,18 @@ describe('AUTH_SCHEMA_SQL', () => {
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true',
     );
     const tail = AUTH_SCHEMA_SQL.slice(notifyHeartsAt + 1);
-    expect(tail).toHaveLength(12);
-    expect(tail.slice(0, 3)).toEqual([
+    expect(tail).toHaveLength(15);
+    expect(tail.slice(0, 6)).toEqual([
+      'ALTER TABLE account ADD COLUMN IF NOT EXISTS heart_sats integer NOT NULL DEFAULT 1',
+      'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_heart_sats_chk',
+      `ALTER TABLE account ADD CONSTRAINT account_heart_sats_chk
+  CHECK (heart_sats >= 1 AND heart_sats <= ${HEART_SATS_MAX})`,
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_address text',
       'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_address_chk',
       `ALTER TABLE account ADD CONSTRAINT account_spark_address_chk
   CHECK (spark_address IS NULL OR (spark_pubkey IS NOT NULL AND spark_address ~ '^spark1[02-9ac-hj-np-z]{62}$'))`,
     ]);
-    expect(tail.slice(3).map((statement) => statement.split('\n')[0]?.trim())).toEqual([
+    expect(tail.slice(6).map((statement) => statement.split('\n')[0]?.trim())).toEqual([
       'CREATE TABLE IF NOT EXISTS recovery_share (',
       'CREATE TABLE IF NOT EXISTS pending_recovery (',
       'CREATE UNIQUE INDEX IF NOT EXISTS pending_recovery_new_spark_pubkey_uidx ON pending_recovery (new_spark_pubkey)',

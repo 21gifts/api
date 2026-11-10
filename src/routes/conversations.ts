@@ -33,6 +33,7 @@ import {
   forumPhotoResponse,
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
+  POSITIVE_SATS_BODY_ERROR,
   normalizeForumText,
   normalizePhotoTakenAt,
   truncatePubkeyDisplay,
@@ -1102,7 +1103,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             conversationMessageId: null,
           }),
         );
-        return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
+        return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
       const amountMsat = parsed.data.sats * 1000;
       const invoiceText = normalizeForumText(parsed.data.text ?? '');
@@ -1154,7 +1155,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             conversationMessageId: null,
           }),
         );
-        return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
+        return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
       try {
         const thread = await deps.store.getById(id);

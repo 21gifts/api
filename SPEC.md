@@ -134,8 +134,9 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/seed/finish`                          | Bearer                                       | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session. Failure stores a failed renew row. Success stores succeeded, acknowledges open failures, and returns passkeyRenewClosed false.                                                                                                                                                                                                                                                                                                         |
 | POST   | `/auth/passkey/recovery/begin`                       | none                                         | Social recovery: forward the old wallet's signed lookup, then issue WebAuthn creation options for a new passkey on that account; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass); 503 without the LNURL server                                                                                                                                                                                                               |
 | POST   | `/auth/passkey/recovery/finish`                      | none                                         | Verify the new passkey's attestation and the old wallet's signature, store a pending recovery, issue no session; same 403 `app_outdated` and 503 `logins_closed` as begin                                                                                                                                                                                                                                                                                                                                                                                 |
-| GET    | `/me`                                                | `Authorization: Bearer`                      | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `amountUnit` + `locale` + `fiat` + `sparkPubkey` + `sparkWalletVerified`)                                                                                                                                                                                                                                                                                                                                                   |
+| GET    | `/me`                                                | `Authorization: Bearer`                      | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `notifyHearts` + `heartSats` + `amountUnit` + `locale` + `fiat` + `sparkPubkey` + `sparkWalletVerified`)                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/me/amount-unit`                                    | Bearer                                       | Set owner amount-entry unit (`btc` or `fiat`, default `btc`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/me/heart-sats`                                     | Bearer                                       | Set the whole-sat amount one heart payment sends (`1`–`10000000`, default `1`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/me/locale`                                         | Bearer                                       | Set owner UI language (`en`, `de`, `es`, or `fil`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | POST   | `/me/fiat`                                           | Bearer                                       | Set owner fiat (`CHF`, `EUR`, `USD`, or `PHP`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/me/activity`                                       | Bearer                                       | Donation given + received series (non-loan forum zaps plus daily and welcome gifts; loans, repayments, and moderator stipends omitted) plus outstanding owedSats and creditSats                                                                                                                                                                                                                                                                                                                                                                           |
@@ -2675,6 +2676,7 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "aboutMeHasPhoto": false,
   "aboutMessageId": null,
   "notificationLevel": "all",
+  "heartSats": 1,
   "amountUnit": "btc",
   "locale": null,
   "fiat": null,
@@ -2733,6 +2735,7 @@ stays `null`)).
 | `aboutMeHasPhoto`            | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                                                                                |
 | `aboutMessageId`             | string \| null | Id of the stored About me note when `aboutMe` is non-null. `null` when `aboutMe` is `null` (including a name-copy note). Not a display name.                                                                                                                                                                                                                                                      |
 | `notificationLevel`          | string         | Owner fan-out filter: `all`, `active`, `mentions`, or `none`. `none` is none of the living-room stream, including the dedicated `@username` channel. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                        |
+| `heartSats`                  | integer        | Whole-sat amount one heart payment sends. Default `1`; valid `1`–`10000000`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. `POST /me/heart-sats` sets it.                                                                                                                                                                                                                |
 | `amountUnit`                 | string         | Owner amount-entry unit: `btc` or `fiat`. Default `btc`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. The last unit the member chose on any amount field.                                                                                                                                                                                                               |
 | `locale`                     | string \| null | Owner UI language: `en`, `de`, `es`, or `fil`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the browser.                                                                                                                                                                                                        |
 | `fiat`                       | string \| null | Owner fiat: `CHF`, `EUR`, `USD`, or `PHP`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the language default.                                                                                                                                                                                                   |
@@ -4137,6 +4140,35 @@ Success → **Response** `200` with the updated account (same owner JSON as
 `GET /me`), including `amountUnit`. The same unit again is still **200**.
 Public member cards and `GET /view/:viewKey` omit `amountUnit`. Logs
 `account.amount_unit.set` with `accountId` and `unit`.
+
+### `POST /me/heart-sats`
+
+Set the whole-sat amount one heart payment sends. Bearer session required
+(same as `POST /me/notification-level`). Body:
+
+```json
+{ "sats": 21 }
+```
+
+`sats` must be a JSON whole number from `1` through `10000000` (the
+whole-sat form of `GIFT_INVOICE_MAX_MSAT`). Missing, fractional, string, zero,
+negative, and oversized values are **400**. A new account, or a stored value that is missing or invalid,
+reads as `1`. The route does not change an invoice already being paid, and
+`POST /messages/:id/invoice` does not require the request to match the stored
+value.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Invalid body → **Response** `400`:
+
+```json
+{ "error": "Expected a JSON body with a positive \"sats\" integer" }
+```
+
+Success → **Response** `200` with the updated account (same owner JSON as
+`GET /me`), including `heartSats`. The same value again is still **200**.
+Public member cards and `GET /view/:viewKey` omit `heartSats`. Logs
+`account.heart_sats.set` with `accountId` and `sats`.
 
 ### `POST /me/locale`
 
@@ -7209,7 +7241,9 @@ sent. A replay creates no key and queues nothing.
 Signed-in pay-on-note. Bearer session required. `:id` is a UUID (`MESSAGE_ID_RE`).
 Body `{ "sats": <int 1..10_000_000>, "text"?: "<string>", "amountUsd"?: "<string>|null", "amountChf"?: "<string>|null", "amountEur"?: "<string>|null", "amountPhp"?: "<string>|null", "heart"?: <boolean> }`. Optional `text` is the
 NIP-57 zap-request `content` (same 1–8000 forum rules; omit or whitespace = gift-only).
-Optional `heart: true` asks for a 1-sat heart instead of a gift (see
+Optional `heart: true` asks for a heart whose amount is the request's `sats`
+instead of a gift; the server does not read the sender's stored `heartSats`
+(the app normally sends that value) and does not require the two to match (see
 [Hearts](#hearts) below); omitted or `false` is a gift.
 Omitting every amount key leaves the invoice unpinned. Any present amount key pins all four; a missing sibling is null. `"0"`, `"0.0"`, and `"0.00"` are stored as `"0.00"`. An unusable amount string is **400** `{ "error": "Expected a JSON body with a positive \"sats\" integer" }`.
 Invalid `text` → **400** `{ "error": "Text must be 1–8000 characters" }`.
@@ -7307,8 +7341,9 @@ Other LNURL/zap failure (`unreachable`) →
 A heart is always fee-free: it is paid only with the in-app Spark invoice,
 never over Lightning.
 
-- `heart: true` needs `sats: 1`; any other amount is **400**
-  `{ "error": "A heart sends 1 sat" }` (attempt `bad_body`, no LNURL).
+- `heart: true` accepts any positive whole `sats` like a normal payment. The
+  app sends the stored `heartSats`; the server does not require the request to
+  match it, so a change made on another device never rejects the payment.
 - A heart on the payer's own note is **400**
   `{ "error": "You cannot send a heart to yourself" }` (attempt `self_heart`,
   no LNURL).
@@ -7320,11 +7355,11 @@ never over Lightning.
   `{ "error": "HEART_UNAVAILABLE" }` before the limiter and before LNURL
   (attempt `heart_unavailable`).
 - When the Spark invoice cannot be issued for the minted `pr` (store failure,
-  or `pr` is not for exactly 1 sat), the heart is the same **503**
+  or `pr` is not for the requested amount), the heart is the same **503**
   `{ "error": "HEART_UNAVAILABLE" }`. The body has no `pr`, and the attempt is
   `heart_unavailable` with `pr` null, so no `ok` row exists for that payment
   hash. A gift keeps `sparkInvoice: null` and its `pr` in that case.
-- Success is the same **200** `{ pr, amountSats: 1, sparkInvoice }` with a
+- Success is the same **200** `{ pr, amountSats: <sats>, sparkInvoice }` with a
   non-null `sparkInvoice`. The attempt is `ok` with `heart: true`.
 - Hearts have their own budget, separate from the gift limiter (1 per second,
   20 per hour per account). A heart neither checks nor consumes it, and a gift
@@ -7335,8 +7370,8 @@ never over Lightning.
   `rate_limited` with `heart: true`). An account with role `founder` or staff
   tag `software_developer` is exempt and its hearts are not counted.
 - When the heart is indexed, sats are credited, only the note author is
-  notified (`notifyHeart`), and no gift-reply or living-room zap notice is
-  written. If the invoice lookup for a receipt fails twice, the receipt is
+  notified (`notifyHeart` with the exact invoice amount), and no gift-reply or
+  living-room zap notice is written. If the invoice lookup for a receipt fails twice, the receipt is
   handled as a gift for the notice: `notifyZap` runs as for any gift.
 
 ### `GET /messages/:id/repayment`
@@ -7582,10 +7617,24 @@ the stored author id is non-null, with or without a session. External replies
 set `via: "nostr"`, keep `payable: false` and `authorCanReceive: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
 Photo and video bytes are never included. `:id` is a UUID
-(`MESSAGE_ID_RE`).
+(`MESSAGE_ID_RE`). The response also carries `hearts`: one entry per claimed
+paid heart on the parent, ordered newest first (`createdAt` desc, then invoice
+id desc), capped at 200. Each entry is
+`{ accountId, name, username?, role?, sats, amountUsd, amountChf, amountEur, amountPhp, createdAt }`,
+where `sats` is the exact `amount_sats` of that heart invoice and the four
+`amount*` fields are its frozen `fiat_usd` / `fiat_chf` / `fiat_eur` / `fiat_php`
+strings, never recalculated; each is JSON `null` when its column is null.
+`createdAt` is its ISO creation time. `name` is the current display name;
+`username` is present only when set;
+`role` is present only while the account exists. A deleted account keeps the
+entry with `name: ""` and no `username` or `role`. The same heart condition as
+`heartStats` applies (`heart = true`, `result = 'ok'`, a non-null payment hash
+claimed in `nostr_zap_payment` via `lower(payment_hash)`), so
+`hearts.length === heartCount` up to the 200-heart cap (`heartCount` itself is
+uncapped). A heart-query failure is the route's **503**.
 
 Unsigned/non-staff: hidden children are omitted. A founder/moderator Bearer
-is **200** `{ "messages" }` from `listReplies(id, limit, true)` including
+is **200** `{ "messages", "hearts" }` from `listReplies(id, limit, true)` including
 hidden attributed children with hide stamps, `payable: false`, and `authorCanReceive: false`, whether
 the parent is live or hidden (live children stay live serialize).
 
@@ -7623,11 +7672,25 @@ Success → **Response** `200`:
       "videoContentType": null,
       "role": "basis"
     }
+  ],
+  "hearts": [
+    {
+      "accountId": "<uuid>",
+      "name": "Ada",
+      "username": "ada",
+      "role": "basis",
+      "sats": 21,
+      "amountUsd": "0.02",
+      "amountChf": "0.02",
+      "amountEur": "0.02",
+      "amountPhp": "1.25",
+      "createdAt": "2026-11-09T15:22:00.000Z"
+    }
   ]
 }
 ```
 
-An empty reply thread is **200** with `"messages": []`. Soft-hidden and
+An empty reply thread is **200** with `"messages": []` and `"hearts": []`. Soft-hidden and
 unattributed null-account children (`accountId` and `authorPubkey` both null)
 are omitted from the list, as is a null-account child whose `authorPubkey` is
 set but is not a recorded zapper (retroactively included once that pubkey zaps).

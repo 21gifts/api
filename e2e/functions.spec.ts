@@ -2789,6 +2789,28 @@ test('Function: parseNotificationLevel — GET /me without bearer is 401', async
 test('Function: parseAmountUnit — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });
+test('Function: parseHeartSats — POST /me/heart-sats without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/me/heart-sats', { data: { sats: 21 } })).status()).toBe(401);
+});
+test('Function: heartSenders — replies for a live note return a real empty-hearts list', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const saved = await request.put('/me/about', {
+    headers: { authorization: member.authorization },
+    data: { text: 'E2E heartSender parent' },
+  });
+  expect(saved.status()).toBe(200);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  const noteId = ((await me.json()) as { aboutMessageId: string | null }).aboutMessageId;
+  expect(noteId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  const res = await request.get(`/messages/${noteId}/replies`);
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ messages: [], hearts: [] });
+});
 test('Function: parseStoredLocale — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });

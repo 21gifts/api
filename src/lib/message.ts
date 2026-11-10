@@ -25,6 +25,9 @@ import type { ForumVideoContentType } from '@/lib/video';
 /** Maximum stored length after trim (member posts and member replies). */
 export const MESSAGE_MAX_LENGTH = 8000;
 
+/** 400 copy for a missing or invalid positive whole-sat body. */
+export const POSITIVE_SATS_BODY_ERROR = 'Expected a JSON body with a positive "sats" integer';
+
 /** Hard cap for inbound Damus reply content (may exceed member 8000). */
 export const MESSAGE_INBOUND_REPLY_MAX_LENGTH = 8192;
 
