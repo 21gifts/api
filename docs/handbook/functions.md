@@ -5370,3 +5370,52 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Inputs:** `FondRouteDeps` (`authStore`, `fondPayoutStore`, `payoutSigner`, `fondUsername`, `now`, `fetchImpl`, optional `lnurlServer`, and `actions: GiftActionDeps` including an optional `giftStore.hasOutboundInvoice`).
 - **Returns / side effects:** A Hono app. Never logs addresses, preimages, or invoices. Unknown or malformed id → 404 `Not found`; non-invoiced row of another day, `paid`, or `failed` → 409 `Not payable`; fresh or lost `issuing` → 409 `Invoice in progress`; wrong preimage → 400 `Proof does not match invoice`; not invoiced → 409 `Not invoiced`; a fresh settling row matching proof → 409 `Proof in progress`; a paid row's matching proof repeats 200 without a second settlement. An `invoiced` row returns its stored invoice regardless of the current UTC day. A thrown or missed `get`, claim, `releaseClaim`, `markFailed`, `setInvoiced`, `claimSettlement`, `markPaid`, `releaseSettlement`, `claimStaleIssuing`, `markStaleSettlingPaid`, or `restoreStaleSettling` logs `fond.invoice.failed` or `fond.proof.failed` and answers 503 `Payouts are unavailable` without an address, preimage, or BOLT11; a thrown `settleProvenGift` releases the row and answers the same 503; a thrown or lost `markPaid` after settlement answers the same 503 and is finished by lease recovery later.
 - **Used by:** `createApp`.
+
+## Function: ipToBits
+
+- **Purpose:** Parses an IPv4 or IPv6 literal into its numeric value and family width, so an address can be tested against a CIDR block. IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are reduced to their IPv4 form so they match IPv4 trust ranges. Rejects malformed literals, a zone id, and anything carrying a prefix.
+- **Inputs:** `ip` (an address literal string).
+- **Returns / side effects:** `{ bits, value }` — `bits` is 32 for IPv4 or 128 for IPv6 and `value` the unsigned big integer — or `null` for an invalid literal. Pure; no I/O.
+- **Used by:** `parseCidr` and `resolveRateLimitKey`.
+
+## Function: parseCidr
+
+- **Purpose:** Parses an `address` or `address/prefix` CIDR string into a block pre-computed (network and mask) for fast membership tests. A bare address is treated as a host route with a full-width prefix. Rejects a malformed address, a non-numeric prefix, or a prefix wider than the address family.
+- **Inputs:** `spec` (a CIDR string).
+- **Returns / side effects:** `{ bits, network, mask }`, or `null` when the string is malformed. Pure; no I/O.
+- **Used by:** `parseTrustedProxyCidrs` (and the trusted-proxy tests).
+
+## Function: parseTrustedProxyCidrs
+
+- **Purpose:** Turns a raw `TRUSTED_PROXY_CIDRS` spec into usable trusted-proxy blocks. `undefined` yields the published Cloudflare ranges (`DEFAULT_CLOUDFLARE_CIDRS`); `off`, `none`, or an empty/whitespace value yields no trusted proxy, so `cf-connecting-ip` is then never trusted; any other value is parsed as a comma-separated CIDR list. Malformed entries are dropped rather than failing.
+- **Inputs:** `raw` (the raw env value, or `undefined` for the default).
+- **Returns / side effects:** `Cidr[]` of trusted blocks. Pure; no I/O.
+- **Used by:** `loadTrustedProxyCidrs`.
+
+## Function: loadTrustedProxyCidrs
+
+- **Purpose:** Returns the trusted-proxy allowlist for an environment, memoized by the raw `TRUSTED_PROXY_CIDRS` value so a spec is parsed at most once. The default (unset) spec and each distinct seen value are cached in a module-level map, keeping per-request resolution allocation-free after the first lookup.
+- **Inputs:** `env` (a `Record<string, string | undefined>` of environment variables).
+- **Returns / side effects:** `Cidr[]` of trusted blocks. Reads one env key and caches parsed results in module state; no other I/O.
+- **Used by:** `clientRateLimitKey`.
+
+## Function: extractPeerAddress
+
+- **Purpose:** Reads the transport peer address from the value Hono exposes as `c.env`, without assuming its type (the app runs with the default, untyped binding). Mirrors Hono's Bun adapter: the server is `env.server` when that property is present, otherwise `env` itself (the second argument Bun passes to `fetch`). Distinguishes a runtime with no peer lookup from a Bun request whose address is unreadable.
+- **Inputs:** `env` (`unknown` — the context env/server object) and `req` (the raw `Request`).
+- **Returns / side effects:** `{ supported, address }` — `supported` is `false` when no `requestIP` function exists, and `address` is the socket address literal or `null`. Calls `server.requestIP(req)`; no other I/O.
+- **Used by:** `clientRateLimitKey`.
+
+## Function: resolveRateLimitKey
+
+- **Purpose:** Decides the per-client rate-limit bucket key from a transport peer and the validated `cf-connecting-ip` header. With a peer address present, the header is trusted only when the peer is a trusted proxy egress; otherwise the header is ignored and the peer address is the key. A peer present but unreadable yields `null` (unknown — not an unlimited, uncounted pass). When the runtime exposes no peer lookup at all (a non-Bun test harness) the validated header is used as a best effort; that branch cannot occur under `Bun.serve`. Peer- and header-derived keys are namespaced (`peer:` vs `ip:`) so a client reaching the origin directly cannot share or poison a forwarded client's bucket.
+- **Inputs:** `peer` (`{ supported, address }` from `extractPeerAddress`), `headerIp` (the validated `cf-connecting-ip` value or `null`), and `trustedProxies` (`Cidr[]` from `loadTrustedProxyCidrs`).
+- **Returns / side effects:** A stable string key, or `null` when the client cannot be identified. Pure; no I/O.
+- **Used by:** `clientRateLimitKey`.
+
+## Function: clientRateLimitKey
+
+- **Purpose:** Request-handler entry point that resolves the per-client rate-limit key, replacing keying an `IpRateLimiter` on the raw, spoofable `cf-connecting-ip` header. Reads the transport peer via `extractPeerAddress`, the validated header via `readClientRequestMeta`, and the trusted-proxy allowlist via `loadTrustedProxyCidrs`, then delegates to `resolveRateLimitKey`. The returned key is opaque: it is a limiter bucket id only and must never be echoed back as the client's IP.
+- **Inputs:** `c` (a context exposing `env` — the Bun server — and `req.raw`) and an optional `env` record (default `process.env`) for the `TRUSTED_PROXY_CIDRS` allowlist.
+- **Returns / side effects:** A stable string key, or `null` when the client cannot be identified. No I/O beyond reading the transport peer address.
+- **Used by:** The IP-rate-limited handlers in `authRoutes` (social-recovery begin/finish), `lnurlServerRoutes` (register/transfer/recover/metadata/invoice/verify/callback/proof/wait), and `wellKnownRoutes` (the walletPay branch).
