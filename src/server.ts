@@ -529,8 +529,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`),
  *   walletStore (optional; default {@link InMemoryWalletStore}; mounts
- *   `POST /me/wallet/report`, `GET /wallets/stats`, and
- *   `GET /debug/accounts/:id/wallet`; SQL boot injects
+ *   `POST /me/wallet/report`, `GET /wallets/stats`,
+ *   `GET /debug/accounts/:id/wallet`, and `POST /me/wallet/counterparties`;
+ *   SQL boot injects
  *   {@link PostgresWalletStore}),
  *   and memberEventStore (optional; default {@link InMemoryMemberEventStore};
  *   mounts `POST /me/events`; SQL boot injects

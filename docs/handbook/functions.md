@@ -4580,10 +4580,10 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: readCappedText
 
-- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), `POST /me/events` (64 KiB), `POST /me/wallet/hearts`, and `POST /webhooks/lnurl` (64 KiB).
+- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), `POST /me/events` (64 KiB), `POST /me/wallet/hearts`, `POST /me/wallet/counterparties` (8192 bytes), and `POST /webhooks/lnurl` (64 KiB).
 - **Inputs:** The incoming `Request` and the largest accepted body in bytes.
-- **Returns / side effects:** The decoded text, `''` when the request has no body, or `null` when the body is larger than the cap (`lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, and `memberEventRoutes` answer 413 `{ error: 'Request body is too large' }`; `webhookRoutes` answers 200 `ignored`, because the LNURL server retries every non-2xx answer without end). Never logs the body.
-- **Used by:** `lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, `memberEventRoutes`, `webhookRoutes`.
+- **Returns / side effects:** The decoded text, `''` when the request has no body, or `null` when the body is larger than the cap (`lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, `walletCounterpartyRoutes`, and `memberEventRoutes` answer 413 `{ error: 'Request body is too large' }`; `webhookRoutes` answers 200 `ignored`, because the LNURL server retries every non-2xx answer without end). Never logs the body.
+- **Used by:** `lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, `walletCounterpartyRoutes`, `memberEventRoutes`, `webhookRoutes`.
 
 ## Function: isSecretFieldName
 
