@@ -7883,17 +7883,24 @@ values and therefore always equal it.
 ```json
 {
   "walletCount": 61,
-  "fundedWalletCount": 32,
-  "totalSats": 89096,
-  "totalBtc": "0.00089096",
+  "fundedWalletCount": 39,
+  "totalSats": 95457,
+  "totalBtc": "0.00095457",
   "asOf": "2026-11-10T06:21:04.985Z",
   "balanceOverTime": [
     {
       "day": "2026-11-09",
-      "totalSats": 80000,
-      "totalBtc": "0.00080000",
-      "walletCount": 55,
-      "fundedWalletCount": 30
+      "totalSats": 50496,
+      "totalBtc": "0.00050496",
+      "walletCount": 38,
+      "fundedWalletCount": 18
+    },
+    {
+      "day": "2026-11-10",
+      "totalSats": 95457,
+      "totalBtc": "0.00095457",
+      "walletCount": 61,
+      "fundedWalletCount": 39
     }
   ]
 }
