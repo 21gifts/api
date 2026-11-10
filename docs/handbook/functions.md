@@ -3418,21 +3418,37 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Coerce stored/wire signed events (object, JSON string, double-encoded jsonb string) into a plain object so EVENT frames never send a string payload.
 - **Inputs:** Unknown value.
 - **Returns / side effects:** Shallow-copied object or `null` (arrays, primitives, invalid JSON).
-- **Used by:** `WebsocketNostrPublisher.publishOne`; `mapMessageRow`.
+- **Used by:** `WebsocketNostrPublisher.publish`; `mapMessageRow`.
 
 ## Function: WebsocketNostrPublisher
 
-- **Purpose:** Production `NostrPublisher` that opens one WebSocket per relay URL, runs `normalizeSignedEvent` so the EVENT second element is an object, sends `["EVENT", event]`, and waits for a matching `["OK", id, true|false]` (or timeout/error) before closing.
-- **Inputs:** Optional `WebSocketFactory` (default `new WebSocket(url)`); `publish(event, urls, timeoutMs)`.
-- **Returns / side effects:** One `RelayAck` per URL in input order; never leaves sockets open after settle. Injectable factory keeps unit tests off the network.
-- **Used by:** Process entry `src/index.ts` when KEK + durable message store present.
+- **Purpose:** Production `NostrPublisher`. Runs `normalizeSignedEvent` so the EVENT second element is an object, then sends `["EVENT", event]` on the shared `NostrRelayPool` connection of each relay URL and waits for the `["OK", id, true|false]` with that event id. The socket stays open for the next call.
+- **Inputs:** Optional `NostrRelayPool` (default `sharedNostrRelayPool()`); `publish(event, urls, timeoutMs)`.
+- **Returns / side effects:** One `RelayAck` per URL in input order. `ok: false` for an unusable event (no send), an OK false, a timeout, a dropped socket, a socket that cannot open, or a closed pool. Never throws.
+- **Used by:** Process entry `src/index.ts` (nostr worker and spark invoice worker), with the same pool as `WebsocketNostrQuerier`.
 
 ## Function: WebsocketNostrQuerier
 
-- **Purpose:** Production `NostrQuerier`: one WebSocket per URL, send `["REQ", subId, filter]`, collect EVENT object payloads (id, pubkey, kind, tags, plus content/created_at/sig when present), stop on EOSE/timeout, CLOSE and close socket. Factory throw / error / timeout contribute no events. Dedup by id; first URL in the list wins.
-- **Inputs:** Optional `WebSocketFactory`; `query(filter, urls, timeoutMs)`.
-- **Returns / side effects:** `NostrEventFrame[]`; never throws; no live subscription past the call.
-- **Used by:** `src/index.ts` worker wiring.
+- **Purpose:** Production `NostrQuerier`. Sends `["REQ", subId, filter]` on the shared `NostrRelayPool` connection of each URL, collects EVENT object payloads (id, pubkey, kind, tags, plus content/created_at/sig when present) until EOSE, CLOSED or timeout, then sends `["CLOSE", subId]`. The socket stays open. Dedup by id; the first URL in the list wins.
+- **Inputs:** Optional `NostrRelayPool` (default `sharedNostrRelayPool()`); `query(filter, urls, timeoutMs)`.
+- **Returns / side effects:** `NostrEventFrame[]`. A relay that cannot connect, drops, or times out contributes the events it delivered before that. Never throws; no subscription stays open past the call.
+- **Used by:** `src/index.ts` worker wiring and `openBootStores` (zapper backfill).
+
+## Function: NostrRelayPool
+
+- **Purpose:** One long-lived WebSocket per relay URL, shared by every query and publish of the process, so relays and their edge see one connection instead of one per call. Connects lazily on the first call for a URL. REQ subscriptions are multiplexed by subscription id (`q-1`, `q-2`, …); OK frames are matched by event id, and every publish of the same id settles on the same OK. Frames of calls made before the socket opens are sent on open.
+- **Inputs:** Optional `NostrRelayPoolOptions`: `createSocket` (default `new WebSocket(url)`), `backoffBaseMs` (1 000), `backoffMaxMs` (60 000), `connectTimeoutMs` (10 000), `idleMs` (120 000). Methods `query(filter, url, timeoutMs, onEvent)`, `publish(event, url, timeoutMs)`, `close()`.
+- **Drop and reconnect:** A socket error, close, throwing send, or connect timeout fails every call waiting on it at once (query resolves with what it collected, publish resolves `false`). The next call reconnects no earlier than the backoff: `backoffBaseMs` doubled per drop without a relay frame in between, capped at `backoffMaxMs`; any frame from the relay resets it. Calls made during the backoff wait for that reconnect within their own timeout. Nothing reconnects while no call waits.
+- **Timeouts:** Each call's deadline counts from the call, including connect time. A call that times out on an open socket that sent nothing since the call's frame went out recycles the socket, so a half-open connection does not stay in use.
+- **Returns / side effects:** `query` resolves (never rejects) after EOSE, CLOSED, timeout, drop, or `close()`, then sends CLOSE when the socket is open. `publish` resolves `true` only for a matching `OK true`; an event without a string `id` is `false` without a send. A connection with no call for `idleMs` is closed and forgotten. `close()` closes every socket, fails waiting calls, and makes later calls fail at once.
+- **Used by:** `WebsocketNostrQuerier`, `WebsocketNostrPublisher`; `src/index.ts` closes the pool on SIGTERM/SIGINT.
+
+## Function: sharedNostrRelayPool
+
+- **Purpose:** The process-wide `NostrRelayPool`, so every querier and publisher built without an explicit pool shares one socket per relay URL.
+- **Inputs:** None.
+- **Returns / side effects:** The same pool on every call; created on first call with default options. No socket is opened until a query or publish.
+- **Used by:** `src/index.ts` (passed to the querier and both publishers, closed on stop); default argument of `WebsocketNostrQuerier` and `WebsocketNostrPublisher`.
 
 ## Function: spaceAcked
 

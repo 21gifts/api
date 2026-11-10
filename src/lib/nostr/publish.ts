@@ -1,6 +1,8 @@
 /**
- * Injectable Nostr EVENT publisher. Production uses WebSockets; tests fake OK.
+ * Injectable Nostr EVENT publisher. Production uses the shared relay pool; tests fake OK.
  */
+
+import { type NostrRelayPool, sharedNostrRelayPool } from '@/lib/nostr/relay-pool';
 
 /**
  * Whether `value` is a plain object (not null, not an array).
@@ -93,7 +95,7 @@ export class RecordingPublisher implements NostrPublisher {
   }
 }
 
-/** Minimal WebSocket surface used by the publisher (injectable; no real network in tests). */
+/** Minimal WebSocket surface used by the relay pool (injectable; no real network in tests). */
 export interface WebSocketLike {
   /** Register `open` / `message` / `error` / `close` listeners. */
   addEventListener(type: string, listener: (event: { data?: unknown }) => void): void;
@@ -111,24 +113,23 @@ export interface WebSocketLike {
 export type WebSocketFactory = (url: string) => WebSocketLike;
 
 /**
- * Production publisher: one WebSocket per relay URL.
+ * Production publisher: EVENT on the shared connection per relay URL.
  *
- * @param createSocket - Socket factory. Default opens `new WebSocket(url)`.
+ * @param pool - Relay pool. Default is the process-wide {@link sharedNostrRelayPool}.
  */
 export class WebsocketNostrPublisher implements NostrPublisher {
-  private readonly createSocket: WebSocketFactory;
-
   /**
-   * @param createSocket - Socket factory. Default opens `new WebSocket(url)`.
+   * @param pool - Relay pool. Default is the process-wide {@link sharedNostrRelayPool}.
    */
-  constructor(createSocket?: WebSocketFactory) {
-    this.createSocket =
-      createSocket ??
-      ((url: string): WebSocketLike => new WebSocket(url) as unknown as WebSocketLike);
-  }
+  constructor(private readonly pool: NostrRelayPool = sharedNostrRelayPool()) {}
 
   /**
-   * Publish a signed event to each URL over an independent WebSocket.
+   * Publish a signed event to each URL over that relay's shared connection.
+   *
+   * The event goes through {@link normalizeSignedEvent} first; an unusable
+   * event is `ok: false` for every URL without a send. A relay that cannot
+   * connect, drops, rejects, or does not answer within `timeoutMs` is
+   * `ok: false`. Never throws.
    *
    * @param event - Signed NIP-01 event object.
    * @param urls - Relay WebSocket URLs.
@@ -140,88 +141,13 @@ export class WebsocketNostrPublisher implements NostrPublisher {
     urls: readonly string[],
     timeoutMs: number,
   ): Promise<RelayAck[]> {
-    return Promise.all(urls.map((url) => this.publishOne(event, url, timeoutMs)));
-  }
-
-  /**
-   * Open one relay, send EVENT, wait for matching OK or fail.
-   *
-   * @param event - Signed event.
-   * @param url - Relay URL.
-   * @param timeoutMs - Settle deadline.
-   * @returns ACK for this URL.
-   */
-  private publishOne(
-    event: Record<string, unknown>,
-    url: string,
-    timeoutMs: number,
-  ): Promise<RelayAck> {
     const normalized = normalizeSignedEvent(event);
-    if (normalized === null) {
-      return Promise.resolve({ url, ok: false });
-    }
-    return new Promise((resolve) => {
-      let settled = false;
-      let socket: WebSocketLike | undefined;
-      const settle = (ok: boolean): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        try {
-          socket?.close();
-        } catch {
-          // Ignore close failures after settle.
-        }
-        resolve({ url, ok });
-      };
-      const timer = setTimeout(() => {
-        settle(false);
-      }, timeoutMs);
-
-      try {
-        socket = this.createSocket(url);
-      } catch {
-        settle(false);
-        return;
-      }
-
-      socket.addEventListener('open', () => {
-        try {
-          socket!.send(JSON.stringify(['EVENT', normalized]));
-        } catch {
-          settle(false);
-        }
-      });
-
-      socket.addEventListener('message', (ev) => {
-        if (typeof ev.data !== 'string') {
-          return;
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(ev.data);
-        } catch {
-          return;
-        }
-        if (!Array.isArray(parsed) || parsed[0] !== 'OK') {
-          return;
-        }
-        if (parsed[1] !== normalized['id']) {
-          return;
-        }
-        settle(parsed[2] === true);
-      });
-
-      socket.addEventListener('error', () => {
-        settle(false);
-      });
-
-      socket.addEventListener('close', () => {
-        settle(false);
-      });
-    });
+    return Promise.all(
+      urls.map(async (url) => ({
+        url,
+        ok: normalized !== null && (await this.pool.publish(normalized, url, timeoutMs)),
+      })),
+    );
   }
 }
 

@@ -1,12 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FakeSocket, FakeSocketFactory } from '@/__tests__/helpers/fake-relay-socket';
 import {
   normalizeSignedEvent,
   publicAcked,
   RecordingPublisher,
   spaceAcked,
   WebsocketNostrPublisher,
-  type WebSocketLike,
 } from '@/lib/nostr/publish';
+import { NostrRelayPool } from '@/lib/nostr/relay-pool';
 
 describe('normalizeSignedEvent', () => {
   it('returns a shallow copy of a plain object', () => {
@@ -59,233 +60,104 @@ describe('ack helpers', () => {
   });
 });
 
-/** In-memory WebSocket stub (no network). */
-class FakeSocket implements WebSocketLike {
-  readonly sent: string[] = [];
-  closed = false;
-  private readonly listeners = new Map<string, Array<(event: { data?: unknown }) => void>>();
-  throwOnSend = false;
-  throwOnClose = false;
-
-  addEventListener(type: string, listener: (event: { data?: unknown }) => void): void {
-    const list = this.listeners.get(type) ?? [];
-    list.push(listener);
-    this.listeners.set(type, list);
-  }
-
-  send(data: string): void {
-    if (this.throwOnSend) {
-      throw new Error('send failed');
-    }
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.throwOnClose) {
-      throw new Error('close failed');
-    }
-    this.closed = true;
-    this.emit('close', {});
-  }
-
-  emit(type: string, event: { data?: unknown } = {}): void {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(event);
-    }
-  }
-}
-
 describe('WebsocketNostrPublisher', () => {
   const event = { id: 'abc123', kind: 1 };
-  let originalWebSocket: typeof globalThis.WebSocket | undefined;
+  let factory: FakeSocketFactory;
+  let pool: NostrRelayPool;
+
+  beforeEach(() => {
+    factory = new FakeSocketFactory();
+    pool = new NostrRelayPool({ createSocket: factory.create });
+  });
 
   afterEach(() => {
-    if (originalWebSocket !== undefined) {
-      globalThis.WebSocket = originalWebSocket;
-      originalWebSocket = undefined;
-    }
+    pool.close();
   });
 
   it('returns [] for empty urls', async () => {
-    const pub = new WebsocketNostrPublisher(() => new FakeSocket());
+    const pub = new WebsocketNostrPublisher(pool);
     await expect(pub.publish(event, [], 20)).resolves.toEqual([]);
   });
 
-  it('ACKs ok:true, sends EVENT, and closes the socket', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const pending = pub.publish(event, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      expect(socket.sent[0]).toBe(JSON.stringify(['EVENT', event]));
-      socket.emit('message', { data: JSON.stringify(['OK', 'abc123', true]) });
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: true }]);
-    expect(socket.closed).toBe(true);
-  });
-
-  it('sends a JSON-string event as an object in the EVENT frame', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const asString = JSON.stringify(event) as unknown as Record<string, unknown>;
-    const pending = pub.publish(asString, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      const frame = JSON.parse(socket.sent[0]!) as unknown[];
-      expect(frame[0]).toBe('EVENT');
-      expect(frame[1]).toEqual(event);
-      expect(typeof frame[1]).toBe('object');
-      socket.emit('message', { data: JSON.stringify(['OK', 'abc123', true]) });
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: true }]);
-  });
-
-  it('returns ok:false without send when the event cannot be normalised', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const bad = '{not-json' as unknown as Record<string, unknown>;
-    await expect(pub.publish(bad, ['wss://a'], 100)).resolves.toEqual([
-      { url: 'wss://a', ok: false },
-    ]);
-    expect(socket.sent).toHaveLength(0);
-  });
-
-  it('returns ok:false without send when the event is an array', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const bad = [1, 2] as unknown as Record<string, unknown>;
-    await expect(pub.publish(bad, ['wss://a'], 100)).resolves.toEqual([
-      { url: 'wss://a', ok: false },
-    ]);
-    expect(socket.sent).toHaveLength(0);
-  });
-
-  it('ACKs ok:false when the relay rejects', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const pending = pub.publish(event, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      socket.emit('message', { data: JSON.stringify(['OK', 'abc123', false, 'rejected']) });
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: false }]);
-    expect(socket.closed).toBe(true);
-  });
-
-  it('times out with ok:false and closes the socket', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const pending = pub.publish(event, ['wss://a'], 20);
-    queueMicrotask(() => {
-      socket.emit('open');
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: false }]);
-    expect(socket.closed).toBe(true);
-  });
-
-  it('returns ok:false when the factory throws', async () => {
-    const pub = new WebsocketNostrPublisher(() => {
-      throw new Error('no socket');
-    });
-    await expect(pub.publish(event, ['wss://a'], 20)).resolves.toEqual([
-      { url: 'wss://a', ok: false },
-    ]);
-  });
-
-  it('returns ok:false on socket error', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const pending = pub.publish(event, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('error');
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: false }]);
-  });
-
-  it('returns ok:false when send throws', async () => {
-    const socket = new FakeSocket();
-    socket.throwOnSend = true;
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const pending = pub.publish(event, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: false }]);
-  });
-
-  it('returns ok:false when the socket closes before OK', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const pending = pub.publish(event, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      socket.emit('close');
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: false }]);
-  });
-
-  it('ignores non-JSON, wrong-id, and non-OK frames until a matching OK', async () => {
-    const socket = new FakeSocket();
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const pending = pub.publish(event, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      socket.emit('message', { data: 'not-json{' });
-      socket.emit('message', { data: 42 });
-      socket.emit('message', { data: JSON.stringify(['NOTICE', 'hi']) });
-      socket.emit('message', { data: JSON.stringify(['OK', 'other-id', true]) });
-      socket.emit('message', { data: JSON.stringify(['OK', 'abc123', true]) });
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: true }]);
-  });
-
-  it('publishes to multiple URLs independently', async () => {
-    const okSocket = new FakeSocket();
-    const badSocket = new FakeSocket();
-    const sockets = [okSocket, badSocket];
-    let i = 0;
-    const pub = new WebsocketNostrPublisher(() => sockets[i++]!);
-    const pending = pub.publish(event, ['wss://ok', 'wss://bad'], 100);
-    queueMicrotask(() => {
-      okSocket.emit('open');
-      okSocket.emit('message', { data: JSON.stringify(['OK', 'abc123', true]) });
-      badSocket.emit('open');
-      badSocket.emit('message', { data: JSON.stringify(['OK', 'abc123', false]) });
-    });
+  it('sends EVENT and maps OK true/false per URL in input order', async () => {
+    const pub = new WebsocketNostrPublisher(pool);
+    const pending = pub.publish(event, ['wss://a', 'wss://b'], 100);
+    const [a, b] = factory.sockets as [FakeSocket, FakeSocket];
+    a.emit('open');
+    b.emit('open');
+    expect(a.frames()).toEqual([['EVENT', event]]);
+    b.frame('OK', 'abc123', false, 'blocked');
+    a.frame('OK', 'abc123', true, '');
     await expect(pending).resolves.toEqual([
-      { url: 'wss://ok', ok: true },
-      { url: 'wss://bad', ok: false },
+      { url: 'wss://a', ok: true },
+      { url: 'wss://b', ok: false },
     ]);
+    expect(a.closed).toBe(false);
   });
 
-  it('still settles when close throws after OK', async () => {
-    const socket = new FakeSocket();
-    socket.throwOnClose = true;
-    const pub = new WebsocketNostrPublisher(() => socket);
-    const pending = pub.publish(event, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      socket.emit('message', { data: JSON.stringify(['OK', 'abc123', true]) });
-    });
+  it('normalizes a JSON-string event before sending', async () => {
+    const pub = new WebsocketNostrPublisher(pool);
+    const pending = pub.publish(
+      JSON.stringify(event) as unknown as Record<string, unknown>,
+      ['wss://a'],
+      100,
+    );
+    const socket = factory.last();
+    socket.emit('open');
+    expect(socket.frames()).toEqual([['EVENT', event]]);
+    socket.frame('OK', 'abc123', true);
     await expect(pending).resolves.toEqual([{ url: 'wss://a', ok: true }]);
   });
 
-  it('uses the default WebSocket factory when constructed with no args', async () => {
-    originalWebSocket = globalThis.WebSocket;
+  it('fails every URL without a socket when the event is not usable', async () => {
+    const pub = new WebsocketNostrPublisher(pool);
+    await expect(
+      pub.publish('{bad' as unknown as Record<string, unknown>, ['wss://a', 'wss://b'], 100),
+    ).resolves.toEqual([
+      { url: 'wss://a', ok: false },
+      { url: 'wss://b', ok: false },
+    ]);
+    expect(factory.sockets).toHaveLength(0);
+  });
+
+  it('is ok: false on drop, on timeout, and when the socket cannot open', async () => {
+    vi.useFakeTimers();
+    try {
+      const pub = new WebsocketNostrPublisher(pool);
+      const dropped = pub.publish(event, ['wss://a'], 100);
+      factory.last().emit('open');
+      factory.last().emit('close');
+      await expect(dropped).resolves.toEqual([{ url: 'wss://a', ok: false }]);
+      const timedOut = pub.publish(event, ['wss://b'], 100);
+      factory.last().emit('open');
+      vi.advanceTimersByTime(100);
+      await expect(timedOut).resolves.toEqual([{ url: 'wss://b', ok: false }]);
+      factory.throwNext = true;
+      await expect(pub.publish(event, ['wss://c'], 100)).resolves.toEqual([
+        { url: 'wss://c', ok: false },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses the shared process pool when constructed with no args', async () => {
+    const originalWebSocket = globalThis.WebSocket;
     const socket = new FakeSocket();
     globalThis.WebSocket = class {
       constructor(_url: string) {
         return socket;
       }
     } as unknown as typeof WebSocket;
-
-    const pub = new WebsocketNostrPublisher();
-    const pending = pub.publish(event, ['wss://default'], 100);
-    queueMicrotask(() => {
+    try {
+      const pub = new WebsocketNostrPublisher();
+      const pending = pub.publish(event, ['wss://default'], 100);
       socket.emit('open');
-      socket.emit('message', { data: JSON.stringify(['OK', 'abc123', true]) });
-    });
-    await expect(pending).resolves.toEqual([{ url: 'wss://default', ok: true }]);
-    expect(socket.sent[0]).toBe(JSON.stringify(['EVENT', event]));
+      socket.frame('OK', 'abc123', true);
+      await expect(pending).resolves.toEqual([{ url: 'wss://default', ok: true }]);
+      expect(socket.frames()[0]).toEqual(['EVENT', event]);
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+    }
   });
 });
