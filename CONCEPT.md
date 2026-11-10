@@ -177,7 +177,7 @@ row (`createdAt` desc, then `id` desc), both without changing `role`.
 | Basis     | Log in, maintain a profile, receive gifts (default). No forum tag. Pays 1 sat to 21.gifts before posting or replying, except a free first top-level post and a reply on their own note.          |
 | Verified  | Everything Basis can, plus a forum tag: a moderator physically met this person. Not a verified wallet. May post and reply without a Bitcoin payment.                                             |
 | Moderator | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag. |
-| Initiator | Rank 4, the minimum rank for the daily payout roster. Forum tag.                                                                                                                                  |
+| Initiator | Rank 4, the minimum rank for the daily payout roster. Forum tag.                                                                                                                                 |
 | Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                                                        |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
