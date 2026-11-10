@@ -1741,8 +1741,9 @@ describe('FondQueueSink', () => {
   });
 
   it('uses the clock UTC day when the body has no day and maps kinds', async () => {
-    const store = new InMemoryFondPayoutStore(() => Date.parse('2026-11-09T23:30:00.000Z'));
-    const sink = new FondQueueSink({ store });
+    const now = (): number => Date.parse('2026-11-09T23:30:00.000Z');
+    const store = new InMemoryFondPayoutStore(now);
+    const sink = new FondQueueSink({ store, now });
     await sink.deliver(ADDRESS, {
       address: ADDRESS,
       kind: 'moderator',
