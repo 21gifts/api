@@ -1286,6 +1286,10 @@ export interface MessageStore {
   /**
    * Sum of zap sats per 21.gifts payer of one note.
    *
+   * Each receipt adds the fiat of its oldest indexed ingest line on the same
+   * note, the amount fixed when it was paid. A later ingest does not replace
+   * it. A missing line or a null column stays null.
+   *
    * @param messageId - Forum note.
    * @returns Positive contributions. External payers without an account are omitted.
    */
@@ -4155,6 +4159,16 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
+  /**
+   * Sum of zap sats per 21.gifts payer of one note.
+   *
+   * Each receipt adds the fiat of its oldest indexed ingest line on the same
+   * note, the amount fixed when it was paid. A later ingest does not replace
+   * it. A missing line or a null column stays null.
+   *
+   * @param messageId - Forum note.
+   * @returns Positive contributions. External payers without an account are omitted.
+   */
   listCreditPayers(messageId: string): Promise<
     {
       accountId: string;
@@ -4184,10 +4198,7 @@ export class InMemoryMessageStore implements MessageStore {
       ) {
         continue;
       }
-      const ingest = this.#zapIngests.find(
-        (row) =>
-          row.receiptId === eventId && row.outcome === 'indexed' && row.messageId === messageId,
-      );
+      const ingest = this.#oldestIndexedIngest(eventId, messageId);
       const current = totals.get(receipt.payerAccountId) ?? {
         sats: 0,
         usd: null,
@@ -7779,6 +7790,17 @@ export class PostgresMessageStore implements MessageStore {
     );
   }
 
+  /**
+   * Sum of zap sats per 21.gifts payer of one note.
+   *
+   * Each receipt adds the fiat of its oldest indexed ingest line on the same
+   * note, the amount fixed when it was paid (`created_at` ascending, then
+   * `id` ascending, `outcome = 'indexed'`, same `message_id`). A later ingest
+   * does not replace it. A missing line or a null column stays null.
+   *
+   * @param messageId - Forum note.
+   * @returns Positive contributions. External payers without an account are omitted.
+   */
   async listCreditPayers(messageId: string): Promise<
     {
       accountId: string;
@@ -7810,7 +7832,7 @@ export class PostgresMessageStore implements MessageStore {
          WHERE receipt_id = r.event_id
            AND outcome = 'indexed'
            AND message_id = r.message_id
-         ORDER BY created_at DESC, id DESC
+         ORDER BY created_at ASC, id ASC
          LIMIT 1
        ) i ON true
        JOIN message m ON m.id = r.message_id

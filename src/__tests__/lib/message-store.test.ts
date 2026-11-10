@@ -10884,6 +10884,98 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/recorded_at <= m.goal_funded_at/);
     expect(sql.queries[0]?.text).toContain('SUM(i.fiat_usd)::text');
     expect(sql.queries[0]?.text).not.toContain('COUNT(i.fiat_usd) = COUNT(*)');
+    expect(sql.queries[0]?.text).toContain("outcome = 'indexed'");
+    expect(sql.queries[0]?.text).toContain('message_id = r.message_id');
+    expect(sql.queries[0]?.text).toContain('ORDER BY created_at ASC, id ASC');
+    expect(sql.queries[0]?.text).not.toContain('ORDER BY created_at DESC');
+  });
+
+  it('listCreditPayers keeps the oldest indexed ingest on the same note', async () => {
+    const memory = new InMemoryMessageStore();
+    const ingest = async (
+      id: string,
+      receiptId: string,
+      createdAt: string,
+      messageId: string,
+      amount: string,
+    ): Promise<void> => {
+      await memory.recordZapIngest({
+        id,
+        createdAt: new Date(createdAt),
+        receiptId,
+        noteEventId: null,
+        messageId,
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 21,
+        amountUsd: amount,
+        amountChf: amount,
+        amountEur: amount,
+        amountPhp: amount,
+        receiptPubkey: null,
+        receipt: { id: receiptId, kind: 9735 },
+      });
+    };
+    await memory.recordZapReceipt('r1', 'm1', 21, null);
+    await memory.updateZapReceiptGift('r1', { payerAccountId: 'giver' });
+    await ingest('zi-other', 'r1', '2026-05-01T00:00:00.000Z', 'other-note', '9.99');
+    await ingest('zi-new', 'r1', '2026-06-02T00:00:00.000Z', 'm1', '1.00');
+    await ingest('zi-old', 'r1', '2026-06-01T00:00:00.000Z', 'm1', '4.50');
+    expect(await memory.listCreditPayers('m1')).toEqual([
+      { accountId: 'giver', sats: 21, usd: '4.50', chf: '4.50', eur: '4.50', php: '4.50' },
+    ]);
+    await memory.recordZapReceipt('r-tie', 'm-tie', 8, null);
+    await memory.updateZapReceiptGift('r-tie', { payerAccountId: 'giver' });
+    const tiedAt = '2026-06-05T00:00:00.000Z';
+    await ingest('zi-b', 'r-tie', tiedAt, 'm-tie', '9.00');
+    await ingest('zi-a', 'r-tie', tiedAt, 'm-tie', '3.25');
+    expect(await memory.listCreditPayers('m-tie')).toEqual([
+      { accountId: 'giver', sats: 8, usd: '3.25', chf: '3.25', eur: '3.25', php: '3.25' },
+    ]);
+  });
+
+  it('listCreditPayers and listLoanLedger share the oldest indexed amount', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'loan',
+      accountId: 'author',
+      goalSats: 500,
+      goalRepayable: true,
+    });
+    await store.recordZapReceipt('r-grant', 'loan', 100, null);
+    await store.updateZapReceiptGift('r-grant', { payerAccountId: 'payer' });
+    const ingest = async (id: string, createdAt: string, amount: string): Promise<void> => {
+      await store.recordZapIngest({
+        id,
+        createdAt: new Date(createdAt),
+        receiptId: 'r-grant',
+        noteEventId: null,
+        messageId: 'loan',
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 100,
+        amountUsd: amount,
+        amountChf: amount,
+        amountEur: amount,
+        amountPhp: amount,
+        receiptPubkey: null,
+        receipt: { id: 'r-grant', kind: 9735 },
+      });
+    };
+    await ingest('zi-new', '2026-06-02T00:00:00.000Z', '1.00');
+    await ingest('zi-old', '2026-06-01T00:00:00.000Z', '4.50');
+    expect(await store.listCreditPayers('loan')).toEqual([
+      { accountId: 'payer', sats: 100, usd: '4.50', chf: '4.50', eur: '4.50', php: '4.50' },
+    ]);
+    const grant = (await store.listLoanLedger('payer')).find((row) => row.kind === 'grant');
+    expect(grant).toMatchObject({
+      sats: 100,
+      amountUsd: '4.50',
+      amountChf: '4.50',
+      amountEur: '4.50',
+      amountPhp: '4.50',
+    });
   });
 
   it('ignores a gift that arrives after the credit has filled', async () => {
@@ -11199,17 +11291,17 @@ describe('PostgresMessageStore', () => {
     });
     await store.recordZapReceipt('r-keep', 'loan', 7, null);
     await store.updateZapReceiptGift('r-keep', { payerAccountId: 'payer' });
+    await ingest('zi-keep-rej', 'r-keep', '2026-05-15T00:00:00.000Z', 'rejected', {
+      amountUsd: '9.00',
+      amountChf: '9.00',
+      amountEur: '9.00',
+      amountPhp: '9.00',
+    });
     await ingest('zi-keep-old', 'r-keep', '2026-06-01T00:00:00.000Z', 'indexed', {
       amountUsd: '4.00',
       amountChf: '4.00',
       amountEur: '4.00',
       amountPhp: '4.00',
-    });
-    await ingest('zi-keep-rej', 'r-keep', '2026-06-04T00:00:00.000Z', 'rejected', {
-      amountUsd: '9.00',
-      amountChf: '9.00',
-      amountEur: '9.00',
-      amountPhp: '9.00',
     });
     await store.recordZapReceipt('r-tie', 'loan', 3, null);
     await store.updateZapReceiptGift('r-tie', { payerAccountId: 'payer' });
