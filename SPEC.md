@@ -5925,9 +5925,9 @@ after 60 reports from one account in 60 seconds; `413`
 
 ### `POST /me/wallet/counterparties`
 
-Bearer required. Request `{ "payments": [{ "id", "direction", "invoice", "paymentHash" }] }` has 1–32 entries. Direction is required and is `in` or `out`. Each id is 1–128 characters; invoice is null, absent, or 1–4096 characters without NUL; paymentHash is null, absent, or 64 hex characters. Invoice and hash are trimmed before matching, as in the wallet report; an invoice that becomes empty is treated as absent. At least one key is required. Duplicate ids keep the first entry. The body limit is 8192 bytes and the per-account rate limit is 60 per minute.
+Bearer required. Request `{ "payments": [{ "id", "direction" }] }` has 1–32 entries. Direction is `in` or `out` and each id is 1–128 characters. Extra fields are ignored. Duplicate ids keep the first entry. The body limit is 8192 bytes and the per-account rate limit is 60 per minute.
 
-For `in`, match invoice or case-insensitive payment hash against completed outgoing payments of other accounts whose counterparty is the caller, returning their account id. For `out`, match the caller's completed outgoing payments and return their non-null, non-self counterparty id. The request id is only a correlation handle and is never matched to a payment id. Multiple rows for one account count once; multiple accounts are ambiguous and omitted. Missing accounts, platform accounts and accounts without a username are omitted. Response: `200 { "counterparties": [{ "id", "accountId", "username" }] }`.
+The caller must have reported the same payment id and direction as completed. For `in`, the counterparties are other accounts that reported the same payment id as a completed outgoing payment. For `out`, the counterparty is the non-null, non-self counterparty of the caller's own payment. Multiple accounts are ambiguous and omitted. Missing accounts, platform accounts and accounts without a username are omitted. Response: `200 { "counterparties": [{ "id", "accountId", "username" }] }`.
 
 Errors: 401 unauthorized, 429 rate limited, 413 body too large, 400 `{ "error": "Invalid counterparty lookup" }`, and 503 `{ "error": "Counterparty lookup is unavailable" }` on store failure.
 

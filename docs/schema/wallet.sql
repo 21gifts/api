@@ -39,4 +39,3 @@ CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (ac
 
 -- Pairs the two sides of an internal transfer (same payment_id on two accounts).
 CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id);
-CREATE INDEX IF NOT EXISTS wallet_payment_counterparty_idx ON wallet_payment (counterparty_account_id) WHERE direction = 'out';

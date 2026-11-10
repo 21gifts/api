@@ -55,26 +55,6 @@ describe('POST /me/wallet/counterparties', () => {
       'id is longer than 128 characters',
       { payments: [{ id: 'a'.repeat(129), direction: 'in', invoice: 'x' }] },
     ],
-    ['invoice is empty', { payments: [{ id: 'a', direction: 'in', invoice: '' }] }],
-    [
-      'invoice is whitespace with no hash',
-      { payments: [{ id: 'a', direction: 'in', invoice: '   ' }] },
-    ],
-    [
-      'invoice is longer than 4096 characters',
-      { payments: [{ id: 'a', direction: 'in', invoice: 'x'.repeat(4097) }] },
-    ],
-    ['invoice is not a string', { payments: [{ id: 'a', direction: 'in', invoice: 1 }] }],
-    ['invoice contains NUL', { payments: [{ id: 'a', direction: 'in', invoice: 'x\u0000y' }] }],
-    [
-      'payment hash has 63 characters',
-      { payments: [{ id: 'a', direction: 'in', paymentHash: 'a'.repeat(63) }] },
-    ],
-    [
-      'payment hash is not hexadecimal',
-      { payments: [{ id: 'a', direction: 'in', paymentHash: 'g'.repeat(64) }] },
-    ],
-    ['neither lookup key is present', { payments: [{ id: 'a', direction: 'in' }] }],
   ])('rejects invalid input when %s', async (_name, body) => {
     const { auth, wallet } = await setup();
     const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
@@ -128,11 +108,6 @@ describe('POST /me/wallet/counterparties', () => {
         { id: '', direction: 'in', invoice: 'x' },
         { id: 'a'.repeat(129), direction: 'in', invoice: 'x' },
         { id: 'a' },
-        { id: 'a', direction: 'in', invoice: '' },
-        { id: 'a', direction: 'in', invoice: 'x'.repeat(4097) },
-        { id: 'a', direction: 'in', invoice: 1 },
-        { id: 'a', direction: 'in', paymentHash: 'g'.repeat(64) },
-        { id: 'a', direction: 'in', paymentHash: 'a'.repeat(63) },
       ].map((item) => JSON.stringify({ payments: [item] })),
     ]) {
       expect(
@@ -184,7 +159,7 @@ describe('POST /me/wallet/counterparties', () => {
         headers,
         body: JSON.stringify({
           payments: [
-            { id: 'a', direction, paymentHash: 'A'.repeat(64) },
+            { id: 'a', direction, invoice: 42, paymentHash: 'invalid' },
             { id: 'a', direction, invoice: 'second' },
             { id: 'ambiguous', direction, invoice: 'x' },
             { id: 'missing', direction, invoice: 'x' },
@@ -198,73 +173,48 @@ describe('POST /me/wallet/counterparties', () => {
       expect(lookup.mock.calls[0]?.[1][0]).toEqual({
         id: 'a',
         direction,
-        invoice: null,
-        paymentHash: 'a'.repeat(64),
       });
       expect(lookup.mock.calls[0]?.[1]).toHaveLength(4);
     },
   );
 
-  it('matches invoice or hash but never the client payment id', async () => {
+  it('matches completed payments by id and uses the caller’s outgoing counterparty', async () => {
     const { auth, wallet } = await setup();
     const time = new Date(now);
     const row: WalletPaymentRecord = {
       accountId: sender,
-      paymentId: 'sdk-id',
+      paymentId: 'shared',
       direction: 'out',
       status: 'completed',
       amountSats: 1,
       feeSats: 0,
       paidAt: time,
       method: 'spark',
-      paymentHash: 'A'.repeat(64),
-      invoice: 'spark1invoice',
+      paymentHash: null,
+      invoice: null,
       destination: null,
       description: null,
       lnurlComment: null,
       category: 'member',
-      counterpartyAccountId: receiver,
+      counterpartyAccountId: null,
       firstSeenAt: time,
       updatedAt: time,
     };
     await wallet.upsertPayments([
       row,
-      { ...row, paymentId: 'second' },
-      {
-        ...row,
-        accountId: receiver,
-        paymentId: 'out',
-        invoice: 'own',
-        counterpartyAccountId: sender,
-      },
-      {
-        ...row,
-        accountId: receiver,
-        paymentId: 'null',
-        invoice: 'null',
-        counterpartyAccountId: null,
-      },
-      {
-        ...row,
-        accountId: receiver,
-        paymentId: 'self',
-        invoice: 'self',
-        counterpartyAccountId: receiver,
-      },
-      {
-        ...row,
-        accountId: receiver,
-        paymentId: 'ambiguous-a',
-        invoice: 'ambiguous',
-        counterpartyAccountId: sender,
-      },
-      {
-        ...row,
-        accountId: receiver,
-        paymentId: 'ambiguous-b',
-        invoice: 'ambiguous',
-        counterpartyAccountId: '33333333-3333-4333-8333-333333333333',
-      },
+      { ...row, accountId: receiver, direction: 'in' },
+      { ...row, paymentId: 'out', accountId: receiver, counterpartyAccountId: sender },
+      { ...row, paymentId: 'null', accountId: receiver },
+      { ...row, paymentId: 'self', accountId: receiver, counterpartyAccountId: receiver },
+      { ...row, paymentId: 'pending-own' },
+      { ...row, paymentId: 'pending-own', accountId: receiver, direction: 'in', status: 'pending' },
+      { ...row, paymentId: 'wrong-direction' },
+      { ...row, paymentId: 'wrong-direction', accountId: receiver },
+      { ...row, paymentId: 'pending-sender', status: 'pending' },
+      { ...row, paymentId: 'pending-sender', accountId: receiver, direction: 'in' },
+      { ...row, paymentId: 'ambiguous' },
+      { ...row, paymentId: 'ambiguous', accountId: '33333333-3333-4333-8333-333333333333' },
+      { ...row, paymentId: 'ambiguous', accountId: receiver, direction: 'in' },
     ]);
     const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
     const response = await app.request('/me/wallet/counterparties', {
@@ -272,27 +222,21 @@ describe('POST /me/wallet/counterparties', () => {
       headers,
       body: JSON.stringify({
         payments: [
-          { id: 'invoice', direction: 'in', invoice: 'spark1invoice' },
-          { id: 'hash', direction: 'in', paymentHash: 'A'.repeat(64) },
-          { id: 'trim-invoice', direction: 'in', invoice: '  spark1invoice  ' },
-          { id: 'trim-hash', direction: 'in', paymentHash: `  ${'A'.repeat(64)}  ` },
-          { id: 'blank-invoice', direction: 'in', invoice: '   ', paymentHash: 'A'.repeat(64) },
-          { id: 'sdk-id', direction: 'in', invoice: 'different' },
-          { id: 'out', direction: 'out', invoice: 'own' },
-          { id: 'out-null', direction: 'out', invoice: 'null' },
-          { id: 'out-self', direction: 'out', invoice: 'self' },
-          { id: 'out-ambiguous', direction: 'out', invoice: 'ambiguous' },
-          { id: 'out-missing', direction: 'out', invoice: 'not-found' },
+          { id: 'shared', direction: 'in', invoice: 42, paymentHash: 'invalid' },
+          { id: 'out', direction: 'out' },
+          { id: 'null', direction: 'out' },
+          { id: 'self', direction: 'out' },
+          { id: 'pending-own', direction: 'in' },
+          { id: 'wrong-direction', direction: 'in' },
+          { id: 'pending-sender', direction: 'in' },
+          { id: 'ambiguous', direction: 'in' },
+          { id: 'missing', direction: 'in' },
         ],
       }),
     });
     expect(await response.json()).toEqual({
       counterparties: [
-        { id: 'invoice', accountId: sender, username: 'sender' },
-        { id: 'hash', accountId: sender, username: 'sender' },
-        { id: 'trim-invoice', accountId: sender, username: 'sender' },
-        { id: 'trim-hash', accountId: sender, username: 'sender' },
-        { id: 'blank-invoice', accountId: sender, username: 'sender' },
+        { id: 'shared', accountId: sender, username: 'sender' },
         { id: 'out', accountId: sender, username: 'sender' },
       ],
     });

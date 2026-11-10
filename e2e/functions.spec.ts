@@ -4405,6 +4405,18 @@ test('Function: walletCounterpartyRoutes — no bearer is 401', async ({ request
   expect(res.status()).toBe(401);
 });
 
+test('Function: walletCounterpartyRoutes — unreported payment has no counterparty', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/counterparties', {
+    headers: { authorization: auth.authorization },
+    data: { payments: [{ id: 'unreported', direction: 'out' }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ counterparties: [] });
+});
+
 test('Function: InMemoryWalletStore — pending then completed same id both 200', async ({
   request,
 }) => {

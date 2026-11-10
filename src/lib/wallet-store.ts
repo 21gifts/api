@@ -59,11 +59,11 @@ export interface WalletPaymentCursor {
 /** Persistence contract for wallet report data. */
 export interface WalletStore {
   /**
-   * Find distinct counterparties of completed outgoing payments matching either lookup key.
+   * Find counterparties for the caller's completed payments by payment id and direction.
    *
    * @param receiverAccountId - Caller account id.
-   * @param keys - Client correlation ids, directions, and nullable invoice and hash lookup keys.
-   * @returns Matching counterparty account ids sorted by id, keyed by correlation id; absent ids have no matches.
+   * @param keys - Payment ids and directions.
+   * @returns Matching counterparty account ids sorted by id, keyed by payment id; absent ids have no matches.
    * @throws Propagates storage failures.
    */
   findPaymentCounterparties(
@@ -71,8 +71,6 @@ export interface WalletStore {
     keys: readonly {
       id: string;
       direction: 'in' | 'out';
-      invoice: string | null;
-      paymentHash: string | null;
     }[],
   ): Promise<Map<string, string[]>>;
   /**
@@ -166,7 +164,6 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC)`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)`,
-  `CREATE INDEX IF NOT EXISTS wallet_payment_counterparty_idx ON wallet_payment (counterparty_account_id) WHERE direction = 'out'`,
 ];
 
 /**
@@ -302,46 +299,40 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
-   * Find distinct counterparties of completed outgoing payments.
+   * Find counterparties for the caller's completed payments.
    * @param receiverAccountId - Caller account id.
-   * @param keys - Correlation ids with direction, invoice and hash keys.
-   * @returns Matching sorted account ids by correlation id.
+   * @param keys - Payment ids and directions.
+   * @returns Matching sorted account ids by payment id.
    */
   findPaymentCounterparties(
     receiverAccountId: string,
     keys: readonly {
       id: string;
       direction: 'in' | 'out';
-      invoice: string | null;
-      paymentHash: string | null;
     }[],
   ): Promise<Map<string, string[]>> {
     const result = new Map<string, string[]>();
     for (const key of keys) {
+      const own = this.#payments.get(`${receiverAccountId}\u0000${key.id}`)?.row;
+      if (own === undefined || own.direction !== key.direction || own.status !== 'completed')
+        continue;
       const senders = new Set<string>();
-      for (const { row } of this.#payments.values()) {
-        if (
-          row.direction === 'out' &&
-          row.status === 'completed' &&
-          ((key.invoice !== null && row.invoice === key.invoice) ||
-            (key.paymentHash !== null &&
-              row.paymentHash?.toLowerCase() === key.paymentHash.toLowerCase()))
-        ) {
-          if (key.direction === 'in') {
-            if (
-              row.counterpartyAccountId === receiverAccountId &&
-              row.accountId !== receiverAccountId
-            ) {
-              senders.add(row.accountId);
-            }
-          } else if (
-            row.accountId === receiverAccountId &&
-            row.counterpartyAccountId !== null &&
-            row.counterpartyAccountId !== receiverAccountId
+      if (key.direction === 'in') {
+        for (const { row } of this.#payments.values()) {
+          if (
+            row.paymentId === key.id &&
+            row.direction === 'out' &&
+            row.status === 'completed' &&
+            row.accountId !== receiverAccountId
           ) {
-            senders.add(row.counterpartyAccountId);
+            senders.add(row.accountId);
           }
         }
+      } else if (
+        own.counterpartyAccountId !== null &&
+        own.counterpartyAccountId !== receiverAccountId
+      ) {
+        senders.add(own.counterpartyAccountId);
       }
       if (senders.size > 0) result.set(key.id, [...senders].sort());
     }
@@ -692,10 +683,10 @@ export class PostgresWalletStore implements WalletStore {
   constructor(private readonly sql: SqlClient) {}
 
   /**
-   * Find distinct counterparties of completed outgoing payments in one query.
+   * Find counterparties for the caller's completed payments in one query.
    * @param receiverAccountId - Caller account id.
-   * @param keys - Correlation ids with direction, invoice and hash keys.
-   * @returns Matching sorted account ids by correlation id.
+   * @param keys - Payment ids and directions.
+   * @returns Matching sorted account ids by payment id.
    * @throws Propagates SQL failures.
    */
   async findPaymentCounterparties(
@@ -703,41 +694,35 @@ export class PostgresWalletStore implements WalletStore {
     keys: readonly {
       id: string;
       direction: 'in' | 'out';
-      invoice: string | null;
-      paymentHash: string | null;
     }[],
   ): Promise<Map<string, string[]>> {
+    // PostgreSQL text cannot contain NUL, so such ids cannot have stored matches.
+    const searchableKeys = keys.filter((key) => !key.id.includes('\u0000'));
     const rows = await this.sql.query<{ id: string; account_id: string }>(
-      `WITH k AS (SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[]) AS t(id, invoice, payment_hash, direction)),
+      `WITH k AS (SELECT * FROM unnest($2::text[], $3::text[]) AS t(id, direction)),
 matches AS (
 SELECT k.id, p.account_id
-FROM k JOIN wallet_payment p ON k.direction = 'in' AND p.direction = 'out'
-  AND p.counterparty_account_id = $1 AND p.account_id <> $1 AND p.status = 'completed'
-  AND ((NULLIF(k.invoice, '') IS NOT NULL AND p.invoice = k.invoice)
-    OR (NULLIF(k.payment_hash, '') IS NOT NULL AND lower(p.payment_hash) = lower(k.payment_hash)))
+FROM k JOIN wallet_payment own ON own.account_id = $1 AND own.payment_id = k.id
+  AND own.direction = k.direction AND own.status = 'completed'
+JOIN wallet_payment p ON k.direction = 'in' AND p.payment_id = k.id
+  AND p.direction = 'out' AND p.account_id <> $1 AND p.status = 'completed'
 UNION
-SELECT k.id, p.counterparty_account_id AS account_id
-FROM k JOIN wallet_payment p ON k.direction = 'out' AND p.direction = 'out'
-  AND p.account_id = $1 AND p.counterparty_account_id IS NOT NULL
-  AND p.counterparty_account_id <> $1 AND p.status = 'completed'
-  AND ((NULLIF(k.invoice, '') IS NOT NULL AND p.invoice = k.invoice)
-    OR (NULLIF(k.payment_hash, '') IS NOT NULL AND lower(p.payment_hash) = lower(k.payment_hash)))
+SELECT k.id, own.counterparty_account_id AS account_id
+FROM k JOIN wallet_payment own ON own.account_id = $1 AND own.payment_id = k.id
+  AND own.direction = k.direction AND own.status = 'completed'
+WHERE k.direction = 'out' AND own.counterparty_account_id IS NOT NULL
+  AND own.counterparty_account_id <> $1
 )
 SELECT id, account_id FROM matches ORDER BY id, account_id`,
       [
         receiverAccountId,
-        postgresTextArrayLiteral(keys.map((_, index) => String(index))),
-        postgresTextArrayLiteral(keys.map((key) => key.invoice ?? '')),
-        postgresTextArrayLiteral(keys.map((key) => key.paymentHash ?? '')),
-        postgresTextArrayLiteral(keys.map((key) => key.direction)),
+        postgresTextArrayLiteral(searchableKeys.map((key) => key.id)),
+        postgresTextArrayLiteral(searchableKeys.map((key) => key.direction)),
       ],
     );
     const result = new Map<string, string[]>();
     for (const row of rows) {
-      const key = keys[Number(row.id)];
-      /* v8 ignore next -- SQL returns only indexes generated from these keys in the same query. */
-      if (key === undefined) continue;
-      result.set(key.id, [...(result.get(key.id) ?? []), row.account_id]);
+      result.set(row.id, [...(result.get(row.id) ?? []), row.account_id]);
     }
     return result;
   }

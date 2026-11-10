@@ -23,8 +23,6 @@ export interface WalletCounterpartyRouteDeps {
 type Key = {
   id: string;
   direction: 'in' | 'out';
-  invoice: string | null;
-  paymentHash: string | null;
 };
 
 function parsePayments(body: unknown): Key[] | null {
@@ -35,52 +33,18 @@ function parsePayments(body: unknown): Key[] | null {
   const seen = new Set<string>();
   for (const item of payments) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
-    const {
-      id,
-      direction,
-      invoice: rawInvoice,
-      paymentHash: rawPaymentHash,
-    } = item as {
-      id?: unknown;
-      direction?: unknown;
-      invoice?: unknown;
-      paymentHash?: unknown;
-    };
-    const invoice = typeof rawInvoice === 'string' ? rawInvoice.trim() || null : rawInvoice;
-    const paymentHash = typeof rawPaymentHash === 'string' ? rawPaymentHash.trim() : rawPaymentHash;
+    const { id, direction } = item as { id?: unknown; direction?: unknown };
     if (typeof id !== 'string' || id.length === 0 || id.length > 128) return null;
     if (direction !== 'in' && direction !== 'out') return null;
-    if (
-      invoice !== null &&
-      invoice !== undefined &&
-      (typeof invoice !== 'string' || invoice.length > 4096 || invoice.includes('\u0000'))
-    )
-      return null;
-    if (
-      paymentHash !== null &&
-      paymentHash !== undefined &&
-      (typeof paymentHash !== 'string' || !/^[0-9a-f]{64}$/i.test(paymentHash))
-    )
-      return null;
-    if (
-      (invoice === null || invoice === undefined) &&
-      (paymentHash === null || paymentHash === undefined)
-    )
-      return null;
     if (seen.has(id)) continue;
     seen.add(id);
-    keys.push({
-      id,
-      direction,
-      invoice: (invoice as string | null | undefined) ?? null,
-      paymentHash: typeof paymentHash === 'string' ? paymentHash.toLowerCase() : null,
-    });
+    keys.push({ id, direction });
   }
   return keys;
 }
 
 /**
- * Build the authenticated counterparty lookup route.
+ * Build the authenticated counterparty lookup route for completed reported payments.
  * @param deps - Auth, wallet store, clock, and optional limiter.
  * @returns A Hono app serving `POST /me/wallet/counterparties`.
  */
