@@ -130,9 +130,10 @@ export interface PushStore {
 
   /**
    * Append a pending outbox row for a received payment, once per payment
-   * hash. The claim on the hash and the row are written together.
+   * key. The claim on the key and the row are written together.
    *
-   * @param paymentHash - BOLT11 payment hash (lowercase hex).
+   * @param paymentHash - Payment key, 64 lowercase hex: a BOLT11 payment hash,
+   *   or the SHA-256 of a member Spark invoice string (`PaymentReceived.paymentHash`).
    * @param row - Fully formed outbox row.
    * @returns `true` when the row was enqueued; `false` when the hash was
    *   already claimed and nothing was written.
