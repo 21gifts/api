@@ -76,6 +76,13 @@ export interface WalletStore {
   latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined>;
 
   /**
+   * Return the newest received balance snapshot of every account and UTC day.
+   *
+   * @returns One caller-owned snapshot per account and UTC day, ordered by account then time.
+   */
+  dailyBalances(): Promise<WalletBalanceSnapshot[]>;
+
+  /**
    * Aggregate completed payments by direction for one account.
    *
    * @param accountId - Reporting account id.
@@ -340,6 +347,33 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
+   * Return the newest snapshot of every account and UTC day.
+   *
+   * @returns One snapshot copy per account and UTC day, oldest received time first per account.
+   */
+  dailyBalances(): Promise<WalletBalanceSnapshot[]> {
+    const byAccountDay = new Map<string, WalletBalanceSnapshot>();
+    for (const row of this.#balances) {
+      const key = `${row.accountId}\u0000${row.receivedAt.toISOString().slice(0, 10)}`;
+      const current = byAccountDay.get(key);
+      if (current === undefined || isLaterBalance(row, current)) {
+        byAccountDay.set(key, row);
+      }
+    }
+    return Promise.resolve(
+      [...byAccountDay.values()]
+        .sort((left, right) => {
+          const byAccount = left.accountId.localeCompare(right.accountId);
+          if (byAccount !== 0) {
+            return byAccount;
+          }
+          return left.receivedAt.getTime() - right.receivedAt.getTime();
+        })
+        .map(copyBalance),
+    );
+  }
+
+  /**
    * Sum completed payments by direction over stored rows.
    *
    * @param accountId - Reporting account id.
@@ -382,6 +416,11 @@ export class InMemoryWalletStore implements WalletStore {
         .map(copyPayment),
     );
   }
+}
+
+function isLaterBalance(candidate: WalletBalanceSnapshot, current: WalletBalanceSnapshot): boolean {
+  const byTime = candidate.receivedAt.getTime() - current.receivedAt.getTime();
+  return byTime > 0 || (byTime === 0 && byteOrder(candidate.id, current.id) > 0);
 }
 
 interface WalletBalanceSqlRow {
@@ -669,6 +708,25 @@ LIMIT 1`,
     );
     const row = rows[0];
     return row === undefined ? undefined : mapBalance(row);
+  }
+
+  /**
+   * Read the last snapshot of every account and UTC day in one query.
+   *
+   * The existing `(account_id, received_at DESC, id DESC)` index supplies the
+   * account and received-time order. The derived day can still need a sort, but
+   * the query returns only one row per account and day, never the whole table.
+   *
+   * @returns Mapped snapshots, at most one per account and UTC day.
+   */
+  async dailyBalances(): Promise<WalletBalanceSnapshot[]> {
+    const rows = await this.sql.query<WalletBalanceSqlRow>(
+      `SELECT DISTINCT ON (account_id, ((received_at AT TIME ZONE 'UTC')::date))
+id, account_id, balance_sats, synced_at, received_at
+FROM wallet_balance_snapshot
+ORDER BY account_id, ((received_at AT TIME ZONE 'UTC')::date), received_at DESC, id DESC`,
+    );
+    return rows.map(mapBalance);
   }
 
   /**

@@ -19,6 +19,7 @@ import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
 import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
+import { walletStatsRoutes } from '@/routes/wallets';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
 import { fondRoutes } from '@/routes/fond';
@@ -514,7 +515,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`),
  *   walletStore (optional; default {@link InMemoryWalletStore}; mounts
- *   `POST /me/wallet/report`; SQL boot injects {@link PostgresWalletStore}),
+ *   `POST /me/wallet/report` and `GET /wallets/stats`; SQL boot injects
+ *   {@link PostgresWalletStore}),
  *   and memberEventStore (optional; default {@link InMemoryMemberEventStore};
  *   mounts `POST /me/events`; SQL boot injects
  *   {@link PostgresMemberEventStore}), and loginGateStore (optional; default
@@ -1073,6 +1075,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/gifts/stats',
     giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }),
   );
+  app.route('/wallets', walletStatsRoutes({ store: walletStore, now }));
   app.route('/fx', fxRoutes({ store: fxSpotStore }));
   app.route(
     '/messages',

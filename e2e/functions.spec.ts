@@ -873,6 +873,14 @@ test('Function: buildPostStats — GET /messages/stats returns a posts total', a
   expect(Array.isArray(body.postsOverTime)).toBe(true);
 });
 
+test('Function: buildWalletStats — GET /wallets/stats returns totals', async ({ request }) => {
+  const res = await request.get('/wallets/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { walletCount: number; balanceOverTime: unknown[] };
+  expect(body.walletCount).toBeGreaterThanOrEqual(0);
+  expect(Array.isArray(body.balanceOverTime)).toBe(true);
+});
+
 test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot', async ({
   request,
 }) => {
@@ -4282,6 +4290,14 @@ test('Function: InMemoryWalletStore — pending then completed same id both 200'
   });
   expect(completed.status()).toBe(200);
   expect(await completed.json()).toEqual({ acknowledgedIds: ['same'] });
+});
+
+test('Function: walletStatsRoutes — GET /wallets/stats is public', async ({ request }) => {
+  const res = await request.get('/wallets/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { walletCount: number; balanceOverTime: unknown[] };
+  expect(body.walletCount).toBeGreaterThanOrEqual(0);
+  expect(Array.isArray(body.balanceOverTime)).toBe(true);
 });
 
 test('Function: PostgresWalletStore — needs DATABASE_URL; default boot stores in memory (200)', async ({

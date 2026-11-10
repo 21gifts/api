@@ -1081,6 +1081,25 @@ test('GET /messages/stats returns a posts total', async ({ request }) => {
   expect(body.postsOverTime.reduce((sum, row) => sum + row.postCount, 0)).toBe(body.postCount);
 });
 
+test('GET /wallets/stats returns public wallet totals', async ({ request }) => {
+  const res = await request.get('/wallets/stats');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    walletCount: number;
+    fundedWalletCount: number;
+    totalSats: number;
+    totalBtc: string;
+    asOf: string | null;
+    balanceOverTime: unknown[];
+  };
+  expect(body.walletCount).toBeGreaterThanOrEqual(0);
+  expect(body.fundedWalletCount).toBeGreaterThanOrEqual(0);
+  expect(body.fundedWalletCount).toBeLessThanOrEqual(body.walletCount);
+  expect(body.totalSats).toBeGreaterThanOrEqual(0);
+  expect(body.totalBtc).toMatch(/^\d+\.\d{8}$/);
+  expect(Array.isArray(body.balanceOverTime)).toBe(true);
+});
+
 test('GET /fx/spot is the empty result while the provider is unreachable', async ({ request }) => {
   const res = await request.get('/fx/spot');
   expect(res.status()).toBe(200);

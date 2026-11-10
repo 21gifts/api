@@ -117,6 +117,26 @@ describe('InMemoryWalletStore', () => {
     expect((await store.latestBalance('account'))?.receivedAt).toEqual(T2);
   });
 
+  it('returns the last snapshot per account and UTC day, with the id tie-break', async () => {
+    const store = new InMemoryWalletStore();
+    await store.recordBalance(balance({ id: 'a', balanceSats: 1 }));
+    await store.recordBalance(balance({ id: 'b', balanceSats: 2 }));
+    await store.recordBalance(balance({ id: 'c', balanceSats: 3, receivedAt: T2 }));
+    await store.recordBalance(balance({ id: 'd', balanceSats: 4, receivedAt: new Date(T2) }));
+    await store.recordBalance(balance({ id: 'a0', balanceSats: 6, receivedAt: new Date(T2) }));
+    await store.recordBalance(
+      balance({ id: 'e', accountId: 'other', balanceSats: 5, receivedAt: T2 }),
+    );
+    const rows = await store.dailyBalances();
+    expect(rows.map((row) => [row.accountId, row.id, row.balanceSats])).toEqual([
+      ['account', 'b', 2],
+      ['account', 'd', 4],
+      ['other', 'e', 5],
+    ]);
+    rows[0]?.receivedAt.setTime(0);
+    expect((await store.dailyBalances())[0]?.receivedAt).toEqual(T1);
+  });
+
   it('inserts, sorts, limits, isolates accounts, and returns date copies', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([
@@ -604,6 +624,27 @@ describe('PostgresWalletStore', () => {
     expect(sql.queries[0]?.params).toEqual(['account']);
     sql.rows = [];
     await expect(store.latestBalance('none')).resolves.toBeUndefined();
+  });
+
+  it('maps the one-per-account-and-day snapshot query', async () => {
+    const sql = new MockSql();
+    sql.rows = [
+      {
+        id: 'a',
+        account_id: 'account',
+        balance_sats: 21n,
+        synced_at: T1,
+        received_at: T2.toISOString(),
+      },
+    ];
+    const rows = await new PostgresWalletStore(sql).dailyBalances();
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toContain(
+      "SELECT DISTINCT ON (account_id, ((received_at AT TIME ZONE 'UTC')::date))",
+    );
+    expect(sql.queries[0]?.text).toContain('received_at DESC, id DESC');
+    expect(sql.queries[0]?.params).toEqual([]);
+    expect(rows).toEqual([balance({ receivedAt: T2 })]);
   });
 
   it('aggregates completed payments in one direction-grouped query', async () => {

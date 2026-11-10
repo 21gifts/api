@@ -559,6 +559,13 @@
 - **Used by:** The public statistics page.
 - **Auth:** Public.
 
+## Endpoint: GET /wallets/stats
+
+- **Purpose:** Public wallet totals across all 21.gifts member wallets. `walletCount` is every `account_id` with at least one `wallet_balance_snapshot` row; `fundedWalletCount` counts those whose newest snapshot overall has a balance greater than 0; `totalSats` / `totalBtc` sum those newest balances. `asOf` is the newest `received_at` as an ISO string, or `null` when the table is empty. `balanceOverTime` has one row per UTC day without gaps from the earliest `received_at` day through the current UTC day. An account's balance at the end of a day is its snapshot with the greatest `(received_at, id)` with `received_at < the next UTC midnight`; the balance carries forward over days without a report, and a wallet appears from its first report onward. The current values equal the last series day. The data are self-reported by the member apps and begin with the first report (2026-11-09 in production). Each `totalBtc` uses the existing eight-decimal sats-to-BTC formatter.
+- **Errors:** 503 `{ "error": "Wallet stats are unavailable" }` when the balance query or a sat-total aggregation throws (`wallets.stats.failed`). A total above `Number.MAX_SAFE_INTEGER` throws instead of returning a rounded JSON number. An empty table is 200 with zeros, `asOf: null`, and `balanceOverTime: []`.
+- **Used by:** The public statistics page.
+- **Auth:** Public. No session or token. The response never exposes account ids, per-account balances, or any other per-account value.
+
 ## Endpoint: GET /fx/spot
 
 - **Purpose:** Public current price of 1 BTC in USD, CHF, EUR, and PHP, independent of gifts: `{ asOf, source, rates }` where `asOf` is the ISO fetch time, `source` is `coinbase-exchange-rates`, and `rates` holds fiat per 1 BTC as decimal text at provider precision. A currency without a usable quote is omitted from `rates`. The background worker refreshes the stored quote every 5 minutes from one Coinbase response (`BTC_FIAT_SPOT_URL`); the request never calls the provider. A failed fetch keeps the last good quote and its `asOf` (Postgres `btc_fiat_spot` survives a restart). Does not change `GET /gifts/stats`.
