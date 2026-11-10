@@ -1723,13 +1723,13 @@ Operator inspection of external Nostr identities that have earned visibility or 
 
 ## Endpoint: POST /me/wallet/counterparties
 
-- **Purpose:** Find the member who sent an incoming payment or received an outgoing payment. For `in`, completed outgoing reports of other accounts must name the caller as counterparty; for `out`, only the caller's completed outgoing reports are considered, and their non-null, non-self counterparty is returned.
-- **Request:** `payments`, an array of 1–32 objects with required `direction` (`in` or `out`), a nonempty `id` of at most 128 characters and an invoice of at most 4096 characters without NUL or a 64-hex `paymentHash`. Optional lookup keys may be null. Duplicate ids keep the first.
+- **Purpose:** Find the member who sent an incoming payment or received an outgoing payment. The caller must have reported the payment id and direction as completed. For `in`, other accounts must have reported the same id as a completed outgoing payment; for `out`, the caller's non-null, non-self counterparty is returned.
+- **Request:** `payments`, an array of 1–32 objects with required `direction` (`in` or `out`) and a nonempty `id` of at most 128 characters. Extra fields are ignored. Duplicate ids keep the first.
 - **Response:** 200 `{ counterparties: [{ id, accountId, username }] }`. Multiple matching accounts, missing or blank usernames, missing accounts and platform accounts are omitted. Only these three fields are returned.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 429 `{ error: 'Too many requests' }` after 60 requests per account per minute; 413 `{ error: 'Request body is too large' }` above 8192 bytes; 400 `{ error: 'Invalid counterparty lookup' }`; 503 `{ error: 'Counterparty lookup is unavailable' }` on lookup failure, logging `wallet_counterparties.lookup.failed` with only `accountId`.
 - **Auth:** Bearer session. Not the debug token.
 
-Invoice and hash are trimmed before matching, as in the wallet report; an invoice that becomes empty is treated as absent. They match by OR, with hashes compared case-insensitively. The id is a correlation handle and never matches a payment id.
+The id is the reported payment id. An incoming payment with more than one matching sender has no returned name.
 
 ## Endpoint: POST /me/wallet/hearts
 
