@@ -1167,7 +1167,9 @@ local sections and then re-reads:
 2. Stop unless stablecoin rows are on for the username, unless the
    account's 60 s no-pair wait has passed, and unless the api-wide counter
    (60 creations per minute) and then the account counter (10 per minute)
-   allow it. The counters are per process.
+   allow it. The wait is checked for both routes; a charge creation or the
+   payer's offers fill after its insert starts it, never the payer creation
+   itself. The counters are per process.
 3. For a charge, read the route list and select the candidate pairs. A
    failed route-list fetch, or one the route-list budget refuses → stop (no
    stablecoin until a fetch succeeds; the next creation fetches again). No

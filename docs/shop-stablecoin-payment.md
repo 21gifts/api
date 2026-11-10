@@ -585,7 +585,7 @@ as for `POST /pay/:username/invoice`. The checks run in this order:
 | 4     | A till charge is pending.                                                                                                                                         | **409** `{ "error": "A payment is already open", "code": "payment_open" }`                   |
 | 5     | The amount is outside that pay request's minimum and maximum.                                                                                                     | **400** `{ "error": "Enter a whole number of sats" }`                                        |
 | 6     | A username without stablecoin rows (see Route details), or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` is not configured. | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
-| 7     | This account started 10 creations in the last minute, or the api started 60 in the last minute.                                                                   | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 7     | The account's 60 s no-pair wait is running, or it started 10 creations in the last minute, or the api started 60 in the last minute.                              | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 | 8     | The mint fails, or the BOLT11 amount differs.                                                                                                                     | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
 | 9     | `findChargeForPayment` fails with an error (step 4), or step 8 finds its request at least 16 s old or its client disconnected.                                    | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 
@@ -593,8 +593,9 @@ Orders 1, 2, 3, 5, and 8 are the checks and texts of
 `POST /pay/:username/invoice`. Order 4 comes before the range check, because a
 pending charge pins that range to the charge amount. Orders 4 and 6 run again
 under the creation lock. Order 7 runs only there, once per creation. The lock
-covers those local checks and the insert. Route list, mint, and quotes run
-outside it.
+covers those local checks and the insert. For a charge, the route list, mint,
+and quotes run outside it. The payer's creation skips the route list and
+quotes; its offers fill runs them after the insert, in the background.
 A store failure during creation logs `pay.failed`; the page cannot tell whether
 a payment opened, so it repeats the request after order 2's 502 as after any
 other 5xx.
