@@ -360,19 +360,20 @@ memory otherwise (a memory boot always starts from `LOGINS_OPEN_DEFAULT`).
 
 ## Role hierarchy
 
-Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2, `initiator`
-2, `founder` 3. Initiator has the same rank as moderator; founder stays
-strictly above. A higher rank can always do and see everything a lower rank
-can; equal ranks can do the same things. Every route that names a role names
-the **minimum** role: "Bearer (moderator+)" means that rank or higher,
-"Bearer (verified+)" means that rank or higher. Permission text names the
-minimum rank only. Do not write "moderator or initiator" or „Moderator oder
-Initiator“. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
-equality test on the caller's role is a defect. The single named exception is `canEditDailyPayoutRoster`: initiator and moderator share rank 2, so `roleAtLeast` cannot exclude moderators; true only for initiator and founder. Checks on the _subject_ of an
-action (for example "only a verified member can be proposed as moderator") are
-state rules, not permissions, and stay exact. A subject already at the
-moderator rank is `sameRoleRank(role, 'moderator')`, which does not include
-founder. Initiator is not created by
+Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2, `fond` 3,
+`initiator` 4, `founder` 5. A higher rank can always do and see everything a
+lower rank can; equal ranks can do the same things. Every route that names a
+role names the **minimum** role: "Bearer (moderator+)" means that rank or
+higher, "Bearer (verified+)" means that rank or higher. Permission text names
+the minimum rank only. Do not write "moderator or initiator" or „Moderator
+oder Initiator“. Permission checks use `roleAtLeast`
+(`src/lib/auth/roles.ts`), including the daily payout roster
+(`canEditDailyPayoutRoster`: minimum `initiator`); an equality test on the
+caller's role is a defect. Checks on the _subject_ of an action (for example
+"only a verified member can be proposed as moderator") are state rules, not
+permissions, and stay exact. A subject already at the moderator rank is
+`sameRoleRank(role, 'moderator')`, which does not include founder. Initiator
+is not created by
 propose, confirm, or appoint. Only the boot UPDATE and operator
 `PATCH /debug/accounts/:id` set it.
 
@@ -8609,7 +8610,7 @@ Bearer session required. `:id` and `:messageId` are UUIDs. Body is only
 hit on `conversation_message_translation` for that text returns
 `{ "translatedText", "cached": true }` with no upstream call. Access matches
 `GET /conversations/:id` (`moderator_group` only for a moderator-group
-member; initiator has the same rank as moderator).
+member; initiator is above moderator and qualifies).
 
 Missing or invalid bearer → **401** `{ "error": "Unauthorized" }`.
 Non-uuid `:id` or `:messageId`, missing thread, no access, missing message,

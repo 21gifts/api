@@ -33,10 +33,10 @@ export function roleRank(role: AccountRole): number {
 /**
  * Whether `role` meets a minimum on the product hierarchy. A higher rank
  * can do everything a lower rank can; equal ranks can do the same things.
- * Every permission check names a minimum role — an equality test on the
- * caller's role is a defect. Subject rank equality uses
- * {@link sameRoleRank} (state, not permission). The named permission that
- * is not a rank check is {@link canEditDailyPayoutRoster}.
+ * Every permission check, including the daily payout roster, names a
+ * minimum role and uses this function; an equality test on the caller's
+ * role is a defect. Subject rank equality uses {@link sameRoleRank}
+ * (state, not permission).
  *
  * @param role - Caller's live role.
  * @param min - Minimum role that may proceed.
@@ -104,13 +104,13 @@ export function isModeratorGroupMember(account: {
 /**
  * Whether the caller may read and edit the daily payout roster.
  *
- * Not a rank check. True only for `initiator` and `founder`; moderators and
- * `fond` are false. This is the single named non-rank permission; rank
- * permissions stay on {@link roleAtLeast}.
+ * The roster's minimum rank is `initiator`: true for `initiator` and
+ * `founder`, false for `fond`, moderator, verified, and basis. This is a
+ * plain {@link roleAtLeast} check.
  *
  * @param role - Caller's live role.
- * @returns `true` for `initiator` and `founder` only.
+ * @returns `true` when `role` is at least `initiator`.
  */
 export function canEditDailyPayoutRoster(role: AccountRole): boolean {
-  return role === 'initiator' || role === 'founder';
+  return roleAtLeast(role, 'initiator');
 }

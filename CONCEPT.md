@@ -142,12 +142,13 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 
 ### Roles
 
-One exclusive `account.role` per account. Initiator has the same rank as
-moderator; founder stays strictly above. A higher rank can always do and
-see everything a lower rank can; equal ranks can do the same things.
-Permission text names the minimum rank only. Do not write "moderator or
-initiator" or „Moderator oder Initiator“. The single named exception is `canEditDailyPayoutRoster`: initiator and moderator share rank 2, so `roleAtLeast` cannot exclude moderators; true only for initiator and founder. New passkey accounts are
-**Basis**.
+One exclusive `account.role` per account. The rank order is `basis` 0,
+`verified` 1, `moderator` 2, `fond` 3, `initiator` 4, `founder` 5. A higher
+rank can always do and see everything a lower rank can; equal ranks can do
+the same things. Permission text names the minimum rank only. Do not write
+"moderator or initiator" or „Moderator oder Initiator“. Every permission
+check, including the daily payout roster (`canEditDailyPayoutRoster`: minimum
+`initiator`), is a `roleAtLeast` minimum. New passkey accounts are **Basis**.
 `verified` is a moderator confirming this person in real life
 (forum badge), not a verified wallet. `POST /trust/verify` must have
 confirmed the stored name. A **funding-program grant** is
@@ -176,7 +177,7 @@ row (`createdAt` desc, then `id` desc), both without changing `role`.
 | Basis     | Log in, maintain a profile, receive gifts (default). No forum tag. Pays 1 sat to 21.gifts before posting or replying, except a free first top-level post and a reply on their own note.          |
 | Verified  | Everything Basis can, plus a forum tag: a moderator physically met this person. Not a verified wallet. May post and reply without a Bitcoin payment.                                             |
 | Moderator | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag. |
-| Initiator | Rank 2, same rank as moderator. Forum tag.                                                                                                                                                       |
+| Initiator | Rank 4, the minimum rank for the daily payout roster. Forum tag.                                                                                                                                  |
 | Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                                                        |
 
 Becoming a **donor** is an upgrade available to every account, not a role of

@@ -57,7 +57,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Bearer session required except the public `GET /funding/places`. Grant
  * routes are independent of `account.role`
  * except `basis` cannot apply or be granted. Roster routes use
- * {@link canEditDailyPayoutRoster} (initiator or founder only).
+ * {@link canEditDailyPayoutRoster} (minimum `initiator`).
  */
 
 /** Collaborators the funding routes need. */

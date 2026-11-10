@@ -3761,16 +3761,16 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: roleAtLeast
 
-- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. True when `roleRank(role)` is ≥ `roleRank(min)`. Every role inherits every right of the ranks below it; `fond` inherits every moderator right. Every permission names a minimum role; an equality test on the caller's role is a defect. Subject rank equality uses `sameRoleRank`, not this caller check. The named permission that is not a rank check is `canEditDailyPayoutRoster`.
+- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. True when `roleRank(role)` is ≥ `roleRank(min)`. Every role inherits every right of the ranks below it; `fond` inherits every moderator right. Every permission check, including the daily payout roster, is a `roleAtLeast` minimum; an equality test on the caller's role is a defect. Subject rank equality uses `sameRoleRank`, not this caller check.
 - **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
 - **Returns / side effects:** boolean (`roleRank(role) >= roleRank(min)`). No I/O.
-- **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`.
+- **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`, `canEditDailyPayoutRoster`.
 
 ## Function: canEditDailyPayoutRoster
 
-- **Purpose:** Whether the caller may read and edit the daily payout roster. Not a rank check: true only for `initiator` and `founder`, so moderators and `fond` are excluded. This is the single named non-rank permission; rank permissions stay on `roleAtLeast`.
+- **Purpose:** Whether the caller may read and edit the daily payout roster. The roster's minimum rank is `initiator`: true for `initiator` and `founder`, false for `fond`, moderator, verified, and basis. This is a plain `roleAtLeast(role, 'initiator')` check.
 - **Inputs:** `role` (caller's live `AccountRole`).
-- **Returns / side effects:** boolean. No I/O.
+- **Returns / side effects:** boolean (`roleAtLeast(role, 'initiator')`). No I/O.
 - **Used by:** `fundingRoutes` daily-roster routes.
 
 ## Function: sameRoleRank
