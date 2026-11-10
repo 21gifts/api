@@ -164,8 +164,10 @@
   offer prevents it, even when the commit then writes nothing. The
   creation re-check commits before mint: it ends a lapsed `open`
   payment with `window` and expires overdue payer charges. Those changes remain when a later hash
-  check stops creation. In the insert transaction, `hashHolder` and `chargeIdForInvoice` write
-  nothing and do not end a still-open payment when the hash is held. 200
+  check stops creation. In the insert transaction, a holder found before `endPayment` writes
+  nothing and does not end a still-open payment. A foreign holder found by the second
+  `hashHolder` or `chargeIdForInvoice` read rolls the row change back, so the payment stays `open`; the
+  `shop.payment.ended` log from that `endPayment` remains. 200
   `{ payment, expiresAt }` where `expiresAt` is the window end, five minutes after creation. The
   route group is always mounted; a payment opens only when `LNURL_SERVER_URL` and
   `PUBLIC_BASE_URL` resolve.

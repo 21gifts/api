@@ -1323,10 +1323,10 @@ its proofs is accepted. `open`, `ended`, or `accepted` (not closed) →
 `paid` when its BOLT11 settles. `accepted` → `ended` when the accepted
 proof is refunded, fails, or is refused without another proof taking its
 place (`orchestra_refunded`, `orchestra_failed`, `proof_refused`), or when
-the final settlement read finds the BOLT11 unpaid (`expired_unpaid`). The
-final settlement read, 10 minutes after the BOLT11 expiry, sets
-`closed_at` on a payment that is not paid; a paid or closed payment never
-changes again.
+an unpaid read at least 10 minutes after the BOLT11 expiry closes it
+(`expired_unpaid`). That read sets `closed_at` on a payment that is not
+paid. A failed read at or after that time leaves the payment unclosed and is
+retried at the same cadence; a paid or closed payment never changes again.
 
 **Error body.** Every error on the callback, the proof, and the wait route,
 and every error on the pay link, is:
@@ -1746,19 +1746,21 @@ rows by their own next-try column, oldest first:
 2. **Settlement:** the LUD-21 `GET /verify/<paymentHash>` read of the
    charge watch (`verifyLightningPayment`) for payments that are neither
    paid nor closed, `accepted` and charge-backed payments first, every 5 s
-   for 15 minutes after creation, then every 30 s, and a final read 10
-   minutes after the BOLT11 expiry. Each read is applied under the lock of
-   locks of a charge-backed payment: the account row, then the
+   for 15 minutes after creation, then every 30 s. Before 10 minutes after
+   the BOLT11 expiry, the next read is capped at that time. Each read is
+   applied under the locks of a charge-backed payment: the account row, then the
    `pos_charge` row, then the `shop_payment` row; when an account merge
    moved the payment between the unlocked read and the lock, the account
    it moved to is locked instead (`lockAccountOf`, at most two locks; a
    payment still moving is left for the next tick). A payer's payment locks
-   only its `shop_payment` row. Settled → `paid`, and `markPaid` for its
-   charge (a charge already paid by another invoice logs
-   `shop.alert.double_settled`; a cancelled charge logs
-   `shop.alert.cancelled_settled` and stays cancelled). Only a successful
-   final read that reports the invoice unpaid closes the payment; an
-   `accepted` payment then ends with `expired_unpaid` and logs
+   only its `shop_payment` row. Settled → `paid`. `markPaid` runs only for
+   a charge that is still `pending` or `expired`; a payer payment and a
+   missing charge row skip it. A charge already paid by another invoice
+   logs `shop.alert.double_settled`; a cancelled charge logs
+   `shop.alert.cancelled_settled` and stays cancelled. An unpaid read at or
+   after that time closes the payment; a failed read leaves it unclosed and
+   schedules another read one cadence later. An `accepted` payment then
+   ends with `expired_unpaid` and logs
    `shop.alert.accepted_unpaid`, an `open` one ends with `window`, and
    both log `shop.payment.ended` with the reason. The duty waits until
    every read of the tick and its write have ended before it rethrows the
@@ -4733,9 +4735,11 @@ funding grants are **409**
 with a shop payment that is neither `paid` nor closed is **409**
 `{ "error": "A payment is already open" }` and nothing changes, because
 that payment's BOLT11 still pays the source account's wallet, which the
-merge does not carry over; the merge can be repeated after the final
-settlement read, 10 minutes after the BOLT11 expired. A source with an
-unexpired pending till charge while the survivor has an `open` shop
+merge does not carry over. At least 10 minutes after the BOLT11 expired,
+an unpaid read closes it; a failed read leaves it unclosed and is retried at
+the same cadence. The merge can be repeated after the payment is paid or
+closed. A source with an unexpired pending till charge while the survivor
+has an `open` shop
 payment and no unexpired pending till charge of its own is the same
 **409** and nothing changes, so a till charge never lands next to another
 payment's open amount. Both refusals are checked under the locks of both

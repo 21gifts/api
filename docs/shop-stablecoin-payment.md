@@ -150,8 +150,8 @@ Each term has exactly one meaning in this document.
 - **Accepted**: the one proof of a payment whose order is expected to pay
   the BOLT11 ([States](#states)).
 - **Paid**: the payment's BOLT11 has settled.
-- **Closed**: the payment's final settlement read, 10 minutes after the
-  BOLT11 expired, found it unpaid. A closed payment never changes again.
+- **Closed**: a settlement read at least 10 minutes after the BOLT11
+  expired found it unpaid. A closed payment never changes again.
 - **Unresolved**: a proof without an order and without a definitive
   refusal. Only an unresolved proof is submitted.
 - **Progressing**: an order whose status is `processing`,
@@ -241,7 +241,7 @@ method is a change to the table and to its tests.
 | Replacement        | A fetch starts a replacement when the quote has a stablecoin entry, less than 45 s remain before its `quote.expiration`, at least 45 s remain before `window_ends_at`, the payment has had fewer than 4 replacements, and stablecoin rows are on for the username. It joins an entry already in `#replacements` when those rows are on. The fetch does not wait for it. When the quote has expired, it re-reads under the account row lock. While the payment is still `open` and its window has not ended, it returns the newest quote when that quote is still valid, and otherwise inserts a Lightning-only row and returns that row. Only a later fetch sees a replacement quote that is not stored yet. A payer-opened payment also gets an offers fill after its Lightning-only first quote; that fill is not a replacement and does not count. |
 | BOLT11 expiry      | The time the mint was requested plus the invoice's `expiry` tag, or plus 3600 s when the tag is absent, as `invoiceStillOpen` computes it from `inspectBolt11` and `DEFAULT_INVOICE_EXPIRY_MS`, both moved from `src/routes/repayment.ts` to `src/lib/bolt11.ts` ([Implementation](#implementation)). Taking the request time, not the later answer, keeps the stored expiry at or before the real one when the LNURL server's clock is not behind the api's; when it runs behind, the real expiry is earlier by that difference. A difference up to 60 s is tolerated; the rest of the 600 s BOLT11 margin stays for Orchestra to pay the invoice after a deposit made just before `expiresAt`, and release check 3 confirms the staging mint's clock.                                                                                               |
 | BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`. Over a full window that needs a BOLT11 of 1020 s.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Settlement watch   | The payment's BOLT11 is watched until its final read, 10 min after its expiry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Settlement watch   | The payment's BOLT11 is watched through a read 10 min after its expiry; a failed read then or later is retried at the same cadence.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
@@ -262,11 +262,13 @@ pattern.
 | (none)                      | `open`     | A charge-backed creation, or `POST /pay/:username/payment`.                                                                                | sets `created_at`, `window_ends_at`                 |
 | `open`                      | `ended`    | The window ends; `POST /pos`; a new payer amount; the charge is cancelled; or the charge is paid by an invoice that is not this payment's. | sets `ended_at`, `end_reason`                       |
 | `open`, `ended`             | `accepted` | A proof of the payment becomes `accepted` before the payment is closed.                                                                    | sets `accepted_at`; clears `ended_at`, `end_reason` |
-| `open`, `ended`, `accepted` | `paid`     | The BOLT11 settles, found by any settlement read up to the final one.                                                                      | sets `paid_at`; clears `ended_at`, `end_reason`     |
-| `accepted`                  | `ended`    | The accepted proof leaves `accepted` without another proof taking its place, or the final settlement read finds the BOLT11 unpaid.         | sets `ended_at`, `end_reason`                       |
+| `open`, `ended`, `accepted` | `paid`     | The BOLT11 settles, found by any settlement read.                                                                                          | sets `paid_at`; clears `ended_at`, `end_reason`     |
+| `accepted`                  | `ended`    | The accepted proof leaves `accepted` without another proof taking its place, or a read at least 10 min after expiry finds it unpaid.       | sets `ended_at`, `end_reason`                       |
 
-The final settlement read sets `closed_at` on a payment that is not
-`paid`. `paid` is final, and a closed payment is final. Before that,
+A settlement read at least 10 minutes after the BOLT11 expiry sets
+`closed_at` when it reports the invoice unpaid. A failed read leaves the
+payment unclosed and is retried at the same cadence. `paid` is final, and a
+closed payment is final. Before that,
 `ended` can still move to `accepted` or `paid`, because a transfer made
 in time can be confirmed after the window. Nothing else changes a
 status. `db_change` keeps every earlier value.
@@ -275,10 +277,14 @@ The step that moves a charge-backed payment to `paid` takes the account
 row lock first, then the `pos_charge` row, then the `shop_payment` row,
 the order the charge watch uses, so the two never wait for each other in
 opposite order. For a payer's payment, which has no charge, it locks only
-the `shop_payment` row. It also runs
-`markPaid` for its charge, so the till sees the charge paid even after
-the charge's own watch has ended. That watch ends 10 minutes after the
-charge expires (`POS_PAID_WATCH_MS` in `src/lib/pos-paid-worker.ts`).
+the `shop_payment` row. For a charge-backed payment it runs `markPaid`
+only while the locked charge is still `pending` or `expired`, so the till
+sees the charge paid even after the charge's own watch has ended. A
+missing charge row and a payer payment skip that call. A charge already
+`paid` logs `shop.alert.double_settled`; a `cancelled` charge stays
+cancelled and logs `shop.alert.cancelled_settled`. That watch ends 10
+minutes after the charge expires (`POS_PAID_WATCH_MS` in
+`src/lib/pos-paid-worker.ts`).
 
 `end_reason` is one of `window`, `superseded` (by `POST /pos`),
 `replaced` (by a new payer amount), `cancelled`, `charge_paid`,
@@ -546,8 +552,10 @@ the merge handles shop payments first, in the same transaction:
   does not carry over. The operator route
   `POST /debug/accounts/merge` answers it with **409**
   `{ "error": "A payment is already open" }`, the text `POST /pos`
-  uses. A payment is paid or closed after its final settlement read, 10
-  minutes after its BOLT11 expired, and the merge can be repeated then.
+  uses. At least 10 minutes after its BOLT11 expired, an unpaid read
+  closes the payment; a failed read leaves it unclosed and is retried at the
+  same cadence. The merge can be repeated after the payment is paid or
+  closed.
 - The merged account's other shop payments are `paid` or closed and
   never change again; they move with the account like every other row.
 - The merge marks due pending charges on both accounts expired, then
@@ -699,8 +707,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    that deadline has time left. Pairs beyond what the quote share of the
    Orchestra budget allows are skipped, in the order of
    [Methods](#methods).
-6. For a charge, keep each quote that commits, passes [Offer checks](#offer-checks), and has a
-   readable gas price for its chain. An unreadable gas price drops only offers on that chain.
+6. For a charge, before the insert, keep each successful Orchestra quote that passes
+   [Offer checks](#offer-checks) and has a readable gas price for its chain. An unreadable gas
+   price drops only offers on that chain.
 7. For a charge, the 60 s no-pair wait starts when there is no candidate pair, or
    `#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget,
    no USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that
@@ -1424,7 +1433,8 @@ absolute time in milliseconds.
   `accepted`. The proof of the replaced deposit keeps its `unfulfilled` order: it
   is held like any proof with that status, or, when it was already
   `accepted`, stays `accepted` until another proof's order completes or
-  the final settlement read ends the payment. Orchestra leaves such an
+  a read at least 10 minutes after the BOLT11 expiry finds it unpaid and
+  ends the payment. Orchestra leaves such an
   order `unfulfilled` for good, so the order-status duty stops for it
   (`next_status_at` is cleared) and logs no `shop.alert.order_stuck`,
   because the successor's own proof is watched. In the same step it
@@ -1464,7 +1474,7 @@ also count against the budget in [Calls](#calls).
 | Order | Duty               | Calls          | Rows                                                                                                     | Cadence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ----- | ------------------ | -------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | End lapsed windows | 0              | `open` payments whose `window_ends_at` has passed                                                        | Every tick, one conditional update.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| 2     | Settlement         | 8, in parallel | Payments that are not `paid` and not closed; `accepted` and charge-backed payments first                 | Every 5 s for 15 min after creation, then every 30 s, and a final read 10 min after the BOLT11 expiry. Only a successful read that reports the invoice unpaid closes a payment; a failed final read is retried at the same cadence. Closing an `accepted` payment ends it with `expired_unpaid` and logs `shop.alert.accepted_unpaid`. The LUD-21 `/verify` read the charge watch uses.                                                                                                                                          |
+| 2     | Settlement         | 8, in parallel | Payments that are not `paid` and not closed; `accepted` and charge-backed payments first                 | Every 5 s for 15 min after creation, then every 30 s. Before 10 min after the BOLT11 expiry, the next read is capped at that time. An unpaid read then or later closes the payment; a failed read then or later is retried at the same cadence. Closing an `accepted` payment ends it with `expired_unpaid` and logs `shop.alert.accepted_unpaid`. The LUD-21 `/verify` read the charge watch uses.                                                                                                                              |
 | 3     | Orders             | 1, odd ticks   | Payments with `next_history_at` due, oldest first, paid and closed ones included                         | History by the payment's BOLT11 every 10 s, or every 60 s while only the successor wait keeps it (see below), one page per read. An order whose id no proof holds as `provider_order` is stored through [Storing and submitting](#storing-and-submitting) as a `detected` proof, and duty 8 takes it over. An order whose `recoveredFromOperationId` a proof holds is stored the same way, as its own proof, as the status read in [Calls](#calls) states. An order without `sourceTxHash` yet stores nothing and is read again. |
 | 4     | Lookups            | 4              | `shop_proof_lookup` rows that are not done                                                               | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification; a verified transfer is stored through the same step, and a refusal (steps 3 and 5 of [Verification of `tx`](#verification-of-tx)) stores nothing. Either way the duty sets `done_at`. After one hour it sets `done_at` and logs `shop.proof.lookup_expired`; Orchestra's own detection still applies. A failed read leaves the row open.                                                                                  |
 | 5     | Receipts           | 4              | `hex` proofs whose transaction is not found or has no receipt, and `detected` proofs without a log index | Read the receipt, or send a `hex` transaction again, after 30 s, then every 2 min: a `hex` proof while it is unresolved and before its `give_up_at`, a `detected` proof for at most 24 h. A receipt fills the log index and value, or refuses as [Verification of `hex`](#verification-of-hex) states. A `detected` proof whose receipt has no matching transfer log stays held, stops being read, and logs `shop.alert.detected_mismatch`.                                                                                      |
@@ -1515,9 +1525,11 @@ reads one payment until the order watch of its last offer with an issued
 detail ends, or while it waits for a successor as stated above, also after the payment is paid or closed, because a later
 deposit still makes an order that Orchestra must fill or refund.
 
-The BOLT11 settling marks the payment `paid` and runs `markPaid` for its
-charge. When the payment's BOLT11 settles after its charge was already paid by
-another invoice, the api logs `shop.alert.double_settled`: the shop then
+The BOLT11 settling marks the payment `paid`. It runs `markPaid` only
+when its charge is still `pending` or `expired`. A payer payment and a
+missing charge row skip that call. When the payment's BOLT11 settles
+after its charge was already paid by another invoice, the api logs
+`shop.alert.double_settled`: the shop then
 received the charge twice and refunds the payer directly. When it
 settles after its charge was cancelled, the api logs
 `shop.alert.cancelled_settled`: the shop received a payment for a
@@ -1698,7 +1710,7 @@ it.
   transaction under the account row lock, as
   [By a till charge](#by-a-till-charge) states. When the BOLT11 settles
   after the charge watch ended, the shop payment's `paid` step runs
-  `markPaid`.
+  `markPaid` only while the charge is still `pending` or `expired`.
 
 A cashier hands over goods only when the till shows the charge paid,
 never because a payer shows a success screen. The wallet reports success
