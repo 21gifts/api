@@ -20,6 +20,7 @@ import {
   sticker,
   tetherWallet,
   verifiedShop,
+  waitForStablecoinOffers,
 } from './fixtures';
 
 /** The watcher reads history every 10 s and receipts after 30 s; leave room for both. */
@@ -37,6 +38,7 @@ test('an order Orchestra created without a submit makes the payment accepted', a
   const shop = await verifiedShop(request, 'watch');
   await control.behave(shop.username, { completeAfterMs: null });
   const opened = await openPayerPayment(request, shop.username, 3_000);
+  await waitForStablecoinOffers(request, shop.username, ['polygon-usdt']);
   const detail = await fetchDetail(request, shop.username, 'polygon-usdt');
   // The payer pays and never sends a proof; Orchestra detects the deposit.
   const sent = await control.transfer({
@@ -69,6 +71,7 @@ test('a second completed order moves acceptance to it', async ({ request }) => {
   const shop = await verifiedShop(request, 'second');
   await control.behave(shop.username, { submit: 'accept', completeAfterMs: null });
   const opened = await openPayerPayment(request, shop.username, 3_100);
+  await waitForStablecoinOffers(request, shop.username, ['arbitrum-usdt', 'polygon-usdt']);
   // Payer B scans first and holds an Arbitrum detail of the same quote.
   const detailB = await fetchDetail(request, shop.username, 'arbitrum-usdt');
   // Payer A pays on Polygon and is accepted with a running order.
@@ -124,6 +127,7 @@ test('a dust transfer to the deposit address does not take acceptance from the p
   const shop = await verifiedShop(request, 'dust');
   await control.behave(shop.username, { submit: 'accept', completeAfterMs: null });
   const opened = await openPayerPayment(request, shop.username, 3_200);
+  await waitForStablecoinOffers(request, shop.username, ['polygon-usdt']);
   const runA = await tetherWallet(request, control).pay(sticker(shop.username), {
     railId: 'polygon-usdt',
   });
@@ -176,6 +180,7 @@ test('a replaced order: the successor is stored as its own proof and takes the p
   const shop = await verifiedShop(request, 'replaced');
   await control.behave(shop.username, { submit: 'accept', completeAfterMs: null });
   const opened = await openPayerPayment(request, shop.username, 3_300);
+  await waitForStablecoinOffers(request, shop.username, ['polygon-usdt']);
   const run = await tetherWallet(request, control).pay(sticker(shop.username), {
     railId: 'polygon-usdt',
   });
