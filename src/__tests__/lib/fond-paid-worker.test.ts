@@ -925,9 +925,9 @@ describe('startFondPaidWorker', () => {
       5000,
     );
     await vi.advanceTimersByTimeAsync(4999);
-    expect(listOpen).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
     expect(listOpen).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(listOpen).toHaveBeenCalledTimes(4);
     handle.stop();
   });
 });
