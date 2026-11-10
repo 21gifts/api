@@ -614,9 +614,9 @@ proxy forwards none.
 
 The creation re-check commits before mint. It ends a lapsed `open` payment with `window` and
 expires overdue payer charges even if a later held-hash check returns order 8. After the insert
-locks, a request at least 16 s old or an aborted payer returns `unavailable` and writes nothing;
-this payer route maps it to order 9. A
-foreign charge invoice then returns order 8 without ending a payment. A pending charge then
+locks, one clock read returns `unavailable` without a write when it finds the request at least
+16 s old or the payer aborted; this payer route maps it to order 9. The age is not checked again.
+A foreign charge invoice then returns order 8 without ending a payment. A pending charge then
 returns order 4 without ending a payment. A held payment hash is checked next and leaves a
 still-open payment open. Only then does an open payer payment end with `window` when its
 `window_ends_at` is at or before the insert clock, or with `replaced` otherwise, before the new
@@ -707,18 +707,18 @@ One procedure creates a shop payment, for a charge or for a payer:
    The other container of a deploy keeps its own wait, so during a deploy an account can see two
    creations in 60 s. While the charge stays pending, the pay link stays pinned and
    `POST /pay/:username/payment` answers order 4. Order 7 applies during the wait only when no
-   charge is pending. A `findChargeForPayment` error, an insert at 16 s or later, a disconnected
-   client, and the fallback after two insert conflicts whose winner is not found return
-   `unavailable`. Only the payer route maps that result to order 9. A charge creation ends, and
-   the pay link keeps answering the pinned Lightning request.
+   charge is pending. A `findChargeForPayment` error, a post-lock clock read that finds the
+   request at least 16 s old, a disconnected client, and the fallback after two insert conflicts
+   whose winner is not found return `unavailable`. Only the payer route maps that result to order 9. A charge creation ends, and the pay link keeps answering the pinned Lightning request.
    For a payer, no offer is not an error: the payment is already open Lightning-only, and the
    offers fill inserts no second quote.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first takes the
    [Payment hash claim](#payment-hash-claim), then locks the account row, and for a charge then
    locks the `pos_charge` row (`SELECT … FOR UPDATE`). Only after those locks does it read the
-   clock. A request at least 16 s old writes nothing and returns `unavailable`; only the payer
-   route maps that result to order 9. An aborted payer also returns `unavailable`. A foreign
+   clock, once. A request at least 16 s old writes nothing and returns `unavailable`; only the
+   payer route maps that result to order 9. An aborted payer also returns `unavailable`. It does
+   not check the request age again. A foreign
    charge invoice then returns order 8
    without ending a payment. In that transaction:
    - For a charge, the api inserts only while the locked charge is still `pending`. A charge that
@@ -769,16 +769,14 @@ For a charge, three separate external-call budgets apply. The route
 list's 1 s starts at the recheck, so that lock wait shortens the fetch.
 The mint's 4 s and the quotes' 3 s start with their own steps. That is
 8 s of external-call budget in all. The insert's account lock, store,
-and transaction waits come on top. Step 8 is the hard limit. After it holds its locks, it returns
-`unavailable` and writes nothing when the request arrived 16 s ago or longer (the time the api
-received it). An aborted payer returns the same. Only the payer route maps `unavailable` to
-order 9.
-A charge creation that hits the cutoff returns `unavailable` and writes nothing. The sticker
-stays on today's pinned Lightning request. No creation inserts a payment once the
-request is 16 s old or older. For a payer, the mint's 4 s deadline is the
-only external-call budget before the insert. The same lock, store, and
-16 s limit apply. The offers fill runs after the insert, in the
-background.
+and transaction waits come on top. After it holds its locks, step 8 reads the clock once. It
+returns `unavailable` and writes nothing when that read finds the request at least 16 s old (from
+the time the api received it). An aborted payer returns the same. Only the payer route maps
+`unavailable` to order 9. A charge creation that hits this check returns `unavailable` and writes
+nothing. The sticker stays on today's pinned Lightning request. Later work in the transaction
+does not check the request age again, so the insert can finish after 16 s. For a payer, the mint's
+4 s deadline is the only external-call budget before the insert. The same lock, store, and
+one-time check apply. The offers fill runs after the insert, in the background.
 Every external call runs outside the database transaction. A losing
 caller's BOLT11 stays recorded against the charge and can still pay the
 charge. Its Orchestra quotes are never shown and expire unused.
@@ -798,13 +796,14 @@ for the one in flight.
 A throw logs `shop.creation.failed` once with `accountId` and
 `paymentId`.
 
-The fill then runs one transaction under the account row lock. It
-inserts a quote with the passing offers only when the payment is still
-`open`, at least 45 s remain before `window_ends_at`, `replacements` is
-unchanged, and the payment's newest quote is still the Lightning-only
-first quote or a newer Lightning-only row. The quote row is inserted even
-when a stored offer already holds an offer's deposit address. That conflict
-drops only the offer and logs `shop.alert.shared_deposit_address`.
+The fill then runs one transaction. It locks the account row, reads the
+clock, and then locks the `shop_payment` row. It inserts a quote with the
+passing offers only when the locked payment is still `open`, at least 45 s
+remain before `window_ends_at`, `replacements` is unchanged, and the
+payment's newest quote is still the Lightning-only first quote or a newer
+Lightning-only row. The quote row is inserted even when a stored offer
+already holds an offer's deposit address. That conflict drops only the offer
+and logs `shop.alert.shared_deposit_address`.
 The fill inserts no quote when the route list fails or there is no candidate pair. It also
 inserts no quote when the commit conditions fail. An unreadable gas price drops only offers on
 that chain. The 60 s no-pair wait starts when there is no candidate pair, or when
@@ -1743,11 +1742,10 @@ page.
   - A **503** `stablecoin_unavailable` or another 4xx makes the page
     fetch the pay link, once at least 20 s have passed since the most
     recent call that ended in a timeout, a transport error, or another
-    5xx: a creation inserts no payment more than 16 s after its request
-    arrived ([Creation procedure](#creation-procedure)), so by then every
-    creation the page started has inserted its payment or written
-    nothing. When it shows no open payer amount, the page
-    falls back to `POST /pay/:username/invoice`. When it shows one, or
+    5xx. The insert rejects a request when its one post-lock clock read
+    finds it at least 16 s old ([Creation procedure](#creation-procedure)). When
+    the pay link shows no open payer amount, the page falls back to
+    `POST /pay/:username/invoice`. When it shows one, or
     the fetch fails, the page shows "This payment could not be started.
     Try again." with a button that repeats the call.
   - A timeout, a transport error, or another 5xx shows the same text
