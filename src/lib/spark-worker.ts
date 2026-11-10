@@ -12,6 +12,10 @@
  * The same tick watches the member Spark invoices of `POST /pay/:username/invoice`:
  * one reported `FINALIZED` gets the "You received N sats" push through
  * `notifyPaymentReceived`, keyed by the SHA-256 of the invoice string.
+ *
+ * A boot with a database but without free in-app payments does not run the
+ * worker; {@link startMemberSparkInvoicePrune} still deletes the expired
+ * member rows stored while the feature was on.
  */
 
 import { createHash } from 'node:crypto';
@@ -35,6 +39,9 @@ export const SPARK_WORKER_INTERVAL_MS = 2_000;
 
 /** Only Spark invoices issued this recently are polled. */
 export const SPARK_INVOICE_WINDOW_MS = 60 * 60_000;
+
+/** Prune interval of {@link startMemberSparkInvoicePrune}. */
+export const MEMBER_SPARK_INVOICE_PRUNE_INTERVAL_MS = 60 * 60_000;
 
 /** Per-relay timeout when publishing a receipt. */
 const RECEIPT_PUBLISH_TIMEOUT_MS = 5_000;
@@ -248,6 +255,48 @@ export function startSparkInvoiceWorker(
   };
   tick();
   const timer = setInterval(tick, intervalMs);
+  return {
+    stop: () => {
+      clearInterval(timer);
+    },
+  };
+}
+
+/**
+ * Delete expired member Spark invoices now and then every `intervalMs`,
+ * without asking the coordinator.
+ *
+ * The entry point starts it on a boot with a database whose Spark invoice
+ * worker is off (free in-app payments or the LNURL server not configured), so
+ * rows stored while the feature was on are still deleted once `expiresAt`
+ * passes. A prune does not start while the previous one is still running. A
+ * rejecting prune logs `spark.member_invoice.prune_failed`.
+ *
+ * @param deps - The store and the clock in epoch milliseconds.
+ * @param intervalMs - Prune period (default {@link MEMBER_SPARK_INVOICE_PRUNE_INTERVAL_MS}).
+ * @returns Stop handle.
+ */
+export function startMemberSparkInvoicePrune(
+  deps: { store: Pick<SparkInvoiceStore, 'pruneMember'>; now: () => number },
+  intervalMs: number = MEMBER_SPARK_INVOICE_PRUNE_INTERVAL_MS,
+): { stop: () => void } {
+  let running = false;
+  const prune = (): void => {
+    if (running) {
+      return;
+    }
+    running = true;
+    void deps.store
+      .pruneMember(new Date(deps.now()))
+      .catch((error: unknown) => {
+        logEvent('spark.member_invoice.prune_failed', errorLogFields(error));
+      })
+      .finally(() => {
+        running = false;
+      });
+  };
+  prune();
+  const timer = setInterval(prune, intervalMs);
   return {
     stop: () => {
       clearInterval(timer);

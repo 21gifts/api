@@ -1571,7 +1571,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`), and `startFondPaidWorker` (`fond.paid.tick.failed`); `webhookRoutes` (`payment_received.failed` when a store call fails); and `runSparkInvoiceTick` (`payment_received.failed` with the member invoice `kind` when `notifyPayment` rejects).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`), and `startFondPaidWorker` (`fond.paid.tick.failed`); `webhookRoutes` (`payment_received.failed` when a store call fails); `runSparkInvoiceTick` (`payment_received.failed` with the member invoice `kind` when `notifyPayment` rejects); and `startMemberSparkInvoicePrune` (`spark.member_invoice.prune_failed`).
 
 ## Function: meRoutes
 
@@ -2669,6 +2669,13 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Inputs:** `SparkWorkerDeps` and an optional interval in milliseconds.
 - **Returns / side effects:** `{ stop }`, which clears the interval. A rejecting tick logs `spark.worker.tick.failed` with the error fields.
 - **Used by:** The entry point when `resolveLnurlServerConfig` and `resolveFreePaymentsConfig` both resolve (`LNURL_SERVER_URL`, `PUBLIC_BASE_URL`, `LNURL_ZAP_NSEC_HEX`, and a usable or unset `SPARK_OPERATOR_URL`).
+
+## Function: startMemberSparkInvoicePrune
+
+- **Purpose:** Delete expired member Spark invoices (`pruneMember`, rows whose `expiresAt` is at or before now) once immediately and then every hour (`MEMBER_SPARK_INVOICE_PRUNE_INTERVAL_MS`), without asking the coordinator. A prune does not start while the previous one is still running.
+- **Inputs:** `{ store, now }` (a store with `pruneMember`, a clock in epoch milliseconds) and an optional interval in milliseconds.
+- **Returns / side effects:** `{ stop }`, which clears the interval. A rejecting prune logs `spark.member_invoice.prune_failed` with the error fields.
+- **Used by:** The entry point on a boot with `DATABASE_URL` whose `startSparkInvoiceWorker` is not started (free in-app payments or the LNURL server not configured), so member invoices stored while the feature was on are still deleted once they expire; with the worker running, `runSparkInvoiceTick` prunes on every tick.
 
 ## Function: runPosPaidTick
 

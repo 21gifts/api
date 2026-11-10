@@ -212,7 +212,7 @@ default boot): `ShopPayments`, `InMemoryShopPaymentStore`, `endPayment`, `lockAc
 `bolt11ExpiresAtMs` and `invoiceStillOpen`, which run only for a shop payment mint or an open
 repayment bill of a loan, and a loan is a post, which needs a verified wallet (their tests assert
 posting 409 `missing: ['lightning-address']`);
-`migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
+`migrateSparkInvoiceSchema`, `PostgresSparkInvoiceStore`, and `startMemberSparkInvoicePrune`, which need `DATABASE_URL`;
 `concatBytes` and `protoBytesField`, which are reached through `encodeSparkAddress` (needs `DATABASE_URL` or the LNURL server) or when free in-app payments are on;
 `protoVarintField`, `encodeSparkInvoice`, `uuidV7`,
 `InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,

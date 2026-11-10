@@ -63,7 +63,7 @@ import { OrchestraClient } from './lib/orchestra';
 import { ShopPayments } from './lib/shop-payment';
 import { InMemoryShopPaymentStore, PostgresShopPaymentStore } from './lib/shop-payment-store';
 import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
-import { startSparkInvoiceWorker } from './lib/spark-worker';
+import { startMemberSparkInvoicePrune, startSparkInvoiceWorker } from './lib/spark-worker';
 import { startPosPaidWorker } from './lib/pos-paid-worker';
 import { startFondPaidWorker } from './lib/fond-paid-worker';
 import { resolveFxSpotUrl, startFxSpotWorker } from './lib/fx-spot';
@@ -413,6 +413,10 @@ if (import.meta.main) {
         ),
       now: Date.now,
     });
+  } else if (boot.sparkInvoiceStore !== undefined) {
+    // The worker prunes on every tick; without it, expired member invoices
+    // stored while free in-app payments were on are still deleted.
+    startMemberSparkInvoicePrune({ store: boot.sparkInvoiceStore, now: Date.now });
   }
   if (lnurlServer !== undefined) {
     startPosPaidWorker({

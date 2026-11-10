@@ -16,9 +16,11 @@ import {
   type SparkInvoiceStore,
 } from '@/lib/spark-invoice-store';
 import {
+  MEMBER_SPARK_INVOICE_PRUNE_INTERVAL_MS,
   SPARK_INVOICE_WINDOW_MS,
   SPARK_WORKER_INTERVAL_MS,
   runSparkInvoiceTick,
+  startMemberSparkInvoicePrune,
   startSparkInvoiceWorker,
   type SparkWorkerDeps,
 } from '@/lib/spark-worker';
@@ -692,6 +694,76 @@ describe('startSparkInvoiceWorker', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(listOpen).toHaveBeenCalledTimes(2);
     expect(events(warn).filter((e) => e['event'] === 'spark.worker.tick.failed')).toHaveLength(2);
+    handle.stop();
+  });
+});
+
+describe('startMemberSparkInvoicePrune', () => {
+  const MEMBER_ID = '00000000-0000-4000-8000-000000000001';
+
+  function memberRow(n: number, expiresAt: number): MemberSparkInvoiceIssue {
+    return {
+      invoice: `spark1pay${n}`,
+      kind: 'pay',
+      accountId: MEMBER_ID,
+      receiverPubkey: OWNER,
+      amountSats: 21,
+      createdAt: new Date(expiresAt - SPARK_INVOICE_WINDOW_MS),
+      expiresAt: new Date(expiresAt),
+    };
+  }
+
+  it('deletes rows stored while free payments were on once they expire, with the feature off', async () => {
+    vi.useFakeTimers();
+    let clock = NOW;
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(1, NOW));
+    await store.issueMember(memberRow(2, NOW + 30 * 60_000));
+    const handle = startMemberSparkInvoicePrune({ store, now: () => clock });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await store.listOpenMember(new Date(0))).toEqual([
+      expect.objectContaining({ invoice: 'spark1pay2' }),
+    ]);
+    clock = NOW + MEMBER_SPARK_INVOICE_PRUNE_INTERVAL_MS;
+    await vi.advanceTimersByTimeAsync(MEMBER_SPARK_INVOICE_PRUNE_INTERVAL_MS);
+    expect(await store.listOpenMember(new Date(0))).toEqual([]);
+    expect(await store.pruneMember(new Date(Number.MAX_SAFE_INTEGER))).toBe(0);
+    handle.stop();
+  });
+
+  it('prunes now and on the interval without overlapping, and stops', async () => {
+    vi.useFakeTimers();
+    let release: (() => void) | undefined;
+    const pruneMember = vi.fn(
+      () =>
+        new Promise<number>((resolve) => {
+          release = () => resolve(0);
+        }),
+    );
+    const handle = startMemberSparkInvoicePrune({ store: { pruneMember }, now: () => NOW }, 1000);
+    expect(pruneMember).toHaveBeenCalledTimes(1);
+    expect(pruneMember).toHaveBeenCalledWith(new Date(NOW));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(pruneMember).toHaveBeenCalledTimes(1);
+    release?.();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(pruneMember).toHaveBeenCalledTimes(2);
+    handle.stop();
+    release?.();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(pruneMember).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs a failed prune and keeps running', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const pruneMember = vi.fn(() => Promise.reject(new Error('db down')));
+    const handle = startMemberSparkInvoicePrune({ store: { pruneMember }, now: () => NOW }, 1000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(pruneMember).toHaveBeenCalledTimes(2);
+    expect(
+      events(warn).filter((e) => e['event'] === 'spark.member_invoice.prune_failed'),
+    ).toHaveLength(2);
     handle.stop();
   });
 });
