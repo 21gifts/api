@@ -596,11 +596,12 @@ under the creation lock. The lock covers those local checks and the insert. For
 a charge, the route list, mint, and quotes run outside it. The payer's creation
 skips the route list and quotes; its offers fill runs them after the insert, in
 the background. No Orchestra call is awaited while the lock is held. Order 7
-runs only there, once per creation. `IpRateLimiter.allow` records every call it
-allows. The api-wide counter is asked first, and the account counter only when
-it allows, so a refusal by the account counter leaves one extra hit on the
-api-wide counter at most. A store failure during creation logs `pay.failed`;
-the page cannot tell whether a payment opened, so it repeats the request after
+runs only there, once per creation. `IpRateLimiter.allow` records an allowed call
+only for a non-null key. A `null` key is allowed and not counted. The shop counters
+call it with `'api'` and the account id. The api-wide counter is asked first, and
+the account counter only when it allows, so a refusal by the account counter leaves
+one extra hit on the api-wide counter at most. A store failure during creation logs
+`pay.failed`; the page cannot tell whether a payment opened, so it repeats the request after
 order 2's 502 as after any other 5xx. The counters in order 7 are two
 `IpRateLimiter` instances, keyed by
 the account id as `src/routes/wallet-report.ts` does and by one fixed
@@ -697,8 +698,10 @@ One procedure creates a shop payment, for a charge or for a payer:
    wait only when no charge is pending. Order 9 is only a
    `findChargeForPayment` error, an insert at 16 s or later, or a disconnected
    client. For a payer, no committed pair is not an error: the payment is
-   already open Lightning-only, and the offers fill simply inserts no second
-   quote.
+   already open Lightning-only, and the offers fill inserts no second quote.
+   Except when the route-list fetch failed, an empty candidate list or no
+   retained offer also starts the account's 60 s no-pair wait, as described for
+   `POST /pay/:username/payment` above.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first takes the
    [Payment hash claim](#payment-hash-claim) and then locks the account
