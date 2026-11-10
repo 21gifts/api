@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
+import type { WalletAccountKind } from '@/lib/wallet-category';
 import { parseWalletReport } from '@/lib/wallet-report';
 import {
   InMemoryWalletStore,
   migrateWalletSchema,
   PostgresWalletStore,
+  repairWalletPaymentPairs,
   WALLET_SCHEMA_SQL,
   type WalletBalanceSnapshot,
   type WalletPaymentRecord,
@@ -71,7 +73,7 @@ function payment(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord 
 
 describe('wallet schema', () => {
   it('contains the exact idempotent tables, migration order, and mirrored documentation', async () => {
-    expect(WALLET_SCHEMA_SQL).toHaveLength(6);
+    expect(WALLET_SCHEMA_SQL).toHaveLength(7);
     expect(WALLET_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/);
     expect(WALLET_SCHEMA_SQL[1]).toMatch(/received_at DESC, id DESC/);
     expect(WALLET_SCHEMA_SQL[2]).toMatch(/PRIMARY KEY \(account_id, payment_id\)/);
@@ -83,6 +85,9 @@ describe('wallet schema', () => {
       'ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz',
     );
     expect(WALLET_SCHEMA_SQL[5]).toMatch(/paid_at DESC, payment_id DESC/);
+    expect(WALLET_SCHEMA_SQL[6]).toBe(
+      'CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)',
+    );
     const documented = readFileSync(join(process.cwd(), 'docs/schema/wallet.sql'), 'utf8');
     for (const statement of WALLET_SCHEMA_SQL) {
       expect(documented).toContain(statement);
@@ -248,6 +253,238 @@ describe('InMemoryWalletStore', () => {
   });
 });
 
+describe('InMemoryWalletStore pairing by payment id', () => {
+  const T0 = new Date('2026-09-30T00:00:00.000Z');
+  const T3 = new Date('2026-10-03T00:00:00.000Z');
+
+  /** An outgoing transfer the sender's wallet reported without any detail. */
+  function bare(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord {
+    return payment({
+      accountId: 'sender',
+      paymentId: 'transfer',
+      direction: 'out',
+      method: 'spark',
+      paymentHash: null,
+      invoice: null,
+      destination: null,
+      description: null,
+      lnurlComment: null,
+      category: 'unknown',
+      counterpartyAccountId: null,
+      ...extra,
+    });
+  }
+
+  /** The receiver's categorized side of the same transfer. */
+  function received(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord {
+    return payment({
+      accountId: 'receiver',
+      paymentId: 'transfer',
+      direction: 'in',
+      method: 'spark',
+      description: 'zap:' + 'b'.repeat(64),
+      category: 'gift',
+      counterpartyAccountId: 'sender',
+      ...extra,
+    });
+  }
+
+  async function only(store: InMemoryWalletStore, accountId: string): Promise<WalletPaymentRecord> {
+    const [row] = await store.listPayments(accountId, 10);
+    if (row === undefined) {
+      throw new Error(`no payment for ${accountId}`);
+    }
+    return row;
+  }
+
+  it('fills an out-row without details from the categorized in-row that is already stored', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([received({ updatedAt: T1, firstSeenAt: T1 })]);
+    await store.upsertPayments([bare({ updatedAt: T2, firstSeenAt: T2 })]);
+    expect(await only(store, 'sender')).toMatchObject({
+      category: 'gift',
+      counterpartyAccountId: 'receiver',
+      updatedAt: T2,
+      description: null,
+    });
+    expect(await only(store, 'receiver')).toMatchObject({
+      category: 'gift',
+      counterpartyAccountId: 'sender',
+      updatedAt: T1,
+    });
+  });
+
+  it('fills an earlier uncategorized out-row when the in-row arrives later', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([bare({ updatedAt: T1, firstSeenAt: T1 })]);
+    expect(await only(store, 'sender')).toMatchObject({ category: 'unknown' });
+    await store.upsertPayments([received({ updatedAt: T2, firstSeenAt: T2 })]);
+    expect(await only(store, 'sender')).toMatchObject({
+      category: 'gift',
+      counterpartyAccountId: 'receiver',
+      updatedAt: T2,
+      firstSeenAt: T1,
+    });
+    // A later bare re-send keeps the paired category, as for any resolved one.
+    await store.upsertPayments([bare({ updatedAt: T3, firstSeenAt: T3 })]);
+    expect(await only(store, 'sender')).toMatchObject({
+      category: 'gift',
+      counterpartyAccountId: 'receiver',
+      updatedAt: T2,
+    });
+  });
+
+  it('pairs the reverse direction: an in-row without details from a categorized out-row', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([
+      bare({ accountId: 'receiver', direction: 'in', updatedAt: T2, firstSeenAt: T2 }),
+    ]);
+    // The paired row never moves updatedAt backwards.
+    await store.upsertPayments([
+      received({
+        accountId: 'sender',
+        direction: 'out',
+        category: 'member',
+        counterpartyAccountId: 'receiver',
+        updatedAt: T1,
+        firstSeenAt: T1,
+      }),
+    ]);
+    expect(await only(store, 'receiver')).toMatchObject({
+      category: 'member',
+      counterpartyAccountId: 'sender',
+      updatedAt: T2,
+    });
+  });
+
+  it('names the paired account like the classifier: platform, gift, point-of-sale shop, then its kind', async () => {
+    const kinds: Record<string, WalletAccountKind> = {
+      platform: 'platform',
+      shop: 'shop',
+      member: 'member',
+    };
+    const cases: Array<{
+      source: Partial<WalletPaymentRecord>;
+      expected: string;
+    }> = [
+      { source: { accountId: 'platform', category: 'gift' }, expected: 'platform' },
+      { source: { accountId: 'shop', category: 'gift' }, expected: 'gift' },
+      {
+        source: { accountId: 'member', category: 'shop', counterpartyAccountId: null },
+        expected: 'shop',
+      },
+      { source: { accountId: 'member', category: 'shop' }, expected: 'member' },
+      { source: { accountId: 'shop', category: 'platform' }, expected: 'shop' },
+      {
+        source: { accountId: 'member', category: 'outside_lightning', counterpartyAccountId: null },
+        expected: 'member',
+      },
+    ];
+    for (const { source, expected } of cases) {
+      const store = new InMemoryWalletStore((id) => Promise.resolve(kinds[id] ?? 'member'));
+      await store.upsertPayments([bare()]);
+      await store.upsertPayments([received(source)]);
+      expect(await only(store, 'sender')).toMatchObject({
+        category: expected,
+        counterpartyAccountId: source.accountId,
+      });
+    }
+  });
+
+  it('never overwrites a category or counterparty the row resolved itself', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([
+      bare({ category: 'outside_lightning' }),
+      received({ updatedAt: T2 }),
+    ]);
+    expect(await only(store, 'sender')).toMatchObject({
+      category: 'outside_lightning',
+      counterpartyAccountId: null,
+    });
+    const member = new InMemoryWalletStore();
+    await member.upsertPayments([
+      bare({ category: 'member', counterpartyAccountId: 'someone' }),
+      received({ updatedAt: T2 }),
+    ]);
+    expect(await only(member, 'sender')).toMatchObject({
+      category: 'member',
+      counterpartyAccountId: 'someone',
+    });
+  });
+
+  it('ignores ambiguous payment ids, same-direction pairs, and two unknown sides', async () => {
+    const ambiguous = new InMemoryWalletStore();
+    await ambiguous.upsertPayments([
+      bare(),
+      received(),
+      received({ accountId: 'third', updatedAt: T2 }),
+    ]);
+    expect(await only(ambiguous, 'sender')).toMatchObject({ category: 'gift' });
+    await ambiguous.upsertPayments([bare({ accountId: 'fourth', updatedAt: T2 })]);
+    expect(await only(ambiguous, 'fourth')).toMatchObject({
+      category: 'unknown',
+      counterpartyAccountId: null,
+    });
+
+    const sameDirection = new InMemoryWalletStore();
+    await sameDirection.upsertPayments([bare(), received({ direction: 'out' })]);
+    expect(await only(sameDirection, 'sender')).toMatchObject({ category: 'unknown' });
+
+    const bothUnknown = new InMemoryWalletStore();
+    await bothUnknown.upsertPayments([
+      bare(),
+      bare({ accountId: 'receiver', direction: 'in', updatedAt: T0 }),
+    ]);
+    expect(await only(bothUnknown, 'sender')).toMatchObject({ category: 'unknown' });
+    expect(await only(bothUnknown, 'receiver')).toMatchObject({ category: 'unknown' });
+  });
+
+  it('keeps a row its own report resolved while the account kind was looked up', async () => {
+    let release: (kind: WalletAccountKind) => void = () => undefined;
+    const store = new InMemoryWalletStore(
+      () =>
+        new Promise<WalletAccountKind>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await store.upsertPayments([received()]);
+    const pairing = store.upsertPayments([bare({ updatedAt: T2 })]);
+    await Promise.resolve();
+    await store.upsertPayments([
+      bare({ category: 'member', counterpartyAccountId: 'someone', updatedAt: T3 }),
+    ]);
+    release('member');
+    await pairing;
+    expect(await only(store, 'sender')).toMatchObject({
+      category: 'member',
+      counterpartyAccountId: 'someone',
+    });
+  });
+});
+
+describe('repairWalletPaymentPairs', () => {
+  it('runs the pairing over the whole table once and counts the changed rows', async () => {
+    const sql = new MockSql();
+    sql.rows = [{ account_id: 'a' }, { account_id: 'b' }];
+    expect(await repairWalletPaymentPairs(sql, T2)).toBe(2);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.params).toEqual([T2]);
+    const text = sql.queries[0]?.text ?? '';
+    expect(text).toContain('UPDATE wallet_payment AS t');
+    expect(text).not.toContain('$2');
+    expect(text).toContain("t.category = 'unknown'");
+    expect(text).toContain('t.counterparty_account_id IS NULL');
+    expect(text).toContain("s.category <> 'unknown'");
+    expect(text).toContain('s.direction <> t.direction');
+    expect(text).toContain('s.account_id <> t.account_id');
+    expect(text).toContain('WHERE c.payment_id = t.payment_id) = 2');
+    expect(text).toContain('last_observed_at = COALESCE(t.last_observed_at, t.updated_at)');
+    expect(text).toContain("m.text ~* '#21GiftsShop(?![A-Za-z0-9_])'");
+    sql.rows = [];
+    expect(await repairWalletPaymentPairs(sql, T2)).toBe(0);
+  });
+});
+
 describe('PostgresWalletStore', () => {
   it('writes more payments than one concurrency batch, one statement each', async () => {
     const sql = new MockSql();
@@ -255,10 +492,13 @@ describe('PostgresWalletStore', () => {
     await store.upsertPayments(
       Array.from({ length: 20 }, (_, index) => payment({ paymentId: `p${index}` })),
     );
-    expect(sql.executes).toHaveLength(20);
-    expect(sql.executes.map((entry) => entry.params[1])).toEqual(
-      Array.from({ length: 20 }, (_, index) => `p${index}`),
-    );
+    // One upsert plus one pairing statement per payment.
+    expect(sql.executes).toHaveLength(40);
+    expect(
+      sql.executes
+        .filter((entry) => entry.text.startsWith('INSERT INTO wallet_payment'))
+        .map((entry) => entry.params[1]),
+    ).toEqual(Array.from({ length: 20 }, (_, index) => `p${index}`));
   });
 
   it('inserts balance and payment rows in order with guarded coalescing upserts', async () => {
@@ -270,7 +510,16 @@ describe('PostgresWalletStore', () => {
       text: expect.stringContaining('INSERT INTO wallet_balance_snapshot'),
       params: ['a', 'account', 21, T1, T1],
     });
-    expect(sql.executes).toHaveLength(3);
+    expect(sql.executes).toHaveLength(5);
+    // The two payments run concurrently: both upserts, then the pairing of each payment id.
+    const pairing = sql.executes.filter((entry) =>
+      entry.text.startsWith('UPDATE wallet_payment AS t'),
+    );
+    expect(pairing.map((entry) => entry.params)).toEqual([
+      [T1, 'a'],
+      [T1, 'b'],
+    ]);
+    expect(pairing[0]?.text).toContain('WHERE t.payment_id = $2 AND s.payment_id = t.payment_id');
     expect(sql.executes[1]?.text).toContain('ON CONFLICT (account_id, payment_id) DO UPDATE');
     expect(sql.executes[1]?.text).toContain('COALESCE(EXCLUDED.invoice, wallet_payment.invoice)');
     expect(sql.executes[1]?.text).toContain('IS DISTINCT FROM');

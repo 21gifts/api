@@ -333,8 +333,10 @@ describe('POST /me/wallet/report', () => {
       }),
     );
     expect(response.status).toBe(200);
-    expect(sql.executes).toHaveLength(2);
+    // Balance snapshot, payment upsert, then the pairing of that payment id.
+    expect(sql.executes).toHaveLength(3);
     expect(sql.executes[1]?.params.slice(11, 13)).toEqual([null, null]);
+    expect(sql.executes[2]?.text).toContain('UPDATE wallet_payment AS t');
     const output = JSON.stringify({
       sql: sql.executes,
       warn: warn.mock.calls,

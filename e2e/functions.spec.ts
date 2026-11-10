@@ -4249,6 +4249,33 @@ test('Function: PostgresWalletStore — needs DATABASE_URL; default boot stores 
   expect(await res.json()).toEqual({ acknowledgedIds: ['p1'] });
 });
 
+test('Function: walletAccountKind — the other side of a paired transfer is acknowledged', async ({
+  request,
+}) => {
+  const receiver = await memberSession(request);
+  const sender = await memberSession(request);
+  const paymentId = `pair-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  // A resolved in-row first, then the same transfer id as an out-row without details:
+  // the memory store pairs them and names the receiver with walletAccountKind.
+  const incoming = await request.post('/me/wallet/report', {
+    headers: receiver,
+    data: walletReport([walletPayment({ id: paymentId, direction: 'in' })]),
+  });
+  expect(incoming.status()).toBe(200);
+  const outgoing = await request.post('/me/wallet/report', {
+    headers: sender,
+    data: walletReport([walletPayment({ id: paymentId, method: 'spark' })]),
+  });
+  expect(outgoing.status()).toBe(200);
+  expect(await outgoing.json()).toEqual({ acknowledgedIds: [paymentId] });
+});
+
+test('Function: repairWalletPaymentPairs — needs DATABASE_URL; default boot is healthy', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
 test('Function: migrateWalletSchema — needs DATABASE_URL; default boot stores in memory (200)', async ({
   request,
 }) => {

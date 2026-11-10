@@ -1,7 +1,11 @@
 /** Persistence ports and adapters for wallet balance snapshots and payments. */
 
 import type { SqlClient } from '@/lib/auth/sql';
-import type { WalletPaymentClass, WalletPaymentCategory } from '@/lib/wallet-category';
+import type {
+  WalletAccountKind,
+  WalletPaymentClass,
+  WalletPaymentCategory,
+} from '@/lib/wallet-category';
 import type {
   ReportedWalletPayment,
   WalletPaymentDirection,
@@ -44,6 +48,10 @@ export interface WalletStore {
   /**
    * Upsert payment rows, preserving first-seen time and non-null details. Rows for the same
    * payment are applied in the given order; distinct payments may be written concurrently.
+   * After each row, the two sides of an internal transfer are paired by payment id: when the
+   * payment id is held by exactly two rows of opposite direction on different accounts, a row
+   * whose own fields resolved nothing (`unknown`, no counterparty) takes its category from the
+   * other, resolved row and that row's account as counterparty.
    *
    * @param rows - Classified payment observations.
    */
@@ -100,6 +108,7 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS invoice text`,
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC)`,
+  `CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)`,
 ];
 
 /**
@@ -149,6 +158,35 @@ const DETAIL_PAYMENT_FIELDS = [
   'lnurlComment',
 ] as const;
 
+/** Whether a row's own fields resolved neither a category nor a counterparty. */
+function unresolved(row: WalletPaymentRecord): boolean {
+  return row.category === 'unknown' && row.counterpartyAccountId === null;
+}
+
+/**
+ * Category of the unresolved side of a transfer, from its resolved other side `source`.
+ *
+ * Mirrors `PAIRED_CATEGORY` in `pairFillSql`: the platform account is `platform`; a `gift`
+ * (forum invoice or zap) is a gift on both sides; a `shop` row without a counterparty is the
+ * shop's own point-of-sale receipt, so its account is the shop; otherwise the source account is
+ * named like any resolved counterparty.
+ */
+function pairedCategory(
+  source: WalletPaymentRecord,
+  kind: WalletAccountKind,
+): WalletPaymentCategory {
+  if (kind === 'platform') {
+    return 'platform';
+  }
+  if (source.category === 'gift') {
+    return 'gift';
+  }
+  if (source.category === 'shop' && source.counterpartyAccountId === null) {
+    return 'shop';
+  }
+  return kind;
+}
+
 function updatePayment(existing: WalletPaymentRecord, row: WalletPaymentRecord): void {
   let changed = existing.paidAt.getTime() !== row.paidAt.getTime();
   existing.paidAt = new Date(row.paidAt.getTime());
@@ -192,6 +230,16 @@ export class InMemoryWalletStore implements WalletStore {
   readonly #balances: WalletBalanceSnapshot[] = [];
   /** Stored row plus the latest accepted observation, also one that changed nothing (the staleness watermark). */
   readonly #payments = new Map<string, { row: WalletPaymentRecord; observedMs: number }>();
+  readonly #accountKind: (accountId: string) => Promise<WalletAccountKind>;
+
+  /**
+   * @param accountKind - Names the account on the resolved side of a paired transfer (default:
+   *   every account is a `member`); `createApp` passes `walletAccountKind`.
+   */
+  constructor(accountKind?: (accountId: string) => Promise<WalletAccountKind>) {
+    this.#accountKind =
+      accountKind ?? ((): Promise<WalletAccountKind> => Promise.resolve('member'));
+  }
 
   /**
    * Append a copy of a balance snapshot.
@@ -204,27 +252,55 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
-   * Upsert rows sequentially using account id plus payment id as the key.
+   * Upsert rows sequentially using account id plus payment id as the key, pairing each
+   * payment's two sides after its row.
    *
    * @param rows - Classified payment observations.
    */
-  upsertPayments(rows: readonly WalletPaymentRecord[]): Promise<void> {
+  async upsertPayments(rows: readonly WalletPaymentRecord[]): Promise<void> {
     for (const row of rows) {
       const key = `${row.accountId}\u0000${row.paymentId}`;
       const stored = this.#payments.get(key);
       const observedMs = row.updatedAt.getTime();
       if (stored === undefined) {
         this.#payments.set(key, { row: copyPayment(row), observedMs });
-        continue;
+      } else if (observedMs >= stored.observedMs) {
+        // A report observed before the latest accepted one (a slower concurrent request) never overwrites it.
+        stored.observedMs = observedMs;
+        updatePayment(stored.row, row);
       }
-      // A report observed before the latest accepted one (a slower concurrent request) never overwrites it.
-      if (observedMs < stored.observedMs) {
-        continue;
-      }
-      stored.observedMs = observedMs;
-      updatePayment(stored.row, row);
+      await this.#pair(row.paymentId, row.updatedAt);
     }
-    return Promise.resolve();
+  }
+
+  /**
+   * Fill the unresolved side of a payment id held by exactly two rows of opposite direction
+   * (distinct accounts by key) from its resolved side, like `pairFillSql`.
+   */
+  async #pair(paymentId: string, at: Date): Promise<void> {
+    const rows = [...this.#payments.values()]
+      .map((entry) => entry.row)
+      .filter((row) => row.paymentId === paymentId);
+    if (rows.length !== 2) {
+      return;
+    }
+    const [first, second] = rows as [WalletPaymentRecord, WalletPaymentRecord];
+    const [target, source] = unresolved(first) ? [first, second] : [second, first];
+    if (
+      target.direction === source.direction ||
+      !unresolved(target) ||
+      source.category === 'unknown'
+    ) {
+      return;
+    }
+    const kind = await this.#accountKind(source.accountId);
+    // Another write may have resolved the row while the account kind was looked up.
+    if (!unresolved(target)) {
+      return;
+    }
+    target.category = pairedCategory(source, kind);
+    target.counterpartyAccountId = source.accountId;
+    target.updatedAt = new Date(Math.max(target.updatedAt.getTime(), at.getTime()));
   }
 
   /**
@@ -359,6 +435,75 @@ IS DISTINCT FROM
 /** Latest accepted observation of the stored row; rows written before the column existed fall back to `updated_at`. */
 const OBSERVED_WATERMARK = 'COALESCE(wallet_payment.last_observed_at, wallet_payment.updated_at)';
 
+/**
+ * Category of the unresolved side `t` from its resolved other side `s` (account `a`), the same
+ * rule as `pairedCategory`: platform account, then `gift`, then the shop's own point-of-sale
+ * receipt, then the classifier's step 4 (`shop` for a live assigned `#21GiftsShop` note, the
+ * pattern of `textHasHashtagToken`, else `member`).
+ */
+const PAIRED_CATEGORY = `CASE
+  WHEN a.is_platform IS TRUE THEN 'platform'
+  WHEN s.category = 'gift' THEN 'gift'
+  WHEN s.category = 'shop' AND s.counterparty_account_id IS NULL THEN 'shop'
+  WHEN EXISTS (
+    SELECT 1 FROM message AS m
+    WHERE m.parent_id IS NULL AND m.deleted_at IS NULL
+      AND m.shop_account_id = s.account_id
+      AND m.text ~* '#21GiftsShop(?![A-Za-z0-9_])'
+  ) THEN 'shop'
+  ELSE 'member'
+END`;
+
+/**
+ * Pair the two sides of internal transfers by payment id.
+ *
+ * A row whose own fields resolved nothing (`category = 'unknown'`, no counterparty) takes its
+ * category from the other side's row ({@link PAIRED_CATEGORY}) and that row's account as
+ * counterparty. Only a payment id held by exactly two rows counts, of opposite direction and
+ * different accounts, and only when the other side's category is not `unknown`. A resolved row
+ * is never changed. `updated_at` moves forward to `$1` at most; the staleness watermark
+ * `last_observed_at` keeps its value (pinned from `updated_at` for rows written before the
+ * column existed). Scoped, the statement touches payment id `$2` only; unscoped, every eligible
+ * row (the boot repair). Returns one row per changed row.
+ */
+function pairFillSql(scoped: boolean): string {
+  return `UPDATE wallet_payment AS t
+SET category = ${PAIRED_CATEGORY},
+    counterparty_account_id = s.account_id,
+    updated_at = GREATEST(t.updated_at, $1::timestamptz),
+    last_observed_at = COALESCE(t.last_observed_at, t.updated_at)
+FROM wallet_payment AS s
+JOIN account AS a ON a.id = s.account_id
+WHERE ${scoped ? 't.payment_id = $2 AND ' : ''}s.payment_id = t.payment_id
+  AND s.account_id <> t.account_id
+  AND s.direction <> t.direction
+  AND t.category = 'unknown'
+  AND t.counterparty_account_id IS NULL
+  AND s.category <> 'unknown'
+  AND (SELECT count(*) FROM wallet_payment AS c WHERE c.payment_id = t.payment_id) = 2
+RETURNING t.account_id`;
+}
+
+/** Pairing of one payment id, run after each upserted row. */
+const PAIR_FILL_ONE_SQL = pairFillSql(true);
+
+/**
+ * Fill every unresolved `wallet_payment` row from the resolved other side of its transfer
+ * (the pairing of `upsertPayments`, over the whole table), for rows stored before pairing existed.
+ *
+ * Idempotent: a filled row is resolved, so a second run changes nothing. Runs after
+ * `migrateDbChangeSchema`, so `trg_db_change` logs every changed row.
+ *
+ * @param sql - Parameter-bound SQL client for a migrated database.
+ * @param now - Time written to `updated_at` of each changed row (never moved backwards).
+ * @returns How many rows this run changed.
+ * @throws Propagates SQL failures.
+ */
+export async function repairWalletPaymentPairs(sql: SqlClient, now: Date): Promise<number> {
+  const changed = await sql.query<{ account_id: string }>(pairFillSql(false), [now]);
+  return changed.length;
+}
+
 /** Durable wallet store backed by Postgres. */
 export class PostgresWalletStore implements WalletStore {
   /**
@@ -386,7 +531,8 @@ VALUES ($1,$2,$3,$4,$5)`,
   }
 
   /**
-   * Upsert each payment with one ordered statement and a no-op update guard.
+   * Upsert each payment with one ordered statement and a no-op update guard, then pair the
+   * two sides of its payment id (see {@link WalletStore.upsertPayments}).
    *
    * @param rows - Classified payment observations.
    */
@@ -403,6 +549,9 @@ VALUES ($1,$2,$3,$4,$5)`,
         groups.slice(start, start + UPSERT_CONCURRENCY).map(async (group) => {
           for (const row of group) {
             await this.upsertPayment(row);
+            // Runs after the row's own statement committed, so of two concurrent reports of the
+            // same transfer at least the later one sees both rows.
+            await this.sql.execute(PAIR_FILL_ONE_SQL, [row.updatedAt, row.paymentId]);
           }
         }),
       );
