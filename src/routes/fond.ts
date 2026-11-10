@@ -1,12 +1,14 @@
 /**
- * Member-session routes for the single `fond` account that pays the queued
- * payout instructions from its own in-app wallet. The routes are mounted
- * always; they answer 404 unless `PAYOUT_SIGNER=fond`.
+ * Routes for the Fond payout queue. Mounted always; they answer 404 unless
+ * `PAYOUT_SIGNER=fond`.
  *
- * The API decides every payout in the ping path. These routes only request
- * the recipient invoice, convert the stored USD amount at the current spot,
- * and accept the preimage as proof. Never log addresses, preimages, or
- * invoices.
+ * `GET /health` is public and unauthenticated. It reports whether queued
+ * payouts are being paid. The other routes are the member session of the
+ * single `fond` account that pays the queued instructions from its own
+ * in-app wallet. The API decides every payout in the ping path. Those routes
+ * only request the recipient invoice, convert the stored USD amount at the
+ * current spot, and accept the preimage as proof. Never log addresses,
+ * preimages, or invoices.
  */
 
 import { Hono } from 'hono';
@@ -18,6 +20,7 @@ import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { LnurlServerConfig, PayoutSigner } from '@/lib/config';
 import {
   FOND_CLAIM_LEASE_MS,
+  FOND_OVERDUE_MS,
   type FondPayoutRow,
   type FondPayoutStore,
 } from '@/lib/fond-payout-store';
@@ -84,6 +87,9 @@ export const FOND_ONLY = 'Fond only';
 /** `503` body when a payout store read or transition throws. */
 const PAYOUTS_UNAVAILABLE = 'Payouts are unavailable';
 
+/** `Cache-Control` for every `GET /fond/health` answer. The probe must not be cached. */
+const HEALTH_NO_STORE = { 'Cache-Control': 'no-store' } as const;
+
 /**
  * Resolve the session account for a `/fond` request.
  *
@@ -110,6 +116,22 @@ function listRow(row: FondPayoutRow): FondPayoutListRow {
 /** UTC day key `YYYY-MM-DD`. */
 function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
+}
+
+/** One UTC calendar day, in milliseconds. Exact integer, not a day index. */
+const UTC_DAY_MS = 86_400_000;
+
+/**
+ * UTC day key one calendar day before `day`.
+ *
+ * Subtracts one UTC day from that day's midnight. Month and year boundaries
+ * stay on the calendar; the result does not use local time or a floating day count.
+ *
+ * @param day - UTC day key `YYYY-MM-DD` from {@link utcDay}.
+ * @returns The previous UTC day key.
+ */
+function previousUtcDay(day: string): string {
+  return utcDay(Date.parse(`${day}T00:00:00.000Z`) - UTC_DAY_MS);
 }
 
 /** Positive decimal text accepted for the spot and committed USD strings. */
@@ -203,7 +225,10 @@ async function refusedInvoice(
 }
 
 /**
- * Build the `/fond` route group for the fond payer.
+ * Build the `/fond` route group.
+ *
+ * `GET /health` is public and does not read a session. The other routes are
+ * the fond payer's session routes.
  *
  * @param deps - Auth, queue, switch, username, clock, fetch, LNURL config,
  *   and the extracted issue/proof collaborators.
@@ -224,6 +249,31 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
   };
 
   return new Hono()
+    .get('/health', async (c) => {
+      if (deps.payoutSigner !== 'fond') {
+        return c.json({ error: 'Not found' }, 404, HEALTH_NO_STORE);
+      }
+      const nowMs = deps.now();
+      const today = utcDay(nowMs);
+      const yesterday = previousUtcDay(today);
+      let todayRows: FondPayoutRow[];
+      let yesterdayRows: FondPayoutRow[];
+      try {
+        todayRows = await deps.fondPayoutStore.listOpen(today);
+        yesterdayRows = await deps.fondPayoutStore.listOpen(yesterday);
+      } catch {
+        logEvent('fond.health.failed');
+        return c.json({ status: 'unavailable' }, 503, HEALTH_NO_STORE);
+      }
+      const open = todayRows.length;
+      const overdue =
+        todayRows.filter((row) => nowMs - row.createdAt.getTime() > FOND_OVERDUE_MS).length +
+        yesterdayRows.length;
+      if (overdue > 0) {
+        return c.json({ status: 'overdue', open, overdue }, 503, HEALTH_NO_STORE);
+      }
+      return c.json({ status: 'ok', open }, 200, HEALTH_NO_STORE);
+    })
     .get('/payouts', async (c) => {
       if (deps.payoutSigner !== 'fond') {
         return c.json({ error: 'Not found' }, 404);

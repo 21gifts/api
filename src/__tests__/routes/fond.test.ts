@@ -5,7 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
-import { InMemoryFondPayoutStore, type FondPayoutEnqueue } from '@/lib/fond-payout-store';
+import {
+  FOND_OVERDUE_MS,
+  InMemoryFondPayoutStore,
+  type FondPayoutEnqueue,
+  type FondPayoutRow,
+} from '@/lib/fond-payout-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { GiftRecord, GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
@@ -36,6 +41,7 @@ const mockedSettle = vi.mocked(settleProvenGift);
 
 const NOW = Date.parse('2026-11-09T12:00:00.000Z');
 const TODAY = '2026-11-09';
+const YESTERDAY = '2026-11-08';
 const TOKEN = 'fond-session';
 const FOND = 'tondo-fond';
 const INVOICE_ID = 'inv-1';
@@ -321,6 +327,7 @@ function captureEvents(): string[] {
 describe('fondRoutes switch and auth', () => {
   it('returns 404 on every route unless PAYOUT_SIGNER is fond', async () => {
     const { app } = await makeApp({ signer: 'spend' });
+    expect((await app.request('/fond/health')).status).toBe(404);
     expect((await app.request('/fond/payouts', { headers: authHeader() })).status).toBe(404);
     expect(
       (
@@ -547,6 +554,195 @@ describe('GET /fond/payouts', () => {
     const res = await app.request('/fond/payouts', { headers: authHeader() });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+  });
+});
+
+describe('GET /fond/health', () => {
+  async function markPaid(
+    payouts: InMemoryFondPayoutStore,
+    id: string,
+    utcDay: string,
+  ): Promise<void> {
+    await payouts.claimForInvoice(id, utcDay);
+    await payouts.setInvoiced(id, {
+      invoiceId: INVOICE_ID,
+      paymentHash: HASH,
+      bolt11: BOLT11,
+      amountMsat: 1_000_000,
+    });
+    await payouts.claimSettlement(id);
+    await payouts.markPaid(id);
+  }
+
+  it('is 404 when PAYOUT_SIGNER is not fond, and does not read the queue', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp({ signer: 'spend' });
+    await payouts.enqueue(rowInput());
+    const listOpen = vi.spyOn(payouts, 'listOpen');
+    const res = await app.request('/fond/health');
+    expect(res.status).toBe(404);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(listOpen).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  it('is ok with no rows and does not need a session', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp({ seedFond: false });
+    const listOpen = vi.spyOn(payouts, 'listOpen');
+    const anonymous = await app.request('/fond/health');
+    expect(anonymous.status).toBe(200);
+    expect(anonymous.headers.get('Cache-Control')).toBe('no-store');
+    expect(await anonymous.json()).toEqual({ status: 'ok', open: 0 });
+    const bearer = await app.request('/fond/health', {
+      headers: { authorization: 'Bearer not-a-session' },
+    });
+    expect(bearer.status).toBe(200);
+    expect(bearer.headers.get('Cache-Control')).toBe('no-store');
+    expect(await bearer.json()).toEqual({ status: 'ok', open: 0 });
+    expect(listOpen).toHaveBeenNthCalledWith(1, TODAY);
+    expect(listOpen).toHaveBeenNthCalledWith(2, YESTERDAY);
+    expect(listOpen).toHaveBeenCalledTimes(4);
+    expect(events).toEqual([]);
+  });
+
+  it('is ok with fresh open rows and ignores paid and failed rows', async () => {
+    let clock = NOW - FOND_OVERDUE_MS - 1;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await payouts.enqueue(rowInput({ id: 'old-failed', address: 'failed@example.com' }));
+    await payouts.claimForInvoice('old-failed', TODAY);
+    await payouts.markFailed('old-failed', 'no invoice');
+    await payouts.enqueue(rowInput({ id: 'old-paid', address: 'paid@example.com' }));
+    await markPaid(payouts, 'old-paid', TODAY);
+    clock = NOW;
+    await payouts.enqueue(rowInput({ id: 'fresh-1', address: 'one@example.com' }));
+    await payouts.enqueue(rowInput({ id: 'fresh-2', address: 'two@example.com' }));
+    const res = await app.request('/fond/health');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ status: 'ok', open: 2 });
+  });
+
+  it('is ok when an open row is exactly FOND_OVERDUE_MS old', async () => {
+    let clock = NOW - FOND_OVERDUE_MS;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await payouts.enqueue(rowInput({ id: 'exact', address: 'exact@example.com' }));
+    await payouts.claimForInvoice('exact', TODAY);
+    await payouts.setInvoiced('exact', {
+      invoiceId: INVOICE_ID,
+      paymentHash: HASH,
+      bolt11: BOLT11,
+      amountMsat: 1_000_000,
+    });
+    clock = NOW;
+    const res = await app.request('/fond/health');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ status: 'ok', open: 1 });
+  });
+
+  it('counts today rows only past the threshold, for any open status', async () => {
+    const events = captureEvents();
+    let clock = NOW - FOND_OVERDUE_MS - 1;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await payouts.enqueue(rowInput({ id: 'late-issuing', address: 'late@example.com' }));
+    await payouts.claimForInvoice('late-issuing', TODAY);
+    clock = NOW;
+    await payouts.enqueue(rowInput({ id: 'fresh-settling', address: 'fresh@example.com' }));
+    await payouts.claimForInvoice('fresh-settling', TODAY);
+    await payouts.setInvoiced('fresh-settling', {
+      invoiceId: INVOICE_ID,
+      paymentHash: HASH,
+      bolt11: BOLT11,
+      amountMsat: 1_000_000,
+    });
+    await payouts.claimSettlement('fresh-settling');
+    const res = await app.request('/fond/health');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ status: 'overdue', open: 2, overdue: 1 });
+    expect(events).toEqual([]);
+  });
+
+  it('counts every open row of yesterday, including a fresh one, and ignores paid', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ id: 'today-fresh', address: 'today@example.com' }));
+    await payouts.enqueue(rowInput({ id: 'y-owed', utcDay: YESTERDAY, address: 'y1@example.com' }));
+    await payouts.enqueue(
+      rowInput({
+        id: 'y-welcome',
+        utcDay: YESTERDAY,
+        kind: 'welcome',
+        address: 'y2@example.com',
+      }),
+    );
+    await payouts.enqueue(rowInput({ id: 'y-paid', utcDay: YESTERDAY, address: 'y3@example.com' }));
+    await markPaid(payouts, 'y-paid', YESTERDAY);
+    const res = await app.request('/fond/health');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ status: 'overdue', open: 1, overdue: 2 });
+    expect(events).toEqual([]);
+  });
+
+  it('is unavailable when the today read throws', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    const listOpen = vi.spyOn(payouts, 'listOpen');
+    listOpen.mockRejectedValueOnce(new Error('today down'));
+    const res = await app.request('/fond/health');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ status: 'unavailable' });
+    expect(listOpen).toHaveBeenCalledTimes(1);
+    expect(listOpen).toHaveBeenCalledWith(TODAY);
+    expect(events).toEqual(['fond.health.failed']);
+  });
+
+  it('is unavailable when the yesterday read throws', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    const listOpen = vi.spyOn(payouts, 'listOpen');
+    listOpen.mockImplementation((day: string): Promise<FondPayoutRow[]> => {
+      if (day === YESTERDAY) {
+        return Promise.reject(new Error('yesterday down'));
+      }
+      return Promise.resolve([]);
+    });
+    const res = await app.request('/fond/health');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ status: 'unavailable' });
+    expect(listOpen).toHaveBeenNthCalledWith(1, TODAY);
+    expect(listOpen).toHaveBeenNthCalledWith(2, YESTERDAY);
+    expect(events).toEqual(['fond.health.failed']);
+  });
+
+  it('reads the previous calendar day across a year boundary and a leap day', async () => {
+    const cases = [
+      {
+        now: Date.parse('2026-01-01T00:30:00.000Z'),
+        today: '2026-01-01',
+        yesterday: '2025-12-31',
+      },
+      {
+        now: Date.parse('2024-03-01T00:00:00.000Z'),
+        today: '2024-03-01',
+        yesterday: '2024-02-29',
+      },
+    ];
+    for (const item of cases) {
+      const { app, payouts } = await makeApp({ now: () => item.now });
+      const listOpen = vi.spyOn(payouts, 'listOpen');
+      const res = await app.request('/fond/health');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      expect(await res.json()).toEqual({ status: 'ok', open: 0 });
+      expect(listOpen).toHaveBeenNthCalledWith(1, item.today);
+      expect(listOpen).toHaveBeenNthCalledWith(2, item.yesterday);
+    }
   });
 });
 

@@ -12,6 +12,14 @@ import type { SqlClient } from '@/lib/auth/sql';
 /** How long an `issuing` or `settling` claim is trusted before restart recovery. */
 export const FOND_CLAIM_LEASE_MS = 120_000;
 
+/**
+ * How long an open row may wait before `GET /fond/health` reports it overdue.
+ *
+ * Fifteen minutes. This is not the claim lease (`FOND_CLAIM_LEASE_MS`), which
+ * only bounds one invoice or proof request.
+ */
+export const FOND_OVERDUE_MS = 15 * 60_000;
+
 /** Payout kinds the API decides. Matches the `kind` CHECK constraint. */
 export type FondPayoutKind = 'daily' | 'moderator' | 'welcome';
 

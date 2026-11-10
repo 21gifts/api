@@ -1656,6 +1656,11 @@ test('POST /debug/shop-proofs/:id/retry is 404 when LNURL server is off', async 
   expect(await res.text()).toBe('404 Not Found');
 });
 
+test('GET /fond/health is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
+  const res = await request.get('/fond/health');
+  expect(res.status()).toBe(404);
+});
+
 test('GET /fond/payouts is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
   const res = await request.get('/fond/payouts');
   expect(res.status()).toBe(404);

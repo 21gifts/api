@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
   FOND_CLAIM_LEASE_MS,
+  FOND_OVERDUE_MS,
   FOND_PAYOUT_SCHEMA_SQL,
   InMemoryFondPayoutStore,
   PostgresFondPayoutStore,
@@ -238,10 +239,11 @@ describe('InMemoryFondPayoutStore', () => {
     expect(await store.restoreStaleSettling('missing', new Date(NOW))).toBeUndefined();
   });
 
-  it('re-claims only a stale issuing row and reports the lease constant', async () => {
+  it('re-claims a stale issuing row and reports both time windows', async () => {
     let clock = NOW;
     const store = new InMemoryFondPayoutStore(() => clock);
     expect(FOND_CLAIM_LEASE_MS).toBe(120_000);
+    expect(FOND_OVERDUE_MS).toBe(15 * 60_000);
     await store.enqueue(enqueue());
     await store.claimForInvoice(enqueue().id, '2026-11-09');
     expect(await store.claimStaleIssuing(enqueue().id, new Date(NOW))).toBeUndefined();
