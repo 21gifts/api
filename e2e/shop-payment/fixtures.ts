@@ -27,10 +27,12 @@ import {
   OPEN_CRYPTO_PAY_RAILS,
   encodeLnurl,
   getOpenCryptoPayPayment,
+  listOpenCryptoPayOptions,
   parseOpenCryptoPayLink,
   resolveOpenCryptoPayRail,
   TetherWallet,
   withQuery,
+  type OcpPayment,
   type PendingProof,
   type Rail,
   type RailResult,
@@ -454,6 +456,64 @@ function railById(id: string): Rail {
     throw new Error(id);
   }
   return rail;
+}
+
+/** How often the offer wait reads the pay link. */
+const STABLECOIN_OFFER_POLL_MS = 100;
+/** How long the offer wait allows the background fill to insert its quote. */
+const STABLECOIN_OFFER_TIMEOUT_MS = 10_000;
+
+/**
+ * Wait for the background offers fill of a payer-opened payment: poll the pay
+ * link until its current quote offers every requested stablecoin rail.
+ *
+ * @param request - Playwright request context.
+ * @param username - Shop username.
+ * @param railIds - Stablecoin rails that the current quote must offer.
+ * @returns The pay request whose current quote offered every requested rail.
+ * @throws Error when the pay link is not usable or the offers never appear.
+ */
+export async function waitForStablecoinOffers(
+  request: APIRequestContext,
+  username: string,
+  railIds: readonly string[],
+): Promise<OcpPayment> {
+  for (const railId of railIds) {
+    if (railById(railId).tokenName !== 'usdt') {
+      throw new Error(`${railId} is not a stablecoin rail`);
+    }
+  }
+  const http = walletHttp(request);
+  const link = parseOpenCryptoPayLink(sticker(username));
+  if (link === null) {
+    throw new Error(`sticker for ${username} is not an OpenCryptoPay link`);
+  }
+  let current: OcpPayment | null = null;
+  await expect
+    .poll(
+      async () => {
+        const fetched = await getOpenCryptoPayPayment(http, link.url);
+        if (fetched.kind !== 'payment') {
+          return `pay request: ${fetched.kind}`;
+        }
+        current = fetched.payment;
+        const offered = listOpenCryptoPayOptions(fetched.payment).map((option) => option.rail.id);
+        const missing = railIds.filter((railId) => !offered.includes(railId));
+        return missing.length === 0
+          ? 'ready'
+          : `missing ${missing.join(', ')}; offered ${offered.join(', ') || 'nothing'}`;
+      },
+      {
+        message: `Stablecoin offers ${railIds.join(', ')} did not appear on the pay link of ${username}`,
+        timeout: STABLECOIN_OFFER_TIMEOUT_MS,
+        intervals: [STABLECOIN_OFFER_POLL_MS],
+      },
+    )
+    .toBe('ready');
+  if (current === null) {
+    throw new Error(`pay link of ${username} did not answer with a payment`);
+  }
+  return current;
 }
 
 /**

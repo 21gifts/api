@@ -31,9 +31,6 @@ import {
   SHOP_METHODS,
   SHOP_LNURL_HEADERS,
   SHOP_CREATION_INSERT_LIMIT_MS,
-  SHOP_PAY_LINK_CREATION_WAIT_MS,
-  SHOP_REPLACEMENT_BUDGET_MS,
-  SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
   SHOP_SETTLE_FAST_INTERVAL_MS,
   SHOP_SETTLE_SLOW_INTERVAL_MS,
   ShopPayments,
@@ -405,6 +402,7 @@ async function setup(
     username?: string;
     sleep?: 'default';
     now?: () => number;
+    newId?: () => string;
   } = {},
 ): Promise<Harness> {
   const pos = new InMemoryPosStore();
@@ -430,6 +428,7 @@ async function setup(
     fxSpot: options.fxSpot ?? freshSpot(now),
     fetchImpl: fakeFetch(net),
     now,
+    ...(options.newId === undefined ? {} : { newId: options.newId }),
     ...(options.sleep === 'default'
       ? {}
       : {
@@ -565,7 +564,42 @@ async function payerPayment(h: Harness, sats = SATS): Promise<ShopPayment> {
   if (created.kind !== 'payment') {
     throw new Error(`creation ${created.kind}`);
   }
+  await settle();
   return created.payment;
+}
+
+/**
+ * Let the payment's background offers fill run to its end (or to its first
+ * pending external call). In-memory work settles after a few turns; no test
+ * waits on a real timer.
+ *
+ * @returns Nothing, once queued work had its turns.
+ */
+async function settle(): Promise<void> {
+  for (let round = 0; round < 4; round += 1) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    for (let turn = 0; turn < 10; turn += 1) {
+      await Promise.resolve();
+    }
+  }
+}
+
+/**
+ * Route-list fetches that wait until released; the returned function answers
+ * the first held fetch.
+ *
+ * @param h - Harness.
+ * @returns Release of the first held fetch.
+ */
+function holdRouteList(h: Harness): (result: OrchestraRoutesResult) => void {
+  const releases: ((result: OrchestraRoutesResult) => void)[] = [];
+  h.orchestra.routesImpl = () =>
+    new Promise((resolve) => {
+      releases.push(resolve);
+    });
+  return (result) => releases[0]?.(result);
 }
 
 const NO_QUERY: ShopPayLinkQuery = { timeout: null, method: null, asset: null, repeated: false };
@@ -2356,7 +2390,7 @@ describe('wait route statuses (Wait)', () => {
 // ─── Creation procedure ────────────────────────────────────────────────────
 
 describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a till charge)', () => {
-  it('creates a payer payment: one BOLT11, one quote per offered pair, a five-minute window', async () => {
+  it('creates a payer payment Lightning-first: one BOLT11, a five-minute window, then one fill quote per offered pair', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
     const issued = h.net.issued[0]!;
@@ -2392,7 +2426,13 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(new Set(h.orchestra.quoteCalls.map((call) => call.key)).size).toBe(12);
     // One eth_gasPrice per chain.
     expect(h.net.rpcCalls.map((call) => call.method)).toEqual(Array(6).fill('eth_gasPrice'));
-    const [quote] = await quotesOf(h, payment.id);
+    const [first, quote] = await quotesOf(h, payment.id);
+    // The first quote is Lightning-only and expires with the window.
+    expect(first!.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(first!.expiresAt).toEqual(payment.windowEndsAt);
+    // The offers fill adds the second quote without counting a replacement.
+    expect(payment.replacements).toBe(0);
+    expect((await readPayment(h, payment.id)).replacements).toBe(0);
     expect(quote!.expiresAt.getTime()).toBe(T0 + 90_000);
     expect(quote!.transferAmounts.map((entry) => entry.method)).toEqual([
       'Lightning',
@@ -2433,6 +2473,268 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     });
     expect(await h.pos.findChargeForPayment({ paymentHash: issued.hash })).toBeUndefined();
     expect(eventsNamed('shop.payment.opened')).toHaveLength(1);
+  });
+
+  it('returns the created outcome when another creation ends the payment before its re-read', async () => {
+    const h = await setup();
+    let ended = 0;
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      const [paymentId] = args as unknown as [string];
+      const payment = await tx.getPayment(paymentId);
+      if (payment !== null && payment.status === 'open') {
+        // Model another creation replacing the payment after its insert and
+        // before this creator re-reads it to start the background offers fill.
+        ended += 1;
+        await tx.updatePayment(
+          paymentId,
+          {},
+          { status: 'ended', endReason: 'replaced', endedAt: new Date(clock) },
+        );
+      }
+      return tx.getPayment(paymentId);
+    };
+    const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    delete h.store.hooks.getPayment;
+    expect(created).toMatchObject({
+      kind: 'payment',
+      payment: { status: 'open', endReason: null, endedAt: null },
+    });
+    if (created.kind !== 'payment') {
+      throw new Error(`creation ${created.kind}`);
+    }
+    expect(ended).toBe(1);
+    expect(await readPayment(h, created.payment.id)).toMatchObject({
+      status: 'ended',
+      endReason: 'replaced',
+      endedAt: new Date(clock),
+    });
+    expect(h.orchestra.routesCalls).toHaveLength(0);
+    expect(await quotesOf(h, created.payment.id)).toHaveLength(1);
+  });
+
+  it('createForPayer answers before a never-answering Orchestra; the first quote is Lightning-only, the fill commits later', async () => {
+    const h = await setup();
+    const releaseRoutes = holdRouteList(h);
+    const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    expect(created.kind).toBe('payment');
+    const payment = created.kind === 'payment' ? created.payment : null;
+    // The Orchestra route list is still pending when the creation answers.
+    expect(h.orchestra.routesCalls).toEqual([1_000]);
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
+    const [first] = await quotesOf(h, payment!.id);
+    expect(first!.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(first!.expiresAt).toEqual(payment!.windowEndsAt);
+    // The pay link serves the Lightning-only quote at once, too.
+    const { status, json } = await bodyOf(
+      await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock),
+    );
+    expect(status).toBe(200);
+    expect((json['quote'] as Record<string, string>)['id']).toBe(first!.id);
+    expect(json['transferAmounts']).toEqual([lightningTransferAmount(SATS)]);
+    expect(h.orchestra.routesCalls).toEqual([1_000]);
+    // Releasing the route list lets the fill commit its offers quote.
+    let paymentReads = 0;
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      paymentReads += 1;
+      return tx.getPayment(...(args as unknown as [string]));
+    };
+    releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await vi.waitFor(async () => expect(await quotesOf(h, payment!.id)).toHaveLength(2));
+    delete h.store.hooks.getPayment;
+    const quotes = await quotesOf(h, payment!.id);
+    // The fill's observable result is the offers quote; it does not re-read
+    // the payment afterwards to build an unused result.
+    expect(paymentReads).toBe(0);
+    expect(quotes[1]!.transferAmounts.length).toBeGreaterThan(1);
+    expect((await readPayment(h, payment!.id)).replacements).toBe(0);
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
+    // The pay link then serves the offers quote.
+    const after = await bodyOf(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock));
+    expect((after.json['quote'] as Record<string, string>)['id']).toBe(quotes[1]!.id);
+    expect((after.json['transferAmounts'] as unknown[]).length).toBeGreaterThan(1);
+  });
+
+  it('the offers fill inserts nothing when the payment ended meanwhile', async () => {
+    const h = await setup();
+    const releaseRoutes = holdRouteList(h);
+    const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    if (created.kind !== 'payment') {
+      throw new Error(`creation ${created.kind}`);
+    }
+    await h.store.transaction((tx) =>
+      tx.updatePayment(
+        created.payment.id,
+        {},
+        { status: 'ended', endReason: 'cancelled', endedAt: new Date(clock) },
+      ),
+    );
+    releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await settle();
+    expect(await quotesOf(h, created.payment.id)).toHaveLength(1);
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
+  });
+
+  it('the offers fill inserts nothing when less than 45 s remain before the window ends', async () => {
+    const h = await setup();
+    const releaseRoutes = holdRouteList(h);
+    const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    if (created.kind !== 'payment') {
+      throw new Error(`creation ${created.kind}`);
+    }
+    clock = T0 + 255_001;
+    releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await settle();
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
+    expect(await quotesOf(h, created.payment.id)).toHaveLength(1);
+    expect((await readPayment(h, created.payment.id)).replacements).toBe(0);
+  });
+
+  it('the offers fill inserts nothing when a newer quote with offers exists', async () => {
+    const h = await setup();
+    const releaseRoutes = holdRouteList(h);
+    const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    if (created.kind !== 'payment') {
+      throw new Error(`creation ${created.kind}`);
+    }
+    const firstId = (await quotesOf(h, created.payment.id))[0]!.id;
+    const newer: ShopQuote = {
+      id: crypto.randomUUID(),
+      paymentId: created.payment.id,
+      expiresAt: new Date(T0 + 140_000),
+      transferAmounts: transferAmountsFor(SATS, [offerRow('newer')]),
+      createdAt: new Date(T0 + 2),
+    };
+    await h.store.transaction((tx) => tx.insertQuote(newer));
+    releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await settle();
+    expect((await quotesOf(h, created.payment.id)).map((quote) => quote.id)).toEqual([
+      firstId,
+      newer.id,
+    ]);
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
+    expect((await readPayment(h, created.payment.id)).replacements).toBe(0);
+  });
+
+  it('a second registration for the same payer payment starts no extra offers fill', async () => {
+    const paymentId = '00000000-0000-4000-8000-0000000000f1';
+    let ids = 0;
+    const h = await setup({
+      newId: () => {
+        ids += 1;
+        return ids === 1 || ids === 3 ? paymentId : crypto.randomUUID();
+      },
+    });
+    const releaseRoutes = holdRouteList(h);
+    const first = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    expect(first.kind).toBe('payment');
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+
+    // Model another successful writer returning the same payment while its
+    // first offers fill is registered and waiting for Orchestra.
+    h.store.hooks.openPayment = async () => null;
+    h.store.hooks.insertPayment = async () => true;
+    const second = await h.svc.createForPayer(h.account, USER, SATS + 1, clock);
+    delete h.store.hooks.openPayment;
+    delete h.store.hooks.insertPayment;
+    expect(second).toMatchObject({ kind: 'payment', payment: { id: paymentId } });
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
+    expect(await quotesOf(h, paymentId)).toHaveLength(2);
+
+    releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await settle();
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
+    expect(
+      (await quotesOf(h, paymentId)).filter((quote) => quote.transferAmounts.length > 1),
+    ).toHaveLength(1);
+  });
+
+  it('an offers fill that throws logs shop.creation.failed and leaves the first quote', async () => {
+    const h = await setup();
+    h.orchestra.routesImpl = async () => {
+      throw new Error('routes down');
+    };
+    const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    expect(created.kind).toBe('payment');
+    if (created.kind !== 'payment') {
+      return;
+    }
+    await settle();
+    expect(await quotesOf(h, created.payment.id)).toHaveLength(1);
+    expect(eventsNamed('shop.creation.failed').map((entry) => entry.fields)).toEqual([
+      { accountId: ACCOUNT_ID, paymentId: created.payment.id, name: 'Error' },
+    ]);
+  });
+
+  it("createForPayer answers at once while another payer payment's offers fill remains blocked", async () => {
+    const h = await setup();
+    h.orchestra.routesImpl = () => new Promise(() => undefined);
+    const first = await h.svc.createForPayer(h.account, USER, 1_000, clock);
+    expect(first.kind).toBe('payment');
+    if (first.kind !== 'payment') {
+      return;
+    }
+    // The first payment's fill waits at Orchestra. Its lock-free external call
+    // must not keep a second payer request waiting.
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+    clock = T0 + 1_000;
+    const second = await h.svc.createForPayer(h.account, USER, 2_000, clock);
+    expect(second.kind).toBe('payment');
+    // Both fills are still pending; neither call held the creation lock.
+    expect(h.orchestra.routesCalls).toHaveLength(2);
+    expect(h.net.issued).toHaveLength(2);
+    expect(await readPayment(h, first.payment.id)).toMatchObject({
+      status: 'ended',
+      endReason: 'replaced',
+    });
+  });
+
+  it('createForPayer answers at once while a till charge creation is blocked in Orchestra', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.orchestra.routesImpl = () =>
+      h.orchestra.routesCalls.length === 1
+        ? new Promise<OrchestraRoutesResult>(() => undefined)
+        : Promise.resolve({ ok: false } as const);
+    void h.svc.createForCharge(h.account, USER, charge, clock);
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+    // The charge stays pending, but its creation is blocked in Orchestra. A
+    // payer request must not wait behind that external call; cancel the
+    // charge first so order 4 does not refuse it with 409.
+    await h.pos.cancelPending(ACCOUNT_ID, clock);
+    clock = T0 + 1_000;
+    const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    expect(created.kind).toBe('payment');
+    // The charge's first route-list promise is still pending. The payer has
+    // already answered and its own background fill made the second call.
+    expect(h.orchestra.routesCalls).toHaveLength(2);
+    expect(h.net.issued).toHaveLength(1);
+  });
+
+  it('two concurrent runs for one payment produce at most one offers quote and count one replacement', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    const beforeOffers = (await quotesOf(h, payment.id)).filter(
+      (quote) => quote.transferAmounts.length > 1,
+    ).length;
+    const beforeQuoteCalls = h.orchestra.quoteCalls.length;
+    clock = T0 + 95_000;
+    const releaseRoutes = holdRouteList(h);
+    const first = h.svc.currentQuote(h.account, USER, payment);
+    const second = h.svc.currentQuote(h.account, USER, payment);
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
+    expect(h.orchestra.quoteCalls).toHaveLength(beforeQuoteCalls);
+    releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await Promise.all([first, second]);
+    await vi.waitFor(async () =>
+      expect(
+        (await quotesOf(h, payment.id)).filter((quote) => quote.transferAmounts.length > 1),
+      ).toHaveLength(beforeOffers + 1),
+    );
+    expect(h.orchestra.quoteCalls).toHaveLength(beforeQuoteCalls + 12);
+    expect((await readPayment(h, payment.id)).replacements).toBe(1);
   });
 
   it('creates a charge payment with the charge window and records its BOLT11 against the charge', async () => {
@@ -2623,13 +2925,18 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   it('step 3: a failed route list offers nothing until a fetch succeeds; the list is reused for validForMs', async () => {
     const h = await setup();
     h.orchestra.routesResult = { ok: false };
-    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
-      kind: 'unavailable',
-    });
-    expect(h.net.issued).toHaveLength(0);
+    // The payment opens Lightning-only; the fill's failed route list adds no offer.
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    await settle();
+    expect(h.net.issued).toHaveLength(1);
+    expect(
+      (await quotesOf(h, (await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID)))!.id))
+        .length,
+    ).toBe(1);
     h.orchestra.routesResult = { ok: true, assets: defaultRoutes(), validForMs: 30_000 };
     clock = T0 + 1_000;
     expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    await settle();
     expect(h.orchestra.routesCalls).toHaveLength(2);
     clock = T0 + 30_999;
     await payerPayment(h);
@@ -2659,30 +2966,58 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   it('step 3: no candidate pair offers nothing, and the account’s next creation waits 60 s', async () => {
     const h = await setup();
     h.orchestra.routesResult = { ok: true, assets: [], validForMs: 0 };
+    // The payment opens Lightning-only; the fill finds no pair and sets the wait.
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    await settle();
+    expect(
+      await quotesOf(h, (await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID)))!.id),
+    ).toHaveLength(1);
+    h.orchestra.routesResult = { ok: true, assets: defaultRoutes(), validForMs: 0 };
+    clock = T0 + 59_999;
+    // The no-pair wait refuses the next creation before the mint.
     expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
       kind: 'unavailable',
     });
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+    expect(h.net.issued).toHaveLength(1);
+    clock = T0 + 60_000;
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+  });
+
+  it('step 3: a charge with no candidate pair is unavailable and starts the no-pair wait', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.orchestra.routesResult = { ok: true, assets: [], validForMs: 0 };
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'unavailable',
+    });
+    expect(h.net.issued).toHaveLength(0);
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+
     h.orchestra.routesResult = { ok: true, assets: defaultRoutes(), validForMs: 0 };
     clock = T0 + 59_999;
-    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
       kind: 'unavailable',
     });
     expect(h.orchestra.routesCalls).toHaveLength(1);
     expect(h.net.issued).toHaveLength(0);
     clock = T0 + 60_000;
-    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    expect((await h.svc.createForCharge(h.account, USER, charge, clock)).kind).toBe('payment');
   });
 
   it('step 3: no route list once its 1 s share is used up', async () => {
     const h = await setup();
-    const original = h.pos.currentPending.bind(h.pos);
-    h.pos.currentPending = async (accountId, nowMs) => {
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.store.hooks.lockAccount = async (tx, ...args) => {
       clock += 2_000;
-      return original(accountId, nowMs);
+      return tx.lockAccount(...(args as unknown as [string]));
     };
-    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
       kind: 'unavailable',
     });
+    delete h.store.hooks.lockAccount;
     expect(h.orchestra.routesCalls).toHaveLength(0);
   });
 
@@ -2698,8 +3033,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       'USDT',
       'USDC',
     ]);
-    const [quote] = await quotesOf(h, payment.id);
-    expect(quote!.transferAmounts.map((entry) => entry.method)).toEqual(['Lightning', 'Polygon']);
+    const quote = (await quotesOf(h, payment.id)).at(-1)!;
+    expect(quote.transferAmounts.map((entry) => entry.method)).toEqual(['Lightning', 'Polygon']);
   });
 
   it('step 4: a failed mint, a wrong amount, or an undecodable BOLT11 stops with order 8 and records nothing', async () => {
@@ -2720,10 +3055,14 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     });
     const mintFailed = eventsNamed('shop.mint.failed').map((entry) => entry.fields);
     expect(mintFailed).toHaveLength(3);
-    // Each creation's payment id, chosen before the route list (Logging).
-    // The route list is fetched once and reused; its call carries the first id.
-    expect(h.orchestra.routesLogs).toEqual([{ paymentId: expect.any(String) }]);
-    expect(mintFailed[0]).toEqual({ accountId: ACCOUNT_ID, ...h.orchestra.routesLogs[0] });
+    // Payer creation mints before its background route list. A failed mint
+    // therefore never reaches Orchestra, and each failure still names the
+    // payment id chosen before the mint (Logging).
+    expect(h.orchestra.routesLogs).toEqual([]);
+    expect(mintFailed[0]).toEqual({
+      accountId: ACCOUNT_ID,
+      paymentId: expect.any(String),
+    });
     expect(new Set(mintFailed.map((fields) => fields?.['paymentId'])).size).toBe(3);
     expect(h.orchestra.quoteCalls).toHaveLength(0);
     expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
@@ -2976,7 +3315,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       'arbitrum',
     ]);
     expect(h.net.rpcCalls.map((call) => call.chainId)).toEqual([1, 42161]);
-    const [quote] = await quotesOf(h, payment.id);
+    const quote = (await quotesOf(h, payment.id)).at(-1)!;
     expect(quote!.transferAmounts.map((entry) => entry.method)).toEqual([
       'Lightning',
       'Ethereum',
@@ -2984,9 +3323,11 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     ]);
 
     h.orchestra.budget = -3;
-    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
-      kind: 'unavailable',
-    });
+    h.orchestra.routesImpl = null;
+    h.orchestra.routesResult = { ok: true, assets: defaultRoutes(), validForMs: 60_000 };
+    // A payer opens Lightning-only; the fill sends no call with no budget left.
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    await settle();
     expect(h.orchestra.quoteCalls).toHaveLength(2);
   });
 
@@ -3064,7 +3405,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
         asset: 'USDC',
       },
     ]);
-    const [quote] = await quotesOf(h, payment.id);
+    const quote = (await quotesOf(h, payment.id)).at(-1)!;
     expect(
       quote!.transferAmounts.map(
         (entry) => `${entry.method}:${entry.assets.map((a) => a.asset).join('+')}`,
@@ -3078,11 +3419,28 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     ]);
   });
 
+  it('step 6: a quote refused before it is sent logs the budget check', async () => {
+    const h = await setup();
+    h.orchestra.quoteImpl = (request) =>
+      request.sourceChain === 'ethereum' && request.sourceAsset === 'USDT'
+        ? { ok: false, reason: 'unavailable', sent: false }
+        : { ok: true, quote: h.orchestra.validQuote(request) };
+    const payment = await payerPayment(h);
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
+    expect(eventsNamed('shop.offer.rejected').map((entry) => entry.fields)).toEqual([
+      { paymentId: payment.id, method: 'Ethereum', asset: 'USDT', check: 'budget' },
+    ]);
+    const quote = (await quotesOf(h, payment.id)).at(-1)!;
+    expect(quote.transferAmounts.find((entry) => entry.method === 'Ethereum')?.assets).toEqual([
+      { asset: 'USDC', amount: '1.234' },
+    ]);
+  });
+
   it('step 6 / offer checks: a deposit address another stored offer holds drops only that offer', async () => {
     const h = await setup();
     const first = await payerPayment(h);
     const firstOffers = await h.store.transaction(async (tx) =>
-      tx.offersOf((await tx.quotesOf(first.id))[0]!.id),
+      tx.offersOf((await tx.quotesOf(first.id)).at(-1)!.id),
     );
     const taken = firstOffers.find(
       (offer) => offer.method === 'Polygon' && offer.asset === 'USDT',
@@ -3106,7 +3464,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     };
     events = [];
     const second = await payerPayment(h);
-    const [quote] = await quotesOf(h, second.id);
+    const quote = (await quotesOf(h, second.id)).at(-1)!;
     const shared = {
       paymentId: second.id,
       quoteId: quote!.id,
@@ -3134,9 +3492,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       rates: { USD: '95238' },
     } as unknown as Parameters<InMemoryFxSpotStore['save']>[0]);
     const h = await setup({ fxSpot: fx });
-    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
-      kind: 'unavailable',
-    });
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    await settle();
     expect(h.orchestra.quoteCalls).toHaveLength(12);
     const rejected = eventsNamed('shop.offer.rejected');
     expect(rejected).toHaveLength(12);
@@ -3145,9 +3502,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     // The last millisecond of the fresh window still applies the spot.
     const edge = await setup({ fxSpot: freshSpot(() => T0 + 1_000 - 599_999, '95238') });
     const before = eventsNamed('shop.offer.rejected').length;
-    expect(await edge.svc.createForPayer(edge.account, USER, SATS, clock)).toEqual({
-      kind: 'unavailable',
-    });
+    expect((await edge.svc.createForPayer(edge.account, USER, SATS, clock)).kind).toBe('payment');
+    await settle();
     expect(edge.orchestra.quoteCalls).toHaveLength(12);
     const edgeRejected = eventsNamed('shop.offer.rejected').slice(before);
     expect(edgeRejected).toHaveLength(12);
@@ -3156,6 +3512,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     // Exactly within the bound at a spot 599 999 ms old: offered.
     const fresh = await setup({ fxSpot: freshSpot(() => T0 + 1_000 - 599_999, '95238.1') });
     expect((await fresh.svc.createForPayer(fresh.account, USER, SATS, clock)).kind).toBe('payment');
+    await settle();
   });
 
   it('step 5 / price check: without a stored USD spot younger than 10 min no Orchestra call is sent and no pair is offered', async () => {
@@ -3185,9 +3542,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       events = [];
       const h = await setup({ fxSpot });
       h.orchestra.budget = 3;
-      expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
-        kind: 'unavailable',
-      });
+      expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+      await settle();
       expect(h.orchestra.quoteCalls).toHaveLength(0);
       expect(h.net.rpcCalls).toHaveLength(0);
       // One rejection per pair the quote budget allows, in request order.
@@ -3201,8 +3557,10 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
             check: 'price',
           })),
       );
-      // Step 7: nothing written; the payer gets order 9.
-      expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
+      // The payment stays open Lightning-only; the fill writes no second quote.
+      const open = await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID));
+      expect(open).not.toBeNull();
+      expect(await quotesOf(h, open!.id)).toHaveLength(1);
     }
   });
 
@@ -3211,9 +3569,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     h.orchestra.onQuote = async () => {
       clock = T0 + 1_000;
     };
-    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
-      kind: 'unavailable',
-    });
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    await settle();
     expect(h.orchestra.quoteCalls).toHaveLength(12);
     const rejected = eventsNamed('shop.offer.rejected');
     expect(rejected).toHaveLength(12);
@@ -3277,8 +3634,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   it('step 8: a payer finds a pending charge at insert: nothing written, order 4', async () => {
     const h = await setup();
     const open = await payerPayment(h);
-    h.orchestra.onQuote = async () => {
-      h.orchestra.onQuote = null;
+    h.net.onInvoice = async () => {
+      h.net.onInvoice = null;
       await h.pos.create(chargeRow());
     };
     expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
@@ -3422,8 +3779,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const h = await setup();
     const hash = nextHash();
     h.net.nextHash = hash;
-    h.orchestra.onQuote = async () => {
-      h.orchestra.onQuote = null;
+    h.net.onInvoice = async () => {
+      h.net.onInvoice = null;
       await h.store.transaction((tx) =>
         tx.insertPayment(
           paymentRow({
@@ -3451,8 +3808,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       status: 'paid',
       paidAt: new Date(clock),
     });
-    h.orchestra.onQuote = async () => {
-      h.orchestra.onQuote = null;
+    h.net.onInvoice = async () => {
+      h.net.onInvoice = null;
       await h.store.transaction((tx) => tx.insertPayment(holder));
     };
     expect(await h.svc.createForPayer(h.account, USER, 2000, clock)).toEqual({
@@ -3605,8 +3962,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     await h.pos.create(other);
     const hash = nextHash();
     h.net.nextHash = hash;
-    h.orchestra.onQuote = async () => {
-      h.orchestra.onQuote = null;
+    h.net.onInvoice = async () => {
+      h.net.onInvoice = null;
       expect(await h.pos.recordInvoice(other.id, hash, clock)).toEqual({ outcome: 'recorded' });
     };
     events = [];
@@ -3645,8 +4002,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   ] as const)('step 8: a payer request %i ms old at the insert gives %s', async (ageMs, kind) => {
     const h = await setup();
     const arrivedMs = clock;
-    h.orchestra.onQuote = async () => {
-      h.orchestra.onQuote = null;
+    h.net.onInvoice = async () => {
+      h.net.onInvoice = null;
       clock = arrivedMs + ageMs;
     };
     expect((await h.svc.createForPayer(h.account, USER, SATS, arrivedMs)).kind).toBe(kind);
@@ -3673,8 +4030,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const h = await setup();
     const earlier = await payerPayment(h);
     const controller = new AbortController();
-    h.orchestra.onQuote = async () => {
-      h.orchestra.onQuote = null;
+    h.net.onInvoice = async () => {
+      h.net.onInvoice = null;
       controller.abort();
     };
     expect(await h.svc.createForPayer(h.account, USER, 2000, clock, controller.signal)).toEqual({
@@ -3710,11 +4067,20 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
+    // Join the creation that payLink started in the background. Its quote
+    // hook advances the shared test clock and must finish before beforeEach
+    // resets that clock for the next test.
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'unavailable',
+    });
   });
 
   it('step 8 on a memory boot: an invoice row that claims the hash after the check rolls back the end of the open payment', async () => {
     const h = await setup();
-    const earlier = await payerPayment(h);
+    // This test needs only an earlier open row. Insert it directly so the
+    // payer's unrelated background offers fill is not part of the race.
+    const earlier = paymentRow();
+    await h.store.transaction((tx) => tx.insertPayment(earlier));
     const other = chargeRow({ accountId: crypto.randomUUID() });
     await h.pos.create(other);
     const hash = nextHash();
@@ -3815,10 +4181,22 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
   });
 
-  it('a pending charge without a payment starts or joins the creation and answers the open amount', async () => {
+  it('a pending charge without a payment starts the creation and answers today’s pinned request at once', async () => {
     const h = await setup();
     const charge = chargeRow();
     await h.pos.create(charge);
+    // Orchestra never answers: the fetch must not wait for it.
+    const releaseRoutes = holdRouteList(h);
+    const answer = await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock);
+    expect(answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    expect(sleepCalls).toEqual([]);
+    // The creation started in the background and is still pending at Orchestra.
+    await settle();
+    expect(h.orchestra.routesCalls).toEqual([1_000]);
+    // A later scan, once Orchestra answered and the creation inserted the payment,
+    // serves the OpenCryptoPay pay request of the charge's payment.
+    releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await settle();
     const { status, json, text } = await bodyOf(
       await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock),
     );
@@ -3853,10 +4231,9 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       quote: { expiration: '2026-10-17T10:01:30.000Z', payment: payment.id },
     });
     expect(text).toContain('"requestedAmount":{"asset":"BTC","amount":0.000021}');
-    expect(sleepCalls).toEqual([8_000]);
   });
 
-  it('answers today’s pinned request when the creation offers nothing, throws, or outlasts the 8 s budget', async () => {
+  it('answers today’s pinned request without waiting when the creation offers nothing or throws', async () => {
     const h = await setup();
     await h.pos.create(chargeRow());
     h.orchestra.routesResult = { ok: false };
@@ -3864,6 +4241,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
+    expect(sleepCalls).toEqual([]);
 
     const thrown = await setup();
     const thrownCharge = chargeRow();
@@ -3873,65 +4251,59 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
-    // The thrown creation is no longer in flight: the next request starts a new one.
+    await settle();
+    // The next request starts a new run because the thrown one is no longer in flight.
     expect(await thrown.svc.payLink(thrown.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
+    await settle();
     expect(thrown.orchestra.routesCalls).toHaveLength(2);
     // Each failed run logs once, although a pay-link fetch started it.
     expect(eventsNamed('shop.creation.failed').map((entry) => entry.fields)).toEqual([
       { accountId: ACCOUNT_ID, chargeId: thrownCharge.id, name: 'Error' },
       { accountId: ACCOUNT_ID, chargeId: thrownCharge.id, name: 'Error' },
     ]);
-
-    const slow = await setup();
-    await slow.pos.create(chargeRow());
-    slow.orchestra.routesImpl = () => new Promise(() => undefined);
-    sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
-    expect(await slow.svc.payLink(slow.account, USER, METADATA, NO_QUERY, clock)).toEqual({
-      kind: 'today',
-      pinSats: CHARGE_SATS,
-    });
   });
 
-  it('joining a running creation waits until 8 s after the fetch arrived, whatever that procedure’s budget, with or without timeout', async () => {
-    expect(SHOP_PAY_LINK_CREATION_WAIT_MS).toBe(8_000);
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
+  it('a pending charge whose creation offers nothing, throws, or never answers: today’s pinned request at once', async () => {
+    for (const setupCase of ['offers nothing', 'throws', 'never answers'] as const) {
       const h = await setup();
-      const charge = chargeRow();
-      await h.pos.create(charge);
-      h.orchestra.routesImpl = () => new Promise(() => undefined);
-      h.svc.startForCharge(h.account, charge, clock);
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
-      clock = T0 + 5_000;
-      sleepImpl = (ms) => (ms === 8_000 || ms === 4_000 ? Promise.resolve() : defaultSleep(ms));
-      // Arrived now: the full 8 s, although the joined run started 5 s ago.
-      expect(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
-      ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-      // Arrived 1 s after the run started (4 s spent resolving the wallet): 4 s left.
-      expect(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, T0 + 1_000),
-      ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-      expect(sleepCalls).toEqual([8_000, 4_000]);
-
-      // A fetch that reaches this point 8 s or more after it arrived does not wait.
-      sleepCalls = [];
-      for (const arrivedMs of [T0 - 3_000, T0 - 3_001]) {
-        expect(
-          await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, arrivedMs),
-        ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      await h.pos.create(chargeRow());
+      if (setupCase === 'offers nothing') {
+        h.orchestra.routesResult = { ok: false };
+      } else if (setupCase === 'throws') {
+        h.orchestra.routesImpl = () => Promise.reject(new Error('boom'));
+      } else {
+        h.orchestra.routesImpl = () => new Promise(() => undefined);
       }
+      expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
+        kind: 'today',
+        pinSats: CHARGE_SATS,
+      });
+      // No sleep: the fetch never waits for the creation or Orchestra.
       expect(sleepCalls).toEqual([]);
-      expect(h.orchestra.routesCalls).toHaveLength(1);
-      sleepImpl = defaultSleep;
     }
   });
 
-  it('a wallet resolve of 3 s and a creation of 6 s: answers today’s pinned request 8 s after the arrival, and the payment exists afterwards', async () => {
+  it('a slow Orchestra reachable through the wallet resolve still answers the pay link at once', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.orchestra.routesImpl = () => new Promise(() => undefined);
+    for (const timeout of [null, '5', '0']) {
+      sleepCalls = [];
+      clock = T0 + 3_000;
+      expect(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
+      ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      expect(sleepCalls).toEqual([]);
+    }
+    // One background creation serves every fetch.
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+  });
+
+  it('two simultaneous requests for one charge join one creation and both answer today’s pinned request at once', async () => {
     const h = await setup();
     const charge = chargeRow();
     await h.pos.create(charge);
@@ -3940,263 +4312,65 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       new Promise((resolve) => {
         releaseRoutes = resolve;
       });
-    let endWait = (): void => undefined;
-    sleepImpl = (ms) =>
-      ms === 5_000
-        ? new Promise<void>((resolve) => {
-            endWait = resolve;
-          })
-        : defaultSleep(ms);
-    clock = T0 + 3_000;
-    const answer = h.svc.payLink(h.account, USER, METADATA, NO_QUERY, T0);
-    await vi.waitFor(() => expect(sleepCalls).toEqual([5_000]));
-    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
-    clock = T0 + 8_000;
-    endWait();
-    expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-    // The creation goes on in the background and ends at 9 s.
-    clock = T0 + 9_000;
+    const first = h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock);
+    const second = h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock);
+    expect(await first).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    expect(await second).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    expect(sleepCalls).toEqual([]);
+    await settle();
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+    // Once released, the single run inserts the payment.
     releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
     await vi.waitFor(async () =>
       expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).not.toBeNull(),
     );
   });
 
-  it('a creation that ends 7 s after the arrival answers the open amount', async () => {
+  it('a charge creation proceeds while a quote replacement is blocked in Orchestra', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    clock = T0 + 60_001;
+    const release = holdRouteList(h);
+    const replacement = h.svc.currentQuote(h.account, USER, payment);
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
+    await h.store.transaction((tx) =>
+      tx.updatePayment(
+        payment.id,
+        {},
+        { status: 'ended', endReason: 'cancelled', endedAt: new Date(clock) },
+      ),
+    );
+    await h.pos.create(chargeRow());
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
+      kind: 'today',
+      pinSats: CHARGE_SATS,
+    });
+    expect(sleepCalls).toEqual([]);
+    // The charge's creation reached Orchestra without waiting for the replacement.
+    await settle();
+    expect(h.orchestra.routesCalls).toHaveLength(3);
+    release({ ok: false });
+    await replacement;
+    await settle();
+  });
+
+  it('an earlier creation for the same charge that ended: the next fetch starts a new one and answers today’s pinned request at once', async () => {
     const h = await setup();
     const charge = chargeRow();
     await h.pos.create(charge);
-    h.orchestra.routesImpl = async () => {
-      clock = T0 + 7_000;
-      return { ok: true, assets: defaultRoutes(), validForMs: 60_000 };
-    };
-    clock = T0 + 3_000;
-    const { status, json } = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, T0),
-    );
-    expect(status).toBe(200);
-    expect(json['minSendable']).toBe(CHARGE_SATS * 1000);
-    expect(sleepCalls).toEqual([5_000]);
-  });
-
-  it('a creation queued 7 s behind a held lock still answers at most 8 s after the arrival', async () => {
-    const h = await setup();
-    const release = heldRoutes(h);
-    const payer = h.svc.createForPayer(h.account, USER, SATS, clock);
-    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
-    await h.pos.create(chargeRow());
-    // Arrived at T0 + 1 s, reaches the creation at T0 + 3 s (wallet resolve).
-    clock = T0 + 3_000;
-    let endWait = (): void => undefined;
-    sleepImpl = (ms) =>
-      ms === 6_000
-        ? new Promise<void>((resolve) => {
-            endWait = resolve;
-          })
-        : defaultSleep(ms);
-    const answer = h.svc.payLink(h.account, USER, METADATA, NO_QUERY, T0 + 1_000);
-    await vi.waitFor(() => expect(sleepCalls).toEqual([6_000]));
-    // The lock is held until T0 + 8 s (7 s after the arrival); the run then
-    // takes it, and its route list does not answer before the wait ends.
-    clock = T0 + 8_000;
-    release({ ok: false });
-    expect(await payer).toEqual({ kind: 'unavailable' });
-    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
-    clock = T0 + 9_000;
-    endWait();
-    expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-    expect(sleepCalls).toEqual([6_000]);
-  });
-
-  /**
-   * Route-list fetches that wait until released; the first release answers
-   * the first fetch, later fetches never answer.
-   */
-  function heldRoutes(h: Harness): (result: OrchestraRoutesResult) => void {
-    const releases: ((result: OrchestraRoutesResult) => void)[] = [];
-    h.orchestra.routesImpl = () =>
-      new Promise((resolve) => {
-        releases.push(resolve);
-      });
-    return (result) => releases[0]?.(result);
-  }
-
-  it('a lock holder that never releases: the request answers today’s pinned request 8 s after its arrival, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      h.orchestra.routesImpl = () => new Promise(() => undefined);
-      void h.svc.createForPayer(h.account, USER, SATS, clock);
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
-      await h.pos.create(chargeRow());
-      clock = T0 + 5_000;
-      sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
-      expect(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
-      ).toEqual({
-        kind: 'today',
-        pinSats: CHARGE_SATS,
-      });
-      // One wait of 8 s from the arrival; the charge's creation is still queued.
-      expect(sleepCalls).toEqual([8_000]);
-      expect(h.orchestra.routesCalls).toHaveLength(1);
-      sleepImpl = defaultSleep;
-    }
-  });
-
-  it('a charge creation queued behind a payer creation that holds the lock 7 s answers 8 s after the arrival at the latest, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      const release = heldRoutes(h);
-      const payer = h.svc.createForPayer(h.account, USER, SATS, clock);
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
-      const charge = chargeRow();
-      await h.pos.create(charge);
-      clock = T0 + 5_000;
-      let endWait = (): void => undefined;
-      sleepImpl = (ms) =>
-        ms === 8_000
-          ? new Promise<void>((resolve) => {
-              endWait = resolve;
-            })
-          : defaultSleep(ms);
-      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
-      // Still queued, the request already waits 8 s from its arrival.
-      await vi.waitFor(() => expect(sleepCalls).toEqual([8_000]));
-      clock = T0 + 12_000;
-      release({ ok: false });
-      expect(await payer).toEqual({ kind: 'unavailable' });
-      // The charge's run took the lock at T0 + 12 s; its route list does not answer.
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
-      clock = T0 + 13_000;
-      endWait();
-      expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-      expect(sleepCalls).toEqual([8_000]);
-      sleepImpl = defaultSleep;
-    }
-  });
-
-  it('two simultaneous requests for one charge queued behind a held lock share one creation run and answer within 8 s of their arrival, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      let releasePayer = (_result: OrchestraRoutesResult): void => undefined;
-      h.orchestra.routesImpl = () =>
-        h.orchestra.routesCalls.length === 1
-          ? new Promise((resolve) => {
-              releasePayer = resolve;
-            })
-          : Promise.resolve({ ok: false });
-      const payer = h.svc.createForPayer(h.account, USER, SATS, clock);
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
-      await h.pos.create(chargeRow());
-      clock = T0 + 5_000;
-      // The 8 s waits never end: only the shared creation ends both requests.
-      const first = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
-      const second = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
-      await vi.waitFor(() => expect(sleepCalls).toEqual([8_000, 8_000]));
-      clock = T0 + 12_000;
-      releasePayer({ ok: false });
-      expect(await payer).toEqual({ kind: 'unavailable' });
-      expect(await first).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-      expect(await second).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-      // One route-list fetch for the payer, one for the charge's single run.
-      expect(h.orchestra.routesCalls).toHaveLength(2);
-    }
-  });
-
-  it('a charge creation queued behind a quote replacement answers 8 s after the arrival at the latest, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      const payment = await payerPayment(h);
-      // The cached route list expired, so the replacement reads it again.
-      clock = T0 + 60_001;
-      const release = heldRoutes(h);
-      const replacement = h.svc.currentQuote(h.account, USER, payment);
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
-      await h.store.transaction((tx) =>
-        tx.updatePayment(
-          payment.id,
-          {},
-          { status: 'ended', endReason: 'cancelled', endedAt: new Date(clock) },
-        ),
-      );
-      await h.pos.create(chargeRow());
-      clock = T0 + 62_000;
-      sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
-      // Answered while the replacement still holds the lock.
-      expect(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
-      ).toEqual({
-        kind: 'today',
-        pinSats: CHARGE_SATS,
-      });
-      expect(sleepCalls).toEqual([4_000, 8_000]);
-      expect(h.orchestra.routesCalls).toHaveLength(2);
-      // The charge's creation goes on in the background once the lock is free.
-      release({ ok: false });
-      expect(await replacement).toBeNull();
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(3));
-      sleepImpl = defaultSleep;
-    }
-  });
-
-  it('a queued charge creation that re-reads and stops at once ends the wait right away, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      const release = heldRoutes(h);
-      const payer = h.svc.createForPayer(h.account, USER, SATS, clock);
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
-      const charge = chargeRow();
-      await h.pos.create(charge);
-      // The budget sleep never ends: only the stopped run ends the wait.
-      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await h.pos.cancelPending(ACCOUNT_ID, clock);
-      release({ ok: false });
-      expect(await payer).toEqual({ kind: 'unavailable' });
-      const result = await answer;
-      if (timeout === null) {
-        expect(result).toEqual({ kind: 'today', pinSats: null });
-      } else {
-        expect((await bodyOf(result)).status).toBe(404);
-      }
-      expect(h.orchestra.routesCalls).toHaveLength(1);
-      expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
-    }
-  });
-
-  it('an earlier creation for the same charge that ended gives the next fetch its own 8 s, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      const charge = chargeRow();
-      await h.pos.create(charge);
-      h.orchestra.routesResult = { ok: false };
-      expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
-        kind: 'unavailable',
-      });
-      clock = T0 + 5_000;
-      h.orchestra.routesImpl = () => new Promise(() => undefined);
-      sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
-      expect(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
-      ).toEqual({
-        kind: 'today',
-        pinSats: CHARGE_SATS,
-      });
-      expect(sleepCalls).toEqual([8_000]);
-      sleepImpl = defaultSleep;
-    }
+    h.orchestra.routesResult = { ok: false };
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'unavailable',
+    });
+    clock = T0 + 5_000;
+    h.orchestra.routesImpl = () => new Promise(() => undefined);
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
+      kind: 'today',
+      pinSats: CHARGE_SATS,
+    });
+    expect(sleepCalls).toEqual([]);
+    await settle();
+    expect(h.orchestra.routesCalls).toHaveLength(2);
   });
 
   it('keeps the pin for a waiting charge: no payment (stablecoins off) or an ended one; no pin for accepted or paid', async () => {
@@ -4316,11 +4490,11 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
         await h.pos.create(chargeRow());
       }
     };
-    const { status, json } = await bodyOf(
+    expect(
       await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }, clock),
-    );
-    expect(status).toBe(200);
-    expect(json['minSendable']).toBe(CHARGE_SATS * 1000);
+    ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    await settle();
+    expect(h.orchestra.routesCalls).toHaveLength(1);
   });
 
   it('timeout: a pending charge without payment and an excluded username answers today’s pinned request', async () => {
@@ -4395,45 +4569,29 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     expect(simplified.json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
   });
 
-  it('answers from the state after a creation that was skipped: a charge cancelled meanwhile is unpinned', async () => {
-    const h = await setup();
-    const charge = chargeRow();
-    await h.pos.create(charge);
-    h.orchestra.onQuote = async () => {
-      h.orchestra.onQuote = null;
-      await h.pos.cancelPending(ACCOUNT_ID, clock);
-    };
-    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
-      kind: 'today',
-      pinSats: null,
-    });
-    expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
-  });
-
-  it('answers from the state after the 8 s budget: a charge paid meanwhile is unpinned, and the 404 with timeout', async () => {
-    for (const timeout of [null, '1'] as const) {
+  it('a charge that a background creation finds cancelled or paid serves today’s request on the next fetch', async () => {
+    for (const outcome of ['cancelled', 'paid'] as const) {
       const h = await setup();
       const charge = chargeRow();
       await h.pos.create(charge);
-      h.orchestra.routesImpl = () => new Promise(() => undefined);
-      sleepImpl = async (ms) => {
-        if (ms !== 8_000) {
-          return defaultSleep(ms);
+      h.orchestra.onQuote = async () => {
+        h.orchestra.onQuote = null;
+        if (outcome === 'cancelled') {
+          await h.pos.cancelPending(ACCOUNT_ID, clock);
+        } else {
+          await h.pos.markPaid(charge.id, clock);
         }
-        await h.pos.markPaid(charge.id, clock);
       };
-      const answer = await h.svc.payLink(
-        h.account,
-        USER,
-        METADATA,
-        { ...NO_QUERY, timeout },
-        clock,
-      );
-      if (timeout === null) {
-        expect(answer).toEqual({ kind: 'today', pinSats: null });
-      } else {
-        expect((await bodyOf(answer)).status).toBe(404);
-      }
+      expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
+        kind: 'today',
+        pinSats: CHARGE_SATS,
+      });
+      await settle();
+      expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
+      expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
+        kind: 'today',
+        pinSats: null,
+      });
     }
   });
 
@@ -4563,65 +4721,135 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
   it('keeps the current quote while 45 s or more remain', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
-    const [first] = await quotesOf(h, payment.id);
+    const first = (await quotesOf(h, payment.id)).at(-1)!;
     clock = T0 + 45_000;
     const read = await h.svc.currentQuote(h.account, USER, payment);
-    expect(read?.quote.id).toBe(first!.id);
+    expect(read?.quote.id).toBe(first.id);
     expect(h.orchestra.quoteCalls).toHaveLength(12);
+    expect(sleepCalls).toEqual([]);
   });
 
-  it('replaces a quote with less than 45 s left: same payment and BOLT11, conditional increment, previous quote kept', async () => {
+  it('a replaceable quote with never-answering Orchestra quotes returns the current quote at once', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
-    const [first] = await quotesOf(h, payment.id);
-    clock = T0 + 45_001;
-    const answer = await bodyOf(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock));
-    const quote = answer.json['quote'] as Record<string, string>;
-    expect(quote['payment']).toBe(payment.id);
-    expect(quote['id']).not.toBe(first!.id);
-    expect(quote['expiration']).toBe(new Date(T0 + 45_001 + 90_000).toISOString());
-    expect(h.orchestra.quoteCalls).toHaveLength(24);
-    for (const call of h.orchestra.quoteCalls.slice(12)) {
-      expect(call.request).toMatchObject({
-        bolt11: payment.bolt11,
-        tag: payment.id,
-        amountSats: SATS,
-      });
-      // The calls end the commit margin before the fetch's 4 s wait.
-      expect(call.deadlineMs).toBe(
-        T0 + 45_001 + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
-      );
-    }
-    // The route list's own 1 s ends before that deadline.
-    expect(
-      T0 + 45_001 + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
-    ).toBeGreaterThan(T0 + 45_001 + 1_000);
-    expect(h.orchestra.routesCalls).toEqual([1_000]);
-    expect((await readPayment(h, payment.id)).replacements).toBe(1);
-    expect(h.net.issued).toHaveLength(1);
-    // The previous quote still serves its detail until its own expiration.
-    const detail = await h.svc.callback(h.account, USER, {
-      amount: null,
-      quote: first!.id,
-      method: 'Polygon',
-      asset: 'USDT',
-      repeated: false,
-    });
-    expect(detail.status).toBe(200);
+    const first = (await quotesOf(h, payment.id)).at(-1)!;
+    h.orchestra.onQuote = () => new Promise(() => undefined);
+    clock = T0 + 50_000;
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    expect(read?.quote.id).toBe(first.id);
+    // The replacement used the cached route list and is pending at Orchestra.
+    await vi.waitFor(() => expect(h.orchestra.quoteCalls).toHaveLength(24));
+    expect(sleepCalls).toEqual([]);
   });
 
-  it('a second fetch in the same container waits for the replacement and returns it', async () => {
+  it.each(['no longer open', 'no longer replaceable'] as const)(
+    'a replacement re-read that is %s requests no quotes and leaves the current response',
+    async (state) => {
+      const h = await setup();
+      const payment = await payerPayment(h);
+      const current = (await quotesOf(h, payment.id)).at(-1)!;
+      let reads = 0;
+      h.store.hooks.getPayment = async (tx, ...args) => {
+        reads += 1;
+        const row = await tx.getPayment(...(args as unknown as [string]));
+        if (reads !== 2 || row === null) {
+          return row;
+        }
+        return state === 'no longer open'
+          ? { ...row, status: 'ended' as const }
+          : { ...row, replacements: 4 };
+      };
+      clock = T0 + 50_000;
+      const read = await h.svc.currentQuote(h.account, USER, payment);
+      await settle();
+      delete h.store.hooks.getPayment;
+      expect(read?.quote.id).toBe(current.id);
+      expect(reads).toBe(2);
+      expect(h.orchestra.quoteCalls).toHaveLength(12);
+      expect(await quotesOf(h, payment.id)).toHaveLength(2);
+    },
+  );
+
+  it('an expired quote with a never-answering Orchestra returns a Lightning-only row at once', async () => {
     const h = await setup();
-    await payerPayment(h);
-    clock = T0 + 50_000;
-    const [a, b] = await Promise.all([
-      h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock),
-      h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock),
+    const payment = await payerPayment(h);
+    h.orchestra.routesImpl = () => new Promise(() => undefined);
+    clock = T0 + 95_000;
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
+    expect(sleepCalls).toEqual([]);
+  });
+
+  it('a fallback committed before the replacement starts does not defeat the replaceable snapshot', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    const [initial, started] = await quotesOf(h, payment.id);
+    const fallback: ShopQuote = {
+      id: crypto.randomUUID(),
+      paymentId: payment.id,
+      expiresAt: payment.windowEndsAt,
+      transferAmounts: [lightningTransferAmount(SATS)],
+      createdAt: new Date(T0 + 95_000),
+    };
+    let staged = false;
+    h.store.hooks.quotesOf = async (tx, ...args) => {
+      const rows = await tx.quotesOf(...(args as unknown as [string]));
+      if (!staged) {
+        staged = true;
+        // Simulate the fetch's fallback transaction committing after this
+        // read captured the expired offers quote but before replacement
+        // revalidation starts.
+        await tx.insertQuote(fallback);
+      }
+      return rows;
+    };
+    const beforeQuoteCalls = h.orchestra.quoteCalls.length;
+    clock = T0 + 95_000;
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    delete h.store.hooks.quotesOf;
+    expect(read?.quote.id).toBe(fallback.id);
+    await settle();
+    const quotes = await quotesOf(h, payment.id);
+    expect(quotes.map((quote) => quote.id)).toEqual([
+      initial!.id,
+      started!.id,
+      fallback.id,
+      expect.any(String),
     ]);
-    const qa = (await bodyOf(a)).json['quote'] as Record<string, string>;
-    const qb = (await bodyOf(b)).json['quote'] as Record<string, string>;
-    expect(qa['id']).toBe(qb['id']);
-    expect(h.orchestra.quoteCalls).toHaveLength(24);
+    expect(h.orchestra.quoteCalls).toHaveLength(beforeQuoteCalls + 12);
+    expect(quotes.at(-1)!.transferAmounts.length).toBeGreaterThan(1);
+    expect((await readPayment(h, payment.id)).replacements).toBe(1);
+  });
+
+  it('a replacement that commits after the fetch inserted the Lightning-only row still inserts its offers quote', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    const [initial, started] = await quotesOf(h, payment.id);
+    // The replacement's route list answers only on release.
+    const release = holdRouteList(h);
+    clock = T0 + 95_000;
+    const reading = h.svc.currentQuote(h.account, USER, payment);
+    const fallback = await reading;
+    expect(fallback?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    const fallbackId = fallback!.quote.id;
+    // The replacement's route list now answers; its 12 quotes commit.
+    release({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await vi.waitFor(async () => expect(await quotesOf(h, payment.id)).toHaveLength(4));
+    const quotes = await quotesOf(h, payment.id);
+    expect(quotes.map((quote) => quote.id)).toEqual([
+      initial!.id,
+      started!.id,
+      fallbackId,
+      expect.any(String),
+    ]);
+    expect(quotes[3]!.transferAmounts.length).toBeGreaterThan(1);
+    // The fallback row did not make the run lose; the replacement counts once.
+    expect((await readPayment(h, payment.id)).replacements).toBe(1);
+    // The pay link then serves the offers quote.
+    const { json } = await bodyOf(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock));
+    expect((json['quote'] as Record<string, string>)['id']).toBe(quotes[3]!.id);
+    expect((json['transferAmounts'] as unknown[]).length).toBeGreaterThan(1);
   });
 
   it('a replacement with no committed offer is a Lightning-only quote and counts as a replacement', async () => {
@@ -4629,54 +4857,67 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     const payment = await payerPayment(h);
     h.orchestra.quoteImpl = () => ({ ok: false, reason: 'refused', sent: true });
     clock = T0 + 50_000;
-    const read = await h.svc.currentQuote(h.account, USER, payment);
-    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
-    expect(read?.quote.expiresAt.getTime()).toBe(T0 + 300_000);
+    h.svc.currentQuote(h.account, USER, payment);
+    await settle();
+    const latest = (await quotesOf(h, payment.id)).at(-1)!;
+    expect(latest.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(latest.expiresAt.getTime()).toBe(T0 + 300_000);
     expect((await readPayment(h, payment.id)).replacements).toBe(1);
     // A Lightning-only quote is never replaced.
     clock = T0 + 280_000;
     h.orchestra.quoteImpl = null;
-    expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(read?.quote.id);
+    expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(latest.id);
   });
 
   it('a failed route list during a replacement gives a Lightning-only row that is not counted', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
     h.orchestra.routesResult = { ok: false };
-    clock = T0 + 60_001;
-    const read = await h.svc.currentQuote(h.account, USER, payment);
+    clock = T0 + 92_000;
+    h.svc.currentQuote(h.account, USER, payment);
+    await settle();
     // The cached list expired, so the replacement read the route list again.
     expect(h.orchestra.routesCalls).toHaveLength(2);
-    expect(read?.quote.transferAmounts).toHaveLength(1);
+    expect((await quotesOf(h, payment.id)).at(-1)!.transferAmounts).toEqual([
+      lightningTransferAmount(SATS),
+    ]);
     expect(h.orchestra.quoteCalls).toHaveLength(12);
-    // No quote request was sent, so the Lightning-only row is not a replacement.
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
   });
 
-  it('a replacement whose quote requests were never sent (no budget, or refused before sending) is not counted', async () => {
+  it('a replacement whose quote requests were never sent (no budget) is not counted', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
     h.orchestra.budget = 0;
     clock = T0 + 50_000;
-    const read = await h.svc.currentQuote(h.account, USER, payment);
-    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    h.svc.currentQuote(h.account, USER, payment);
+    await settle();
+    expect((await quotesOf(h, payment.id)).at(-1)!.transferAmounts).toEqual([
+      lightningTransferAmount(SATS),
+    ]);
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
-    clock = T0;
-    const other = await setup();
-    const second = await payerPayment(other);
-    other.orchestra.quoteImpl = () => ({ ok: false, reason: 'budget', sent: false });
-    clock = T0 + 50_000;
-    const lightning = await other.svc.currentQuote(other.account, USER, second);
-    expect(lightning?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
-    expect((await readPayment(other, second.id)).replacements).toBe(0);
-    expect(
-      events.filter(
-        (entry) => entry.event === 'shop.offer.rejected' && entry.fields?.['check'] === 'budget',
-      ),
-    ).toHaveLength(12);
   });
 
-  it('never replaces in the last 45 s of the window; an expired quote then gets a Lightning-only row that is not a replacement', async () => {
+  it('a replacement that sent no quote request inserts nothing and leaves the fetch-created fallback row current', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    const [initial, first] = await quotesOf(h, payment.id);
+    h.orchestra.budget = 0;
+    const release = holdRouteList(h);
+    clock = T0 + 95_000;
+    const fallback = await h.svc.currentQuote(h.account, USER, payment);
+    expect(fallback?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    release({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await settle();
+    expect((await quotesOf(h, payment.id)).map((quote) => quote.id)).toEqual([
+      initial!.id,
+      first!.id,
+      fallback!.quote.id,
+    ]);
+    expect((await readPayment(h, payment.id)).replacements).toBe(0);
+  });
+
+  it('never replaces in the last 45 s of the window; an expired quote gets a Lightning-only row that is not a replacement', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
     clock = T0 + 255_001;
@@ -4685,9 +4926,8 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect(read?.quote.expiresAt.getTime()).toBe(T0 + 300_000);
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
     expect(h.orchestra.quoteCalls).toHaveLength(12);
-    // The next fetch returns that row unchanged.
     expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(read?.quote.id);
-    expect(await quotesOf(h, payment.id)).toHaveLength(2);
+    expect(await quotesOf(h, payment.id)).toHaveLength(3);
   });
 
   it('allows at most 4 replacements', async () => {
@@ -4695,8 +4935,8 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     const payment = await payerPayment(h);
     await h.store.transaction((tx) => tx.updatePayment(payment.id, {}, { replacements: 4 }));
     clock = T0 + 50_000;
-    const [first] = await quotesOf(h, payment.id);
-    expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(first!.id);
+    const first = (await quotesOf(h, payment.id)).at(-1)!;
+    expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(first.id);
     clock = T0 + 90_000;
     const fallback = await h.svc.currentQuote(h.account, USER, payment);
     expect(fallback?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
@@ -4716,185 +4956,98 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
   });
 
-  it('a replacement that loses the conditional increment inserts nothing and answers the quote that is current now', async () => {
+  it('a replacement whose newest quote is a newer quote with offers inserts nothing', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
-    const [first] = await quotesOf(h, payment.id);
-    // Another container's replacement wins meanwhile: it counts and inserts a newer quote.
+    const [initial, started] = await quotesOf(h, payment.id);
+    // Another container's replacement wins meanwhile: it counts and inserts an offers quote.
     const newer: ShopQuote = {
       id: crypto.randomUUID(),
       paymentId: payment.id,
       expiresAt: new Date(T0 + 140_000),
-      transferAmounts: [lightningTransferAmount(SATS)],
+      transferAmounts: transferAmountsFor(SATS, [offerRow('newer')]),
       createdAt: new Date(T0 + 50_000),
     };
+    let released = false;
     h.orchestra.onQuote = async () => {
+      if (released) {
+        return;
+      }
+      released = true;
       h.orchestra.onQuote = null;
       await h.store.transaction(async (tx) => {
         await tx.updatePayment(payment.id, {}, { replacements: 1 });
         await tx.insertQuote(newer);
       });
     };
+    let paymentReads = 0;
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      paymentReads += 1;
+      return tx.getPayment(...(args as unknown as [string]));
+    };
     clock = T0 + 50_000;
-    const read = await h.svc.currentQuote(h.account, USER, payment);
-    expect(read?.quote.id).toBe(newer.id);
-    expect((await quotesOf(h, payment.id)).map((quote) => quote.id)).toEqual([first!.id, newer.id]);
+    h.svc.currentQuote(h.account, USER, payment);
+    await settle();
+    delete h.store.hooks.getPayment;
+    const quotes = await quotesOf(h, payment.id);
+    expect(quotes.map((quote) => quote.id)).toEqual([initial!.id, started!.id, newer.id]);
+    // One read serves the fetch and one starts the replacement. Losing the
+    // commit race needs no result-building read afterwards.
+    expect(paymentReads).toBe(2);
     expect((await readPayment(h, payment.id)).replacements).toBe(1);
   });
 
-  it('a replacement whose slow pair runs into its call deadline still commits inside the fetch wait and is answered, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      const payment = await payerPayment(h);
-      const [first] = await quotesOf(h, payment.id);
-      // One timeline: the fetch's 4 s wait and the slow pair's deadline are
-      // timers, and the earlier one fires first (the fetch's on a tie).
-      const timers: { atMs: number; fetch: boolean; fire: () => void }[] = [];
-      sleepImpl = (ms) =>
-        ms === SHOP_REPLACEMENT_BUDGET_MS
-          ? new Promise((resolve) => {
-              timers.push({ atMs: clock + ms, fetch: true, fire: resolve });
-            })
-          : defaultSleep(ms);
-      // Polygon USDT answers only at its deadline, without a quote.
-      const slow = (request: OrchestraQuoteRequest): boolean =>
-        request.sourceChain === 'polygon' && request.sourceAsset === 'USDT';
-      h.orchestra.onQuote = (request) => {
-        const call = h.orchestra.quoteCalls[h.orchestra.quoteCalls.length - 1]!;
-        return slow(request)
-          ? new Promise((resolve) => {
-              timers.push({ atMs: call.deadlineMs, fetch: false, fire: resolve });
-            })
-          : Promise.resolve();
-      };
-      h.orchestra.quoteImpl = (request) =>
-        slow(request)
-          ? { ok: false, reason: 'unavailable', sent: true }
-          : { ok: true, quote: h.orchestra.validQuote(request) };
-      // The quote read expires at T0 + 90 s, 2 s into the fetch's wait.
-      const arrivalMs = T0 + 88_000;
-      clock = arrivalMs;
-      const answering = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
-      await vi.waitFor(() => expect(timers).toHaveLength(2));
-      timers.sort((x, y) => x.atMs - y.atMs || Number(y.fetch) - Number(x.fetch));
-      const [earliest, later] = timers as [(typeof timers)[0], (typeof timers)[0]];
-      expect(earliest.fetch).toBe(false);
-      expect(earliest.atMs).toBe(
-        arrivalMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
-      );
-      expect(later.atMs).toBe(arrivalMs + SHOP_REPLACEMENT_BUDGET_MS);
-      clock = earliest.atMs;
-      earliest.fire();
-      const answer = await bodyOf(await answering);
-      const quote = answer.json['quote'] as Record<string, string>;
-      const stored = await quotesOf(h, payment.id);
-      expect(stored.map((row) => row.id)).toEqual([first!.id, quote['id']]);
-      // The replacement's quote with the 11 pairs that answered in time.
-      const offers = await h.store.transaction((tx) => tx.offersOf(quote['id']!));
-      expect(offers).toHaveLength(11);
-      expect(offers.some((offer) => offer.method === 'Polygon' && offer.asset === 'USDT')).toBe(
-        false,
-      );
-      expect((await readPayment(h, payment.id)).replacements).toBe(1);
-      // The fetch's wait never ended: the replacement did.
-      expect(sleepCalls).toEqual([4_000]);
-      sleepImpl = defaultSleep;
-    }
-  });
-
-  it('a replacement that took the lock after the fetch arrived and commits after the fetch inserted the Lightning-only row inserts nothing', async () => {
+  it('a replacement that loses the conditional increment inserts nothing and leaves the current quote', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
-    const [first] = await quotesOf(h, payment.id);
-    // A payer creation holds the creation lock; the cached route list
-    // expired, so it reads the list again, which answers on release.
-    clock = T0 + 88_000;
-    let releaseCreation = (_result: OrchestraRoutesResult): void => undefined;
-    h.orchestra.routesImpl = () =>
-      new Promise((resolve) => {
-        releaseCreation = resolve;
-      });
-    const payer = h.svc.createForPayer(h.account, USER, SATS + 1, clock);
-    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
-    // The fetch's replacement queues behind it, so the fetch waits 4 s from
-    // its arrival; that wait ends on wake.
-    let wake = (): void => undefined;
-    sleepImpl = (ms) =>
-      ms === SHOP_REPLACEMENT_BUDGET_MS
-        ? new Promise((resolve) => {
-            wake = resolve;
-          })
-        : defaultSleep(ms);
-    const reading = h.svc.currentQuote(h.account, USER, payment);
-    await vi.waitFor(() => expect(sleepCalls).toEqual([4_000]));
-    // 3 s after the arrival the creation ends and the replacement takes the
-    // lock; its route list answers on release.
-    let releaseReplacement = (_result: OrchestraRoutesResult): void => undefined;
-    h.orchestra.routesImpl = () =>
-      new Promise((resolve) => {
-        releaseReplacement = resolve;
-      });
-    const startMs = T0 + 91_000;
-    clock = startMs;
-    releaseCreation({ ok: false });
-    expect(await payer).toEqual({ kind: 'unavailable' });
-    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(3));
-    // The fetch's wait ends at arrival + 4 s, before the replacement's calls
-    // end; the quote read expired at T0 + 90 s, so the fetch inserts the
-    // Lightning-only row.
-    const callsEndMs = startMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS;
-    expect(callsEndMs).toBeGreaterThan(T0 + 92_000);
-    clock = T0 + 92_000;
-    wake();
-    const read = await reading;
-    sleepImpl = defaultSleep;
-    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
-    expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
-    const fallback = read!.quote;
-    // The replacement's calls end and it takes the account row lock.
-    let locked = false;
-    h.store.hooks.lockAccount = async (tx, ...args) => {
-      const [accountId] = args as unknown as [string];
-      locked = true;
-      return tx.lockAccount(accountId);
+    const [initial, started] = await quotesOf(h, payment.id);
+    h.store.hooks.updatePayment = async (tx, ...args) => {
+      const [id, where, patch] = args as unknown as [
+        string,
+        Parameters<ShopTx['updatePayment']>[1],
+        Parameters<ShopTx['updatePayment']>[2],
+      ];
+      if (patch.replacements === undefined) {
+        return tx.updatePayment(id, where, patch);
+      }
+      // Another container's replacement counted first.
+      await tx.updatePayment(payment.id, {}, { replacements: 1 });
+      return tx.updatePayment(id, where, patch);
     };
-    clock = callsEndMs;
-    releaseReplacement(h.orchestra.routesResult);
-    await vi.waitFor(() => expect(locked).toBe(true));
-    // Transactions run in call order: this one starts after the replacement's.
-    await h.store.transaction(async () => undefined);
-    delete h.store.hooks.lockAccount;
-    for (const call of h.orchestra.quoteCalls.slice(12)) {
-      expect(call.deadlineMs).toBe(callsEndMs);
-    }
-    expect(h.orchestra.quoteCalls).toHaveLength(24);
+    clock = T0 + 50_000;
+    h.svc.currentQuote(h.account, USER, payment);
+    await settle();
+    delete h.store.hooks.updatePayment;
     expect((await quotesOf(h, payment.id)).map((quote) => quote.id)).toEqual([
-      first!.id,
-      fallback.id,
+      initial!.id,
+      started!.id,
     ]);
-    expect((await readPayment(h, payment.id)).replacements).toBe(0);
-    const again = await h.svc.currentQuote(h.account, USER, payment);
-    expect(again?.quote.id).toBe(fallback.id);
+    expect((await readPayment(h, payment.id)).replacements).toBe(1);
   });
 
   it('a replacement whose window shrank below 45 s meanwhile inserts nothing', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
+    const [initial, started] = await quotesOf(h, payment.id);
     h.orchestra.onQuote = async () => {
       h.orchestra.onQuote = null;
       clock = T0 + 255_001;
     };
     clock = T0 + 50_000;
     const read = await h.svc.currentQuote(h.account, USER, payment);
-    // The old quote expired at T0 + 90 s: the fallback row answers.
-    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
-    expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
+    // The fetch answers the still-valid quote it read without waiting for
+    // Orchestra, whose callback moves the clock only in the background.
+    expect(read?.quote.id).toBe(started!.id);
+    await settle();
+    // The run inserted nothing.
+    expect((await quotesOf(h, payment.id)).map((quote) => quote.id)).toEqual([
+      initial!.id,
+      started!.id,
+    ]);
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
   });
 
-  it('a payment that left open during the replacement answers as ended, also for a fetch waiting on the lock', async () => {
+  it('a payment that left open during the replacement answers as ended on the next fetch', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
     h.orchestra.onQuote = async () => {
@@ -4902,12 +5055,11 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
       await h.store.transaction((tx) => endPayment(tx, payment, 'replaced', clock));
     };
     clock = T0 + 50_000;
-    const [a, b] = await Promise.all([
-      h.svc.currentQuote(h.account, USER, payment),
-      h.svc.currentQuote(h.account, USER, payment),
-    ]);
-    expect(a).toBeNull();
-    expect(b).toBeNull();
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    // The fetch read it open before the replacement ended it.
+    expect(read?.quote).toBeDefined();
+    await settle();
+    expect(await h.svc.currentQuote(h.account, USER, payment)).toBeNull();
   });
 
   it('the Lightning-only fallback re-reads under the lock: a payment no longer open, or a newer valid quote', async () => {
@@ -4943,134 +5095,36 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(newer.id);
   });
 
-  /** Hold the account's creation lock: a payer creation whose route list never answers. */
-  async function holdLock(h: Harness): Promise<void> {
-    h.orchestra.routesImpl = () => new Promise(() => undefined);
-    const before = h.orchestra.routesCalls.length;
-    void h.svc.createForPayer(h.account, USER, SATS + 1, clock);
-    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(before + 1));
-  }
-
-  it('a replacement queued behind a held lock: the fetch answers the still-valid quote 4 s after its arrival, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      const payment = await payerPayment(h);
-      const [first] = await quotesOf(h, payment.id);
-      // The cached route list expired, so the lock holder reads it again and hangs.
-      clock = T0 + 61_000;
-      await holdLock(h);
-      sleepImpl = (ms) => (ms === 4_000 ? Promise.resolve() : defaultSleep(ms));
-      const answer = await bodyOf(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
-      );
-      expect(answer.status).toBe(200);
-      expect((answer.json['quote'] as Record<string, string>)['id']).toBe(first!.id);
-      expect(sleepCalls).toEqual([4_000]);
-      expect((await readPayment(h, payment.id)).replacements).toBe(0);
-      expect(await quotesOf(h, payment.id)).toHaveLength(1);
-      sleepImpl = defaultSleep;
-    }
-  });
-
-  it('a replacement queued behind a held lock: an expired quote gets the Lightning-only row after 4 s', async () => {
+  it('createForPayer answers while a replacement is blocked in Orchestra', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
-    clock = T0 + 95_000;
-    await holdLock(h);
-    sleepImpl = (ms) => (ms === 4_000 ? Promise.resolve() : defaultSleep(ms));
-    const read = await h.svc.currentQuote(h.account, USER, payment);
-    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
-    expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
-    expect(sleepCalls).toEqual([4_000]);
-    expect((await readPayment(h, payment.id)).replacements).toBe(0);
+    h.orchestra.onQuote = () => new Promise(() => undefined);
+    clock = T0 + 50_000;
+    const current = await h.svc.currentQuote(h.account, USER, payment);
+    expect(current?.quote.transferAmounts.length).toBeGreaterThan(1);
+    await vi.waitFor(() => expect(h.orchestra.quoteCalls).toHaveLength(24));
+    const created = await h.svc.createForPayer(h.account, USER, SATS + 1, clock);
+    expect(created.kind).toBe('payment');
+    expect(h.net.issued).toHaveLength(2);
+    expect(await readPayment(h, payment.id)).toMatchObject({
+      status: 'ended',
+      endReason: 'replaced',
+    });
+    expect(sleepCalls).toEqual([]);
   });
 
-  it('a replacement that ends within the wait answers its new quote, with or without timeout', async () => {
-    for (const timeout of [null, '5']) {
-      sleepCalls = [];
-      clock = T0;
-      const h = await setup();
-      const payment = await payerPayment(h);
-      const [first] = await quotesOf(h, payment.id);
-      clock = T0 + 50_000;
-      const answer = await bodyOf(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
-      );
-      const quote = answer.json['quote'] as Record<string, string>;
-      expect(quote['id']).not.toBe(first!.id);
-      expect(quote['expiration']).toBe(new Date(T0 + 50_000 + 90_000).toISOString());
-      // The 4 s wait never ended: the replacement did.
-      expect(sleepCalls).toEqual([4_000]);
-      expect((await readPayment(h, payment.id)).replacements).toBe(1);
-    }
-  });
-
-  it('a fetch that joins a replacement running for 4 s or more answers the current state at once', async () => {
+  it('a replacement that throws logs shop.creation.failed once and leaves the current quote', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
-    const [first] = await quotesOf(h, payment.id);
-    clock = T0 + 61_000;
-    h.orchestra.routesImpl = () => new Promise(() => undefined);
-    const held = h.svc.currentQuote(h.account, USER, payment);
-    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
-    clock = T0 + 65_000;
-    const read = await h.svc.currentQuote(h.account, USER, payment);
-    expect(read?.quote.id).toBe(first!.id);
-    // Only the first fetch waited; the second joined the same replacement.
-    expect(sleepCalls).toEqual([4_000]);
-    expect(h.orchestra.routesCalls).toHaveLength(2);
-    void held;
-  });
-
-  it('a queued replacement re-reads under the lock: a payment no longer open, or one no longer replaceable, is answered as it stands', async () => {
-    for (const change of ['ended', 'used up'] as const) {
-      clock = T0;
-      const h = await setup();
-      const payment = await payerPayment(h);
-      const [first] = await quotesOf(h, payment.id);
-      clock = T0 + 61_000;
-      let release = (_result: OrchestraRoutesResult): void => undefined;
-      h.orchestra.routesImpl = () =>
-        new Promise((resolve) => {
-          release = resolve;
-        });
-      const payer = h.svc.createForPayer(h.account, USER, SATS + 1, clock);
-      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
-      // The fetch's replacement is queued behind the payer creation.
-      const read = h.svc.currentQuote(h.account, USER, payment);
-      await vi.waitFor(() => expect(sleepCalls).toEqual([4_000]));
-      await h.store.transaction((tx) =>
-        change === 'ended'
-          ? tx.updatePayment(
-              payment.id,
-              {},
-              { status: 'ended', endReason: 'cancelled', endedAt: new Date(clock) },
-            )
-          : tx.updatePayment(payment.id, {}, { replacements: 4 }),
-      );
-      release({ ok: false });
-      expect(await payer).toEqual({ kind: 'unavailable' });
-      const answer = await read;
-      expect(answer === null ? null : answer.quote.id).toBe(change === 'ended' ? null : first!.id);
-      // The replacement read nothing more from Orchestra.
-      expect(h.orchestra.routesCalls).toHaveLength(2);
-      sleepCalls = [];
-    }
-  });
-
-  it('a replacement that throws: the fetch answers the current quote', async () => {
-    const h = await setup();
-    const payment = await payerPayment(h);
-    const [first] = await quotesOf(h, payment.id);
+    const first = (await quotesOf(h, payment.id)).at(-1)!;
     h.store.hooks.updatePayment = async () => {
       throw new Error('store down');
     };
     clock = T0 + 50_000;
     const read = await h.svc.currentQuote(h.account, USER, payment);
+    expect(read?.quote.id).toBe(first.id);
+    await settle();
     delete h.store.hooks.updatePayment;
-    expect(read?.quote.id).toBe(first!.id);
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
     expect(eventsNamed('shop.creation.failed').map((entry) => entry.fields)).toEqual([
       { accountId: ACCOUNT_ID, paymentId: payment.id, name: 'Error' },
@@ -5089,11 +5143,13 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
       }
       return tx.lockAccount(...(args as unknown as [string]));
     };
-    // The account lock was taken with less than 45 s left in the window: no replacement.
+    // The account lock was taken with less than 45 s left in the window: no
+    // replacement. The fetch had already answered the still-valid quote it read.
     const read = await h.svc.currentQuote(h.account, USER, payment);
+    await settle();
     expect(h.orchestra.quoteCalls).toHaveLength(24);
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
-    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(read?.quote.transferAmounts.length).toBeGreaterThan(1);
     // The fallback's lock ends after the window: no Lightning-only row, the payment is not open.
     const other = await setup();
     clock = T0;
@@ -5233,15 +5289,15 @@ describe('simplified flow (Pay link: Simplified flow)', () => {
     // The pay link and the quote read see `first`; the callback's state read sees `second`.
     staleOpen(h, [first]);
     const answer = await bodyOf(await h.svc.payLink(h.account, USER, METADATA, USDT_QUERY, clock));
-    const [quote] = await quotesOf(h, second.id);
-    const offers = await h.store.transaction((tx) => tx.offersOf(quote!.id));
+    const quote = (await quotesOf(h, second.id)).at(-1)!;
+    const offers = await h.store.transaction((tx) => tx.offersOf(quote.id));
     const offer = offers.find((row) => row.method === 'Polygon' && row.asset === 'USDT')!;
     expect(answer.status).toBe(200);
     expect(answer.json['blockchain']).toBe('Polygon');
     expect(answer.json['uri']).toContain(offer.depositAddress);
     expect(offer.detailIssuedAt?.getTime()).toBe(clock);
-    const [old] = await quotesOf(h, first.id);
-    const oldOffers = await h.store.transaction((tx) => tx.offersOf(old!.id));
+    const old = (await quotesOf(h, first.id)).at(-1)!;
+    const oldOffers = await h.store.transaction((tx) => tx.offersOf(old.id));
     expect(oldOffers.every((row) => row.detailIssuedAt === null)).toBe(true);
   });
 
@@ -5278,7 +5334,7 @@ describe('callback order table (Callback)', () => {
   async function opened() {
     const h = await setup();
     const payment = await payerPayment(h);
-    const [quote] = await quotesOf(h, payment.id);
+    const quote = (await quotesOf(h, payment.id)).at(-1)!;
     return { h, payment, quote: quote! };
   }
 
@@ -5370,17 +5426,20 @@ describe('callback order table (Callback)', () => {
     // Two replacements push the first quote out of current and previous.
     clock = T0 + 50_000;
     await h.svc.currentQuote(h.account, USER, payment);
+    await settle();
     expect((await ask(quote.id)).status).toBe(200);
     clock = T0 + 100_000;
     await h.svc.currentQuote(h.account, USER, payment);
+    await settle();
     expect((await ask(quote.id)).status).toBe(404);
     const quotes = await quotesOf(h, payment.id);
     // The previous quote expired at T0 + 50 s + 90 s.
     clock = T0 + 140_000;
     expect((await ask(quotes[1]!.id)).status).toBe(404);
-    expect((await ask(quotes[2]!.id.toUpperCase())).status).toBe(200);
+    const current = quotes.at(-1)!;
+    expect((await ask(current.id.toUpperCase())).status).toBe(200);
     clock = T0 + 300_000;
-    expect((await ask(quotes[2]!.id)).status).toBe(404);
+    expect((await ask(current.id)).status).toBe(404);
   });
 
   it('order 2: a quote of a payment a newer payer amount replaced is 404 Quote expired', async () => {

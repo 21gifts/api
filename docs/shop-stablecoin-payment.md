@@ -6,7 +6,8 @@ which was `docs/shop-spark-payment.md`. The routes and cases below are
 mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, and
 `SPEC.md` lists them. Stablecoin rows are offered only when
 `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, and
-`SHOP_REFUND_ADDRESS` resolve too.
+`SHOP_REFUND_ADDRESS` resolve too. Revised 2026-11-09: Orchestra never
+delays Lightning.
 
 A payer settles a shop payment in USDT or USDC. Orchestra (Flashnet)
 takes the stablecoin and pays one BOLT11 for the shop's sats. That
@@ -71,11 +72,28 @@ it. What 21.gifts does with such a refund is outside this document.
 
 ## Flow
 
+**Orchestra never delays Lightning.** No HTTP answer that a payer or a
+wallet needs to pay by Lightning waits for an Orchestra call (route
+list, quote, or gas price) or for work queued behind one. An Orchestra
+quote is stored as an offer only when it passes every offer check. A
+charge's creation inserts those offers with the new payment. A payer's
+payment opens Lightning-only. A later offers fill or replacement adds an
+offer only while the payment is still `open`, at least 45 s remain in
+its window, and the newest-quote rule still holds. When that later run
+keeps no offer, the payment stays Lightning-only. Orchestra is an
+add-on, never a condition of paying.
+
 1. A till charge, or an amount the payer enters on the payment page,
    opens one **shop payment** for a fixed number of sats.
-2. The api mints one BOLT11 for those sats and asks Orchestra for one
-   exact-out quote per offered chain and asset. Each quote pays that
-   BOLT11.
+2. The api mints one BOLT11 for those sats. For a payer,
+   `POST /pay/:username/payment` answers only `{ payment, expiresAt }`;
+   the payment page then fetches the pay link, which serves the
+   Lightning-only first quote and, on a later fetch, the offers quote when
+   one was inserted. The api asks Orchestra for one exact-out quote per
+   candidate pair in the background. An answer becomes an offer only when
+   it passes the offer checks. A till charge's creation already runs in
+   the background and asks before its insert. Each request asks Orchestra
+   to pay that BOLT11.
 3. For up to five minutes the shop's sticker is pinned to that payment.
    A wallet that scans it receives an OpenCryptoPay pay request with
    Lightning and the stablecoin options.
@@ -184,7 +202,7 @@ A pair is offered on one quote only when all of these hold:
 
 A pair whose route-list values differ from the table is not offered, and
 the api logs `shop.route.mismatch`. The route list is fetched with the
-server key, because Orchestra filters it per partner, with a 1 s timeout.
+server key, because Orchestra filters it per partner, with a timeout of at most 1 s.
 It is reused only until its `validForMs` has passed since the request
 started, as Orchestra defines it. Route-list fetches have their own
 budget of 25
@@ -214,18 +232,18 @@ method is a change to the table and to its tests.
 
 ## Lifetimes
 
-| Name               | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Window             | Five minutes (`POS_CHARGE_TTL_MS`). A charge-backed payment uses the charge's `expires_at`. A payer-opened payment uses `created_at` + 5 min.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Offer expiry       | Orchestra's `expiresAt`, 2 minutes after the Orchestra quote was created.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Funding margin     | 30 s, a design value: a transfer sent at `quote.expiration` has 30 s to reach the chain before Orchestra's `expiresAt`. Release check 4 measures late funding.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `quote.expiration` | A quote with offers: the earliest of `window_ends_at` and every offer's `expiresAt` minus the funding margin. A Lightning-only quote: `window_ends_at`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Replacement        | A fetch replaces the current quote when less than 45 s remain before its `quote.expiration`, at least 45 s remain before `window_ends_at`, and the payment has had fewer than 4 replacements.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| BOLT11 expiry      | The time the mint was requested plus the invoice's `expiry` tag, or plus 3600 s when the tag is absent, as `invoiceStillOpen` computes it from `inspectBolt11` and `DEFAULT_INVOICE_EXPIRY_MS`, both moved from `src/routes/repayment.ts` to `src/lib/bolt11.ts` ([Implementation](#implementation)). Taking the request time, not the later answer, keeps the stored expiry at or before the real one when the LNURL server's clock is not behind the api's; when it runs behind, the real expiry is earlier by that difference. A difference up to 60 s is tolerated; the rest of the 600 s BOLT11 margin stays for Orchestra to pay the invoice after a deposit made just before `expiresAt`, and release check 3 confirms the staging mint's clock. |
-| BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`. Over a full window that needs a BOLT11 of 1020 s.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Settlement watch   | The payment's BOLT11 is watched until its final read, 10 min after its expiry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Name               | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Window             | Five minutes (`POS_CHARGE_TTL_MS`). A charge-backed payment uses the charge's `expires_at`. A payer-opened payment uses `created_at` + 5 min.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Offer expiry       | Orchestra's `expiresAt`, 2 minutes after the Orchestra quote was created.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Funding margin     | 30 s, a design value: a transfer sent at `quote.expiration` has 30 s to reach the chain before Orchestra's `expiresAt`. Release check 4 measures late funding.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `quote.expiration` | A quote with offers: the earliest of `window_ends_at` and every offer's `expiresAt` minus the funding margin. A Lightning-only quote: `window_ends_at`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Replacement        | A fetch starts a replacement when the quote has a stablecoin entry, less than 45 s remain before its `quote.expiration`, at least 45 s remain before `window_ends_at`, the payment has had fewer than 4 replacements, and stablecoin rows are on for the username. It joins an entry already in `#replacements` when those rows are on. The fetch does not wait for it. When the quote has expired, it re-reads under the account row lock. While the payment is still `open` and its window has not ended, it returns the newest quote when that quote is still valid, and otherwise inserts a Lightning-only row and returns that row. Only a later fetch sees a replacement quote that is not stored yet. A payer-opened payment also gets an offers fill after its Lightning-only first quote; that fill is not a replacement and does not count. |
+| BOLT11 expiry      | The time the mint was requested plus the invoice's `expiry` tag, or plus 3600 s when the tag is absent, as `invoiceStillOpen` computes it from `inspectBolt11` and `DEFAULT_INVOICE_EXPIRY_MS`, both moved from `src/routes/repayment.ts` to `src/lib/bolt11.ts` ([Implementation](#implementation)). Taking the request time, not the later answer, keeps the stored expiry at or before the real one when the LNURL server's clock is not behind the api's; when it runs behind, the real expiry is earlier by that difference. A difference up to 60 s is tolerated; the rest of the 600 s BOLT11 margin stays for Orchestra to pay the invoice after a deposit made just before `expiresAt`, and release check 3 confirms the staging mint's clock.                                                                                               |
+| BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`. Over a full window that needs a BOLT11 of 1020 s.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Settlement watch   | The payment's BOLT11 is watched until its final read, 10 min after its expiry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 A wallet can take longer than the funding margin, for example when the
 chain is slow. Orchestra then decides about the late deposit. The api
@@ -345,17 +363,16 @@ shop payment is `accepted` or `paid` is not pinned, so the response is
 today's unpinned request. Any LNURL wallet can still pay the sticker.
 
 A pending charge with no shop payment first starts or joins the
-[Creation procedure](#creation-procedure) and waits for it at most until
-8 s after the fetch arrived, a wait as long as the procedure's 8 s
-budget, whatever the
-creation is still waiting for, lock waits included. A request with
-`timeout` that reaches this point only 8 s or more after it arrived, while
-it waits as described below, does not wait for the creation and answers
-today's pinned Lightning request. The 8 s wait stays below the 10 s a plain
-LNURL wallet waits and the 20 s Tether 1.11.0 waits. When the payment
-exists by the end of that wait, the fetch answers as for an open amount.
-Otherwise it answers today's pinned Lightning request, and the creation
-goes on in the background.
+[Creation procedure](#creation-procedure), but the fetch does not wait
+for it. It answers at once with today's Lightning request pinned to the
+charge amount. The creation goes on in the background, and a later scan
+finds the payment. A charge has at most one creation in flight from when
+it is queued until it ends; every request for that charge, and the
+creation `POST /pos` starts, joins it. A creation that ends earlier
+(re-reads and stops, or fails) ends the in-flight run, and the next
+request starts a new one. Orchestra never delays Lightning: the answer
+never waits for a route list, a quote, a gas price, or work queued behind
+one.
 
 When the request carries `timeout`, the api follows the standard's
 waiting rule, which DFX implements. `timeout` is a whole number of
@@ -440,20 +457,25 @@ shared helper that also takes the 6 and 18 decimals of the stablecoin
 amounts. `requestedAmount.amount` is a JSON
 number written in that same plain notation, never `1e-8`.
 
-A fetch returns the current quote unchanged unless the replacement rule
-in [Lifetimes](#lifetimes) applies ([Quotes](#quotes)). A current quote
-whose `quote.expiration` has passed, and that the rule does not allow to
-replace, gets a Lightning-only quote row instead. That row needs no
-Orchestra call and does not count as a replacement, so no response
-ever carries a `quote.expiration` in the past. `quote.payment` never
-changes for a payment.
+A fetch whose current quote is unexpired returns that quote. When the
+replacement rule in [Lifetimes](#lifetimes) applies, the fetch starts or
+joins a replacement in the background ([Quotes](#quotes)). When the quote
+has expired, it re-reads under the account row lock. While the payment is
+still `open` and its window has not ended, it returns the newest quote when
+that quote is still valid, and otherwise inserts a Lightning-only row and
+returns that row. The inserted row needs no Orchestra call and does not
+count as a replacement. The fetch does not wait for the replacement. Only
+a later fetch sees a replacement quote that is not stored yet. No response carries a
+`quote.expiration` in the past. `quote.payment` never changes for a
+payment.
 
 ### Simplified flow
 
 A pay-link request with `method` and `asset` first applies the rules
-above, including `timeout` and quote replacement. With an open amount it
-then answers like the callback with the same `method` and `asset` and
-the current `quote.id`, as the standard's simplified flow states.
+above, including `timeout` and a background quote replacement. The answer
+uses the quote this fetch returns. With an open amount it then answers
+like the callback with the same `method` and `asset` and that `quote.id`,
+as the standard's simplified flow states.
 Without one it is the **404** above.
 
 ### Route details
@@ -558,19 +580,27 @@ as for `POST /pay/:username/invoice`. The checks run in this order:
 | Order | Condition                                                                                                                                                         | Response                                                                                     |
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | 1     | Invalid username, unknown account, no verified wallet, or no LNURL server config.                                                                                 | **404** `{ "error": "Not found" }`                                                           |
-| 2     | The wallet's pay request cannot be resolved.                                                                                                                      | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
+| 2     | The wallet's pay request cannot be resolved, or a store failure occurs, including during creation.                                                                | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
 | 3     | The body is not a positive whole number of sats.                                                                                                                  | **400** `{ "error": "Enter a whole number of sats" }`                                        |
 | 4     | A till charge is pending.                                                                                                                                         | **409** `{ "error": "A payment is already open", "code": "payment_open" }`                   |
 | 5     | The amount is outside that pay request's minimum and maximum.                                                                                                     | **400** `{ "error": "Enter a whole number of sats" }`                                        |
 | 6     | A username without stablecoin rows (see Route details), or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` is not configured. | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
-| 7     | This account started 10 creations in the last minute, or the api started 60 in the last minute.                                                                   | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 7     | The account's 60 s no-pair wait is running, or it started 10 creations in the last minute, or the api started 60 in the last minute.                              | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 | 8     | The mint fails, or the BOLT11 amount differs.                                                                                                                     | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 9     | No pair commits, `findChargeForPayment` fails with an error (step 4), or step 8 finds its request at least 16 s old or its client disconnected.                   | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 9     | `findChargeForPayment` fails with an error (step 4), or step 8 finds its request at least 16 s old or its client disconnected.                                    | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 
 Orders 1, 2, 3, 5, and 8 are the checks and texts of
 `POST /pay/:username/invoice`. Order 4 comes before the range check, because a
-pending charge pins that range to the charge amount. Orders 4 and 6 run again under the creation lock. Order 7 runs only
-there, once per creation, because `IpRateLimiter.allow` records every
+pending charge pins that range to the charge amount. Orders 4 and 6 run again
+under the creation lock. Order 7 runs only there, once per creation. The lock
+covers those local checks and the insert. For a charge, the route list, mint,
+and quotes run outside it. The payer's creation skips the route list and
+quotes; its offers fill runs them after the insert, in the background.
+A store failure during creation logs `pay.failed`; the page cannot tell whether
+a payment opened, so it repeats the request after order 2's 502 as after any
+other 5xx.
+No Orchestra call is awaited while
+the lock is held, because `IpRateLimiter.allow` records every
 call it allows: the api-wide counter is asked first, and the account
 counter only when it allows, so a refusal by the account counter leaves
 one extra hit on the api-wide counter at most. The counters in order 7 are two `IpRateLimiter` instances, keyed by
@@ -597,20 +627,28 @@ an accepted risk.
 
 **Response** `200`
 `{ "payment": "<uuid>", "expiresAt": "<window_ends_at>" }`. The page then
-fetches the pay link and checks that `quote.payment` is this id.
+fetches the pay link and checks that `quote.payment` is this id. The route
+answers without awaiting any Orchestra call, while the background offers fill
+may already have started.
 
 ### Creation procedure
 
 One procedure creates a shop payment, for a charge or for a payer:
 
-1. Take the account's in-process creation lock. A second caller for the
-   same account waits for the first and then re-reads.
+1. Take the account's in-process creation lock for the short local re-check,
+   availability checks, and insert sections only. No code holds it while it
+   waits for an Orchestra call (route list, quote, or gas price). Route list,
+   mint, quotes, and offer checks run outside the lock. A second caller for
+   the same account waits only for those short local sections and then
+   re-reads.
    `translate-note.ts` keeps in-flight work in a map the same way.
 2. Re-check the state under the lock: end a lapsed `open` payment of the
    account with `end_reason` `window`, stop when the payment to create
    already exists, stop for a charge that is no longer pending, and for a
    payer stop with order 4 when a charge is now pending.
-3. Read the route list and select the candidate pairs ([Methods](#methods)).
+3. For a charge, read the route list and select the candidate pairs
+   ([Methods](#methods)). A payer skips this step here; its offers fill
+   reads the route list after step 8.
 4. Mint one BOLT11 with `requestGiftInvoice`, as
    `POST /pay/:username/invoice` does, with one 4 s deadline for both of its calls, the pay-request
    resolve and the callback. The implementing change adds that deadline
@@ -643,15 +681,22 @@ One procedure creates a shop payment, for a charge or for a payer:
    run before the insert; the [Payment hash claim](#payment-hash-claim)
    closes the moment between them and the insert, across both
    containers.
-5. In parallel, read `eth_gasPrice` for each candidate chain and request
-   one Orchestra quote per candidate pair, within 3 s for the whole step;
-   a retry runs only while that time lasts. Pairs beyond what the quote share of the Orchestra
-   budget allows are skipped, in the order of [Methods](#methods).
-6. Keep each quote that commits and passes [Offer checks](#offer-checks).
-7. When none is kept, write nothing, and the account's next creation in
-   this container waits 60 s; the other container of a deploy keeps its
-   own wait, so during a deploy an account can see two creations in 60 s. Until then a fetch answers today's pinned Lightning request, and
-   `POST /pay/:username/payment` answers order 9.
+5. For a charge, read `eth_gasPrice` for each candidate chain and request
+   one Orchestra quote per candidate pair, in parallel. Gas prices and
+   quotes share a 3 s external-call deadline that starts when the quote
+   step starts and also covers its stored-spot read. A retry runs only while
+   that deadline has time left. Pairs beyond what the quote share of the
+   Orchestra budget allows are skipped, in the order of
+   [Methods](#methods).
+6. For a charge, keep each quote that commits and passes
+   [Offer checks](#offer-checks).
+7. For a charge, when none is kept, write nothing, and the account's next
+   creation in this container waits 60 s; the other container of a deploy
+   keeps its own wait, so during a deploy an account can see two creations
+   in 60 s. Until then a fetch answers today's pinned Lightning request,
+   and `POST /pay/:username/payment` answers order 9. For a payer, no
+   committed pair is not an error: the payment is already open
+   Lightning-only, and the offers fill simply inserts no second quote.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first takes the
    [Payment hash claim](#payment-hash-claim) and then locks the account
@@ -660,8 +705,10 @@ One procedure creates a shop payment, for a charge or for a payer:
      (`SELECT … FOR UPDATE`) and inserts only while the charge is still
      `pending`. A charge that was cancelled, expired, or paid meanwhile
      gets no shop payment, and the sticker keeps today's behaviour.
-   - For a payer, a pending charge means nothing is written, and the
-     answer is order 4 (**409** `payment_open`). An `open` payer-opened
+   - For a payer, the first quote is Lightning-only: its `transferAmounts`
+     has only the Lightning entry, and its expiry is `window_ends_at`. The
+     transaction inserts no offers. A pending charge means nothing is
+     written, and the answer is order 4 (**409** `payment_open`). An `open` payer-opened
      payment is ended with `end_reason` `replaced` before the insert,
      after the hash claim found no
      other payment holding the hash, so a `payment_hash` conflict ends
@@ -696,17 +743,52 @@ One procedure creates a shop payment, for a charge or for a payer:
    and a charge ends it with `superseded`; then the insert runs once
    more. No answer ever carries another payer's amount.
 
-The procedure stays within 8 s: 1 s for the route list, 4 s for the
-mint, and 3 s for the quotes. Waits on the creation lock and on the
-locks of step 8 come on top, so step 8 also checks, after it holds its
-locks, that its request arrived, as the api received it, less than 16 s ago,
-and for a payer request that the client has not disconnected (the
-request's abort signal is not set); otherwise it writes nothing and
-answers order 9. No creation therefore inserts a payment
-more than 16 s after its request arrived. Every external call runs outside the
-database transaction. A losing caller's BOLT11 stays recorded against the
-charge and can still pay the charge. Its Orchestra quotes are never shown
-and expire unused.
+For a charge, three separate external-call budgets apply. The route
+list's 1 s starts at the recheck, so that lock wait shortens the fetch.
+The mint's 4 s and the quotes' 3 s start with their own steps. That is
+8 s of external-call budget in all. The insert's account lock, store,
+and transaction waits come on top. Step 8 is the hard limit. After it
+holds its locks, it writes nothing when the request arrived 16 s ago or
+longer (the time the api received it). A payer also writes nothing when
+the client has disconnected (the abort signal is set), and that route
+answers order 9.
+A charge creation that hits the cutoff writes nothing. The sticker stays
+on today's Lightning request. No creation inserts a payment once the
+request is 16 s old or older. For a payer, the mint's 4 s deadline is the
+only external-call budget before the insert. The same lock, store, and
+16 s limit apply. The offers fill runs after the insert, in the
+background.
+Every external call runs outside the database transaction. A losing
+caller's BOLT11 stays recorded against the charge and can still pay the
+charge. Its Orchestra quotes are never shown and expire unused.
+
+### Offers fill for a payer
+
+After a payer's payment opened Lightning-only, the api runs an offers
+fill in the background. The route list has a 1 s external-call budget.
+Gas prices and Orchestra quotes have a 3 s external-call deadline that
+starts when the offers-fill quote step starts and also covers its
+stored-spot read. Candidate pairs and offer checks are local. The route
+that opened the payment does not await the fill. Those calls run outside
+the account's in-process creation lock. The lock covers only the short
+re-read and commit, which can wait longer than the external-call budgets.
+A concurrent pay-link fetch does not start another fill and does not wait
+for the one in flight.
+A throw logs `shop.creation.failed` once with `accountId` and
+`paymentId`.
+
+The fill then runs one transaction under the account row lock. It
+inserts a quote with the passing offers only when the payment is still
+`open`, at least 45 s remain before `window_ends_at`, and the payment's
+newest quote is still the Lightning-only first quote. A Lightning-only
+row written by a fetch after the fill read its starting quote still lets
+the fill insert its offers quote, when the other conditions still hold.
+The fill inserts no quote when the route list fails, there is no candidate
+pair, there is no fresh spot, there is no quote budget, or no offer passes.
+No candidate pair, no fresh spot, no quote budget, and no passing offer
+start the account's 60 s no-pair wait. A failed route list does not start
+the wait.
+The fill does not increment `replacements`; it is not a replacement.
 
 ### Payment hash claim
 
@@ -770,33 +852,75 @@ as for any order that cannot pay ([States](#states)).
 
 ## Quotes
 
-A replacement quote is created under the creation lock. A second fetch
-in the same container waits for it and returns it. The replacement runs steps 3, 5, and 6 of
-the creation procedure for the same sats and the same BOLT11, within
-4 s, and inserts one `shop_quote` with the offers that pass in a transaction
-under the account row lock. That transaction first increments
-`shop_payment.replacements` with a conditional update (`status` is `open`, `replacements` still
-has the value read when the replacement started and is below 4, and at
-least 45 s remain before `window_ends_at`), and inserts the quote only
-when that update changed one row. Otherwise it inserts nothing, re-reads
-the payment, and the fetch answers with the quote that is current now, or
-as for an ended payment. The in-process lock is per container; this
-update makes a replacement in the other container of a deploy win or
-lose as a whole, so two containers never use two replacements for one
-expiring quote. The losing container's Orchestra quotes are never shown
-and expire unused. The payment id stays. A payment never gets a second BOLT11, so the shop can only
-be paid once through it.
+A fetch starts a replacement in the background when the quote is
+replaceable (a stablecoin entry, less than 45 s left, at least 45 s left
+in the window, and fewer than 4 replacements) and stablecoin rows are on
+for the username. It also joins an entry already in `#replacements` when
+those rows are on. It returns the quote it read while that quote is
+unexpired. When the quote has expired, it re-reads under the account row
+lock. While the payment is still `open` and its window has not ended, it
+returns the newest quote when that quote is still valid, and otherwise
+inserts a Lightning-only row and returns that row. It does not wait for the
+replacement or for Orchestra. Only a later fetch sees a replacement quote
+that is not stored yet. The route list, gas prices, and quotes run
+outside the account's in-process creation lock.
+The lock covers only the commit. A second fetch in the same container
+uses that in-flight run and does not wait for it. The replacement carries
+the payment and quote snapshot that the first fetch judged replaceable.
+Before calling Orchestra, and outside the creation lock, it revalidates
+that snapshot: the payment is still eligible and the starting quote is
+still newest. A newer Lightning-only fallback with unchanged
+`replacements` still lets the run continue. The route list, gas prices,
+and quotes for the same sats and the same BOLT11 share a 4 s
+external-call budget. Gas prices and quotes end 500 ms before that
+budget. The route list ends at the earlier of that deadline and 1 s after
+the start. The creation lock
+and the database transaction can wait longer. Under the account row
+lock the commit allows a newer Lightning-only row only after a quote
+request was sent. The conditional update checks `replacements` in both
+cases and increments the counter only when a request was sent. When a quote
+request was sent, it increments `shop_payment.replacements` with one
+conditional update (`status` is `open`, `replacements` is still the
+snapshot's value, and at least 45 s remain before `window_ends_at`) and
+inserts the quote only when that update changed the row. The quote is
+Lightning-only when no offer passes. When no quote request was sent, the
+same update leaves `replacements` unchanged and inserts a Lightning-only
+row only while the starting quote is still newest. A fallback row written
+after the read blocks a second Lightning-only row. Otherwise the run
+inserts nothing. The fire-and-forget run produces no result, and no
+handler re-reads the payment for it. The in-process lock is per container; the
+conditional update makes a replacement in the other container of a deploy
+win or lose as a whole, so two containers never use two replacements for
+one expiring quote. The losing run inserts nothing, and only a later fetch
+sees the winning quote. Its Orchestra quotes are never shown and expire
+unused. The payment id stays. A payment never gets a second BOLT11, so the
+shop can only be paid once through it.
 
-When no new offer meets the BOLT11 margin or commits, the replacement is
-a Lightning-only quote: its `transferAmounts` has only the Lightning
-entry, and its `quote.expiration` is `window_ends_at`. A Lightning-only
-quote is never replaced.
+When a quote request was sent and no offer passes, that Lightning-only
+quote has only the Lightning entry in `transferAmounts`, and its
+`quote.expiration` is `window_ends_at`. A Lightning-only quote is never
+replaced.
 
 The previous quote stays valid for a callback until its own
 `quote.expiration`, so a wallet that fetched it just before the
 replacement can still get its detail. A payment has at most 4
 replacements, and none in the last 45 s of its window. A Lightning-only row
 made without an Orchestra call is not a replacement.
+
+A fetch whose current quote has expired re-reads under the account row
+lock. While the payment is still `open` and its window has not ended, it
+returns the newest quote when that quote is still valid, and otherwise
+inserts a Lightning-only row and returns that row. It does not wait for a
+replacement. Only a later fetch sees a replacement quote that is not stored
+yet. When that fallback was written while a replacement or a payer's offers
+fill was in flight, an offers fill still inserts its offers quote while
+the payment is `open`, at least 45 s remain in the window, and
+`replacements` is unchanged. A replacement that sent a quote request
+inserts its offers quote under those conditions too. The Lightning-only
+row passes that replacement's newest-quote check only then, and the
+conditional update increments `replacements` only when a request was sent.
+A replacement that sent no quote request inserts no second Lightning-only
+row over that fallback.
 
 ## Offer checks
 
@@ -1224,8 +1348,8 @@ absolute time in milliseconds.
   `targetAmountOut`. `refundAddress` is `SHOP_REFUND_ADDRESS`
   ([Refund address](#refund-address)). A transport timeout, HTTP 429, HTTP 409 `idempotency_in_progress`,
   HTTP 503, or another 5xx is retried once with the same key and body
-  inside the step's budget, as the key rule states. Any other answer
-  means the pair is not offered.
+  while the caller's deadline still has time left, as the key rule states.
+  Any other answer means the pair is not offered.
 - **Submit**: `POST {base}/v1/orchestration/submit` with
   `{ "quoteId": <provider_ref>, "txHash": <tx_hash> }`. The body sends no
   `sourceAddress`: it is optional for a deposit address of one quote, and
@@ -1717,22 +1841,22 @@ While scanning it can show `home.OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`,
 
 ### How this document meets it
 
-| Wallet behaviour                                  | Rule here                                                                                                                     |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Opens only `https://…?lightning=`                 | The sticker has that form. The page shows no `lightning:` stablecoin deeplink.                                                |
-| Exact method and asset names                      | [Methods](#methods) uses `Ethereum`, `Polygon`, `Arbitrum`, and `USDT`, and requests those pairs first.                       |
-| Sends `tx` and `asset` on EVM                     | [Proof](#proof) accepts `tx` and an optional `asset`.                                                                         |
-| Pays from an ERC-4337 bundle                      | A proof is one transfer log, a hash held only by other quotes is no repeat, and a user-operation hash works.                  |
-| Retries a proof after a 5xx                       | [Repeat](#repeat) answers from the stored row before verification, fills in a missing log, and resubmits an unresolved one.   |
-| 400 and 404 on the callback mean different things | An expired quote is 404, and a pair that is not offered is 400.                                                               |
-| A proof status below 500 is final                 | Pending, unresolved, and rate-limited proofs answer 503, never 429.                                                           |
-| 20 s request timeout                              | A fetch waits at most 8 s for a creation and 4 s for a replacement; a proof request stays within 18 s.                        |
-| Refuses to send close to the deadline             | A fetch replaces a quote with less than 45 s left, except in the window's last 45 s, and the previous quote keeps its detail. |
-| Sends until `quote.expiration`                    | `quote.expiration` is 30 s before Orchestra's own deadline for the deposit.                                                   |
-| Hint URL first, then the `cb` segment rewrite     | The hint names the proof URL with no punctuation after it. Username `cb` and a final `.` are excluded.                        |
-| Settled only on 404 or a new `quote.payment`      | Acceptance frees the sticker in the same step, and the `timeout` poll answers 404.                                            |
-| Token must be the wallet's USDT contract          | [Offer checks](#offer-checks) require the table contract.                                                                     |
-| Unreadable dates are skipped                      | Every timestamp is `toISOString` output.                                                                                      |
+| Wallet behaviour                                  | Rule here                                                                                                                         |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Opens only `https://…?lightning=`                 | The sticker has that form. The page shows no `lightning:` stablecoin deeplink.                                                    |
+| Exact method and asset names                      | [Methods](#methods) uses `Ethereum`, `Polygon`, `Arbitrum`, and `USDT`, and requests those pairs first.                           |
+| Sends `tx` and `asset` on EVM                     | [Proof](#proof) accepts `tx` and an optional `asset`.                                                                             |
+| Pays from an ERC-4337 bundle                      | A proof is one transfer log, a hash held only by other quotes is no repeat, and a user-operation hash works.                      |
+| Retries a proof after a 5xx                       | [Repeat](#repeat) answers from the stored row before verification, fills in a missing log, and resubmits an unresolved one.       |
+| 400 and 404 on the callback mean different things | An expired quote is 404, and a pair that is not offered is 400.                                                                   |
+| A proof status below 500 is final                 | Pending, unresolved, and rate-limited proofs answer 503, never 429.                                                               |
+| 20 s request timeout                              | A fetch never waits for a creation or a replacement; a proof request stays within 18 s.                                           |
+| Refuses to send close to the deadline             | A fetch starts a replacement with less than 45 s left, except in the window's last 45 s, and the previous quote keeps its detail. |
+| Sends until `quote.expiration`                    | `quote.expiration` is 30 s before Orchestra's own deadline for the deposit.                                                       |
+| Hint URL first, then the `cb` segment rewrite     | The hint names the proof URL with no punctuation after it. Username `cb` and a final `.` are excluded.                            |
+| Settled only on 404 or a new `quote.payment`      | Acceptance frees the sticker in the same step, and the `timeout` poll answers 404.                                                |
+| Token must be the wallet's USDT contract          | [Offer checks](#offer-checks) require the table contract.                                                                         |
+| Unreadable dates are skipped                      | Every timestamp is `toISOString` output.                                                                                          |
 
 ## Deviations
 
@@ -1754,7 +1878,7 @@ While scanning it can show `home.OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`,
 | URL tweaking (path B) | DFX serves `GET /pl` on its API.                                                                                       | Not served.                                                                                                                                     | The site has no `app` host to swap for `api`. The standard recommends path A.                                                                                                                                                             |
 | Sticker path          | DFX: `/pl?lightning=`.                                                                                                 | `/pl/?lightning=`.                                                                                                                              | Printed stickers carry this form. The web app redirects `/pl/` to `/pl` and keeps the query.                                                                                                                                              |
 | Error body            | DFX: `{ statusCode, message, error }` with the HTTP reason phrase in `error`.                                          | Those fields plus `status` and `reason`, with the text in `error`.                                                                              | One body for LUD-06, DFX-built wallets, Tether 1.11.0, and this repository's clients.                                                                                                                                                     |
-| Quote per fetch       | DFX creates a quote on every fetch.                                                                                    | One quote until less than 45 s remain, at most 4 replacements.                                                                                  | Each quote costs one Orchestra call per pair, and reuse keeps the amounts stable for a wallet that fetches twice.                                                                                                                         |
+| Quote per fetch       | DFX creates a quote on every fetch.                                                                                    | Read quote or fallback. A replacement quote that is not stored yet is visible only to a later fetch.                                            | Each quote costs one Orchestra call per pair, and reuse keeps the amounts stable for a wallet that fetches twice.                                                                                                                         |
 | `displayQr`           | Controls DFX's link QR.                                                                                                | Always `false`.                                                                                                                                 | The page shows the BOLT11 QR, not a link QR.                                                                                                                                                                                              |
 | Extra fields          | `externalId`, `mode`, `route`, and in the 404 also `transferAmounts` and `currency`.                                   | Omitted.                                                                                                                                        | They have no meaning for a shop payment, and the standard does not require them.                                                                                                                                                          |
 

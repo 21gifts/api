@@ -1792,9 +1792,14 @@ describe('createApp shop payments in USDT and USDC', () => {
     const { fetchImpl, seen } = walletLnurlFetch('wally');
     const app = createApp({ env: SHOP_ENV, authStore, fetchImpl });
     const res = await postPayment(app);
-    // The fake Orchestra answers 500, so no pair commits (order 9).
-    expect(res.status).toBe(503);
-    expect(seen.some((request) => request.url.startsWith('https://orchestra.example/'))).toBe(true);
+    // The payment opens Lightning-only before the fake Orchestra's 500. Its
+    // offers fill still asks Orchestra in the background.
+    expect(res.status).toBe(200);
+    await vi.waitFor(() =>
+      expect(seen.some((request) => request.url.startsWith('https://orchestra.example/'))).toBe(
+        true,
+      ),
+    );
   });
 
   it('uses an injected service for every shop route', async () => {
