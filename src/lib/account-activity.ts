@@ -7,9 +7,12 @@
  * invoices, and moderator stipends stay out of `donatedSats` / `receivedSats`.
  * Loan series are not `buildGiftStats`: balances can fall, and only movement
  * days are emitted. Each loan fiat field is the signed sum of the stored
- * grant amounts for that currency. A repayment stores no fiat figure, so it
- * does not change that sum. A day whose movements all lack a currency is JSON
- * `null` for it and does not clear the cumulative. No rate book is read.
+ * grant amounts for that currency. A grant amount is the oldest indexed
+ * ingest line of that receipt on the same note, the amount fixed when it
+ * was paid. A later ingest does not replace it. A repayment stores no fiat
+ * figure, so it does not change that sum. A day whose movements all lack a
+ * currency is JSON `null` for it and does not clear the cumulative. No rate
+ * book is read.
  * Public JSON never includes invoices, payment hashes, or nsec. Does not
  * change `GET /gifts/stats` (that route remains house outbound only).
  */
@@ -187,7 +190,9 @@ export function matchConfirmedGivenZaps(
  * `goalRepayable === true`. Self-zaps on a non-loan note count on both sides.
  * Loan series come from `listLoanLedger`: grants raise a side, repayments lower
  * it, balances are not clamped, and only movement days are emitted. A grant's
- * stored USD/CHF/EUR/PHP is summed per UTC day with the same rule as a gift
+ * stored USD/CHF/EUR/PHP is the oldest indexed ingest line of that receipt on
+ * the same note, the amount fixed when it was paid. A later ingest does not
+ * replace it. Those amounts are summed per UTC day with the same rule as a gift
  * series: the day is the sum of movements that stored that currency, and all
  * missing is `null`. The cumulative is the running sum of days that stored a
  * value. A `null` day does not clear it. Before the first stored value it is

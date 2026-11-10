@@ -11124,7 +11124,7 @@ describe('PostgresMessageStore', () => {
     );
   });
 
-  it('listLoanLedger copies the newest indexed ingest fiat and nulls a repayment', async () => {
+  it('listLoanLedger copies the oldest indexed ingest fiat on the same note and nulls a repayment', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
       ...EARLY,
@@ -11144,13 +11144,14 @@ describe('PostgresMessageStore', () => {
         amountEur?: string | null;
         amountPhp?: string | null;
       },
+      messageId = 'loan',
     ): Promise<void> => {
       await store.recordZapIngest({
         id,
         createdAt: new Date(createdAt),
         receiptId,
         noteEventId: null,
-        messageId: 'loan',
+        messageId,
         outcome,
         reason: null,
         amountSats: 100,
@@ -11173,6 +11174,19 @@ describe('PostgresMessageStore', () => {
       amountEur: '2.00',
       amountPhp: '3.50',
     });
+    await ingest(
+      'zi-other',
+      'r-grant',
+      '2026-05-01T00:00:00.000Z',
+      'indexed',
+      {
+        amountUsd: '9.99',
+        amountChf: '9.99',
+        amountEur: '9.99',
+        amountPhp: '9.99',
+      },
+      'other-note',
+    );
     await store.recordZapReceipt('r-bare', 'loan', 10, null);
     await store.updateZapReceiptGift('r-bare', { payerAccountId: 'payer' });
     await store.recordZapReceipt('r-rej', 'loan', 5, null);
@@ -11241,6 +11255,20 @@ describe('PostgresMessageStore', () => {
       amountEur: '1.00',
       amountPhp: '1.00',
     });
+    await store.recordZapReceipt('r-gap', 'loan', 17, null);
+    await store.updateZapReceiptGift('r-gap', { payerAccountId: 'payer' });
+    await ingest('zi-gap-old', 'r-gap', '2026-06-01T00:00:00.000Z', 'indexed', {
+      amountUsd: '8.00',
+      amountChf: null,
+      amountEur: '7.00',
+      amountPhp: null,
+    });
+    await ingest('zi-gap-new', 'r-gap', '2026-06-07T00:00:00.000Z', 'indexed', {
+      amountUsd: null,
+      amountChf: '1.25',
+      amountEur: '2.00',
+      amountPhp: '3.50',
+    });
     const paidAt = new Date('2026-06-06T00:00:00.000Z');
     await store.markRepaymentPaid({
       messageId: 'loan',
@@ -11258,10 +11286,10 @@ describe('PostgresMessageStore', () => {
       return found;
     };
     expect(bySats(100, 'grant')).toMatchObject({
-      amountUsd: null,
-      amountChf: '1.25',
-      amountEur: '2.00',
-      amountPhp: '3.50',
+      amountUsd: '8.00',
+      amountChf: '9.00',
+      amountEur: '7.00',
+      amountPhp: '6.00',
     });
     expect(bySats(10, 'grant')).toMatchObject({
       amountUsd: null,
@@ -11282,22 +11310,28 @@ describe('PostgresMessageStore', () => {
       amountPhp: '4.00',
     });
     expect(bySats(3, 'grant')).toMatchObject({
-      amountUsd: '2.00',
-      amountChf: '2.00',
-      amountEur: '2.00',
-      amountPhp: '2.00',
+      amountUsd: '1.00',
+      amountChf: '1.00',
+      amountEur: '1.00',
+      amountPhp: '1.00',
     });
     expect(bySats(11, 'grant')).toMatchObject({
-      amountUsd: '5.00',
-      amountChf: '5.00',
-      amountEur: '5.00',
-      amountPhp: '5.00',
+      amountUsd: '1.00',
+      amountChf: '1.00',
+      amountEur: '1.00',
+      amountPhp: '1.00',
     });
     expect(bySats(13, 'grant')).toMatchObject({
-      amountUsd: '2.00',
-      amountChf: '2.00',
-      amountEur: '2.00',
-      amountPhp: '2.00',
+      amountUsd: '1.00',
+      amountChf: '1.00',
+      amountEur: '1.00',
+      amountPhp: '1.00',
+    });
+    expect(bySats(17, 'grant')).toMatchObject({
+      amountUsd: '8.00',
+      amountChf: null,
+      amountEur: '7.00',
+      amountPhp: null,
     });
     expect(bySats(40, 'repayment')).toMatchObject({
       kind: 'repayment',
@@ -11366,7 +11400,8 @@ describe('PostgresMessageStore', () => {
     expect(text).toContain('LEFT JOIN LATERAL');
     expect(text).toContain("outcome = 'indexed'");
     expect(text).toContain('receipt_id = r.event_id');
-    expect(text).toContain('ORDER BY created_at DESC, id DESC');
+    expect(text).toContain('ORDER BY created_at ASC, id ASC');
+    expect(text).not.toContain('ORDER BY created_at DESC');
     expect(text).toContain('LIMIT 1');
     expect(text).toContain('i.fiat_usd::text AS amount_usd');
     expect(text).toContain('i.fiat_chf::text AS amount_chf');
@@ -11376,7 +11411,7 @@ describe('PostgresMessageStore', () => {
     expect(text).toContain('NULL::text AS amount_chf');
     expect(text).toContain('NULL::text AS amount_eur');
     expect(text).toContain('NULL::text AS amount_php');
-    expect(text).not.toContain('message_id = r.message_id');
+    expect(text).toContain('message_id = r.message_id');
   });
 
   it('listLoanLedger maps grant ingest fiat and leaves a repayment null', async () => {

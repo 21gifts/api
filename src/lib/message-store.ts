@@ -62,11 +62,14 @@ export type ShopNoteRef = { id: string; accountId: string; text: string };
  * `owed` and `credit` are false. One receipt can set both flags when payer and
  * author are the same account — that is one row, not two.
  *
- * A grant copies the stored fiat of the newest indexed ingest for that receipt
- * (`outcome = 'indexed'`, `receipt_id` equal to the receipt event id, newest
- * `created_at` then `id`). No ingest row, or a null column, is `null`. A
- * repayment stores no fiat figure, so all four amounts are `null`. The strings
- * are the stored decimals. They are not priced again from sats or from a rate.
+ * A grant copies the oldest indexed ingest line of that receipt on the same
+ * note (`outcome = 'indexed'`, `receipt_id` equal to the receipt event id,
+ * `message_id` equal to the receipt's note, oldest `created_at` then `id`).
+ * That is the amount fixed when it was paid. A later ingest does not replace
+ * it and does not fill a null column. No ingest row, or a null column, is
+ * `null`. A repayment stores no fiat figure, so all four amounts are `null`.
+ * The strings are the stored decimals. They are not priced again from sats
+ * or from a rate.
  */
 export interface LoanLedgerMovement {
   /** When the movement applies. */
@@ -80,8 +83,10 @@ export interface LoanLedgerMovement {
   /** Tie-break: grants sort before repayments. */
   kind: 'grant' | 'repayment';
   /**
-   * Stored USD of a grant's newest indexed ingest, or `null` when that column
-   * is null, no indexed ingest exists, or the movement is a repayment.
+   * Stored USD of the oldest indexed ingest line of a grant's receipt on the
+   * same note, the amount fixed when it was paid, or `null` when that column
+   * is null, no such ingest exists, or the movement is a repayment. A later
+   * ingest does not replace it.
    */
   amountUsd: string | null;
   /** Stored CHF. Same rule as {@link LoanLedgerMovement.amountUsd}. */
@@ -1317,10 +1322,11 @@ export interface MessageStore {
    * Grant and repayment movements that touch this account's loan balances.
    *
    * Grants: identified payer receipts on `goalRepayable` notes that count
-   * toward the credit plan. Each grant carries the stored fiat of the newest
-   * indexed ingest for that receipt, or `null` when that ingest or column is
-   * missing. Repayments: paid shares with no freeze, and `null` fiat. Caller
-   * sorts. Returns caller-owned `Date` copies.
+   * toward the credit plan. Each grant carries the oldest indexed ingest line
+   * of that receipt on the same note, the amount fixed when it was paid, or
+   * `null` when that ingest or column is missing. A later ingest does not
+   * replace it. Repayments: paid shares with no freeze, and `null` fiat.
+   * Caller sorts. Returns caller-owned `Date` copies.
    *
    * @param accountId - Account whose owed/credit sides are collected.
    * @returns One row per movement (both flags may be true on one row).
@@ -4257,7 +4263,7 @@ export class InMemoryMessageStore implements MessageStore {
       if (!owed && !credit) {
         continue;
       }
-      const ingest = this.#newestIndexedIngest(eventId);
+      const ingest = this.#oldestIndexedIngest(eventId, receipt.messageId);
       out.push({
         at: new Date(receipt.recordedAt.getTime()),
         sats: receipt.sats,
@@ -4631,6 +4637,33 @@ export class InMemoryMessageStore implements MessageStore {
       }
     }
     return newest;
+  }
+
+  /**
+   * Oldest indexed ingest line of this receipt on the same note
+   * (`createdAt` ascending, then `id` ascending). The amount fixed when the
+   * payment was recorded. A later ingest does not replace it.
+   */
+  #oldestIndexedIngest(receiptId: string, messageId: string): ZapIngestRow | undefined {
+    let oldest: ZapIngestRow | undefined;
+    for (const ingest of this.#zapIngests) {
+      if (
+        ingest.receiptId !== receiptId ||
+        ingest.outcome !== 'indexed' ||
+        ingest.messageId !== messageId
+      ) {
+        continue;
+      }
+      if (oldest === undefined) {
+        oldest = ingest;
+        continue;
+      }
+      const byTime = ingest.createdAt.getTime() - oldest.createdAt.getTime();
+      if (byTime < 0 || (byTime === 0 && ingest.id.localeCompare(oldest.id) < 0)) {
+        oldest = ingest;
+      }
+    }
+    return oldest;
   }
 
   listUnattributedIndexedReceipts(
@@ -7866,7 +7899,8 @@ export class PostgresMessageStore implements MessageStore {
          FROM nostr_zap_ingest
          WHERE receipt_id = r.event_id
            AND outcome = 'indexed'
-         ORDER BY created_at DESC, id DESC
+           AND message_id = r.message_id
+         ORDER BY created_at ASC, id ASC
          LIMIT 1
        ) i ON true
        WHERE m.goal_repayable IS TRUE
