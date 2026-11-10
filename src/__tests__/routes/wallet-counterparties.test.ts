@@ -38,6 +38,7 @@ afterEach(() => vi.restoreAllMocks());
 describe('POST /me/wallet/counterparties', () => {
   it.each([
     ['body is not an object', null],
+    ['body is a number', 1],
     ['body is an array', []],
     ['payments is missing', {}],
     ['payments is empty', { payments: [] }],
