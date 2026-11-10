@@ -648,10 +648,11 @@ One procedure creates a shop payment, for a charge or for a payer:
    the same account waits only for those short local sections and then
    re-reads.
    `translate-note.ts` keeps in-flight work in a map the same way.
-2. Re-check the state under the lock: expire overdue charges for a payer, end a lapsed `open`
-   payment of the account with `end_reason` `window`, and stop when the payment to create already
-   exists. A charge is skipped when it is missing, is no longer `pending`, or its `expires_at` is
-   at or before the re-check clock. A payer stops with order 4 when a charge is now pending.
+2. Re-check the state under the lock: expire overdue charges for a payer and end a lapsed `open`
+   payment of the account with `end_reason` `window`. For a charge, first return its existing shop
+   payment. Only when no such payment exists, skip a charge that is missing, is no longer
+   `pending`, or has `expires_at` at or before the re-check clock. A payer stops with order 4 when
+   a charge is now pending.
 3. For a charge, read the route list and select the candidate pairs
    ([Methods](#methods)). A payer skips this step here; its offers fill
    reads the route list after step 8.
@@ -678,8 +679,8 @@ One procedure creates a shop payment, for a charge or for a payer:
    `shop.alert.duplicate_invoice`. On `recorded` or `this_charge` it goes
    on. On `not_open` the charge was no longer open at the issue time, and the procedure ends as step 8 ends for such a charge, without that
    alert. When `recordInvoice` fails with an error, the api logs
-   `pos.invoice.record_failed`, as the invoice routes do, and that call writes nothing; a fetch
-   then answers today's pinned Lightning request.
+   `pos.invoice.record_failed`, as the invoice routes do, and that call writes nothing. The
+   creation leaves no payment; the pay link answers from the state at that time.
    A payer creation never records against a charge, also not against one
    that appeared after step 2. It reads instead whether the hash is
    already recorded against a charge, with
@@ -700,16 +701,15 @@ One procedure creates a shop payment, for a charge or for a payer:
    [Methods](#methods).
 6. For a charge, keep each quote that commits, passes [Offer checks](#offer-checks), and has a
    readable gas price for its chain. An unreadable gas price drops only offers on that chain.
-7. For a charge, the 60 s no-pair wait starts when there is no candidate pair, or when
-   `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger
-   than 10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route
-   list does not start it. A kept offer prevents it, even when the commit then writes nothing.
+7. For a charge, the 60 s no-pair wait starts when there is no candidate pair, or
+   `#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget,
+   no USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that
+   passes `checkOffer`, or no readable gas price). A failed route list does not start it. A kept
+   offer prevents it, even when the commit then writes nothing.
    The other container of a deploy keeps its own wait, so during a deploy an account can see two
-   creations in 60 s. While the charge stays pending, the pay link stays pinned and
-   `POST /pay/:username/payment` answers order 4. Order 7 applies during the wait only when no
-   charge is pending. A `findChargeForPayment` error, a post-lock clock read that finds the
-   request at least 16 s old, a disconnected client, and the fallback after two insert conflicts
-   whose winner is not found return `unavailable`. Only the payer route maps that result to order 9. A charge creation ends, and the pay link keeps answering the pinned Lightning request.
+   creations in 60 s. This creation leaves no payment; the pay link answers from the state at
+   that time. While the charge is pending, `POST /pay/:username/payment` answers order 4. Order 7
+   applies during the wait only when no charge is pending.
    For a payer, no offer is not an error: the payment is already open Lightning-only, and the
    offers fill inserts no second quote.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
@@ -722,8 +722,8 @@ One procedure creates a shop payment, for a charge or for a payer:
    charge invoice then returns order 8
    without ending a payment. In that transaction:
    - For a charge, the api inserts only while the locked charge is still `pending`. A charge that
-     was cancelled, expired, or paid meanwhile
-     gets no shop payment, and the sticker keeps today's behaviour.
+     was cancelled, expired, or paid meanwhile gets no shop payment from this creation; the pay
+     link answers from the state at that time.
    - For a payer, a pending charge returns order 4 (**409** `payment_open`) without ending a
      payment. A held payment hash is checked next and also leaves a still-open payment open. Only
      then does an `open` payer payment end with `window` when `window_ends_at` is at or before the
@@ -763,7 +763,7 @@ One procedure creates a shop payment, for a charge or for a payer:
    runs once more. No answer ever carries another payer's amount. If both
    inserts lose a conflict and neither holder read finds the winner, the
    insert returns `unavailable`. Only `POST /pay/:username/payment` maps that result to order 9.
-   A charge creation ends, and the pay link keeps answering the pinned Lightning request.
+   A charge creation leaves no payment; the pay link answers from the state at that time.
 
 For a charge, three separate external-call budgets apply. The route
 list's 1 s starts at the recheck, so that lock wait shortens the fetch.
@@ -772,9 +772,9 @@ The mint's 4 s and the quotes' 3 s start with their own steps. That is
 and transaction waits come on top. After it holds its locks, step 8 reads the clock once. It
 returns `unavailable` and writes nothing when that read finds the request at least 16 s old (from
 the time the api received it). An aborted payer returns the same. Only the payer route maps
-`unavailable` to order 9. A charge creation that hits this check returns `unavailable` and writes
-nothing. The sticker stays on today's pinned Lightning request. Later work in the transaction
-does not check the request age again, so the insert can finish after 16 s. For a payer, the mint's
+`unavailable` to order 9. A charge creation that hits this check returns `unavailable` and leaves
+no payment; the pay link answers from the state at that time. Later work in the transaction does
+not check the request age again, so the insert can finish after 16 s. For a payer, the mint's
 4 s deadline is the only external-call budget before the insert. The same lock, store, and
 one-time check apply. The offers fill runs after the insert, in the background.
 Every external call runs outside the database transaction. A losing
@@ -806,10 +806,11 @@ already holds an offer's deposit address. That conflict drops only the offer
 and logs `shop.alert.shared_deposit_address`.
 The fill inserts no quote when the route list fails or there is no candidate pair. It also
 inserts no quote when the commit conditions fail. An unreadable gas price drops only offers on
-that chain. The 60 s no-pair wait starts when there is no candidate pair, or when
-`#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger than
-10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list does
-not start it. A kept offer prevents it, even when the commit then writes nothing.
+that chain. The 60 s no-pair wait starts when there is no candidate pair, or `#requestOffers`
+returns an empty offer list, whatever the cause (for example no quote budget, no USD spot younger
+than 10 minutes, a quote request without a parsed HTTP 200, no quote that passes `checkOffer`, or
+no readable gas price). A failed route list does not start it. A kept offer prevents it, even when
+the commit then writes nothing.
 The fill does not increment `replacements`; it is not a replacement.
 
 ### Payment hash claim

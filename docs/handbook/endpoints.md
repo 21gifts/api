@@ -157,10 +157,11 @@
   `shop.alert.shared_deposit_address`, and leaves the quote row inserted. The fill's external
   calls run outside the creation lock. The lock covers only its short re-read and commit, which
   can wait longer than those budgets. The fill does not increment `replacements`. A failed route
-  list inserts no quote. The 60 s no-pair wait starts when there is no candidate pair, or when
-  `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger than
-  10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list
-  does not start it. A kept offer prevents it, even when the commit then writes nothing. The
+  list inserts no quote. The 60 s no-pair wait starts when there is no candidate pair, or
+  `#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget,
+  no USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that
+  passes `checkOffer`, or no readable gas price). A failed route list does not start it. A kept
+  offer prevents it, even when the commit then writes nothing. The
   creation re-check commits before mint: it ends a lapsed `open`
   payment with `window` and expires overdue payer charges. Those changes remain when a later hash
   check stops creation. In the insert transaction, `hashHolder` and `chargeIdForInvoice` write
@@ -197,8 +198,8 @@
   both insert
   attempts lose a conflict and neither holder read finds the winner, the insert returns
   `unavailable` and the route maps it to order 9. A
-  failed route list, no candidate pair, no fresh spot, no quote budget, and no retained offer
-  leave that 200 in place: the payment is already open Lightning-only. They do not answer 503.
+  failed route list or any no-pair-wait cause above leaves that 200 in place: the payment is
+  already open Lightning-only. They do not answer 503.
 - **Used by:** The app's payment page for an entered amount; it falls back to `POST /pay/:username/invoice` on 503 and on other 4xx, and reloads the till charge on 409 `payment_open`.
 - **Auth:** none.
 

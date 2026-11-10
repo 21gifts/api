@@ -4785,10 +4785,10 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   (`#recheckCreation`, under the creation lock) first locks the account row. For a charge it then
   locks that charge row. For a payer, `pendingCharge` instead expires overdue pending charges;
   it is not a `SELECT … FOR UPDATE` of a charge row. Only then does the transaction end a lapsed
-  `open` payment (`window`). A charge with a shop payment returns it. A charge is `skipped` when
-  it is missing, is no longer `pending`, or its `expiresAt` is at or before `startMs`, the
-  re-check clock. A payer with a pending charge is `pending_charge`. `offersStablecoins`, the
-  no-pair wait, and the counters can return `unavailable`.
+  `open` payment (`window`). For a charge, an existing shop payment is returned first. Only when
+  no such payment exists, a missing or non-`pending` charge, or one whose `expiresAt` is at or
+  before `startMs`, is `skipped`. A payer with a pending charge is `pending_charge`.
+  `offersStablecoins`, the no-pair wait, and the counters can return `unavailable`.
 
   For a charge, the route list is reused only until its `validForMs` has passed since the request
   started. A failed fetch, or one refused by the route budget, returns `unavailable` without the
@@ -4803,8 +4803,9 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   For a charge, `posStore.recordInvoice` runs in its own claim transaction, outside any shop
   transaction. `other_payment` is `mint_failed` with the alert, `not_open` is `skipped` without
   it, and `recorded` or `this_charge` continues. An error logs `pos.invoice.record_failed` with
-  `accountId` and `paymentId`; its claim writes nothing and is `skipped`, so a fetch answers
-  today's pinned request. For a payer, `posStore.findChargeForPayment({ paymentHash })` returns a
+  `accountId` and `paymentId`; its claim writes nothing and is `skipped`. The creation leaves no
+  payment; the pay link answers from the state at that time. For a payer,
+  `posStore.findChargeForPayment({ paymentHash })` returns a
   `PosCharge` or `undefined`. After a hit, `#create` stops creation as a failed mint (order 8),
   logs `shop.alert.duplicate_invoice` with this creation's `paymentId` and `holderChargeId`, and
   returns `mint_failed`. An error makes no write of its own, skips the insert, returns
@@ -4819,10 +4820,11 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   gas price drops only offers on that chain; offers on other chains remain. `minFee` is
   `recommendedMinFee`. A failed quote logs `shop.offer.rejected` with `check` `body` for an HTTP
   200 body that does not parse, `http` for a request sent without an HTTP 200, or `budget` when no
-  request could be sent. The 60 s no-pair wait starts when there is no candidate pair, or when
-  `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger than
-  10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list
-  does not start it. A kept offer prevents it, even when the commit then writes nothing.
+  request could be sent. The 60 s no-pair wait starts when there is no candidate pair, or
+  `#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget,
+  no USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that
+  passes `checkOffer`, or no readable gas price). A failed route list does not start it. A kept
+  offer prevents it, even when the commit then writes nothing.
 
   The insert transaction takes `ShopTx.claimPaymentHash`, then the account row lock, and only for
   a charge then the charge row lock. For a charge, the route list's 1 s starts at the re-check, so
@@ -4833,8 +4835,8 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   After the locks, the insert reads `nowMs` once. It first writes nothing and returns
   `unavailable` when the request arrived `SHOP_CREATION_INSERT_LIMIT_MS` (16 s) or longer ago or,
   for a payer, its abort signal is set. The payer route answers order 9. A charge creation that
-  hits the cutoff returns `unavailable`, writes nothing, and leaves the pay link answering the
-  pinned Lightning request. It does not check the request age again. Next, a
+  hits the cutoff returns `unavailable` and leaves no payment; the pay link answers from the
+  state at that time. It does not check the request age again. Next, a
   `pos_charge_invoice` row of another charge (always another for a payer) stops the insert before
   anything is ended or inserted. It returns `mint_failed`
   and logs `shop.alert.duplicate_invoice`. A missing, non-pending, or expired charge is `skipped`.
@@ -4842,8 +4844,9 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   The first `hashHolder` read follows and also runs before `endPayment`.
 
   These no-write results cover only the insert transaction. The earlier `#recheckCreation`
-  transaction has already committed: a lapsed payment ended with `window` and overdue payer charges
-  expired there stay changed if a later hash check returns `mint_failed`.
+  transaction has already committed: a lapsed payment ended with `window` stays changed. For a
+  payer, overdue pending charges expired there also stay changed if a later hash check returns
+  `mint_failed`.
 
   This charge's own hash holder is used. Any other holder throws `HashHeldError` before a payment
   is ended. If `insertPayment` loses the hash race, the second `hashHolder` read runs after
@@ -4868,17 +4871,18 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   this attempt wrote, and returns `mint_failed`.
 
   If both insert attempts lose a conflict and neither holder read finds the winner, the insert
-  returns `unavailable`; the payer route answers order 9. A charge creation ends, and the pay
-  link keeps answering the pinned Lightning request.
+  returns `unavailable`; the payer route answers order 9. A charge creation leaves no payment;
+  the pay link answers from the state at that time.
 
   After a payer insert, `#startOffersFill` starts the unawaited `#fillOffers`. The fill runs the
   route-list, candidate-pair, spot, gas-price, quote, and offer checks outside the creation lock.
   Only its short re-read and quote commit take that lock. A failed route list leaves the open
   Lightning-only payment and 200 response unchanged. No candidate pair or no offer also leaves
-  them unchanged. The 60 s no-pair wait starts when there is no candidate pair, or when
-  `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger than
-  10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list
-  does not start it. A kept offer prevents it, even when the commit then writes nothing.
+  them unchanged. The 60 s no-pair wait starts when there is no candidate pair, or
+  `#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget,
+  no USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that
+  passes `checkOffer`, or no readable gas price). A failed route list does not start it. A kept
+  offer prevents it, even when the commit then writes nothing.
   The commit transaction locks the account row, reads the clock, and then locks the
   `shop_payment` row. The second quote is inserted only while the locked payment is `open`, at
   least 45 s remain, `replacements` is unchanged, and the newest quote is the Lightning-only
@@ -4895,7 +4899,31 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 - **Pay link and quotes:** `payLink(account, username, metadata, query, arrivedMs)` answers an excluded username (`isExcludedShopUsername`) with `{ kind: 'today', pinSats }` at once, pinned to its pending charge's amount when it has one, so `timeout` and `method`/`asset` never reach the 404 there. Otherwise it applies the `timeout` wait (digits only, at most 10 s, every `WAIT_SATS_POLL_MS`), starts or joins the charge's in-flight creation (`#chargeCreation`, which keeps the arrival of the request that started it) for a pending charge without a shop payment, and answers at once from the state it read. No request awaits the creation, an Orchestra call, or work queued behind one. A creation that ends earlier (payment exists, charge no longer pending, a failure) ends the in-flight run, and the next fetch starts a new one. The 50-request cap applies only to the `timeout` wait. When the open payment left `open` during the request (before its quote was read, or, with `method`, before the callback read the state: the private `#callback` with the payment id answers `null` instead of 404 `Quote expired` when that payment is no longer the open amount), it reads the state again: another payment that is the open amount now is answered as the open amount, once per request (the private `#openAmountAnswer` with `retried`), and otherwise, or when that one also left `open`, a charge still waiting keeps its pin. It answers `{ kind: 'response' }` (pay request, simplified-flow detail, or 404 `noPendingPaymentBody`) or `{ kind: 'today', pinSats }`. `currentQuote` starts a replacement in the background when the quote is replaceable (stablecoin entry, under 45 s left, at least 45 s of window left, fewer than 4 replacements) and stablecoin rows are on for the username (`offersStablecoins`), or joins an entry already in `#replacements` when those rows are on. It answers at once with the quote it read while that quote is unexpired. When the quote has expired, it re-reads under the account row lock. While the payment is still `open` and its window has not ended, it returns the newest quote when that quote is still valid, and otherwise inserts a Lightning-only row and returns that row. It does not wait for the replacement. Only a later fetch sees a replacement quote that is not stored yet. The replacement's route list, gas prices, and quotes run outside the creation lock. Gas prices and quotes stop `SHOP_REPLACEMENT_COMMIT_MARGIN_MS` (500 ms) before `SHOP_REPLACEMENT_BUDGET_MS` (4 s). That 4 s is their external-call budget. The route list ends at the earlier of that deadline and 1 s after the start. The creation lock and the database transaction can wait longer. Then, under the account row lock, when a quote request was sent and the newest quote is still the one it started from or a Lightning-only row written after that read, one conditional update checks `replacements` and increments it, and the quote is inserted, Lightning-only when no offer passes. When no quote request was sent (no route list, no candidate pair, no fresh spot, or no budget) the same conditional update checks `replacements` and leaves the counter unchanged, and inserts a Lightning-only row only while the starting quote is still newest, because a Lightning-only row made without an Orchestra call is not a replacement. A fallback row written after the read blocks a second Lightning-only row. A newer quote with offers wins, so the run inserts nothing. A run that throws logs `shop.creation.failed` once with `accountId`, `paymentId`, and the error. It starts or joins the payment's in-flight replacement through the private `#replacement`, whose map holds one `Promise<void>` per payment id until it ends, also on a throw; the run produces no result, and no handler awaits it. `callback` serves `GET /lnurlp/cb/:username` through `#callback` without a payment id, so its answers do not change (amount path and detail table; a `quote` that is not a UUID, or one of a payment that is not the open amount, is 404 `Quote expired`; first detail sets `detail_issued_at` and, when unset, `next_history_at` 10 s ahead). `wait` serves `GET /lnurlp/wait/:payment`. `offersStablecoins(username)` is true when config and Orchestra are set and the username is not excluded.
 - **Replacement snapshot:** `currentQuote` passes the payment and quote snapshot it judged replaceable through `#replacement` to `#replace`. Before any Orchestra call, the run revalidates that the payment is still eligible and the snapshot quote is still newest; a newer Lightning-only fallback is permitted only while `replacements` is unchanged. The commit allows a newer Lightning-only row only after a quote request was sent. The conditional update checks `replacements` in both cases and increments the counter only when a request was sent. A newer offers quote wins, so that run inserts nothing.
-- **Till and settlement:** `createCharge(account, row, requestArrivedMs)` (`POST /pos`; `false` when a pending charge exists; the background creation uses the request's arrival for its one post-lock 16 s check), `cancelCharge` (`DELETE /pos`), `chargePaid` (charge watch: locks the charge's current account row, reading the charge again after each account lock and following an account merge that moved it, at most two account locks (a charge gone or still moving changes nothing and is read again on the next tick), then the charge row, whose state before the update it keeps, then marks the charge paid and locks the `shop_payment` row; the payment's own hash → `markPaymentPaid` with that earlier charge state, so a charge already paid by another invoice logs `shop.alert.double_settled` and a cancelled one `shop.alert.cancelled_settled`; Spark or another BOLT11 → an `open` payment ends `charge_paid`), and `shopPaymentOfCharge` (`GET /pos`) run under the account row lock. `applySettlement(paymentId, settled, nowMs)` locks a charge-backed payment's account with `lockAccountOf` (a payment still moving after two locks is left for the next tick), then its `pos_charge` row, then its `shop_payment` row; a payer's payment locks only its `shop_payment` row; no proof row is locked. It then applies one settlement read: settled → `paid` and `markPaid` of the charge; unpaid at or after the final read (10 minutes after the BOLT11 expiry) → closed (`accepted` ends `expired_unpaid` with `shop.alert.accepted_unpaid`, `open` ends `window`, both log `shop.payment.ended` with the reason, then `shop.payment.closed`); otherwise the next read in 5 s (`SHOP_SETTLE_FAST_INTERVAL_MS`, also the first read after creation) during the first 15 minutes (`SHOP_FAST_SETTLE_MS`), then 30 s (`SHOP_SETTLE_SLOW_INTERVAL_MS`), never past the final read. Getters `store` and `deps` and `newId()` serve the proof and watcher modules.
+- **Till and settlement:** `createCharge(account, row, requestArrivedMs)` (`POST /pos`; `false`
+  when a pending charge exists; the background creation uses the request's arrival for its one
+  post-lock 16 s check), `cancelCharge` (`DELETE /pos`), and `chargePaid` run under the account row
+  lock. The charge watch reads the charge again after each account lock and follows an account
+  merge that moved it, taking at most two account locks. A charge that is gone or still moving
+  changes nothing and is read again on the next tick. It then locks the charge row, keeps its
+  state before the update, marks it paid, and locks the `shop_payment` row. The payment's own hash
+  calls `markPaymentPaid` with that earlier charge state, so a charge already paid by another
+  invoice logs `shop.alert.double_settled` and a cancelled one logs
+  `shop.alert.cancelled_settled`. Spark or another BOLT11 ends an `open` payment with
+  `charge_paid`. `shopPaymentOfCharge` (`GET /pos`) is an unlocked transaction that only calls
+  `paymentForCharge`.
+
+  `applySettlement(paymentId, settled, nowMs)` locks a charge-backed payment's account with
+  `lockAccountOf`; a payment still moving after two locks is left for the next tick. It then locks
+  the `pos_charge` row and the `shop_payment` row. A payer's payment locks only its `shop_payment`
+  row; no proof row is locked. A settled read moves the payment to `paid` and calls `markPaid` for
+  the charge. An unpaid final read, 10 minutes after the BOLT11 expiry, closes the payment:
+  `accepted` ends with `expired_unpaid` and `shop.alert.accepted_unpaid`, while `open` ends with
+  `window`; both log `shop.payment.ended` with the reason, then `shop.payment.closed`. Otherwise
+  the next read is in 5 s (`SHOP_SETTLE_FAST_INTERVAL_MS`, also the first read after creation)
+  during the first 15 minutes (`SHOP_FAST_SETTLE_MS`), then in 30 s
+  (`SHOP_SETTLE_SLOW_INTERVAL_MS`), never after the final read. Getters `store`, `deps`, and
+  `newId()` serve the proof and watcher modules.
+
 - **Used by:** `createApp`, `src/index.ts`, `wellKnownRoutes`, `lnurlServerRoutes`, `payRoutes`, `posRoutes`, `debugShopProofsRoutes`, `runPosPaidTick`, `startShopPaymentWorker`, and `src/lib/shop-proof.ts`.
 
 ## Function: lockAccountOf
