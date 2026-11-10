@@ -1710,7 +1710,7 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 429 `{ error: 'Too many requests' }` after 60 requests per account per minute; 413 `{ error: 'Request body is too large' }` above 8192 bytes; 400 `{ error: 'Invalid counterparty lookup' }`; 503 `{ error: 'Counterparty lookup is unavailable' }` on lookup failure, logging `wallet_counterparties.lookup.failed` with only `accountId`.
 - **Auth:** Bearer session. Not the debug token.
 
-Invoice and hash match by OR, with hashes compared case-insensitively. The id is a correlation handle and never matches a payment id.
+Invoice and hash are trimmed before matching, as in the wallet report; an invoice that becomes empty is treated as absent. They match by OR, with hashes compared case-insensitively. The id is a correlation handle and never matches a payment id.
 
 ## Endpoint: POST /me/wallet/hearts
 

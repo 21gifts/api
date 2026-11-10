@@ -35,21 +35,25 @@ function parsePayments(body: unknown): Key[] | null {
   const seen = new Set<string>();
   for (const item of payments) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
-    const { id, direction, invoice, paymentHash } = item as {
+    const {
+      id,
+      direction,
+      invoice: rawInvoice,
+      paymentHash: rawPaymentHash,
+    } = item as {
       id?: unknown;
       direction?: unknown;
       invoice?: unknown;
       paymentHash?: unknown;
     };
+    const invoice = typeof rawInvoice === 'string' ? rawInvoice.trim() || null : rawInvoice;
+    const paymentHash = typeof rawPaymentHash === 'string' ? rawPaymentHash.trim() : rawPaymentHash;
     if (typeof id !== 'string' || id.length === 0 || id.length > 128) return null;
     if (direction !== 'in' && direction !== 'out') return null;
     if (
       invoice !== null &&
       invoice !== undefined &&
-      (typeof invoice !== 'string' ||
-        invoice.length === 0 ||
-        invoice.length > 4096 ||
-        invoice.includes('\u0000'))
+      (typeof invoice !== 'string' || invoice.length > 4096 || invoice.includes('\u0000'))
     )
       return null;
     if (

@@ -57,6 +57,10 @@ describe('POST /me/wallet/counterparties', () => {
     ],
     ['invoice is empty', { payments: [{ id: 'a', direction: 'in', invoice: '' }] }],
     [
+      'invoice is whitespace with no hash',
+      { payments: [{ id: 'a', direction: 'in', invoice: '   ' }] },
+    ],
+    [
       'invoice is longer than 4096 characters',
       { payments: [{ id: 'a', direction: 'in', invoice: 'x'.repeat(4097) }] },
     ],
@@ -270,6 +274,9 @@ describe('POST /me/wallet/counterparties', () => {
         payments: [
           { id: 'invoice', direction: 'in', invoice: 'spark1invoice' },
           { id: 'hash', direction: 'in', paymentHash: 'A'.repeat(64) },
+          { id: 'trim-invoice', direction: 'in', invoice: '  spark1invoice  ' },
+          { id: 'trim-hash', direction: 'in', paymentHash: `  ${'A'.repeat(64)}  ` },
+          { id: 'blank-invoice', direction: 'in', invoice: '   ', paymentHash: 'A'.repeat(64) },
           { id: 'sdk-id', direction: 'in', invoice: 'different' },
           { id: 'out', direction: 'out', invoice: 'own' },
           { id: 'out-null', direction: 'out', invoice: 'null' },
@@ -283,6 +290,9 @@ describe('POST /me/wallet/counterparties', () => {
       counterparties: [
         { id: 'invoice', accountId: sender, username: 'sender' },
         { id: 'hash', accountId: sender, username: 'sender' },
+        { id: 'trim-invoice', accountId: sender, username: 'sender' },
+        { id: 'trim-hash', accountId: sender, username: 'sender' },
+        { id: 'blank-invoice', accountId: sender, username: 'sender' },
         { id: 'out', accountId: sender, username: 'sender' },
       ],
     });
