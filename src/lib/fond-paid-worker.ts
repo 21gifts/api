@@ -53,10 +53,7 @@ export interface FondPaidWorkerDeps {
 async function watchedRows(deps: FondPaidWorkerDeps): Promise<FondPayoutRow[]> {
   const today = utcDayKey(deps.now());
   const yesterday = addUtcDays(today, -1);
-  const rows = [
-    ...(await deps.store.listOpen(today)),
-    ...(await deps.store.listOpen(yesterday)),
-  ];
+  const rows = [...(await deps.store.listOpen(today)), ...(await deps.store.listOpen(yesterday))];
   return rows.filter((row) => row.status === 'invoiced' || row.status === 'settling');
 }
 

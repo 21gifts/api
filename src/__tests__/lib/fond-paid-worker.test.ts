@@ -282,9 +282,7 @@ describe('runFondPaidTick', () => {
           HASH,
           () => {
             verifyCalls += 1;
-            return verifyCalls === 1
-              ? new Response('', { status: 500 })
-              : settled();
+            return verifyCalls === 1 ? new Response('', { status: 500 }) : settled();
           },
         ],
       ]),
@@ -833,10 +831,7 @@ describe('runFondPaidTick', () => {
   it('never logs an address, BOLT11, Spark invoice, payment hash, or preimage', async () => {
     const store = new InMemoryFondPayoutStore(() => NOW);
     await invoiced(store, { sparkInvoice: SPARK, address: 'ada@example.com' });
-    const net = network(
-      new Map([[SPARK, 2]]),
-      new Map([[HASH, settled]]),
-    );
+    const net = network(new Map([[SPARK, 2]]), new Map([[HASH, settled]]));
     await runFondPaidTick({
       store,
       lnurlServer: LNURL,

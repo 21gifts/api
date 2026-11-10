@@ -143,12 +143,7 @@ async function verifiedRecipient(store: InMemoryAuthStore): Promise<void> {
   });
   const recipient = await store.getAccount('ada');
   await store.claimSparkPubkey('ada', RECIPIENT_SPARK_PUBKEY);
-  await store.markSparkPubkeyVerified(
-    'ada',
-    RECIPIENT_SPARK_PUBKEY,
-    recipient!.username!,
-    1,
-  );
+  await store.markSparkPubkeyVerified('ada', RECIPIENT_SPARK_PUBKEY, recipient!.username!, 1);
   await store.createPasskeyCredential({
     credentialId: 'cred-ada',
     publicKey: new Uint8Array([1]),
