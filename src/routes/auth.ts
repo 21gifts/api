@@ -39,7 +39,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { LNURL_UNAVAILABLE_ERROR } from '@/lib/lnurl-server';
 import type { MessageStore } from '@/lib/message-store';
 import type { NostrKeygen } from '@/lib/nostr/keys';
-import { readClientRequestMeta } from '@/lib/request-meta';
+import { clientRateLimitKey } from '@/lib/client-address';
 import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
 import { normalizeUsername } from '@/lib/username';
 import { bearerToken } from '@/routes/me';
@@ -644,7 +644,7 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         );
         return c.json({ error: LNURL_UNAVAILABLE_ERROR }, 503);
       }
-      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+      const clientIp = clientRateLimitKey(c);
       if (!recoveryBeginLimiter.allow(clientIp, deps.now())) {
         return c.json({ error: TOO_MANY_REQUESTS }, 429);
       }
@@ -739,7 +739,7 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         );
         return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
       }
-      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+      const clientIp = clientRateLimitKey(c);
       if (!recoveryFinishLimiter.allow(clientIp, deps.now())) {
         return c.json({ error: TOO_MANY_REQUESTS }, 429);
       }

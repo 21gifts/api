@@ -35,7 +35,7 @@ import {
   lnurlTransferToMessage,
   verifyLnurlDerSignature,
 } from '@/lib/recovery-signature';
-import { readClientRequestMeta } from '@/lib/request-meta';
+import { clientRateLimitKey } from '@/lib/client-address';
 import { shopError, shopResponse, type ShopPayments } from '@/lib/shop-payment';
 import { handleShopProof } from '@/lib/shop-proof';
 import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
@@ -404,7 +404,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
     .post('/lnurlpay/:pubkey', async (c) => {
       const route: LnurlServerRouteName = 'register';
       try {
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         if (!registerLimiter.allow(clientIp, deps.now())) {
           return c.json(TOO_MANY, 429);
         }
@@ -488,7 +488,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       const route: LnurlServerRouteName = 'transfer';
       try {
         const now = deps.now();
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         if (!transferLimiter.allow(clientIp, now)) {
           return c.json(TOO_MANY, 429);
         }
@@ -549,7 +549,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       const route: LnurlServerRouteName = 'recover';
       try {
         const now = deps.now();
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         if (!recoverLimiter.allow(clientIp, now)) {
           return c.json(TOO_MANY, 429);
         }
@@ -592,7 +592,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       }
       const route: LnurlServerRouteName = 'metadata';
       try {
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         if (!metadataLimiter.allow(clientIp, deps.now())) {
           return c.json(TOO_MANY, 429);
         }
@@ -623,7 +623,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       }
       const route: LnurlServerRouteName = 'invoice';
       try {
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         if (!invoiceLimiter.allow(clientIp, deps.now())) {
           return c.json(TOO_MANY, 429);
         }
@@ -666,7 +666,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       }
       const route: LnurlServerRouteName = 'verify';
       try {
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         if (!verifyLimiter.allow(clientIp, deps.now())) {
           return c.json(TOO_MANY, 429);
         }
@@ -695,7 +695,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         return c.notFound();
       }
       try {
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         if (!callbackLimiter.allow(clientIp, deps.now())) {
           return shopError(503, 'Too many requests');
         }
@@ -719,7 +719,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         return c.notFound();
       }
       try {
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         const overLimit = !proofLimiter.allow(clientIp, deps.now());
         const found = await shopAccount(deps, c.req.param('username'));
         if (found === null) {
@@ -749,7 +749,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         return c.notFound();
       }
       try {
-        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const clientIp = clientRateLimitKey(c);
         if (!waitLimiter.allow(clientIp, deps.now())) {
           return shopError(429, 'Too many requests');
         }

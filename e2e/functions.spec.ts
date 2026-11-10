@@ -591,6 +591,20 @@ test('Function: lnurlServerRoutes — GET /verify/:paymentHash is 404 when LNURL
   expect(await res.text()).toBe('404 Not Found');
 });
 
+test('Function: clientRateLimitKey — wallet-pay stays 404 (no key resolved) while the LNURL server is off', async ({
+  request,
+}) => {
+  // clientRateLimitKey keys the wallet-pay abuse limiter from the transport peer
+  // (not the spoofable cf-connecting-ip header). In the default boot the LNURL
+  // server is off, so GET /.well-known/lnurlp/:username short-circuits to 404
+  // before the limiter is consulted — the key resolver is reached only once a
+  // wallet is verified. A spoofed header does not change the short-circuit.
+  const res = await request.get('/.well-known/lnurlp/nobody', {
+    headers: { 'cf-connecting-ip': '203.0.113.200' },
+  });
+  expect(res.status()).toBe(404);
+});
+
 test('Function: usernameFromDisplayName — POST /me/name without bearer is 401', async ({
   request,
 }) => {

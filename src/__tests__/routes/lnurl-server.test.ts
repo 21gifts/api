@@ -1628,15 +1628,18 @@ describe('lnurlServerRoutes', () => {
       ).toBe(true);
     });
 
-    it('does not count requests without a client address toward the per-address limit', async () => {
+    it('counts requests without a client address against a shared bounded bucket', async () => {
       const store = new InMemoryAuthStore();
       await seedWallet(store, { id: 'acc', username: 'ada', verified: true });
       const { fetchImpl, calls } = recordingFetch(async () => new Response('ok', { status: 200 }));
       const app = mount(store, fetchImpl);
-      for (let i = 0; i < 21; i += 1) {
+      // Unidentifiable requests no longer get an unlimited, uncounted allowance:
+      // they share one bucket and are refused once the per-minute limit is reached.
+      for (let i = 0; i < 20; i += 1) {
         expect((await app.request('/lnurlp/ada/invoice')).status).toBe(200);
       }
-      expect(calls).toHaveLength(21);
+      expect((await app.request('/lnurlp/ada/invoice')).status).toBe(429);
+      expect(calls).toHaveLength(20);
     });
 
     it('returns 429 after the per-client limit', async () => {
