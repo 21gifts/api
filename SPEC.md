@@ -530,51 +530,64 @@ number (`0.00001`, `1.5`, `12`): the canonical decimal form of
 uses with eight decimals and the stablecoin amounts with 6 or 18.
 Timestamps are `toISOString` output.
 
-A fetch returns the current quote unchanged unless it is replaced. A quote
-is replaced when it has a stablecoin entry, less than 45 s remain before
-its expiry, at least 45 s remain before `window_ends_at`, the payment has
-had fewer than 4 replacements, and stablecoin rows are on for the
-username. The replacement runs within 4 s: route list, Orchestra quotes, and offer
-checks for the same sats and the same BOLT11. Its external calls (route
-list, gas prices, quotes) run outside the account's in-process creation
-lock and end `SHOP_REPLACEMENT_COMMIT_MARGIN_MS` (500 ms) before those
-4 s. The fetch starts or joins the replacement in the background and
-answers from the state it read; it never waits for the replacement or
-Orchestra. The replacement carries the payment and quote snapshot that
-the fetch judged replaceable. Before calling Orchestra it revalidates
-that the payment is still eligible and the starting quote is still newest,
-except that a newer Lightning-only fallback with unchanged `replacements`
-does not make it lose. Under the account row lock the replacement then
-reads the payment's newest quote with the same exception:
-when that is a newer quote with offers (another container's replacement
-came first), the losing run inserts nothing; only a later fetch sees the
-winning quote.
-Otherwise it increments `shop_payment.replacements` with one conditional
-update (`status` `open`, `replacements` unchanged from the snapshot, at
-least 45 s left in the window) and inserts the new quote only when that
-update changed the row; otherwise the run inserts nothing and produces no
-result. With two
-containers in a deploy, the conditional update makes one run win as a
-whole, and only a later fetch sees its quote. A
+A fetch starts a replacement in the background when the current quote has
+a stablecoin entry, less than 45 s remain before its expiry, at least 45 s
+remain before `window_ends_at`, the payment has had fewer than 4
+replacements, and stablecoin rows are on for the username. It joins an
+entry already in `#replacements` when those rows are on. The fetch returns
+that quote while it is unexpired. When the quote has expired, it re-reads
+under the account row lock. While the payment is still `open` and its
+window has not ended, it returns the newest quote when that quote is still
+valid, and otherwise inserts a Lightning-only row and returns that row. It
+does not wait for the replacement or for Orchestra. Only a later fetch sees
+a replacement quote that is not stored yet. The replacement's external
+calls (route list, gas prices, and quotes) have a 4 s budget
+(`SHOP_REPLACEMENT_BUDGET_MS`). They run outside the account's in-process
+creation lock. Gas prices and quotes end
+`SHOP_REPLACEMENT_COMMIT_MARGIN_MS` (500 ms) before that budget. The route
+list ends at the earlier of that deadline and 1 s after the start. The
+creation lock and the database transaction can wait longer. The
+replacement carries the payment and quote snapshot that the fetch judged
+replaceable. Before calling Orchestra it revalidates that
+the payment is still eligible and the starting quote is still newest.
+A newer Lightning-only fallback with unchanged `replacements` still lets
+the run continue. Under the account row lock the commit allows a newer
+Lightning-only row only after a quote request was sent. When the newest
+quote has offers (another container's replacement came first), the losing
+run inserts nothing; only a later fetch sees the winning quote. When a
+quote request was sent, one conditional update (`status` `open`,
+`replacements` unchanged from the snapshot, at least 45 s left in the
+window) increments `shop_payment.replacements` and inserts the new quote
+only when that update changed the row. The conditional update checks
+`replacements` in both cases and increments the counter only when a
+request was sent. With two containers in a deploy, the conditional update
+makes one run win as a whole, and only a later fetch sees its quote. A
 Lightning-only row made by a fetch after the replacement read its starting
-quote is not newer for this check: the replacement still inserts its
-offers quote under the same conditions. A replacement that sent no quote
-request (no route list, no candidate pair, no fresh spot, or no quote
-budget) runs the same conditional update without the increment and
-inserts its Lightning-only row, because a Lightning-only row made without
-an Orchestra call is not a replacement. The replacement and the
-Lightning-only fallback read the clock after the account row lock.
-A second fetch in the same process joins the running replacement but does
+quote still lets a run that sent a quote request insert its offers quote,
+under the same conditions. A replacement that sent no quote request (no
+route list, no candidate pair, no fresh spot, or no quote budget) runs the
+same conditional update without the increment and inserts its
+Lightning-only row only while the starting quote is still newest. A
+fallback row written after the read blocks that second Lightning-only row.
+Otherwise the run inserts nothing and produces no result. A Lightning-only
+row made without an Orchestra call is not a replacement. The replacement
+and the Lightning-only fallback read the clock after the account row lock.
+A second fetch in the same process uses the running replacement and does
 not wait for it. A fetch whose current quote is still valid answers that
-quote; one whose quote expired inserts the Lightning-only row below at
-once. The replacement finishes in the background, and its offers quote
-becomes current when it commits.
+quote. When the quote has expired, it re-reads under the account row lock.
+While the payment is still `open` and its window has not ended, it returns
+the newest quote when that quote is still valid, and otherwise inserts the
+Lightning-only row and returns that row. It does not wait for the
+replacement. Only a later fetch sees a replacement quote that is not stored
+yet. The replacement finishes in the background. Its offers quote is
+current for a fetch that reads after the commit.
 When no new offer passes, the new quote is Lightning-only (its expiry is
-`window_ends_at`); a Lightning-only quote is never replaced. A current quote
-whose expiry has passed and that is not replaced gets a new Lightning-only
-quote row, which is not a replacement. `quote.payment` never changes for a
-payment. When the payment stops being `open` between these steps, the api
-reads the account's state again. When another payment is the open amount
+`window_ends_at`). A Lightning-only quote is never replaced. The
+Lightning-only row an expired quote gets in the same fetch, when the
+re-read inserts one, is not a replacement. `quote.payment` never changes
+for a payment. When the payment stops being `open` between these steps,
+the api reads the account's state
+again. When another payment is the open amount
 now (a new payer amount replaced it, or a charge's creation inserted one),
 the request answers that open amount as above, once per request. Otherwise,
 and when that payment also stops being `open` before it is answered, it
@@ -625,9 +638,10 @@ without `timeout`. With neither (a pending charge whose shop payment is
 ```
 
 **Simplified flow.** A request with `method` first applies the rules
-above, including `timeout` and replacement. With an open amount it then
-answers exactly as `GET /lnurlp/cb/:username` with that `method`, the
-request's `asset`, and the current quote id; a repeated `quote`,
+above, including `timeout` and a background replacement. The answer uses
+the quote this fetch returns. With an open amount it then answers exactly
+as `GET /lnurlp/cb/:username` with that `method`, the request's `asset`,
+and that quote id; a repeated `quote`,
 `method`, or `asset` key is the callback's 400. When the payment stops
 being `open` after its current quote was read and before that answer
 reads the account's state (for example, a new payer amount replaced it),
@@ -1126,7 +1140,7 @@ USDT and USDC at the contracts and decimals of the contract's method
 table. Pairs are requested in this order: USDT on `Ethereum`,
 `Arbitrum`, and `Polygon`, then the remaining pairs in table order, USDT
 before USDC. A pair is a candidate only when Orchestra's route list
-(`GET /v2/orchestration/routes`, 1 s timeout, reused only until its
+(`GET /v2/orchestration/routes`, timeout of at most 1 s, reused only until its
 `validForMs` has passed since the request started; at most 25 fetches per
 minute per process, `ORCHESTRA_ROUTES_PER_MINUTE`) names it with `exactOutTo` admitting `lightning:BTC`, its
 contract and decimals equal the table (otherwise `shop.route.mismatch`),
@@ -1176,14 +1190,16 @@ local sections and then re-reads:
    records against a charge; it reads `findChargeForPayment({ paymentHash })`
    instead: a hit stops as a failed mint with the alert, and an error writes
    nothing and answers order 9.
-5. For a charge, within 3 s, read `eth_gasPrice` per chain and request one Orchestra
+5. For a charge, gas prices and Orchestra quotes share a 3 s external-call
+   deadline that starts when the quote step starts and also covers its
+   stored-spot read. Read `eth_gasPrice` per chain and request one Orchestra
    exact-out quote per candidate pair in parallel, for as many pairs as the
-   quote budget (240 per minute) allows. Each quote pays the BOLT11, is
-   tagged with the payment id, and sends `SHOP_REFUND_ADDRESS`. Without a
-   stored spot quote whose USD rate has an `asOf` younger than 10 minutes
-   (the creation never waits for a spot fetch), no gas price or quote is
-   requested and each of those pairs logs `shop.offer.rejected` with
-   `check` `price`.
+   quote budget (240 per minute) allows. A retry runs only while that
+   deadline has time left. Each quote pays the BOLT11, is tagged with the
+   payment id, and sends `SHOP_REFUND_ADDRESS`. Without a stored spot quote
+   whose USD rate has an `asOf` younger than 10 minutes (the creation never
+   waits for a spot fetch), no gas price or quote is requested and each of
+   those pairs logs `shop.offer.rejected` with `check` `price`.
 6. For a charge, keep each quote that passes the offer checks: `targetAmountOut` equals
    the sats; `amountIn` is a positive integer within `requiredAmountIn` and
    `maxAcceptedAmountIn` when present; the transaction's chain id and token
@@ -1210,12 +1226,14 @@ local sections and then re-reads:
    32 bits of the hash as a signed integer; an in-process map shared with
    the charge store on a memory boot), then the account row lock
    (`SELECT … FOR UPDATE`), and for a charge then the charge row lock.
-   Holding them, it writes nothing and answers order 9 when its request
-   arrived 16 s ago or longer (`SHOP_CREATION_INSERT_LIMIT_MS`; the
-   arrival of `POST /pay/:username/payment`, of the `POST /pos` that started
-   the charge's creation, or of the pay-link fetch that started it) or,
-   for a payer, when the client disconnected (the request's abort signal is
-   set). A `pos_charge_invoice` row of another charge for the hash stops it
+   Holding them, it writes nothing when its request arrived 16 s ago or
+   longer (`SHOP_CREATION_INSERT_LIMIT_MS`; the arrival of
+   `POST /pay/:username/payment`, of the `POST /pos` that started the
+   charge's creation, or of the pay-link fetch that started it). The payer
+   route answers order 9 for that outcome. A payer also writes nothing when
+   the client has disconnected (the request's abort signal is set), and
+   that route answers order 9. A charge creation that hits the cutoff
+   writes nothing. A `pos_charge_invoice` row of another charge for the hash stops it
    before anything is ended or inserted, as a failed mint with
    `shop.alert.duplicate_invoice`. A charge that is no longer
    pending or has expired gets nothing; a payer with a pending charge gets
@@ -1239,17 +1257,28 @@ local sections and then re-reads:
    after the check rolls back as above, including the end of the `open`
    payment.
 
+For a charge, the route list's 1 s starts at the recheck, so that lock
+wait shortens the fetch. The mint's 4 s and the quotes' 3 s start with
+their own steps. Those three are external-call budgets, 8 s in all. The
+insert's account lock, store, and transaction waits come on top. Step 8's
+16 s cutoff is the hard limit on an insert. For a payer, the mint's 4 s
+is the only external-call budget before the insert. The same insert waits
+and the same 16 s cutoff apply. The offers fill runs after the insert.
+
 Every external call runs outside a database transaction. The quote expiry
 (`quote.expiration`) is the earliest of `window_ends_at` and every offer's
 `expiresAt` minus 30 s; a Lightning-only quote ends at `window_ends_at`.
 
 **Offers fill for a payer.** After a payer's payment opened
-Lightning-only, the api runs the route list (1 s), the candidate pairs, the
-gas prices and Orchestra quotes (3 s), and the offer checks in the
-background. Route list, gas prices, quotes, and offer checks run outside
-the account's in-process creation lock; the lock covers only the short
-re-read and commit. No request handler awaits it; a concurrent pay-link
-fetch joins the in-flight run. A throw logs `shop.creation.failed` once
+Lightning-only, the api runs an offers fill in the background. The route
+list has a 1 s external-call budget. Gas prices and Orchestra quotes have
+a 3 s external-call deadline that starts when the offers-fill quote step
+starts and also covers its stored-spot read. Candidate pairs and offer
+checks are local. Those calls run outside the account's in-process
+creation lock. The lock covers only the short re-read and commit, which
+can wait longer than the external-call budgets. No request handler awaits
+the fill. A concurrent pay-link fetch does not start a second fill and
+does not wait for this one. A throw logs `shop.creation.failed` once
 with `accountId` and `paymentId`. One transaction under the account row
 lock inserts a quote with the passing offers only when the payment is still
 `open`, at least 45 s remain before `window_ends_at`, and the payment's
@@ -2080,12 +2109,12 @@ A store failure during the creation → **Response** `502` `{ "error":
 "Lightning Address could not be resolved" }` (logs `pay.failed`), the
 answer of order 2: the page cannot tell whether a payment opened, so it
 repeats the request as after any other 5xx.
-The route list is read after the payer's insert, in the background. A
-route list that cannot be read or names no candidate pair, and no
-Orchestra quote passing the offer checks, therefore no longer answer
-503: the payment is open Lightning-only. A `findChargeForPayment` error,
-the insert step at 16 s or later, and a disconnected client still come
-after the mint and keep their answers.
+The offers fill runs after the payer's insert, in the background. The
+route does not wait for it. A failed route list, no candidate pair, no
+fresh spot, no quote budget, and no passing offer leave the answer at
+200: the payment is already open Lightning-only. A `findChargeForPayment`
+error, the insert at 16 s or later, and a disconnected client still
+answer order 9.
 The api-wide counter is asked first and the account counter only when it
 allows. Orders 7 and 9 do not depend on the client address.
 

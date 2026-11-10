@@ -59,31 +59,41 @@ export const SHOP_FINAL_SETTLE_DELAY_MS = 10 * 60_000;
 export const SHOP_ORDER_WATCH_MS = 30 * 60_000;
 /** An unresolved proof becomes `stuck` this long after it was stored. */
 export const SHOP_UNRESOLVED_LIMIT_MS = 24 * 60 * 60_000;
-/** Budget of the creation procedure: route list, mint, quotes. */
+/** External-call timeout of one route-list fetch. Callers may set a shorter deadline. */
 export const SHOP_ROUTES_TIMEOUT_MS = 1_000;
-/** Mint budget inside the creation procedure (both LNURL calls). */
+/** External-call deadline of a mint (both LNURL calls share it). */
 export const SHOP_MINT_TIMEOUT_MS = 4_000;
-/** Quote budget inside the creation procedure (gas prices and Orchestra quotes). */
+/**
+ * External-call deadline of gas prices and Orchestra quotes in a charge
+ * creation and in a payer's offers fill.
+ */
 export const SHOP_QUOTES_TIMEOUT_MS = 3_000;
 /**
- * Step 8 of the creation procedure writes nothing when, after it holds its
- * locks, its request arrived this long ago or longer (the 8 s budget plus
- * lock waits); no creation inserts a payment later than this after its
- * request arrived.
+ * Step 8 writes nothing when, after it holds its locks, the request arrived
+ * this long ago or longer. For a charge, the route list's 1 s starts at the
+ * recheck, so that lock wait shortens the fetch. The mint's 4 s and the
+ * quotes' 3 s start with their own steps. Those three are external-call
+ * budgets. For a payer, the mint's 4 s is the only external-call budget
+ * before the insert. The insert's account lock, store, and transaction
+ * waits come on top. This cutoff is the hard limit: no creation inserts a
+ * payment later than this after its request arrived.
  */
 export const SHOP_CREATION_INSERT_LIMIT_MS = 16_000;
 /**
- * Whole replacement (route list, quotes, and its transaction). No request
- * waits for it; the budget bounds its external calls in the background.
+ * External-call budget of a replacement (route list, gas prices, and quotes).
+ * No request waits for the replacement. The creation lock and the database
+ * transaction can wait longer.
  */
 export const SHOP_REPLACEMENT_BUDGET_MS = 4_000;
 /**
- * Room for the replacement's transaction inside {@link SHOP_REPLACEMENT_BUDGET_MS}:
- * its external calls (route list, gas prices, quotes) end at
+ * How long before {@link SHOP_REPLACEMENT_BUDGET_MS} the gas prices and quotes
+ * of a replacement stop. They end at
  * `startMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS`.
- * Measured on Postgres 16 (lock, quotes read, increment, quote with 12
- * offers): p99 7–26 ms idle, 16–37 ms with 2 and 55–133 ms with 8 writers
- * queuing on the same account row, 604–741 ms with 32 (stress).
+ * The route list ends at the earlier of that deadline and 1 s after the start.
+ * The creation lock and the database transaction are not on that budget.
+ * Measured commit time on Postgres 16 (lock, quotes read, increment, quote
+ * with 12 offers): p99 7–26 ms idle, 16–37 ms with 2 and 55–133 ms with 8
+ * writers queuing on the same account row, 604–741 ms with 32 (stress).
  */
 export const SHOP_REPLACEMENT_COMMIT_MARGIN_MS = 500;
 /** After a creation with no committed pair, the account's next creation waits this long. */
@@ -1732,8 +1742,9 @@ export class ShopPayments {
   }
 
   /**
-   * The route list, fetched with a 1 s timeout and reused only until its
-   * `validForMs` has passed since the request started. A failed fetch, or
+   * The route list. The fetch timeout is at most {@link SHOP_ROUTES_TIMEOUT_MS}
+   * and is cut to the caller's deadline. A cached list is reused only until
+   * its `validForMs` has passed since the request started. A failed fetch, or
    * one the route-list budget refuses, offers no stablecoin.
    *
    * @param deadlineMs - Absolute deadline for the fetch.
@@ -2310,9 +2321,9 @@ export class ShopPayments {
    * Start the offers fill of a payer-opened payment in the background: route
    * list, quotes, and offer checks, then one quote with the passing offers.
    * Its Orchestra work runs without the account's in-process creation lock;
-   * only its short re-read and commit take the lock. A concurrent fetch joins
-   * the registered run instead of starting another one. No handler awaits it;
-   * a throw logs `shop.creation.failed` once.
+   * only its short re-read and commit take the lock. A concurrent fetch uses
+   * that registered run and does not wait for it. It does not start another
+   * one. No handler awaits it. A throw logs `shop.creation.failed` once.
    *
    * @param accountId - Shop account id.
    * @param config - Orchestra, RPC, and refund configuration.
@@ -2536,9 +2547,10 @@ export class ShopPayments {
    * The transaction of {@link ShopPayments.#insertPayment}: the claim, the
    * account and charge locks, then nothing is written when the request
    * arrived {@link SHOP_CREATION_INSERT_LIMIT_MS} or longer ago or the payer
-   * disconnected (`unavailable`, order 9), or when another charge's
-   * `pos_charge_invoice` row holds the hash (`mint_failed`, logs
-   * `shop.alert.duplicate_invoice`).
+   * disconnected (returns `unavailable`). The payer route answers order 9.
+   * A charge creation that hits the cutoff writes nothing. Nothing is written
+   * either when another charge's `pos_charge_invoice` row holds the hash
+   * (`mint_failed`, logs `shop.alert.duplicate_invoice`).
    *
    * @param input - Charge or payer creation.
    * @param paymentId - Id chosen before the quotes.
@@ -2837,15 +2849,21 @@ export class ShopPayments {
   }
 
   /**
-   * The current quote of an open payment, after the replacement rule and the
-   * Lightning-only fallback for an expired quote. The replacement starts or
-   * joins in the background; no fetch waits for it or for Orchestra.
+   * The quote this fetch returns for an open payment. It starts a replacement
+   * in the background when the quote is replaceable and stablecoin rows are
+   * on for the username, and it joins an entry already in `#replacements`
+   * when those rows are on. This fetch does not wait. It returns the quote it
+   * read while that quote is unexpired. When the quote has expired, it
+   * re-reads under the account row lock. While the payment is still open and
+   * its window has not ended, it returns the newest quote when that quote is
+   * still valid, and otherwise inserts a Lightning-only row and returns that
+   * row. Only a later fetch sees a replacement quote that is not stored yet.
    *
    * @param account - Shop account.
    * @param username - Its username.
    * @param payment - The open payment.
-   * @returns The payment and its current quote, or `null` when the payment
-   *   is no longer open.
+   * @returns The payment and the quote this fetch answers with, or `null`
+   *   when the payment is no longer open or its window has ended.
    */
   async currentQuote(
     account: Account,
@@ -2861,10 +2879,15 @@ export class ShopPayments {
         this.#replaceable(read.payment, read.quote, this.#deps.now())) &&
       this.offersStablecoins(username)
     ) {
-      // The fetch joins an offers fill or replacement already in flight, or
-      // starts a replacement in the background, and answers from the state it
-      // read: Orchestra never delays Lightning. Only the run's re-read and
-      // commit wait for the account's creation lock.
+      // Start a background replacement when the quote is replaceable, or join
+      // an entry already in #replacements, when stablecoin rows are on. This
+      // fetch does not wait. An unexpired quote is returned as read. An
+      // expired quote is re-read under the account row lock. While the payment
+      // is still open and its window has not ended, the newest quote is
+      // returned when it is still valid, and otherwise a Lightning-only row is
+      // inserted and returned. A replacement quote that is not stored yet is
+      // seen only by a later fetch. Only the run's commit waits for the
+      // account's creation lock.
       void this.#replacement(account, read);
     }
     if (read.quote.expiresAt.getTime() > this.#deps.now()) {
@@ -2974,21 +2997,26 @@ export class ShopPayments {
   }
 
   /**
-   * Replace the fetch's replaceable quote snapshot. Before Orchestra, the
-   * payment is revalidated: its starting quote must still be newest, except
-   * that a newer uncounted Lightning-only fallback does not make the run
-   * lose. Route list, quotes, and offer checks run without the creation lock
-   * for the same sats and BOLT11 until
-   * {@link SHOP_REPLACEMENT_COMMIT_MARGIN_MS} before the 4 s are up, then one
-   * short creation-lock section runs a transaction under the account row lock.
-   * Only while that same newest-quote rule still holds, it increments
-   * `replacements` conditionally and inserts the quote (Lightning-only when
-   * no offer passes); otherwise it inserts nothing.
-   * When no quote request was sent (no route list, no candidate pair, no
-   * fresh spot, or no budget), the same conditional update leaves
-   * `replacements` as it is, because a Lightning-only row made without an
-   * Orchestra call is not a replacement. The clock is read after the account
-   * lock is taken.
+   * Replace the fetch's replaceable quote snapshot. Before Orchestra, and
+   * outside the creation lock, the payment is revalidated: its starting quote
+   * must still be newest. A newer uncounted Lightning-only fallback still
+   * lets this run continue. Route list, gas prices, and quotes then run
+   * without the creation lock, for the same sats and BOLT11. Gas prices and
+   * quotes end {@link SHOP_REPLACEMENT_COMMIT_MARGIN_MS} before
+   * {@link SHOP_REPLACEMENT_BUDGET_MS}. That 4 s figure is their external-call
+   * budget. The route list ends at the earlier of that deadline and 1 s after
+   * the start. The creation lock and the database transaction can wait longer.
+   * Under the account row lock, and only while the same newest-quote rule
+   * still holds, a run that sent a quote request increments `replacements`
+   * conditionally and inserts the quote. The quote is Lightning-only when
+   * no offer passes. An Orchestra quote is inserted only when it passes the
+   * offer checks. When no quote request was sent (no route list, no
+   * candidate pair, no fresh spot, or no budget), the same conditional
+   * update leaves `replacements` as it is and inserts a Lightning-only row
+   * only while the starting quote is still newest. A fallback row written
+   * after the read blocks that second row. A Lightning-only row made
+   * without an Orchestra call is not a replacement. Otherwise the run
+   * inserts nothing. The clock is read after the account lock is taken.
    *
    * @param account - Shop account.
    * @param target - The payment and quote snapshot judged replaceable by the
@@ -3010,9 +3038,10 @@ export class ShopPayments {
     ) {
       return;
     }
-    // The external calls end early enough that the transaction below
-    // commits inside the run's own 4 s budget. They run without the creation
-    // lock: no handler waits for Orchestra.
+    // Gas prices and quotes end SHOP_REPLACEMENT_COMMIT_MARGIN_MS before the
+    // 4 s external-call budget. The route list ends at the earlier of that
+    // deadline and 1 s after the start. The creation lock and the transaction
+    // below are not on that budget. The calls run without the creation lock.
     const deadlineMs = startMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS;
     const config = this.#deps.config;
     /* v8 ignore next 3 -- callers checked offersStablecoins */
