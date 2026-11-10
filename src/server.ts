@@ -1234,6 +1234,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       fetchImpl,
       ...receivingDeps,
+      ...(sparkInvoices === undefined ? {} : { freePayments: true }),
       actions: {
         store: invoiceStore,
         authStore: store,

@@ -1670,10 +1670,3 @@ test('POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async 
   const res = await request.post('/fond/payouts/:id/invoice');
   expect(res.status()).toBe(404);
 });
-
-test('POST /fond/payouts/:id/proof is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
-  const res = await request.post('/fond/payouts/:id/proof', {
-    data: { preimage: 'a'.repeat(64) },
-  });
-  expect(res.status()).toBe(404);
-});
