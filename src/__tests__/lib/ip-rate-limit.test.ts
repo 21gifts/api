@@ -27,11 +27,13 @@ describe('IpRateLimiter', () => {
     expect(limiter.allow('2.2.2.2', t0 + 1)).toBe(false);
   });
 
-  it('always allows a null client address and never counts it', () => {
+  it('counts null client keys against one shared bucket instead of allowing unconditionally', () => {
     const limiter = new IpRateLimiter(1);
     const t0 = 1_000_000;
+    // Two unidentifiable clients share a single bounded bucket: the second is refused.
     expect(limiter.allow(null, t0)).toBe(true);
-    expect(limiter.allow(null, t0 + 1)).toBe(true);
+    expect(limiter.allow(null, t0 + 1)).toBe(false);
+    // A resolved address keeps its own independent bucket.
     expect(limiter.allow('1.1.1.1', t0)).toBe(true);
     expect(limiter.allow('1.1.1.1', t0 + 1)).toBe(false);
   });

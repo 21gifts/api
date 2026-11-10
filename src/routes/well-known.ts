@@ -26,7 +26,7 @@ import {
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { buildNostrJson } from '@/lib/nip05';
 import { logEvent } from '@/lib/log';
-import { readClientRequestMeta } from '@/lib/request-meta';
+import { clientRateLimitKey } from '@/lib/client-address';
 import { shopErrorBody, type ShopPayments } from '@/lib/shop-payment';
 import { normalizeUsername } from '@/lib/username';
 import type { MessageStore } from '@/lib/message-store';
@@ -123,7 +123,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
           account !== undefined &&
           typeof account.sparkPubkeyVerifiedAt === 'number'
         ) {
-          const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+          const clientIp = clientRateLimitKey(c);
           if (!walletPayLimiter.allow(clientIp, now())) {
             return c.json(shopErrorBody(429, 'Too many requests'), 429, LNURLP_HEADERS);
           }
