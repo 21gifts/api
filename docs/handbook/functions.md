@@ -291,7 +291,7 @@
 - **Purpose:** Fetch the current positive BTC-USD spot used to freeze fiat at payment time, without ever throwing.
 - **Inputs:** Optional fetch implementation and optional URL (blank falls through to `BTC_USD_SPOT_URL`, then the Coinbase default).
 - **Returns / side effects:** Coinbase decimal text, or `null` for every transport, shape, or value failure, including a fetch that aborts after 10 seconds (`BTC_USD_SPOT_TIMEOUT_MS`). Does not throw.
-- **Used by:** `invoiceRoutes`, message create, zap indexing, conversation message append (`InMemoryConversationStore` / `PostgresConversationStore` `appendMessage`).
+- **Used by:** `invoiceRoutes`, message create, zap indexing, conversation message append (`InMemoryConversationStore` / `PostgresConversationStore` `appendMessage`), and `fondRoutes` `POST /payouts/:id/invoice`.
 
 ## Function: fetchSparkAddressBalance
 
@@ -1260,7 +1260,7 @@
 - **Purpose:** Process-local GiftStore seeded at construction. Default empty so the process boots without a database.
 - **Inputs:** Optional `GiftRow[]`, optional legacy welcome account ids, and optional stored BOLT11 strings. `listOutbound()` copies and sorts by `paidAt`. `listDebug(limit)` dumps stored gift fields newest `paidAt` first (cap). `listLegacyWelcomeAccountIds()` returns a copy of the seeded ids (the accounts whose legacy external address already received a welcome gift). `hasOutboundInvoice(invoice)` reports whether the seeded BOLT11 list contains it.
 - **Returns / side effects:** Promise of rows. Does not mutate the seed array.
-- **Used by:** `createApp` default `giftStore`.
+- **Used by:** `createApp` default `giftStore`, and `runFondPaidTick` through `hasOutboundInvoice`.
 
 ## Function: mapGiftQueryRow
 
@@ -1274,7 +1274,7 @@
 - **Purpose:** GiftStore that delegates `listOutbound` to an injected stats query, optional `listDebug` to a full-column dump query, `listLegacyWelcomeAccountIds` to an optional legacy welcome query, and `hasOutboundInvoice` to an optional BOLT11 lookup (Postgres in production).
 - **Inputs:** `() => Promise<GiftRow[]>`, optional `() => Promise<GiftDebugRow[]>`, optional `() => Promise<string[]>`, and optional `(lightningInvoice) => Promise<boolean>`. In production the third query returns the account ids whose legacy external payout address (`account.lightning_address`) has a local part equal to the trimmed, case-insensitive recipient handle of a `welcome` gift; without it the list is empty. The fourth query is `SELECT 1 … WHERE direction = 'outbound' AND lightning_invoice = $1`; without it the answer is `false`.
 - **Returns / side effects:** `listOutbound` is the stats query result. `listDebug(limit)` uses the dump query when set (full `gift` columns, newest `paidAt` first, then sliced to `limit`); otherwise it maps `listOutbound` onto debug rows. `hasOutboundInvoice` returns the injected answer or `false`. Errors propagate to the route (503).
-- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set, and `runFondPaidTick` through `hasOutboundInvoice`.
 
 ## Function: checkSpendAuth
 
@@ -1493,7 +1493,7 @@
 - **Purpose:** Parses `Authorization: Bearer <token>`.
 - **Inputs:** Header string or undefined.
 - **Returns / side effects:** Token or `null`.
-- **Used by:** `meRoutes`, `messagesRoutes`, `authRoutes` (passkey replace).
+- **Used by:** `meRoutes`, `messagesRoutes`, `authRoutes` (passkey replace), and `fondRoutes` for its session gate.
 
 ## Function: brandRoutes
 
@@ -1551,7 +1551,7 @@
 - **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets. The console line never carries a Lightning Address: an explicit string field named `address` is printed as `addressRef` (the reference `setAddressRefKey` describes) and the `address` key is left out; with no key installed it is printed as `address: "[address]"`. In every other explicit string field, each email-shaped part (`local@domain.tld`, the `@` literal or written `%40`) is printed as `[address]`. Numbers, booleans, and the request client fields are printed unchanged.
 - **Inputs:** `event` string, optional `LogFields`. Call sites pass the recipient as `address` (`spend.ping.ok`, `spend.ping.skipped`, `spend.ping.failed`, the `invoice.*` events of `POST /invoices`, `lightning_address.resolved`, `lightning_address.resolve_failed`).
 - **Returns / side effects:** void. The diagnostic sink runs after the console line and receives the fields exactly as passed, including `address`; only the console line differs.
-- **Used by:** every non-test `src/` file below (`.ts` omitted). routes: `auth`, `contact`, `conversations`, `debug`, `debug-api-log`, `debug-catalog`, `debug-contacts`, `debug-db`, `debug-diagnostics`, `debug-external`, `debug-messages`, `debug-passkey-renew`, `debug-payments`, `debug-trust`, `funding`, `gifts`, `grant-continuation`, `invoices`, `lightning-address`, `me`, `members`, `messages`, `notifications`, `pay`, `repayment`, `shop-activity`, `shops`, `stats`, `trust`, `trust-chain`, `view`, `well-known`; lib: `account-activity`, `boot-stores`, `conversation-push`, `dev-shop-places`, `log` (`requestLog`), `nip05`, `notification`, `ocp-activity`, `ocp-outbox`, `pos-store`, `push-worker`, `spend-ping`, `username`, `video`, `welcome-media`; lib/auth: `passkey`; lib/nostr: `external-profile`, `keys`, `retract`, `worker`, `zap-index`.
+- **Used by:** every non-test `src/` file below (`.ts` omitted). routes: `auth`, `contact`, `conversations`, `debug`, `debug-api-log`, `debug-catalog`, `debug-contacts`, `debug-db`, `debug-diagnostics`, `debug-external`, `debug-messages`, `debug-passkey-renew`, `debug-payments`, `debug-trust`, `fond`, `funding`, `gifts`, `grant-continuation`, `invoices`, `lightning-address`, `me`, `members`, `messages`, `notifications`, `pay`, `repayment`, `shop-activity`, `shops`, `stats`, `trust`, `trust-chain`, `view`, `well-known`; lib: `account-activity`, `boot-stores`, `conversation-push`, `dev-shop-places`, `fond-paid-worker`, `log` (`requestLog`), `nip05`, `notification`, `ocp-activity`, `ocp-outbox`, `pos-store`, `push-worker`, `spend-ping`, `username`, `video`, `welcome-media`; lib/auth: `passkey`; lib/nostr: `external-profile`, `keys`, `retract`, `worker`, `zap-index`.
 
 ## Function: setAddressRefKey
 
@@ -1571,7 +1571,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), and the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`); `webhookRoutes` (`payment_received.failed` when a store call fails).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`), `startFondPaidWorker` (`fond.paid.tick.failed`), and `webhookRoutes` (`payment_received.failed` when a store call fails).
 
 ## Function: meRoutes
 
@@ -2531,10 +2531,10 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: accountByReceivingAddress
 
-- **Purpose:** Spend-worker lookup of the member behind a receiving address. The address must be `<username>@<host of PUBLIC_BASE_URL>` (trimmed, case-insensitive). The username is looked up and the account must resolve to that same address through `receivingAddress`, so a member without a verified wallet is not found.
+- **Purpose:** Lookup of the member behind a receiving address, for spend-worker routes and the Fond invoice route's Spark invoice. The address must be `<username>@<host of PUBLIC_BASE_URL>` (trimmed, case-insensitive). The username is looked up and the account must resolve to that same address through `receivingAddress`, so a member without a verified wallet is not found.
 - **Inputs:** An auth store with `getAccountByUsername`, the address as sent, and the `LnurlServerConfig` or `undefined`.
 - **Returns / side effects:** `{ account, receiving }`, or `undefined` for another domain, a blank local part, an unknown username, no verified wallet, or the LNURL server off. Reads the auth store only.
-- **Used by:** `POST /invoices`, `GET /invoices/eligible`, `GET /invoices/passkey`, `GET /invoices/posted`, and the moderator-group gift recipient name on `POST /invoices/proof`.
+- **Used by:** `POST /invoices`, `GET /invoices/eligible`, `GET /invoices/passkey`, `GET /invoices/posted`, the moderator-group gift recipient name on `POST /invoices/proof`, and `fondRoutes` `POST /payouts/:id/invoice` through `payoutSparkInvoice`.
 
 ## Function: lnurlServerFetch
 
@@ -2583,14 +2583,14 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Serialise a Spark invoice: protobuf `SparkAddress { 1: identity_public_key (33 bytes), 2: spark_invoice_fields }` with no signature field, where `SparkInvoiceFields` is written in the canonical order `1: version = 1`, `2: id (16 bytes)`, `5: memo` (left out when `memo` is omitted), `4: SatsPayment { 1: amount }` (not field-number order), then bech32m with prefix `spark` and no length limit.
 - **Inputs:** `{ identityPublicKey (66 hex), id (16 bytes), memo?, amountSats }`.
 - **Returns / side effects:** The `spark1…` string. Throws when the key is not 33 bytes or the id not 16 bytes, and `RangeError` when `amountSats` is negative or not a safe integer. No I/O.
-- **Used by:** `issueSparkInvoice`, `payRoutes`.
+- **Used by:** `issueSparkInvoice`, `payRoutes`, and `fondRoutes` `POST /payouts/:id/invoice` through `payoutSparkInvoice`.
 
 ## Function: uuidV7
 
 - **Purpose:** Build an RFC 9562 UUIDv7 as 16 bytes: 48-bit Unix milliseconds big-endian, version nibble 7, variant bits `10`, and the remaining bits from the given random bytes. Used as the Spark invoice id.
 - **Inputs:** Clock in epoch milliseconds and 10 random bytes.
 - **Returns / side effects:** 16 bytes. Throws `RangeError` when `nowMs` is not an integer. No I/O.
-- **Used by:** `issueSparkInvoice`, `payRoutes`.
+- **Used by:** `issueSparkInvoice`, `payRoutes`, and `fondRoutes` `POST /payouts/:id/invoice` through `payoutSparkInvoice`.
 
 ## Function: issueSparkInvoice
 
@@ -2639,7 +2639,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Ask the Spark coordinator for the status of up to 100 invoices: `POST <operatorUrl>/spark.SparkService/query_spark_invoices` (the RPC path appended to the URL path, a query kept, a fragment dropped) with `content-type: application/grpc-web+proto` and `x-grpc-web: 1`, no authentication, no redirects, 10 s timeout. Never logs an invoice.
 - **Inputs:** Operator base URL, injected fetch, invoice strings.
 - **Returns / side effects:** The parsed result, `{ ok: false, reason: 'unreachable' }` when the fetch or body read fails, or `{ ok: false, reason: 'http' }` for an HTTP status other than 200.
-- **Used by:** `runSparkInvoiceTick`.
+- **Used by:** `runSparkInvoiceTick` and `runFondPaidTick`.
 
 ## Function: zapReceiptSecretKey
 
@@ -2692,9 +2692,9 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: runFondPaidTick
 
-- **Purpose:** Detect paid Fond payouts and run the existing guarded settlement once. Each tick calls `listOpen` for today and yesterday, keeps `invoiced` rows and stale `settling` rows, recovers each stale `settling` row (a recorded gift via `giftStore.hasOutboundInvoice(row.bolt11)` becomes `paid`; otherwise `restoreStaleSettling` returns it to `invoiced`), and then watches the rows. With `operatorUrl`, one `querySparkInvoices` call per batch of up to `SPARK_QUERY_LIMIT` asks the Spark coordinator about every non-null `sparkInvoice`; only `finalized` confirms. Rows still open then get one LUD-21 `verifyLightningPayment` call by `paymentHash`; the first confirmation wins and removes the row from that tick. A confirmed row is claimed with `claimSettlement`, settled through `settleProvenGift` with `sourceWallet = FOND_USERNAME`, the stored invoice fields, the decided USD snapshot with null crosses, and its kind, and then moves to `paid` with `markPaid`. A settlement or missing-field failure releases with `releaseSettlement`; a failed `markPaid` leaves the recorded gift for stale-`settling` recovery. A lost claim settles nothing and logs paid only when the re-read is already `paid`.
+- **Purpose:** Detect paid Fond payouts and run the existing guarded settlement once. Each tick calls `listOpen` for today and yesterday, keeps `invoiced` rows and stale `settling` rows, recovers each stale `settling` row (a recorded gift via `giftStore.hasOutboundInvoice(row.bolt11 ?? '')` becomes `paid`; otherwise `restoreStaleSettling` returns it to `invoiced`), and then watches the rows. With `operatorUrl`, one `querySparkInvoices` call per batch of up to `SPARK_QUERY_LIMIT` asks the Spark coordinator about every non-null `sparkInvoice`; only `finalized` confirms. Rows still open then get one LUD-21 `verifyLightningPayment` call by `paymentHash`; the first confirmation wins and removes the row from that tick. A confirmed row is claimed with `claimSettlement`, settled through `settleProvenGift` with `sourceWallet = FOND_USERNAME`, the stored invoice fields, the decided USD snapshot with null crosses, and its kind, and then moves to `paid` with `markPaid`. A settlement or missing-field failure releases with `releaseSettlement`; a failed `markPaid` leaves the recorded gift for stale-`settling` recovery. A lost claim settles nothing and logs paid only when the re-read is already `paid`.
 - **Inputs:** `FondPaidWorkerDeps` (`store`, `lnurlServer`, optional `operatorUrl`, `fetchImpl`, `now`, `fondUsername`, `actions`).
-- **Returns / side effects:** Resolves after every watched row is checked. Spark batches above the limit run sequentially; a failed coordinator batch logs `fond.paid.spark_query_failed` with `reason`/`grpcStatus` and the remaining batches still run. Failed LUD-21 reads are counted and logged once per tick as `fond.paid.verify_failed` with `failures`. Recovery, claim, settlement, release, and mark failures log `fond.paid.recovery_failed`, `fond.paid.claim_failed`, `fond.paid.settle_failed`, `fond.paid.revert_failed`, or `fond.paid.mark_failed`; success logs `fond.paid.paid` with `{ id }`. No log carries an address, BOLT11, Spark invoice, payment hash, or preimage. A `listOpen` failure propagates.
+- **Returns / side effects:** Resolves after every watched row is checked. Spark batches above the limit run sequentially; a failed coordinator batch logs `fond.paid.spark_query_failed` with `reason`/`grpcStatus` and the remaining batches still run. Failed LUD-21 reads are counted and logged once per tick as `fond.paid.verify_failed` with `failures`. Recovery, claim, settlement, release, and mark failures log `fond.proof.failed` or `fond.proof.revert_failed` with `{ id }`; success logs `fond.payout.paid` with `{ id }`. No log carries an address, BOLT11, Spark invoice, payment hash, or preimage. A `listOpen` failure propagates.
 - **Used by:** `startFondPaidWorker`.
 
 ## Function: startFondPaidWorker
@@ -2723,7 +2723,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Looks up a bearer session; rejects expired tokens and accounts with `sessionRefused` (`isWrongAccount`).
 - **Inputs:** `store`, `now`, `token`.
 - **Returns / side effects:** `Account` or `null` when unknown, expired, or refused.
-- **Used by:** `meRoutes`.
+- **Used by:** `meRoutes` and `fondRoutes`.
 
 ## Function: credentialIdFrom
 
@@ -3376,7 +3376,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** UTC `YYYY-MM-DD` from epoch ms.
 - **Inputs:** nowMs.
 - **Returns / side effects:** Day key.
-- **Used by:** `PostRateLimiter` (top-level notes and replies); funding-grant `effectiveStatus` / `eligibleToday` / trial writes.
+- **Used by:** `PostRateLimiter` (top-level notes and replies); funding-grant `effectiveStatus` / `eligibleToday` / trial writes; `runFondPaidTick` for today's and yesterday's watched rows.
 
 ## Function: PostRateLimiter
 
@@ -4398,7 +4398,7 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 - **Purpose:** Shift a UTC day key by a whole number of calendar days, including backward across month, year, and leap-day boundaries.
 - **Inputs:** A `YYYY-MM-DD` key and a signed number of days.
 - **Returns / side effects:** The shifted `YYYY-MM-DD` key. No writes. Throws when the key is not `YYYY-MM-DD`.
-- **Used by:** member habits (`weekKey`, `nextPeriod`, `weeklyRatableThrough`), `fondRoutes` for `GET /fond/health` (`addUtcDays(today, -1)`), and the member-habit unit tests.
+- **Used by:** member habits (`weekKey`, `nextPeriod`, `weeklyRatableThrough`), `fondRoutes` for `GET /fond/health` (`addUtcDays(today, -1)`), `runFondPaidTick` for yesterday's open payouts, and the member-habit unit tests.
 
 ## Function: nextPeriod
 
@@ -5351,14 +5351,14 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Purpose:** Process-local `FondPayoutStore`. `enqueue` inserts an `owed` row unless a dedupe key exists; a conflict returns `'paid'` when the existing row is `paid`, else `'accepted'`. `listOpen` returns one UTC day's `owed`, `issuing`, `invoiced`, and `settling` rows oldest first. `claimForInvoice(id, utcDay)` is a compare-and-set from `owed` to `issuing` (null when another caller won or the row is another day) and sets `claimedAt`; `setInvoiced` stores the invoice id, payment hash, BOLT11, nullable Spark invoice (an omitted field stores `null`), and amount before leaving `issuing` for `invoiced`; `markFailed` and `releaseClaim` only leave `issuing` and clear `claimedAt`. `claimSettlement` is a compare-and-set from `invoiced` to `settling` and sets `claimedAt`; `markPaid` only leaves `settling` for `paid`; `releaseSettlement` only leaves `settling` and returns it to `invoiced` after a failed settlement; both clear `claimedAt`. `claimStaleIssuing(id, claimedBefore)` re-claims only an `issuing` row whose `claimedAt` is older than the cutoff. `markStaleSettlingPaid` and `restoreStaleSettling` likewise only change a stale `settling` row. A claimed row whose lease never expires and no caller transitions stays `issuing` (or `settling`).
 - **Inputs:** Constructor optional `now` clock (default `Date.now`). `enqueue(FondPayoutEnqueue)`, `listOpen(utcDay)`, `get(id)`, `claimForInvoice(id, utcDay)`, `claimStaleIssuing(id, claimedBefore)`, `setInvoiced(id, invoice)`, `markFailed(id, failure)`, `releaseClaim(id)`, `claimSettlement(id)`, `markStaleSettlingPaid(id, claimedBefore)`, `restoreStaleSettling(id, claimedBefore)`, `markPaid(id)`, `releaseSettlement(id)`.
 - **Returns / side effects:** Caller-owned copies. Rows carry the invoiced `amountMsat`, the nullable `sparkInvoice` stored by `setInvoiced`, and the transient `claimedAt` lease timestamp (`null` in a stable state). `FOND_CLAIM_LEASE_MS` is `120_000`. `FOND_OVERDUE_MS` is `15 * 60_000`: how long an open row may wait before `GET /fond/health` reports it overdue. No I/O.
-- **Used by:** Tests, `createApp` memory boots, `openBootStores`.
+- **Used by:** Tests, `createApp` memory boots, `openBootStores`, `fondRoutes`, and `runFondPaidTick`.
 
 ## Function: PostgresFondPayoutStore
 
 - **Purpose:** `FondPayoutStore` against `fond_payout`. `enqueue` is `INSERT … ON CONFLICT DO NOTHING`; on a conflict it reads the existing row (by `utc_day, kind, address` for daily/moderator, by `kind, address` for welcome) and returns `'paid'` only when that status is `paid`, `'accepted'` for every other found status, and `'failed'` when no row is found. `listOpen` selects the day's `owed`, `issuing`, `invoiced`, and `settling` rows oldest first. `claimForInvoice` is one `UPDATE … SET status = 'issuing', claimed_at = now() WHERE id = $1 AND utc_day = $2 AND status = 'owed' RETURNING *`; the other transitions are conditional `UPDATE … WHERE id = $1 AND status …` statements with `updated_at = now()`, and every entry into or exit from `issuing`/`settling` sets or clears `claimed_at`. `setInvoiced` is `UPDATE … SET status = 'invoiced', invoice_id = $2, payment_hash = $3, bolt11 = $4, spark_invoice = $5, amount_msat = $6, claimed_at = NULL WHERE id = $1 AND status = 'issuing' RETURNING *`; an omitted or `null` Spark invoice binds `$5` as `NULL`. `claimSettlement` is `UPDATE … SET status = 'settling', claimed_at = now() WHERE id = $1 AND status = 'invoiced' RETURNING *`; `claimStaleIssuing` is `WHERE id = $1 AND status = 'issuing' AND claimed_at < $2`; `markStaleSettlingPaid` and `restoreStaleSettling` use `WHERE id = $1 AND status = 'settling' AND claimed_at < $2`; `markPaid` is `UPDATE … SET status = 'paid', claimed_at = NULL WHERE id = $1 AND status = 'settling' RETURNING *`; `releaseSettlement` is `UPDATE … SET status = 'invoiced', claimed_at = NULL WHERE id = $1 AND status = 'settling' RETURNING *`, so only a failed winning settlement rolls back. The status CHECK is `owed`, `issuing`, `invoiced`, `settling`, `paid`, `failed`; `claimed_at` is a nullable `timestamptz`; `spark_invoice` is nullable `text`. A row whose lease never expires and no caller transitions stays `issuing` (or `settling`).
 - **Inputs:** `sql` (`SqlClient`).
 - **Returns / side effects:** Rows mapped from driver values (`date` → `YYYY-MM-DD`, `spark_invoice` → `sparkInvoice`, timestamps → `Date`). Propagates SQL failures.
-- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set, `fondRoutes`, and `runFondPaidTick`.
 
 ## Function: HttpPayoutSink
 

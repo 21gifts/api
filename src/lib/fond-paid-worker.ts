@@ -76,31 +76,31 @@ async function recoverStaleSettling(
   try {
     giftExists = (await deps.actions.giftStore?.hasOutboundInvoice?.(row.bolt11 ?? '')) ?? false;
   } catch {
-    logEvent('fond.paid.recovery_failed', { id: row.id });
+    logEvent('fond.proof.failed', { id: row.id });
     return undefined;
   }
   if (giftExists) {
     try {
       const recovered = await deps.store.markStaleSettlingPaid(row.id, cutoff);
       if (recovered === undefined) {
-        logEvent('fond.paid.recovery_failed', { id: row.id });
+        logEvent('fond.proof.failed', { id: row.id });
         return undefined;
       }
-      logEvent('fond.paid.paid', { id: row.id });
+      logEvent('fond.payout.paid', { id: row.id });
     } catch {
-      logEvent('fond.paid.recovery_failed', { id: row.id });
+      logEvent('fond.proof.failed', { id: row.id });
     }
     return undefined;
   }
   try {
     const restored = await deps.store.restoreStaleSettling(row.id, cutoff);
     if (restored === undefined) {
-      logEvent('fond.paid.recovery_failed', { id: row.id });
+      logEvent('fond.proof.failed', { id: row.id });
       return undefined;
     }
     return restored;
   } catch {
-    logEvent('fond.paid.recovery_failed', { id: row.id });
+    logEvent('fond.proof.failed', { id: row.id });
     return undefined;
   }
 }
@@ -116,10 +116,10 @@ async function releaseAfterFailure(deps: FondPaidWorkerDeps, id: string): Promis
   try {
     const released = await deps.store.releaseSettlement(id);
     if (released === undefined) {
-      logEvent('fond.paid.revert_failed', { id });
+      logEvent('fond.proof.revert_failed', { id });
     }
   } catch {
-    logEvent('fond.paid.revert_failed', { id });
+    logEvent('fond.proof.revert_failed', { id });
   }
 }
 
@@ -138,7 +138,7 @@ async function settleConfirmed(deps: FondPaidWorkerDeps, row: FondPayoutRow): Pr
   try {
     claimed = await deps.store.claimSettlement(row.id);
   } catch {
-    logEvent('fond.paid.claim_failed', { id: row.id });
+    logEvent('fond.proof.failed', { id: row.id });
     return;
   }
   if (claimed === undefined) {
@@ -146,11 +146,11 @@ async function settleConfirmed(deps: FondPaidWorkerDeps, row: FondPayoutRow): Pr
     try {
       current = await deps.store.get(row.id);
     } catch {
-      logEvent('fond.paid.claim_failed', { id: row.id });
+      logEvent('fond.proof.failed', { id: row.id });
       return;
     }
     if (current?.status === 'paid') {
-      logEvent('fond.paid.paid', { id: row.id });
+      logEvent('fond.payout.paid', { id: row.id });
     }
     return;
   }
@@ -160,7 +160,7 @@ async function settleConfirmed(deps: FondPaidWorkerDeps, row: FondPayoutRow): Pr
   const amountMsat = claimed.amountMsat;
   if (invoiceId === null || bolt11 === null || paymentHash === null || amountMsat === null) {
     await releaseAfterFailure(deps, claimed.id);
-    logEvent('fond.paid.settle_failed', { id: claimed.id });
+    logEvent('fond.proof.failed', { id: claimed.id });
     return;
   }
   const paidAt = deps.now();
@@ -188,20 +188,20 @@ async function settleConfirmed(deps: FondPaidWorkerDeps, row: FondPayoutRow): Pr
     );
   } catch {
     await releaseAfterFailure(deps, claimed.id);
-    logEvent('fond.paid.settle_failed', { id: claimed.id });
+    logEvent('fond.proof.failed', { id: claimed.id });
     return;
   }
   try {
     const stored = await deps.store.markPaid(claimed.id);
     if (stored === undefined) {
-      logEvent('fond.paid.mark_failed', { id: claimed.id });
+      logEvent('fond.proof.failed', { id: claimed.id });
       return;
     }
   } catch {
-    logEvent('fond.paid.mark_failed', { id: claimed.id });
+    logEvent('fond.proof.failed', { id: claimed.id });
     return;
   }
-  logEvent('fond.paid.paid', { id: claimed.id });
+  logEvent('fond.payout.paid', { id: claimed.id });
 }
 
 /**

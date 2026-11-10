@@ -194,7 +194,7 @@ describe('runFondPaidTick', () => {
     );
     expect(mockedSettle.mock.calls[0]?.[1]).not.toHaveProperty('groupMessageId');
     expect(await store.get('row-a')).toMatchObject({ status: 'paid', claimedAt: null });
-    expect(eventNames()).toContain('fond.paid.paid');
+    expect(eventNames()).toContain('fond.payout.paid');
   });
 
   it('settles when LUD-21 reports the BOLT11 payment hash settled', async () => {
@@ -267,7 +267,7 @@ describe('runFondPaidTick', () => {
     });
     expect(mockedSettle).not.toHaveBeenCalled();
     expect((await store.get('row-a'))?.status).toBe('invoiced');
-    expect(eventNames()).not.toContain('fond.paid.paid');
+    expect(eventNames()).not.toContain('fond.payout.paid');
   });
 
   it('retries after a failed coordinator read and a failed verify read', async () => {
@@ -376,7 +376,7 @@ describe('runFondPaidTick', () => {
     await runFondPaidTick(deps);
     expect((await store.get('row-a'))?.status).toBe('invoiced');
     expect(await store.get('row-a')).toMatchObject({ claimedAt: null });
-    expect(eventNames()).toContain('fond.paid.settle_failed');
+    expect(eventNames()).toContain('fond.proof.failed');
 
     await runFondPaidTick(deps);
     expect(mockedSettle).toHaveBeenCalledTimes(2);
@@ -403,7 +403,7 @@ describe('runFondPaidTick', () => {
         fondUsername: FOND_USERNAME,
         actions: actions(),
       });
-      expect(eventNames()).toContain('fond.paid.revert_failed');
+      expect(eventNames()).toContain('fond.proof.revert_failed');
     }
   });
 
@@ -427,7 +427,7 @@ describe('runFondPaidTick', () => {
         actions: actions(),
       });
       expect(await store.get('row-a')).toMatchObject({ status: 'settling' });
-      expect(eventNames()).toContain('fond.paid.mark_failed');
+      expect(eventNames()).toContain('fond.proof.failed');
     }
   });
 
@@ -450,7 +450,7 @@ describe('runFondPaidTick', () => {
         fondUsername: FOND_USERNAME,
         actions: actions(),
       });
-      expect(eventNames()).toContain('fond.paid.claim_failed');
+      expect(eventNames()).toContain('fond.proof.failed');
       expect(mockedSettle).not.toHaveBeenCalled();
     }
   });
@@ -472,7 +472,7 @@ describe('runFondPaidTick', () => {
       fondUsername: FOND_USERNAME,
       actions: actions(),
     });
-    expect(eventNames()).toContain('fond.paid.paid');
+    expect(eventNames()).toContain('fond.payout.paid');
     expect(mockedSettle).not.toHaveBeenCalled();
   });
 
@@ -490,7 +490,7 @@ describe('runFondPaidTick', () => {
       actions: actions(),
     });
     expect(mockedSettle).not.toHaveBeenCalled();
-    expect(eventNames()).not.toContain('fond.paid.paid');
+    expect(eventNames()).not.toContain('fond.payout.paid');
   });
 
   it('does nothing when the lost-claim re-read finds no row', async () => {
@@ -508,7 +508,7 @@ describe('runFondPaidTick', () => {
       actions: actions(),
     });
     expect(mockedSettle).not.toHaveBeenCalled();
-    expect(eventNames()).not.toContain('fond.paid.paid');
+    expect(eventNames()).not.toContain('fond.payout.paid');
   });
 
   it.each(['invoiceId', 'bolt11', 'paymentHash', 'amountMsat'] as const)(
@@ -529,7 +529,7 @@ describe('runFondPaidTick', () => {
       });
       expect(release).toHaveBeenCalledWith('row-a');
       expect(mockedSettle).not.toHaveBeenCalled();
-      expect(eventNames()).toContain('fond.paid.settle_failed');
+      expect(eventNames()).toContain('fond.proof.failed');
     },
   );
 
@@ -552,7 +552,7 @@ describe('runFondPaidTick', () => {
     expect(lookup).toHaveBeenCalledWith(BOLT11);
     expect((await store.get('row-a'))?.status).toBe('paid');
     expect(mockedSettle).not.toHaveBeenCalled();
-    expect(eventNames()).toContain('fond.paid.paid');
+    expect(eventNames()).toContain('fond.payout.paid');
   });
 
   it('skips a fresh settling row and one without a claim time', async () => {
@@ -659,7 +659,7 @@ describe('runFondPaidTick', () => {
       actions: actions({ hasOutboundInvoice: lookup }),
     });
     expect((await store.get('row-a'))?.status).toBe('settling');
-    expect(eventNames()).toContain('fond.paid.recovery_failed');
+    expect(eventNames()).toContain('fond.proof.failed');
   });
 
   it('leaves a stale row alone when marking it paid misses or throws', async () => {
@@ -684,7 +684,7 @@ describe('runFondPaidTick', () => {
         fondUsername: FOND_USERNAME,
         actions: actions({ hasOutboundInvoice: async () => true }),
       });
-      expect(eventNames()).toContain('fond.paid.recovery_failed');
+      expect(eventNames()).toContain('fond.proof.failed');
     }
   });
 
@@ -710,7 +710,7 @@ describe('runFondPaidTick', () => {
         fondUsername: FOND_USERNAME,
         actions: actions({ hasOutboundInvoice: async () => false }),
       });
-      expect(eventNames()).toContain('fond.paid.recovery_failed');
+      expect(eventNames()).toContain('fond.proof.failed');
     }
   });
 
