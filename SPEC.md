@@ -2791,7 +2791,7 @@ Store throw → **Response** `503`:
 
 `donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503. Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
 
-`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither; a repayment subtracts `due_sats`; balances are not clamped; a loan movement stores no fiat figure, so every USD/CHF/EUR/PHP field of the loan series is JSON null and no rate book is read; loans stay out of `donatedSats` and `receivedSats`.
+`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither; a repayment subtracts `due_sats`; balances are not clamped; a grant carries the stored ingest USD/CHF/EUR/PHP and a repayment carries none, so each loan-series fiat field is the signed sum of the stored grant amounts for that currency, all missing on a day stays JSON null and does not clear the cumulative, and no rate book is read; loans stay out of `donatedSats` and `receivedSats`.
 
 ### `GET /me/loans`
 
@@ -3022,7 +3022,8 @@ Top-level notes by that member are not listed.
 A session has the same auth and 401 / 409 / 404 as `GET /members/:accountId`.
 An operator token skips the session and `forum.read` gate; 404 still
 applies. Success is the
-same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
+same JSON as `GET /me/activity` for **that** member, including loan series that
+sum stored grant fiat and leave a missing currency null. 503 `{ "error": "Gift
 stats are unavailable" }` when the gift store throws.
 
 Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.

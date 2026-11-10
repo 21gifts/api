@@ -11124,6 +11124,191 @@ describe('PostgresMessageStore', () => {
     );
   });
 
+  it('listLoanLedger copies the newest indexed ingest fiat and nulls a repayment', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'loan',
+      accountId: 'author',
+      goalSats: 500,
+      goalRepayable: true,
+    });
+    const ingest = async (
+      id: string,
+      receiptId: string,
+      createdAt: string,
+      outcome: 'indexed' | 'rejected',
+      amounts: {
+        amountUsd?: string | null;
+        amountChf?: string | null;
+        amountEur?: string | null;
+        amountPhp?: string | null;
+      },
+    ): Promise<void> => {
+      await store.recordZapIngest({
+        id,
+        createdAt: new Date(createdAt),
+        receiptId,
+        noteEventId: null,
+        messageId: 'loan',
+        outcome,
+        reason: null,
+        amountSats: 100,
+        receiptPubkey: null,
+        receipt: { id: receiptId, kind: 9735 },
+        ...amounts,
+      });
+    };
+    await store.recordZapReceipt('r-grant', 'loan', 100, null);
+    await store.updateZapReceiptGift('r-grant', { payerAccountId: 'payer' });
+    await ingest('zi-old', 'r-grant', '2026-06-01T00:00:00.000Z', 'indexed', {
+      amountUsd: '8.00',
+      amountChf: '9.00',
+      amountEur: '7.00',
+      amountPhp: '6.00',
+    });
+    await ingest('zi-new', 'r-grant', '2026-06-02T00:00:00.000Z', 'indexed', {
+      amountUsd: null,
+      amountChf: '1.25',
+      amountEur: '2.00',
+      amountPhp: '3.50',
+    });
+    await store.recordZapReceipt('r-bare', 'loan', 10, null);
+    await store.updateZapReceiptGift('r-bare', { payerAccountId: 'payer' });
+    await store.recordZapReceipt('r-rej', 'loan', 5, null);
+    await store.updateZapReceiptGift('r-rej', { payerAccountId: 'payer' });
+    await ingest('zi-rej', 'r-rej', '2026-06-03T00:00:00.000Z', 'rejected', {
+      amountUsd: '4.00',
+      amountChf: '4.00',
+      amountEur: '4.00',
+      amountPhp: '4.00',
+    });
+    await store.recordZapReceipt('r-keep', 'loan', 7, null);
+    await store.updateZapReceiptGift('r-keep', { payerAccountId: 'payer' });
+    await ingest('zi-keep-old', 'r-keep', '2026-06-01T00:00:00.000Z', 'indexed', {
+      amountUsd: '4.00',
+      amountChf: '4.00',
+      amountEur: '4.00',
+      amountPhp: '4.00',
+    });
+    await ingest('zi-keep-rej', 'r-keep', '2026-06-04T00:00:00.000Z', 'rejected', {
+      amountUsd: '9.00',
+      amountChf: '9.00',
+      amountEur: '9.00',
+      amountPhp: '9.00',
+    });
+    await store.recordZapReceipt('r-tie', 'loan', 3, null);
+    await store.updateZapReceiptGift('r-tie', { payerAccountId: 'payer' });
+    const tiedAt = '2026-06-05T00:00:00.000Z';
+    await ingest('zi-a', 'r-tie', tiedAt, 'indexed', {
+      amountUsd: '1.00',
+      amountChf: '1.00',
+      amountEur: '1.00',
+      amountPhp: '1.00',
+    });
+    await ingest('zi-b', 'r-tie', tiedAt, 'indexed', {
+      amountUsd: '2.00',
+      amountChf: '2.00',
+      amountEur: '2.00',
+      amountPhp: '2.00',
+    });
+    await store.recordZapReceipt('r-late', 'loan', 11, null);
+    await store.updateZapReceiptGift('r-late', { payerAccountId: 'payer' });
+    await ingest('zi-late', 'r-late', '2026-06-08T00:00:00.000Z', 'indexed', {
+      amountUsd: '5.00',
+      amountChf: '5.00',
+      amountEur: '5.00',
+      amountPhp: '5.00',
+    });
+    await ingest('zi-early', 'r-late', '2026-06-01T00:00:00.000Z', 'indexed', {
+      amountUsd: '1.00',
+      amountChf: '1.00',
+      amountEur: '1.00',
+      amountPhp: '1.00',
+    });
+    await store.recordZapReceipt('r-tie-lose', 'loan', 13, null);
+    await store.updateZapReceiptGift('r-tie-lose', { payerAccountId: 'payer' });
+    const loseAt = '2026-06-09T00:00:00.000Z';
+    await ingest('zi-m', 'r-tie-lose', loseAt, 'indexed', {
+      amountUsd: '2.00',
+      amountChf: '2.00',
+      amountEur: '2.00',
+      amountPhp: '2.00',
+    });
+    await ingest('zi-l', 'r-tie-lose', loseAt, 'indexed', {
+      amountUsd: '1.00',
+      amountChf: '1.00',
+      amountEur: '1.00',
+      amountPhp: '1.00',
+    });
+    const paidAt = new Date('2026-06-06T00:00:00.000Z');
+    await store.markRepaymentPaid({
+      messageId: 'loan',
+      dayIndex: 0,
+      recipientAccountId: 'payer',
+      dueSats: 40,
+      paidAt,
+    });
+    const rows = await store.listLoanLedger('payer');
+    const bySats = (sats: number, kind: 'grant' | 'repayment'): (typeof rows)[number] => {
+      const found = rows.find((row) => row.sats === sats && row.kind === kind);
+      if (found === undefined) {
+        throw new Error(`missing ${kind} ${sats}`);
+      }
+      return found;
+    };
+    expect(bySats(100, 'grant')).toMatchObject({
+      amountUsd: null,
+      amountChf: '1.25',
+      amountEur: '2.00',
+      amountPhp: '3.50',
+    });
+    expect(bySats(10, 'grant')).toMatchObject({
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    });
+    expect(bySats(5, 'grant')).toMatchObject({
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    });
+    expect(bySats(7, 'grant')).toMatchObject({
+      amountUsd: '4.00',
+      amountChf: '4.00',
+      amountEur: '4.00',
+      amountPhp: '4.00',
+    });
+    expect(bySats(3, 'grant')).toMatchObject({
+      amountUsd: '2.00',
+      amountChf: '2.00',
+      amountEur: '2.00',
+      amountPhp: '2.00',
+    });
+    expect(bySats(11, 'grant')).toMatchObject({
+      amountUsd: '5.00',
+      amountChf: '5.00',
+      amountEur: '5.00',
+      amountPhp: '5.00',
+    });
+    expect(bySats(13, 'grant')).toMatchObject({
+      amountUsd: '2.00',
+      amountChf: '2.00',
+      amountEur: '2.00',
+      amountPhp: '2.00',
+    });
+    expect(bySats(40, 'repayment')).toMatchObject({
+      kind: 'repayment',
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+      at: paidAt,
+    });
+  });
+
   it('listLoanLedger maps one Postgres UNION ALL query', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -11151,6 +11336,10 @@ describe('PostgresMessageStore', () => {
         owed: false,
         credit: true,
         kind: 'grant',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
       },
       {
         at: new Date('2026-06-02T15:00:00.000Z'),
@@ -11158,6 +11347,10 @@ describe('PostgresMessageStore', () => {
         owed: true,
         credit: false,
         kind: 'repayment',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
       },
     ]);
     expect(sql.queries).toHaveLength(1);
@@ -11170,6 +11363,91 @@ describe('PostgresMessageStore', () => {
     expect(text).toMatch(/recorded_at <= m.goal_funded_at/);
     expect(text).toMatch(/message_repayment/);
     expect(text).toMatch(/due_sats/);
+    expect(text).toContain('LEFT JOIN LATERAL');
+    expect(text).toContain("outcome = 'indexed'");
+    expect(text).toContain('receipt_id = r.event_id');
+    expect(text).toContain('ORDER BY created_at DESC, id DESC');
+    expect(text).toContain('LIMIT 1');
+    expect(text).toContain('i.fiat_usd::text AS amount_usd');
+    expect(text).toContain('i.fiat_chf::text AS amount_chf');
+    expect(text).toContain('i.fiat_eur::text AS amount_eur');
+    expect(text).toContain('i.fiat_php::text AS amount_php');
+    expect(text).toContain('NULL::text AS amount_usd');
+    expect(text).toContain('NULL::text AS amount_chf');
+    expect(text).toContain('NULL::text AS amount_eur');
+    expect(text).toContain('NULL::text AS amount_php');
+    expect(text).not.toContain('message_id = r.message_id');
+  });
+
+  it('listLoanLedger maps grant ingest fiat and leaves a repayment null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        at: '2026-06-01T12:00:00.000Z',
+        sats: '100',
+        owed: 't',
+        credit: false,
+        kind: 'grant',
+        amount_usd: '1.00',
+        amount_chf: '2.50',
+        amount_eur: null,
+        amount_php: 4,
+      },
+      {
+        at: '2026-06-01T13:00:00.000Z',
+        sats: 10,
+        owed: false,
+        credit: 't',
+        kind: 'grant',
+      },
+      {
+        at: new Date('2026-06-02T15:00:00.000Z'),
+        sats: '40',
+        owed: true,
+        credit: false,
+        kind: 'repayment',
+        amount_usd: null,
+        amount_chf: null,
+        amount_eur: null,
+        amount_php: null,
+      },
+    ];
+    const postgres = new PostgresMessageStore(sql);
+    expect(await postgres.listLoanLedger('acc')).toEqual([
+      {
+        at: new Date('2026-06-01T12:00:00.000Z'),
+        sats: 100,
+        owed: true,
+        credit: false,
+        kind: 'grant',
+        amountUsd: '1.00',
+        amountChf: '2.50',
+        amountEur: null,
+        amountPhp: '4',
+      },
+      {
+        at: new Date('2026-06-01T13:00:00.000Z'),
+        sats: 10,
+        owed: false,
+        credit: true,
+        kind: 'grant',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      },
+      {
+        at: new Date('2026-06-02T15:00:00.000Z'),
+        sats: 40,
+        owed: true,
+        credit: false,
+        kind: 'repayment',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      },
+    ]);
   });
 
   it('listOpenConversationZapEventIds maps zap_request e-tags', async () => {

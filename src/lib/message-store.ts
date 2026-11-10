@@ -61,6 +61,12 @@ export type ShopNoteRef = { id: string; accountId: string; text: string };
  * `sats` is always positive; the caller applies the sign. Omit a row when both
  * `owed` and `credit` are false. One receipt can set both flags when payer and
  * author are the same account — that is one row, not two.
+ *
+ * A grant copies the stored fiat of the newest indexed ingest for that receipt
+ * (`outcome = 'indexed'`, `receipt_id` equal to the receipt event id, newest
+ * `created_at` then `id`). No ingest row, or a null column, is `null`. A
+ * repayment stores no fiat figure, so all four amounts are `null`. The strings
+ * are the stored decimals. They are not priced again from sats or from a rate.
  */
 export interface LoanLedgerMovement {
   /** When the movement applies. */
@@ -73,6 +79,17 @@ export interface LoanLedgerMovement {
   credit: boolean;
   /** Tie-break: grants sort before repayments. */
   kind: 'grant' | 'repayment';
+  /**
+   * Stored USD of a grant's newest indexed ingest, or `null` when that column
+   * is null, no indexed ingest exists, or the movement is a repayment.
+   */
+  amountUsd: string | null;
+  /** Stored CHF. Same rule as {@link LoanLedgerMovement.amountUsd}. */
+  amountChf: string | null;
+  /** Stored EUR. Same rule as {@link LoanLedgerMovement.amountUsd}. */
+  amountEur: string | null;
+  /** Stored PHP. Same rule as {@link LoanLedgerMovement.amountUsd}. */
+  amountPhp: string | null;
 }
 
 const MAX_PUBLISH_ATTEMPTS = 5;
@@ -84,6 +101,14 @@ interface PaymentFiatStoreOptions {
   fetchImpl?: FetchFn;
   fiatRates?: FiatRateBook;
   now?: () => number;
+}
+
+/** Text of one stored fiat column. A missing column stays `null`. */
+function storedFiatText(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return String(value);
 }
 
 function centsFromStoredAmount(value: string): bigint {
@@ -1292,7 +1317,9 @@ export interface MessageStore {
    * Grant and repayment movements that touch this account's loan balances.
    *
    * Grants: identified payer receipts on `goalRepayable` notes that count
-   * toward the credit plan. Repayments: paid shares with no freeze. Caller
+   * toward the credit plan. Each grant carries the stored fiat of the newest
+   * indexed ingest for that receipt, or `null` when that ingest or column is
+   * missing. Repayments: paid shares with no freeze, and `null` fiat. Caller
    * sorts. Returns caller-owned `Date` copies.
    *
    * @param accountId - Account whose owed/credit sides are collected.
@@ -4213,7 +4240,7 @@ export class InMemoryMessageStore implements MessageStore {
 
   listLoanLedger(accountId: string): Promise<LoanLedgerMovement[]> {
     const out: LoanLedgerMovement[] = [];
-    for (const receipt of this.#receipts.values()) {
+    for (const [eventId, receipt] of this.#receipts) {
       const message = this.#rows.find((row) => row.id === receipt.messageId);
       if (message === undefined || message.goalRepayable !== true) {
         continue;
@@ -4230,12 +4257,17 @@ export class InMemoryMessageStore implements MessageStore {
       if (!owed && !credit) {
         continue;
       }
+      const ingest = this.#newestIndexedIngest(eventId);
       out.push({
         at: new Date(receipt.recordedAt.getTime()),
         sats: receipt.sats,
         owed,
         credit,
         kind: 'grant',
+        amountUsd: ingest?.amountUsd ?? null,
+        amountChf: ingest?.amountChf ?? null,
+        amountEur: ingest?.amountEur ?? null,
+        amountPhp: ingest?.amountPhp ?? null,
       });
     }
     for (const repayment of this.#repayments) {
@@ -4254,6 +4286,10 @@ export class InMemoryMessageStore implements MessageStore {
         owed,
         credit,
         kind: 'repayment',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
       });
     }
     return Promise.resolve(out);
@@ -7809,14 +7845,30 @@ export class PostgresMessageStore implements MessageStore {
       owed: boolean | string;
       credit: boolean | string;
       kind: string;
+      amount_usd: string | number | null;
+      amount_chf: string | number | null;
+      amount_eur: string | number | null;
+      amount_php: string | number | null;
     }>(
       `SELECT COALESCE(r.recorded_at, m.goal_funded_at, m.created_at) AS at,
               r.sats AS sats,
               (m.account_id = $1) AS owed,
               (r.payer_account_id = $1) AS credit,
-              'grant' AS kind
+              'grant' AS kind,
+              i.fiat_usd::text AS amount_usd,
+              i.fiat_chf::text AS amount_chf,
+              i.fiat_eur::text AS amount_eur,
+              i.fiat_php::text AS amount_php
        FROM nostr_zap_receipt r
        JOIN message m ON m.id = r.message_id
+       LEFT JOIN LATERAL (
+         SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
+         FROM nostr_zap_ingest
+         WHERE receipt_id = r.event_id
+           AND outcome = 'indexed'
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1
+       ) i ON true
        WHERE m.goal_repayable IS TRUE
          AND r.payer_account_id IS NOT NULL
          AND (m.account_id = $1 OR r.payer_account_id = $1)
@@ -7830,7 +7882,11 @@ export class PostgresMessageStore implements MessageStore {
               p.due_sats AS sats,
               (m.account_id = $1) AS owed,
               (p.recipient_account_id = $1) AS credit,
-              'repayment' AS kind
+              'repayment' AS kind,
+              NULL::text AS amount_usd,
+              NULL::text AS amount_chf,
+              NULL::text AS amount_eur,
+              NULL::text AS amount_php
        FROM message_repayment p
        JOIN message m ON m.id = p.message_id
        WHERE m.account_id = $1 OR p.recipient_account_id = $1`,
@@ -7842,6 +7898,10 @@ export class PostgresMessageStore implements MessageStore {
       owed: row.owed === true || row.owed === 't',
       credit: row.credit === true || row.credit === 't',
       kind: row.kind === 'repayment' ? 'repayment' : 'grant',
+      amountUsd: storedFiatText(row.amount_usd),
+      amountChf: storedFiatText(row.amount_chf),
+      amountEur: storedFiatText(row.amount_eur),
+      amountPhp: storedFiatText(row.amount_php),
     }));
   }
 
