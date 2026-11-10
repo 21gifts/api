@@ -692,8 +692,9 @@ One procedure creates a shop payment, for a charge or for a payer:
 7. For a charge, when none is kept, write nothing, and the account's next
    creation in this container waits 60 s; the other container of a deploy
    keeps its own wait, so during a deploy an account can see two creations
-   in 60 s. Until then a fetch answers today's pinned Lightning request,
-   and `POST /pay/:username/payment` answers order 7. Order 9 is only a
+   in 60 s. While the charge stays pending, the pay link stays pinned and
+   `POST /pay/:username/payment` answers order 4. Order 7 applies during the
+   wait only when no charge is pending. Order 9 is only a
    `findChargeForPayment` error, an insert at 16 s or later, or a disconnected
    client. For a payer, no committed pair is not an error: the payment is
    already open Lightning-only, and the offers fill simply inserts no second
