@@ -7855,7 +7855,7 @@ query throws.
 Public wallet totals across all 21.gifts member wallets. No auth. The source is
 `wallet_balance_snapshot`, filled by `POST /me/wallet/report`; the data are
 self-reported by the member apps and begin with the first report (2026-11-09 in
-production). A wallet is an `account_id` with at least one snapshot. The
+production). A wallet is an `account_id` with at least one visible snapshot. The
 response never includes account ids, per-account balances, or any other
 per-account value.
 
@@ -7868,13 +7868,15 @@ wallet balance; `fundedWalletCount` counts those balances greater than 0.
 `walletCount` counts every wallet present at the end of that day, including a
 wallet whose balance is 0.
 
-`balanceOverTime` has no gaps: every UTC day from the earliest `received_at`
-through the current UTC day. `totalBtc` uses the same eight-decimal sats-to-BTC
-formatter as `GET /gifts/stats`. `asOf` is the newest `received_at` as an ISO
-string, or `null` when the table is empty. An empty table is **200** with zeros,
+`balanceOverTime` has no gaps: every UTC day from the earliest visible
+`received_at` through the current UTC day. A snapshot whose UTC day is after the
+current UTC day is not visible and is ignored by both the series and the current
+values. `totalBtc` uses the same eight-decimal sats-to-BTC formatter as
+`GET /gifts/stats`. `asOf` is the newest visible `received_at` as an ISO string,
+or `null` when no row is visible. No visible row is **200** with zeros,
 `asOf: null`, and `balanceOverTime: []`. The current `walletCount`,
-`fundedWalletCount`, `totalSats`, and `totalBtc` use each wallet's newest
-snapshot overall and equal the last series day.
+`fundedWalletCount`, `totalSats`, and `totalBtc` are the last series day's
+values and therefore always equal it.
 
 **Response** `200`:
 

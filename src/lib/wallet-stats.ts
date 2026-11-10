@@ -22,17 +22,17 @@ export interface WalletBalanceDay {
 
 /** Public `GET /wallets/stats` body. */
 export interface WalletStats {
-  /** Wallets with at least one snapshot overall. */
+  /** Wallets with at least one snapshot on or before the current UTC day. */
   walletCount: number;
-  /** Wallets whose newest snapshot overall has a positive balance. */
+  /** Wallets whose carried-forward balance on the current UTC day is positive. */
   fundedWalletCount: number;
-  /** Sum of every wallet's newest snapshot overall. */
+  /** Sum of every wallet's carried-forward balance on the current UTC day. */
   totalSats: number;
   /** {@link WalletStats.totalSats} as an eight-decimal BTC string. */
   totalBtc: string;
-  /** Newest snapshot receipt instant, or null for an empty table. */
+  /** Newest visible snapshot receipt instant, or null when none is visible. */
   asOf: string | null;
-  /** Gap-free UTC days from the first snapshot through today. */
+  /** Gap-free UTC days from the first visible snapshot through today. */
   balanceOverTime: WalletBalanceDay[];
 }
 
@@ -65,61 +65,54 @@ function safeSatsTotal(total: bigint): number {
   return value;
 }
 
+function emptyWalletStats(): WalletStats {
+  return {
+    walletCount: 0,
+    fundedWalletCount: 0,
+    totalSats: 0,
+    totalBtc: satsToBtcString(0),
+    asOf: null,
+    balanceOverTime: [],
+  };
+}
+
 /**
- * Build public wallet totals from the last snapshot of each account and UTC day.
+ * Build public wallet totals from the visible snapshots of each account and UTC day.
  *
  * An account's balance carries forward over days without a report. A wallet
  * exists from its first snapshot day onward. A balance of 0 stays in
- * `walletCount` but not in `fundedWalletCount`.
+ * `walletCount` but not in `fundedWalletCount`. Snapshots after the current UTC
+ * day are ignored by both the series and the headline values.
  *
  * @param rows - Last snapshots per account and UTC day. Order is ignored.
  * @param nowMs - Clock returning epoch milliseconds.
- * @returns Empty stats for no rows; otherwise a gap-free series through today.
+ * @returns Empty stats when no row is visible; otherwise a gap-free series through today.
  * @throws If a current or daily total exceeds `Number.MAX_SAFE_INTEGER`.
  */
 export function buildWalletStats(
   rows: readonly WalletBalanceSnapshot[],
   nowMs: number,
 ): WalletStats {
-  if (rows.length === 0) {
-    return {
-      walletCount: 0,
-      fundedWalletCount: 0,
-      totalSats: 0,
-      totalBtc: satsToBtcString(0),
-      asOf: null,
-      balanceOverTime: [],
-    };
+  const endDay = new Date(nowMs).toISOString().slice(0, 10);
+  const visibleRows = rows.filter((row) => utcDay(row.receivedAt) <= endDay);
+  if (visibleRows.length === 0) {
+    return emptyWalletStats();
   }
 
   const byAccountDay = new Map<string, WalletBalanceSnapshot>();
-  const latestByAccount = new Map<string, WalletBalanceSnapshot>();
   let firstDay: string | undefined;
-  let latestRow: WalletBalanceSnapshot | undefined;
-  for (const row of rows) {
+  let latestVisibleRow: WalletBalanceSnapshot | undefined;
+  for (const row of visibleRows) {
     const day = utcDay(row.receivedAt);
     firstDay = firstDay === undefined || day < firstDay ? day : firstDay;
-    latestRow = latestRow === undefined || isLater(row, latestRow) ? row : latestRow;
+    latestVisibleRow =
+      latestVisibleRow === undefined || isLater(row, latestVisibleRow) ? row : latestVisibleRow;
     const dayKey = `${row.accountId}\u0000${day}`;
     const currentDay = byAccountDay.get(dayKey);
     if (currentDay === undefined || isLater(row, currentDay)) {
       byAccountDay.set(dayKey, row);
     }
-    const currentAccount = latestByAccount.get(row.accountId);
-    if (currentAccount === undefined || isLater(row, currentAccount)) {
-      latestByAccount.set(row.accountId, row);
-    }
   }
-
-  let totalSats = 0n;
-  let fundedWalletCount = 0;
-  for (const row of latestByAccount.values()) {
-    totalSats += BigInt(row.balanceSats);
-    if (row.balanceSats > 0) {
-      fundedWalletCount += 1;
-    }
-  }
-  const currentTotalSats = safeSatsTotal(totalSats);
 
   const snapshotsByDay = new Map<string, WalletBalanceSnapshot[]>();
   for (const row of byAccountDay.values()) {
@@ -128,7 +121,6 @@ export function buildWalletStats(
     rowsOnDay.push(row);
     snapshotsByDay.set(day, rowsOnDay);
   }
-  const endDay = new Date(nowMs).toISOString().slice(0, 10);
   const balances = new Map<string, number>();
   const balanceOverTime: WalletBalanceDay[] = [];
   const first = firstDay as string;
@@ -154,12 +146,13 @@ export function buildWalletStats(
     });
   }
 
+  const lastDay = balanceOverTime[balanceOverTime.length - 1] as WalletBalanceDay;
   return {
-    walletCount: latestByAccount.size,
-    fundedWalletCount,
-    totalSats: currentTotalSats,
-    totalBtc: satsToBtcString(currentTotalSats),
-    asOf: (latestRow as WalletBalanceSnapshot).receivedAt.toISOString(),
+    walletCount: lastDay.walletCount,
+    fundedWalletCount: lastDay.fundedWalletCount,
+    totalSats: lastDay.totalSats,
+    totalBtc: lastDay.totalBtc,
+    asOf: (latestVisibleRow as WalletBalanceSnapshot).receivedAt.toISOString(),
     balanceOverTime,
   };
 }

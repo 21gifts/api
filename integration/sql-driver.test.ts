@@ -3057,7 +3057,6 @@ describe('PostgresWalletStore', () => {
       await migrateAuthSchema(client);
       await migrateWalletSchema(client);
       await migrateDbChangeSchema(client);
-      await client.execute('DELETE FROM wallet_balance_snapshot');
       seeded = true;
       for (const [index, accountId] of [accountA, accountB].entries()) {
         await auth.createAccount({
@@ -3144,8 +3143,10 @@ describe('PostgresWalletStore', () => {
       }
 
       const daily = await store.dailyBalances();
+      const accountIds = new Set([accountA, accountB]);
+      const dailyForAccounts = daily.filter((row) => accountIds.has(row.accountId));
       expect(
-        daily.map((row) => ({
+        dailyForAccounts.map((row) => ({
           id: row.id,
           accountId: row.accountId,
           balanceSats: row.balanceSats,
@@ -3178,7 +3179,7 @@ describe('PostgresWalletStore', () => {
         },
       ]);
 
-      expect(buildWalletStats(daily, Date.parse('2026-11-10T12:00:00.000Z'))).toEqual({
+      expect(buildWalletStats(dailyForAccounts, Date.parse('2026-11-10T12:00:00.000Z'))).toEqual({
         walletCount: 2,
         fundedWalletCount: 2,
         totalSats: 580,

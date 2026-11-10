@@ -211,6 +211,62 @@ describe('buildWalletStats', () => {
     ]);
   });
 
+  it('ignores a snapshot after the current UTC day and keeps headline equal to last day', () => {
+    const stats = buildWalletStats(
+      [
+        snapshot('account-a', 'a', 100, '2026-11-09T10:00:00.000Z'),
+        snapshot('account-a', 'future', 900, '2026-11-11T00:00:00.000Z'),
+      ],
+      Date.parse('2026-11-10T12:00:00.000Z'),
+    );
+
+    expect(stats.balanceOverTime).toEqual([
+      {
+        day: '2026-11-09',
+        totalSats: 100,
+        totalBtc: '0.00000100',
+        walletCount: 1,
+        fundedWalletCount: 1,
+      },
+      {
+        day: '2026-11-10',
+        totalSats: 100,
+        totalBtc: '0.00000100',
+        walletCount: 1,
+        fundedWalletCount: 1,
+      },
+    ]);
+    const lastDay = stats.balanceOverTime[stats.balanceOverTime.length - 1];
+    expect({
+      walletCount: stats.walletCount,
+      fundedWalletCount: stats.fundedWalletCount,
+      totalSats: stats.totalSats,
+      totalBtc: stats.totalBtc,
+    }).toEqual({
+      walletCount: lastDay?.walletCount,
+      fundedWalletCount: lastDay?.fundedWalletCount,
+      totalSats: lastDay?.totalSats,
+      totalBtc: lastDay?.totalBtc,
+    });
+    expect(stats.asOf).toBe('2026-11-09T10:00:00.000Z');
+  });
+
+  it('returns empty stats when every snapshot is after the current UTC day', () => {
+    expect(
+      buildWalletStats(
+        [snapshot('account-a', 'future', 100, '2026-11-11T00:00:00.000Z')],
+        Date.parse('2026-11-10T23:59:59.999Z'),
+      ),
+    ).toEqual({
+      walletCount: 0,
+      fundedWalletCount: 0,
+      totalSats: 0,
+      totalBtc: '0.00000000',
+      asOf: null,
+      balanceOverTime: [],
+    });
+  });
+
   it('throws instead of rounding when five MAX_SATS balances exceed the safe integer range', () => {
     const rows = Array.from({ length: 5 }, (_, index) =>
       snapshot(
