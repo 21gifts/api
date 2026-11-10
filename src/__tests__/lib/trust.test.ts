@@ -32,17 +32,40 @@ function edge(
 
 describe('isStaffRole', () => {
   it('is true from moderator upwards only', () => {
-    const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'fond', 'initiator', 'founder'];
-    expect(roles.filter(isStaffRole)).toEqual(['moderator', 'fond', 'initiator', 'founder']);
+    const roles: AccountRole[] = [
+      'basis',
+      'verified',
+      'moderator',
+      'software_developer',
+      'fond',
+      'initiator',
+      'founder',
+    ];
+    expect(roles.filter(isStaffRole)).toEqual([
+      'moderator',
+      'software_developer',
+      'fond',
+      'initiator',
+      'founder',
+    ]);
   });
 });
 
 describe('isChainAccount', () => {
   it('is true for every role at least verified', () => {
-    const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'fond', 'initiator', 'founder'];
+    const roles: AccountRole[] = [
+      'basis',
+      'verified',
+      'moderator',
+      'software_developer',
+      'fond',
+      'initiator',
+      'founder',
+    ];
     expect(roles.filter((role) => isChainAccount(account({ id: role, role })))).toEqual([
       'verified',
       'moderator',
+      'software_developer',
       'fond',
       'initiator',
       'founder',
@@ -78,16 +101,40 @@ describe('isProjectedTrustEdge', () => {
     ).toBe(true);
   });
 
-  it('omits moderator_propose when the subject is an initiator', () => {
-    const propose = edge({ id: 'e', subjectId: 'i', actorId: 'p', kind: 'moderator_propose' });
-    expect(isProjectedTrustEdge(propose, account({ id: 'i', role: 'initiator' }))).toBe(false);
-    expect(
-      buildTrustChain(
-        [account({ id: 'p', role: 'moderator' }), account({ id: 'i', role: 'initiator' })],
-        [propose],
-      ).edges,
-    ).toEqual([]);
-  });
+  it.each(['software_developer', 'fond', 'initiator', 'founder'] as const)(
+    'projects moderator_propose when the subject is promoted to %s',
+    (role) => {
+      const propose = edge({ id: 'e', subjectId: 's', actorId: 'p', kind: 'moderator_propose' });
+      const subject = account({ id: 's', role });
+      expect(isProjectedTrustEdge(propose, subject)).toBe(true);
+      expect(
+        buildTrustChain([account({ id: 'p', role: 'moderator' }), subject], [propose]).edges,
+      ).toEqual([{ from: 'p', to: 's', kind: 'moderator_propose' }]);
+    },
+  );
+
+  it.each(['software_developer', 'initiator', 'founder'] as const)(
+    'keeps an older propose for a %s subject instead of dropping the edge',
+    (role) => {
+      const subject = account({ id: 's', role });
+      const propose = edge({
+        id: 'e-p',
+        subjectId: 's',
+        actorId: 'p',
+        kind: 'moderator_propose',
+        createdAt: 1,
+      });
+      const appoint = edge({
+        id: 'e-a',
+        subjectId: 's',
+        actorId: 'f',
+        kind: 'moderator_appoint',
+        createdAt: 2,
+      });
+      expect(isProjectedTrustEdge(propose, subject, [propose, appoint])).toBe(true);
+      expect(isProjectedTrustEdge(appoint, subject, [propose, appoint])).toBe(false);
+    },
+  );
 
   it('omits moderator_propose when the subject is verified', () => {
     expect(
@@ -272,12 +319,18 @@ describe('buildTrustChain', () => {
     );
   });
 
-  it('sorts founder, initiator, fond, moderator, then verified; oldest createdAt then id', () => {
+  it('sorts founder, initiator, fond, software developer, moderator, then verified; oldest createdAt then id', () => {
     const verifiedLate = account({ id: 'v2', role: 'verified', createdAt: 3, name: 'V2' });
     const verifiedEarly = account({ id: 'v1', role: 'verified', createdAt: 2, name: 'V1' });
     const verifiedTieHigh = account({ id: 'v9', role: 'verified', createdAt: 2, name: 'V9' });
     const initiatorEarly = account({ id: 'i', role: 'initiator', createdAt: 4, name: 'Init' });
     const fond = account({ id: 'd', role: 'fond', createdAt: 5, name: 'Fond' });
+    const developer = account({
+      id: 's',
+      role: 'software_developer',
+      createdAt: 6,
+      name: 'Dev',
+    });
     const moderator = account({ id: 'm', role: 'moderator', createdAt: 9, name: 'Mod' });
     const founderLate = account({ id: 'f2', role: 'founder', createdAt: 8, name: 'F2' });
     const founderEarly = account({ id: 'f1', role: 'founder', createdAt: 1, name: 'F1' });
@@ -296,6 +349,7 @@ describe('buildTrustChain', () => {
         verifiedEarly,
         initiatorEarly,
         fond,
+        developer,
         moderator,
         founderLate,
         founderEarly,
@@ -308,6 +362,7 @@ describe('buildTrustChain', () => {
       'f2',
       'i',
       'd',
+      's',
       'm',
       'v1',
       'v9',
@@ -315,6 +370,7 @@ describe('buildTrustChain', () => {
     ]);
     expect(chain.nodes[2]).toEqual({ id: 'i', name: 'Init', role: 'initiator' });
     expect(chain.nodes[3]).toEqual({ id: 'd', name: 'Fond', role: 'fond' });
+    expect(chain.nodes[4]).toEqual({ id: 's', name: 'Dev', role: 'software_developer' });
     expect(chain.nodes[0]).toEqual({ id: 'f1', name: 'F1', role: 'founder' });
     expect(chain.nodes[0]).not.toHaveProperty('lightningAddress');
     expect(chain.nodes[0]).not.toHaveProperty('viewKey');

@@ -7,7 +7,7 @@
  * edge per subject: the oldest eligible sibling (`createdAt` then `id`),
  * skipping a non-chain oldest sibling so a later displayable contact can
  * show. Eligible: `verify`, `moderator_appoint`, and `moderator_propose`
- * only when the live subject is a `moderator`. `moderator_confirm` and
+ * only when the live subject is at least a moderator. `moderator_confirm` and
  * `moderator_reject` never. A pending propose (subject still `verified`)
  * stays private. Later appoint, confirm, or propose do not replace an
  * earlier eligible contact.
@@ -16,7 +16,7 @@
 import { roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AccountRole } from '@/lib/auth/store';
 
-/** Stored grant kind. Pending `moderator_propose` is staff-only until the subject is a moderator. */
+/** Stored grant kind. Pending `moderator_propose` is staff-only until the subject is at least a moderator. */
 export type TrustKind =
   'verify' | 'moderator_propose' | 'moderator_confirm' | 'moderator_appoint' | 'moderator_reject';
 
@@ -44,7 +44,7 @@ export interface TrustChainNode {
   /** Display name, or `null` when unset. */
   name: string | null;
   /** Forum display role on the chain. */
-  role: 'verified' | 'moderator' | 'fond' | 'initiator' | 'founder';
+  role: 'verified' | 'moderator' | 'software_developer' | 'fond' | 'initiator' | 'founder';
 }
 
 /** Public graph edge (stored only; actor → subject). */
@@ -59,7 +59,7 @@ export interface TrustChainEdge {
 
 /** Public trust graph. */
 export interface TrustChain {
-  /** Chain nodes (founder, initiator, fond, moderator, then verified). */
+  /** Chain nodes (founder, initiator, fond, software developer, moderator, then verified). */
   nodes: TrustChainNode[];
   /** Stored public edges whose endpoints are in `nodes`. */
   edges: TrustChainEdge[];
@@ -121,8 +121,9 @@ const ROLE_RANK: Record<TrustChainNode['role'], number> = {
   founder: 0,
   initiator: 1,
   fond: 2,
-  moderator: 3,
-  verified: 4,
+  software_developer: 3,
+  moderator: 4,
+  verified: 5,
 };
 
 /**
@@ -139,12 +140,13 @@ export function isStaffRole(role: AccountRole): boolean {
  * Project stored accounts and edges to the public trust graph.
  *
  * Nodes are accounts at least verified (never `basis`), sorted founder →
- * initiator → fond → moderator → verified, then oldest `createdAt`, then `id`.
+ * initiator → fond → software developer → moderator → verified, then oldest
+ * `createdAt`, then `id`.
  * Groups stored edges by `subjectId` and projects
  * at most one incoming edge per subject: the oldest eligible sibling
  * (`createdAt` then `id`), skipping a non-chain oldest sibling so a later
  * displayable contact can show. Eligible: `verify`, `moderator_appoint`, and
- * `moderator_propose` only when the live subject is a `moderator`.
+ * `moderator_propose` only when the live subject is at least a moderator.
  * `moderator_confirm` and `moderator_reject` never. A pending propose
  * (subject still `verified`) stays private. Later appoint, confirm, or
  * propose do not replace an earlier eligible contact. Actor and subject
@@ -317,7 +319,7 @@ export function isChainAccount(
  * True iff `edge` is the oldest eligible sibling among `subjectEdges`
  * (default `[edge]`), by `createdAt` then `id`. Eligible: `verify`,
  * `moderator_appoint`, and `moderator_propose` only when the live subject
- * is a `moderator`. `moderator_confirm` and `moderator_reject` never.
+ * is at least a moderator. `moderator_confirm` and `moderator_reject` never.
  * Later siblings do not replace an earlier eligible contact. At most one
  * public incoming edge per subject, even when several rows share the
  * winning kind.
@@ -351,7 +353,10 @@ function winningPublicEdge(
     if (sibling.kind === 'moderator_confirm' || sibling.kind === 'moderator_reject') {
       continue;
     }
-    if (sibling.kind === 'moderator_propose' && subject?.role !== 'moderator') {
+    if (
+      sibling.kind === 'moderator_propose' &&
+      (subject === undefined || !roleAtLeast(subject.role, 'moderator'))
+    ) {
       continue;
     }
     if (
@@ -393,7 +398,7 @@ function compareTrustEdgesOldestFirst(a: TrustEdge, b: TrustEdge): number {
   return 0;
 }
 
-/** Founder, initiator, fond, moderator, verified; oldest `createdAt`, then `id`. */
+/** Founder, initiator, fond, software developer, moderator, verified; oldest `createdAt`, then `id`. */
 function compareChainAccounts(a: Account, b: Account): number {
   const aRole = a.role as TrustChainNode['role'];
   const bRole = b.role as TrustChainNode['role'];

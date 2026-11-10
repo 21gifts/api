@@ -12,7 +12,6 @@ import {
   parseHeartSats,
   parseStoredFiat,
   parseStoredLocale,
-  staffTagOf,
   type Account,
   type AccountFiat,
   type AccountLocale,
@@ -68,14 +67,13 @@ interface AccountRow {
   amount_unit?: string | null;
   locale?: string | null;
   fiat?: string | null;
-  staff_tag?: string | null;
   spark_pubkey?: string | null;
   spark_pubkey_verified_at?: Date | string | null;
   notify_hearts?: boolean | null;
   heart_sats?: number | string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag, spark_pubkey, spark_pubkey_verified_at, notify_hearts, heart_sats, wallet_intro_seen, (lightning_address IS NOT NULL AND btrim(lightning_address) <> '') AS had_external_wallet`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, spark_pubkey, spark_pubkey_verified_at, notify_hearts, heart_sats, wallet_intro_seen, (lightning_address IS NOT NULL AND btrim(lightning_address) <> '') AS had_external_wallet`;
 
 /** Escape `\`, `%`, and `_` so they are LIKE literals. Does not append `%`. */
 function mentionLikePattern(prefix: string): string {
@@ -1216,12 +1214,12 @@ LIMIT $2`,
   /**
    * Account ids at the moderator rank or above.
    *
-   * @returns Ids from
-   *   `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator', 'fond')`.
+   * @returns Ids from `SELECT id FROM account WHERE role IN
+   *   ('moderator', 'software_developer', 'fond', 'initiator', 'founder')`.
    */
   async listStaffAccountIds(): Promise<string[]> {
     const rows = await this.#sql.query<{ id: string }>(
-      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator', 'fond')`,
+      `SELECT id FROM account WHERE role IN ('moderator', 'software_developer', 'fond', 'initiator', 'founder')`,
     );
     return rows.map((row) => row.id);
   }
@@ -1722,7 +1720,6 @@ function mapAccount(row: AccountRow): Account | undefined {
       row.wallet_backup_seen_at === null || row.wallet_backup_seen_at === undefined
         ? null
         : epochMs(row.wallet_backup_seen_at),
-    staffTag: staffTagOf(row.staff_tag),
     sparkPubkey: row.spark_pubkey ?? null,
     sparkPubkeyVerifiedAt:
       row.spark_pubkey_verified_at === null || row.spark_pubkey_verified_at === undefined

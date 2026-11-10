@@ -1,5 +1,5 @@
 import { aboutMeFromNote } from '@/lib/about-me';
-import { staffTagOf, type Account, type AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
@@ -91,7 +91,6 @@ function serializeListed(
     Math.max(0, row.replyCount - dropped),
     true,
     undefined,
-    staffTagOf(author?.staffTag),
   );
 }
 
@@ -130,7 +129,6 @@ export async function memberPublicMessages(input: {
             undefined,
             true,
             undefined,
-            staffTagOf(account.staffTag),
           ),
         );
       } catch {
@@ -211,7 +209,6 @@ export async function loadMemberProfileNote(input: {
     children.length,
     true,
     undefined,
-    staffTagOf(account.staffTag),
   );
   const attached = await attachHeartStats(
     (ids, viewer) => messageStore.heartStats(ids, viewer),

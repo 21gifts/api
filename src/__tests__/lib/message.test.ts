@@ -852,7 +852,7 @@ describe('serializeMessage', () => {
     expect(body.authorCanReceive).toBe(true);
   });
 
-  it('includes staffTag only when the last argument is software_developer', () => {
+  it('carries the developer badge in role only', () => {
     const row: MessageRow = {
       id: 'msg-staff-tag',
       accountId: 'acc-1',
@@ -862,14 +862,8 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, PAYABLE, 'basis')).not.toHaveProperty('staffTag');
-    expect(
-      serializeMessage(row, PAYABLE, 'basis', undefined, undefined, undefined, 'software_developer')
-        .staffTag,
-    ).toBe('software_developer');
-    expect(
-      serializeMessage(row, PAYABLE, 'basis', undefined, undefined, undefined, null),
-    ).not.toHaveProperty('staffTag');
+    expect(serializeMessage(row, PAYABLE, 'basis').role).toBe('basis');
+    expect(serializeMessage(row, PAYABLE, 'software_developer').role).toBe('software_developer');
   });
 });
 

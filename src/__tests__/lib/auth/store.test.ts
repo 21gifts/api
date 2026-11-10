@@ -6,7 +6,6 @@ import {
   parseHeartSats,
   parseStoredFiat,
   parseStoredLocale,
-  staffTagOf,
   type PasskeyChallenge,
   type PasskeyCredential,
   type PendingRecovery,
@@ -67,16 +66,6 @@ describe('parseStoredFiat', () => {
     expect(parseStoredFiat(null)).toBeNull();
     expect(parseStoredFiat(undefined)).toBeNull();
     expect(parseStoredFiat(1)).toBeNull();
-  });
-});
-
-describe('staffTagOf', () => {
-  it('returns software_developer only for that exact string', () => {
-    expect(staffTagOf('software_developer')).toBe('software_developer');
-    expect(staffTagOf(undefined)).toBeNull();
-    expect(staffTagOf(null)).toBeNull();
-    expect(staffTagOf('')).toBeNull();
-    expect(staffTagOf('basis')).toBeNull();
   });
 });
 
@@ -2309,7 +2298,7 @@ describe('InMemoryAuthStore', () => {
     expect(missing?.createdAt).toBeNull();
   });
 
-  it('listStaffAccountIds returns founder and moderator ids', async () => {
+  it('listStaffAccountIds returns ids at the moderator rank or above', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
       id: 'founder-1',
@@ -2345,6 +2334,17 @@ describe('InMemoryAuthStore', () => {
       rulesAgreedAt: null,
     });
     await store.createAccount({
+      id: 'developer-1',
+      linkingKey: null,
+      role: 'software_developer',
+      name: 'Developer',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'f'.repeat(64),
+      createdAt: 6,
+      rulesAgreedAt: null,
+    });
+    await store.createAccount({
       id: 'basis-1',
       linkingKey: null,
       role: 'basis',
@@ -2367,7 +2367,7 @@ describe('InMemoryAuthStore', () => {
       rulesAgreedAt: null,
     });
     const ids = await store.listStaffAccountIds();
-    expect(ids.sort()).toEqual(['founder-1', 'initiator-1', 'mod-1']);
+    expect(ids.sort()).toEqual(['developer-1', 'founder-1', 'initiator-1', 'mod-1']);
   });
 
   it('listIdsByPrefix returns [] when empty', async () => {

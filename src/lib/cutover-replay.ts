@@ -5,7 +5,7 @@
  * event's own UTC day; at most one per member, payout kind, and day.
  */
 
-import { isModeratorGroupMember } from '@/lib/auth/roles';
+import { earnsModeratorGroupPay } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -417,7 +417,7 @@ export async function replayPayoutWindow(
       continue;
     }
     const posts = (await dayPosts(day)).filter((row) => row.accountId === account.id);
-    if (payout === 'moderator' && !isModeratorGroupMember(account)) {
+    if (payout === 'moderator' && !earnsModeratorGroupPay(account)) {
       skip('not_eligible', 'not_moderator');
       continue;
     }

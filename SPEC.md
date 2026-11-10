@@ -189,17 +189,17 @@ Public base URLs used in examples:
 | POST   | `/funding/admit`                                     | Bearer (moderator+)                          | Admit grant while the round has a free place; full round → 409 `All grant places are taken`                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/funding/places`                                    | none                                         | Public: grant round places (`round`, `startsAt`, `places`, `admitted`, `placesLeft`, `nextGoalShops`)                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)                          | Reject grant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| GET    | `/funding/daily-roster`                              | Initiator/founder Bearer or `DEBUG_*_TOKEN`  | Operator token skips the gate; else 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. 502 Daily roster is unavailable.                                                                                                                                 |
+| GET    | `/funding/daily-roster`                              | At least initiator Bearer or `DEBUG_*_TOKEN`  | Operator token skips the gate; else 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. 502 Daily roster is unavailable.                                                                                                                                 |
 | GET    | `/funding/daily-roster/links`                        | `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`          | Operator check of the roster account link: `{ rows, linked, unlinked: [{ bucket, address, amountUsd }], buckets: { daily, moderator } }`, each bucket `{ rows, linked, totalUsd, linkedUsd }`. 401 without an operator token. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                                                            |
-| POST   | `/funding/daily-roster/comment`                      | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
-| POST   | `/funding/daily-roster/payments`                     | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
-| POST   | `/funding/daily-roster/recipients`                   | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ accountId, amountUsd }` or `{ username, amountUsd }`. Route loads the account; the wallet does not matter. Unknown account → 400 Unknown person. Store load failure → 502 Daily roster is unavailable. The API store lists the account id. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. Local bad body → Invalid person or amount. |
-| POST   | `/funding/daily-roster/recipients/update`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ username, amountUsd }` (or `{ address, amountUsd }` with the row's edit key). Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable. String key + bad amount → Invalid address or amount; otherwise, or no such account, Unknown address.                                   |
-| POST   | `/funding/daily-roster/recipients/delete`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ username }` (or `{ address }` with the row's edit key). Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable. Local bad body or no such account → Unknown address.                                                                                                         |
-| POST   | `/funding/daily-roster/moderators`                   | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ accountId, amountUsd }` or `{ username, amountUsd }`. Route loads the account; the wallet does not matter. Unknown account → 400 Unknown person. Store load failure → 502 Daily roster is unavailable. The API store lists the account id. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Moderator rows stay out of `recipients`. Local bad body → Invalid person or amount.                                                                                                                        |
-| POST   | `/funding/daily-roster/moderators/update`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ username, amountUsd }` (or `{ address, amountUsd }` with the row's edit key) updates a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. String key + bad amount → Invalid address or amount; otherwise, or no such account, Unknown address.                                                                                                                                                                                                                                                  |
-| POST   | `/funding/daily-roster/moderators/delete`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ username }` (or `{ address }` with the row's edit key) deletes a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Local bad body or no such account → Unknown address.                                                                                                                                                                                                                                                                                                                        |
-| POST   | `/funding/daily-roster/moderators/payments`          | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ enabled: boolean }` sets `moderatorPaymentsEnabled` only. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Non-boolean enabled → Invalid payments switch.                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/funding/daily-roster/comment`                      | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
+| POST   | `/funding/daily-roster/payments`                     | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
+| POST   | `/funding/daily-roster/recipients`                   | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ accountId, amountUsd }` or `{ username, amountUsd }`. Route loads the account; the wallet does not matter. Unknown account → 400 Unknown person. Store load failure → 502 Daily roster is unavailable. The API store lists the account id. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. Local bad body → Invalid person or amount. |
+| POST   | `/funding/daily-roster/recipients/update`            | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ username, amountUsd }` (or `{ address, amountUsd }` with the row's edit key). Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable. String key + bad amount → Invalid address or amount; otherwise, or no such account, Unknown address.                                   |
+| POST   | `/funding/daily-roster/recipients/delete`            | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ username }` (or `{ address }` with the row's edit key). Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable. Local bad body or no such account → Unknown address.                                                                                                         |
+| POST   | `/funding/daily-roster/moderators`                   | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ accountId, amountUsd }` or `{ username, amountUsd }`. Route loads the account; the wallet does not matter. Unknown account → 400 Unknown person. Store load failure → 502 Daily roster is unavailable. The API store lists the account id. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Moderator rows stay out of `recipients`. Local bad body → Invalid person or amount.                                                                                                                        |
+| POST   | `/funding/daily-roster/moderators/update`            | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ username, amountUsd }` (or `{ address, amountUsd }` with the row's edit key) updates a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. String key + bad amount → Invalid address or amount; otherwise, or no such account, Unknown address.                                                                                                                                                                                                                                                  |
+| POST   | `/funding/daily-roster/moderators/delete`            | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ username }` (or `{ address }` with the row's edit key) deletes a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Local bad body or no such account → Unknown address.                                                                                                                                                                                                                                                                                                                        |
+| POST   | `/funding/daily-roster/moderators/payments`          | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ enabled: boolean }` sets `moderatorPaymentsEnabled` only. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Non-boolean enabled → Invalid payments switch.                                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/funding/daily-roster/document`                     | Spend Bearer (invoices)                      | 503 if the token env is unset; 401 wrong/missing Bearer. Success 200 is the full document including `moderators` and `moderatorPaymentsEnabled`; each row is `{ accountId, username, address, amountUsd }` with `address` the receiving address now, or `null` when the account has none (missing account, username, or verified wallet, or the LNURL server off). `defaultAmountUsd` is always 1.                                                                                                                                                        |
 | POST   | `/funding/daily-roster/document`                     | Spend Bearer (invoices)                      | Import of the full document. 503 if the token env is unset; 401 wrong/missing Bearer. Writes only while the store is still the empty start document; a saved empty roster is already written; a second import returns 200 with the stored document. `defaultAmountUsd` in the body is ignored.                                                                                                                                                                                                                                                            |
 | POST   | `/funding/daily-roster/worker/comment`               | Spend Bearer (invoices)                      | Spend Bearer. Body `{ comment: string }`. Newlines become spaces, then trim. Empty after trim is valid. Longer than 500 is 400 Invalid comment and is not cut. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                 |
@@ -360,22 +360,24 @@ memory otherwise (a memory boot always starts from `LOGINS_OPEN_DEFAULT`).
 
 ## Role hierarchy
 
-Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2, `fond` 3,
-`initiator` 4, `founder` 5. A higher rank can always do and see everything a
-lower rank can; equal ranks can do the same things. Every route that names a
-role names the **minimum** role: "Bearer (moderator+)" means that rank or
-higher, "Bearer (verified+)" means that rank or higher. Permission text names
-the minimum rank only. Do not write "moderator or initiator" or „Moderator
-oder Initiator“. Permission checks use `roleAtLeast`
-(`src/lib/auth/roles.ts`), including the daily payout roster
-(`canEditDailyPayoutRoster`: minimum `initiator`); an equality test on the
-caller's role is a defect. Checks on the _subject_ of an action (for example
-"only a verified member can be proposed as moderator") are state rules, not
-permissions, and stay exact. A subject already at the moderator rank is
-`sameRoleRank(role, 'moderator')`, which does not include founder. Initiator
-is not created by
-propose, confirm, or appoint. Only the boot UPDATE and operator
-`PATCH /debug/accounts/:id` set it.
+Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2,
+`software_developer` 3, `fond` 3, `initiator` 4, `founder` 5. A higher rank
+can always do and see everything a lower rank can; equal ranks can do the
+same things. Every route that names a role names the **minimum** role:
+"Bearer (moderator+)" means that rank or higher, "Bearer (verified+)" means
+that rank or higher. Permission text names the minimum rank only. Do not write
+"moderator or initiator" or „Moderator oder Initiator“. Permission checks use
+`roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role
+is a defect. The daily payout roster is `roleAtLeast(role, 'initiator')`, so
+the software developer and moderator are excluded. A state check on the
+_subject_ of an action names its minimum too when the rule is cumulative: a
+subject already at or above moderator standing is
+`roleAtLeast(subject.role, 'moderator')`, so confirm, appoint, and the public
+propose edge never demote or hide an initiator, software developer, fond, or
+founder. The exact "subject is still `verified`" pending-proposal rule stays
+exact. Initiator and software developer are not created by propose, confirm,
+or appoint. Only the boot UPDATE and operator `PATCH /debug/accounts/:id` set
+them.
 
 ### `GET /healthz`
 
@@ -2774,9 +2776,8 @@ change `setup` or `missing`. `sparkPubkey` / `sparkWalletVerified` are set
 when the member binds a wallet (`PUT /me/wallet`) and when registration is
 accepted, and `sparkPubkey` becomes the new verified key on a social recovery
 commit; they are owner-only.
-`staffTag` is present only as `"software_developer"` when set and is omitted
-otherwise (never JSON `null`). It is not a permission and does not change
-`role`.
+The Software Developer badge is the live `role` (`software_developer`); there
+is no separate staff label.
 
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the note
@@ -2787,8 +2788,7 @@ stays `null`)).
 | ---------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                         | string         | Opaque account id                                                                                                                                                                                                                                                                                                                                                                                 |
 | `linkingKey`                 | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                                                                                                                                           |
-| `role`                       | string         | `basis`, `verified`, `moderator`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                                                                       |
-| `staffTag`                   | string         | Present only as `"software_developer"` when set; omitted otherwise. Never JSON `null`. Not a permission and does not change `role`.                                                                                                                                                                                                                                                               |
+| `role`                       | string         | `basis`, `verified`, `moderator`, `software_developer`, `fond`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                                                                       |
 | `name`                       | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                                                                                                                                                 |
 | `username`                   | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`, no trailing `.`, no `..`), or `null` until set. Cannot skip. Fixed once the wallet is verified.                                                                                                                                                                                                                                                   |
 | `location`                   | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                                                                                                                                          |
@@ -3022,9 +3022,8 @@ live profile note has a stored photo; false when `profileMessage` is
 `fundingReviewedAt` (`grant.admittedAt` when the effective grant is
 admitted, else `null`) and `fundingReviewedByName` (the live display name
 of `decidedBy` when that time is set and the trimmed name is non-empty,
-otherwise `null`). `staffTag` is present only as `"software_developer"`
-when set and is omitted otherwise (never JSON `null`). It is not a
-permission and does not change `role`. Default
+otherwise `null`). The Software Developer badge is the live `role`; there is no separate staff
+label. Default
 `trust` is all-null when no stored edges exist. Never `viewKey` /
 `eventId`. Uncapped `shopCount` from `countShopsByAccount` is always present,
 including 0, and is not derived from the capped shop list. A live top-level
@@ -3159,7 +3158,7 @@ one hop of **stored** public edges with at most one incoming edge per
 subject: the oldest eligible sibling (`createdAt` then `id`), skipping a
 non-chain oldest sibling so a later displayable contact can show. Eligible:
 `verify`, `moderator_appoint`, and `moderator_propose` only when the live
-subject is a `moderator`; `moderator_confirm` and `moderator_reject`
+subject is at least a moderator; `moderator_confirm` and `moderator_reject`
 never. Later appoint,
 confirm, or propose do not replace an earlier eligible contact. A pending
 propose (subject still `verified`) stays private and is not a hop neighbor.
@@ -3217,7 +3216,7 @@ subjects are omitted. Oldest `createdAt` first, then propose-edge `id`
 is `{ id, subject: { id, name, role: "verified" }, proposedBy: { id, name },
 createdAt }` with the propose-edge `id` and ISO-8601 `createdAt`. A missing actor is
 `{ id, name: null }`. `GET /trust-chain` still omits a pending
-`moderator_propose`. Once the subject is a `moderator`, that propose is
+`moderator_propose`. Once the subject is at least a moderator, that propose is
 eligible as the public incoming edge only when it is the oldest eligible
 sibling (`createdAt` then `id`).
 
@@ -3342,14 +3341,17 @@ that confirm and **409** without promoting. Otherwise sets
 role to `moderator`, logs `trust.moderator_confirmed`. If the caller
 already stored `moderator_confirm` and the subject is still `verified`,
 completes the role write and returns **200**. If the caller already stored
-that edge and the subject's rank equals the moderator rank, returns **200**
-with the stored role unchanged. A founder subject is **409** and stays
-`founder`. Same 401/403/404/409/503 JSON shapes (409 when a confirm
+that edge and the subject is at least a moderator (`roleAtLeast(subject.role,
+'moderator')`, including `software_developer`, `fond`, `initiator`, and
+`founder`), returns **200** with the stored role unchanged; a founder subject
+with the caller-owned confirm edge therefore stays `founder`. Without that
+edge, a new grant still requires a `verified` subject. Same
+401/403/404/409/503 JSON shapes (409 when a confirm
 edge belongs to someone else). **400**
 `{ "error": "Expected a JSON body with an \"accountId\" string" }`.
 A new grant returns **200**
 `{ id, name, role }` with `role: "moderator"`. An idempotent **200**
-returns the stored role. After a 200 that leaves the subject at the
+returns the stored role. After a 200 that leaves the subject at least at the
 moderator rank (new grant and idempotent same-actor 200), the api deletes
 `moderator_proposal` rows with
 `replyId === subject.id`, then notifies the subject only
@@ -3383,19 +3385,21 @@ for the reject itself. Same 401/403/404/409/503 JSON shapes as
 
 Bearer session. Body `{ "accountId": "<uuid>" }`. Caller must be `founder`
 (moderators → **403**). Subject must not be self, not `founder`, and not
-already at the moderator rank; subject may be `basis` or `verified`. Inserts
+already at least a moderator; subject may be `basis` or `verified`. Inserts
 `moderator_appoint` then sets role to `moderator`, logs
 `trust.moderator_appointed`. If the caller already stored `moderator_appoint`
-and the subject's rank equals the moderator rank, returns **200** with the
-stored role unchanged. If that edge exists and the subject is not yet at
-that rank, completes the role write and returns **200**. A subject already
-at the moderator rank with no caller-owned appoint edge is **409**.
+and the subject is at least a moderator (`roleAtLeast(subject.role,
+'moderator')`, including `software_developer`, `fond`, and `initiator`),
+returns **200** with the stored role unchanged. If that edge exists and the
+subject is below that rank, completes the role write and returns **200**. A
+subject already at least a moderator with no caller-owned appoint edge is
+**409** (a founder subject is always **409** and stays `founder`).
 Same 401/403/404/409/503 shapes as `POST /trust/verify` (403
 when the caller is not a founder). **400**
 `{ "error": "Expected a JSON body with an \"accountId\" string" }`.
 A new grant returns **200**
 `{ id, name, role }` with `role: "moderator"`. An idempotent **200**
-returns the stored role. After a 200 that leaves the subject at the
+returns the stored role. After a 200 that leaves the subject at least at the
 moderator rank (new grant and idempotent same-actor 200), the api deletes
 `moderator_proposal` rows for the subject
 (`deleteByTypeAndReplyId`) then notifies the subject only
@@ -3520,45 +3524,45 @@ Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same 
 
 ### `GET /funding/daily-roster`
 
-Bearer session, then initiator or founder (`canEditDailyPayoutRoster`). No session → 401 `{ "error": "Unauthorized" }`. Any other role, including moderator → 403 `{ "error": "Forbidden" }` and never 503. The API roster store is always present. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1: the USD paid to an unlisted admitted or trial grant. Moderator rows stay out of `recipients` and are returned on `moderators`. Each row is a listed account: `accountId`, its trimmed lower-case `username` (or `null`), its trimmed `name` (or `null`), the amount, and `address`, the row's edit key: `<username>@<host of PUBLIC_BASE_URL>`, the bare username when the LNURL server is off, or the account id when the account has no username. `address` is not a payout address and does not say whether the wallet is verified. A store 400 whose `error` is exactly `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, or `Unknown address` stays 400 with that text. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`.
+Bearer session, then at least initiator (`canEditDailyPayoutRoster`). No session → 401 `{ "error": "Unauthorized" }`. Any other role, including moderator and software developer → 403 `{ "error": "Forbidden" }` and never 503. The API roster store is always present. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1: the USD paid to an unlisted admitted or trial grant. Moderator rows stay out of `recipients` and are returned on `moderators`. Each row is a listed account: `accountId`, its trimmed lower-case `username` (or `null`), its trimmed `name` (or `null`), the amount, and `address`, the row's edit key: `<username>@<host of PUBLIC_BASE_URL>`, the bare username when the LNURL server is off, or the account id when the account has no username. `address` is not a payout address and does not say whether the wallet is verified. A store 400 whose `error` is exactly `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, or `Unknown address` stays 400 with that text. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`.
 
 Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above. The operator read logs `{ operator: true, action }` instead of an account id.
 
 ### `POST /funding/daily-roster/comment`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ comment: string }`. A body that is not that object, including a non-string comment → 400 `{ "error": "Invalid comment" }`. Newlines (`\n`, `\r`, `\r\n`) become spaces, then trim. Empty after trim is valid. Longer than 500 characters after that is 400 `{ "error": "Invalid comment" }` and is not cut. The stored `{ comment }` is that normalized string. The store returns any of these five exact texts unchanged: `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, `Unknown address`.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Body `{ comment: string }`. A body that is not that object, including a non-string comment → 400 `{ "error": "Invalid comment" }`. Newlines (`\n`, `\r`, `\r\n`) become spaces, then trim. Empty after trim is valid. Longer than 500 characters after that is 400 `{ "error": "Invalid comment" }` and is not cut. The stored `{ comment }` is that normalized string. The store returns any of these five exact texts unchanged: `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, `Unknown address`.
 
 ### `POST /funding/daily-roster/payments`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ enabled: boolean }` only. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }`. Sets `paymentsEnabled` only. Store 400 texts are the same five.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Body `{ enabled: boolean }` only. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }`. Sets `paymentsEnabled` only. Store 400 texts are the same five.
 
 ### `POST /funding/daily-roster/recipients`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Public body `{ accountId: string, amountUsd: number }` or `{ username: string, amountUsd: number }`; a body with both is 400 `Invalid person or amount`, and `accountId` must match `MESSAGE_ID_RE`. `amountUsd` must be a finite number; numeric strings are rejected here. Local bad body → 400 `{ "error": "Invalid person or amount" }`. The route loads the account by id or by username; the wallet does not matter, so an account without a verified wallet can be listed, and its row gets a payout address once it has one. Being listed lifts no other payout condition, such as the grant and its 21.gifts recovery share. Unknown account → 400 `{ "error": "Unknown person" }`. Store failure on that load → 502 `{ "error": "Daily roster is unavailable" }`, logged as `recipient-add`. The API store receives the account id and the amount via `addRecipient`. An account already in the bucket → 400 `{ "error": "Address already listed" }`. Store 400 texts are the same five.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Public body `{ accountId: string, amountUsd: number }` or `{ username: string, amountUsd: number }`; a body with both is 400 `Invalid person or amount`, and `accountId` must match `MESSAGE_ID_RE`. `amountUsd` must be a finite number; numeric strings are rejected here. Local bad body → 400 `{ "error": "Invalid person or amount" }`. The route loads the account by id or by username; the wallet does not matter, so an account without a verified wallet can be listed, and its row gets a payout address once it has one. Being listed lifts no other payout condition, such as the grant and its 21.gifts recovery share. Unknown account → 400 `{ "error": "Unknown person" }`. Store failure on that load → 502 `{ "error": "Daily roster is unavailable" }`, logged as `recipient-add`. The API store receives the account id and the amount via `addRecipient`. An account already in the bucket → 400 `{ "error": "Address already listed" }`. Store 400 texts are the same five.
 
 ### `POST /funding/daily-roster/recipients/update`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ username: string, amountUsd: finite number }` or `{ address: string, amountUsd: finite number }`. The row is named by `username`, or by `address` holding the editor row's edit key: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username. A body with both is 400. The wallet does not matter. If the body is an object (not an array) whose `username` or `address` is a string but the amount fails → 400 `{ "error": "Invalid address or amount" }`. Any other local failure, including a missing key → 400 `{ "error": "Unknown address" }`. No account for the key, or the account not in the bucket → 400 `{ "error": "Unknown address" }`. The account id and amount go to `updateRecipient`. Store 400 strings are the same five.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Body `{ username: string, amountUsd: finite number }` or `{ address: string, amountUsd: finite number }`. The row is named by `username`, or by `address` holding the editor row's edit key: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username. A body with both is 400. The wallet does not matter. If the body is an object (not an array) whose `username` or `address` is a string but the amount fails → 400 `{ "error": "Invalid address or amount" }`. Any other local failure, including a missing key → 400 `{ "error": "Unknown address" }`. No account for the key, or the account not in the bucket → 400 `{ "error": "Unknown address" }`. The account id and amount go to `updateRecipient`. Store 400 strings are the same five.
 
 ### `POST /funding/daily-roster/recipients/delete`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ username: string }` or `{ address: string }`. The row is named by `username`, or by `address` holding the editor row's edit key: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username. A body with both is 400. The wallet does not matter. Local failure, no account for the key, or the account not in the bucket → 400 `{ "error": "Unknown address" }`. The account id goes to `deleteRecipient`. Store 400 texts are the same five.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Body `{ username: string }` or `{ address: string }`. The row is named by `username`, or by `address` holding the editor row's edit key: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username. A body with both is 400. The wallet does not matter. Local failure, no account for the key, or the account not in the bucket → 400 `{ "error": "Unknown address" }`. The account id goes to `deleteRecipient`. Store 400 texts are the same five.
 
 ### `POST /funding/daily-roster/moderators`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Public body `{ accountId: string, amountUsd: number }` or `{ username: string, amountUsd: number }`; a body with both is 400 `Invalid person or amount`, and `accountId` must match `MESSAGE_ID_RE`. `amountUsd` must be a finite number; numeric strings are rejected here. Local bad body → 400 `{ "error": "Invalid person or amount" }`. The route loads the account by id or by username; the wallet does not matter, so an account without a verified wallet can be listed, and its row gets a payout address once it has one. Being listed lifts no other payout condition, such as the grant and its 21.gifts recovery share. Unknown account → 400 `{ "error": "Unknown person" }`. Store failure on that load → 502 `{ "error": "Daily roster is unavailable" }`, logged as `moderator-add`. The API store receives the account id and the amount via `addModerator`. An account already in the bucket → 400 `{ "error": "Address already listed" }`. Store 400 texts are the same five. Moderator rows stay out of `recipients`.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Public body `{ accountId: string, amountUsd: number }` or `{ username: string, amountUsd: number }`; a body with both is 400 `Invalid person or amount`, and `accountId` must match `MESSAGE_ID_RE`. `amountUsd` must be a finite number; numeric strings are rejected here. Local bad body → 400 `{ "error": "Invalid person or amount" }`. The route loads the account by id or by username; the wallet does not matter, so an account without a verified wallet can be listed, and its row gets a payout address once it has one. Being listed lifts no other payout condition, such as the grant and its 21.gifts recovery share. Unknown account → 400 `{ "error": "Unknown person" }`. Store failure on that load → 502 `{ "error": "Daily roster is unavailable" }`, logged as `moderator-add`. The API store receives the account id and the amount via `addModerator`. An account already in the bucket → 400 `{ "error": "Address already listed" }`. Store 400 texts are the same five. Moderator rows stay out of `recipients`.
 
 ### `POST /funding/daily-roster/moderators/update`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ username: string, amountUsd: finite number }` or `{ address: string, amountUsd: finite number }`. The row is named by `username`, or by `address` holding the editor row's edit key: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username. A body with both is 400. The wallet does not matter. If the body is an object (not an array) whose `username` or `address` is a string but the amount fails → 400 `{ "error": "Invalid address or amount" }`. Any other local failure, including a missing key → 400 `{ "error": "Unknown address" }`. No account for the key, or the account not in the bucket → 400 `{ "error": "Unknown address" }`. The account id and amount go to `updateModerator`. Store 400 strings are the same five.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Body `{ username: string, amountUsd: finite number }` or `{ address: string, amountUsd: finite number }`. The row is named by `username`, or by `address` holding the editor row's edit key: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username. A body with both is 400. The wallet does not matter. If the body is an object (not an array) whose `username` or `address` is a string but the amount fails → 400 `{ "error": "Invalid address or amount" }`. Any other local failure, including a missing key → 400 `{ "error": "Unknown address" }`. No account for the key, or the account not in the bucket → 400 `{ "error": "Unknown address" }`. The account id and amount go to `updateModerator`. Store 400 strings are the same five.
 
 ### `POST /funding/daily-roster/moderators/delete`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ username: string }` or `{ address: string }`. The row is named by `username`, or by `address` holding the editor row's edit key: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username. A body with both is 400. The wallet does not matter. Local failure, no account for the key, or the account not in the bucket → 400 `{ "error": "Unknown address" }`. The account id goes to `deleteModerator`. Store 400 texts are the same five.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Body `{ username: string }` or `{ address: string }`. The row is named by `username`, or by `address` holding the editor row's edit key: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username. A body with both is 400. The wallet does not matter. Local failure, no account for the key, or the account not in the bucket → 400 `{ "error": "Unknown address" }`. The account id goes to `deleteModerator`. Store 400 texts are the same five.
 
 ### `POST /funding/daily-roster/moderators/payments`
 
-Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ enabled: boolean }` only, passed to `setModeratorPaymentsEnabled`. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }`. Sets `moderatorPaymentsEnabled` only. Store 400 texts are the same five.
+Same session gate (at least initiator; operator tokens do not write) and success/502 as GET. Body `{ enabled: boolean }` only, passed to `setModeratorPaymentsEnabled`. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }`. Sets `moderatorPaymentsEnabled` only. Store 400 texts are the same five.
 
 ### `GET /funding/daily-roster/links`
 
@@ -3772,7 +3776,7 @@ Param not matching `/^[0-9a-f]{64}$/` or an unknown key → **Response** `404`:
 
 **Response** `200` (the same visible profile as `GET /members/:accountId`,
 plus `hasPasskey` for the activation banner; omits `linkingKey`, `viewKey`,
-and owner settings; `staffTag` only when it is `software_developer`):
+and owner settings; the badge is live `role`):
 
 ```json
 {
@@ -4492,9 +4496,8 @@ The listing uses `serializeDebugAccount` (public fields plus `isPlatform`,
 `sessionRefused`, `viewKey`, `locale`, `fiat`, `walletRequired`,
 `walletBackupSeenAt`, `walletIntroSeen`, `sparkPubkey`, `sparkPubkeyVerifiedAt`,
 and Nostr debug fields). `locale` and `fiat` are null until stored. `sparkPubkey` /
-`sparkPubkeyVerifiedAt` are null until claimed / verified. `staffTag` is
-present only as `"software_developer"` when set and is omitted otherwise (never
-JSON `null`). It is not a permission and does not change `role`. Member `GET /me`
+`sparkPubkeyVerifiedAt` are null until claimed / verified. The Software
+Developer badge is the live `role`; there is no separate staff label. Member `GET /me`
 does not include `isPlatform` or `sessionRefused` (it exposes
 `sparkWalletVerified` instead of the raw timestamp). Public member cards omit
 `locale`, `fiat`, and the wallet key fields.
@@ -4574,7 +4577,7 @@ second call:
 { "username": "tondo-fond-lost" }
 ```
 
-`role` must be one of `basis`, `verified`, `moderator`, `initiator`, or `founder`.
+`role` must be one of `basis`, `verified`, `moderator`, `software_developer`, `fond`, `initiator`, or `founder`.
 `platform` is a
 boolean; `true` clears any other platform flag (at most one `isPlatform`
 account) and, when a conversation store is wired, points every
@@ -6783,9 +6786,7 @@ equals `photoCount`, null when unknown, `[]` when there are no stills) and
 `photoTakenAt` only when `photoCount` is 1 (equals `photoTakenAts[0]`, null
 allowed), `hasVideo`, `videoContentType` (`null` when
 `hasVideo` is false), live `role` (the author's current `account.role`, or
-`"basis"` if the author is missing; omitted for external authors),
-`staffTag` (present only as `"software_developer"` when set; omitted
-otherwise; never JSON `null`; not a permission and does not change `role`), and
+`"basis"` if the author is missing; omitted for external authors), and
 `replyCount` of live attributed children (`parent_id` match, `deleted_at`
 null, and `account_id` set, or `author_pubkey` set and that pubkey is a
 recorded zapper (`nostr_zapper` entitlement, checked via `isZapperPubkey` /
@@ -6831,7 +6832,7 @@ Unknown `mode`, `limit` outside 1–200, a bad/mismatched `cursor`, an invalid `
 { "error": "Invalid country" }
 ```
 
-`mode=active` is paid notes (`sats > 0`) plus unpaid founder/moderator notes; a top-level ask with `goalSats` > 0 and `sats = 0` is not active; `unpaid` is `sats = 0`; `popular` is paid notes ordered by sats descending.
+`mode=active` is paid notes (`sats > 0`) plus unpaid notes whose author is at least moderator; a top-level ask with a goal and `sats = 0` is not active, including a staff ask; `unpaid` is `sats = 0`; `popular` is paid notes ordered by sats descending.
 
 Missing rules → **Response** `409`:
 
@@ -6875,9 +6876,8 @@ Success → **Response** `200`:
 }
 ```
 
-`staffTag` is present only as `"software_developer"` when set and is omitted
-otherwise (never JSON `null`). It is not a permission and does not change
-`role`.
+The Software Developer badge is the live `role` (`software_developer`); there
+is no separate staff label.
 
 An empty thread is **200** with `"messages": []`. When `DATABASE_URL` is
 unset the default in-memory store starts empty; when set, rows come from
@@ -7198,8 +7198,7 @@ calendar day. A reply never spends top-level budget and a top-level note
 never spends reply budget. Over-limit posters get **429**
 `{ "error": "Too many messages" }` (log event `messages.rate_limited`) with
 `Retry-After: 1` when the 1-second window refused and `Retry-After: 10` when
-the hourly or daily cap refused. An account with role `founder` or staff tag
-`software_developer` is exempt from both budgets, and its posts are not
+the hourly or daily cap refused. An account with role `founder` or `software_developer` is exempt from both budgets, and its posts are not
 counted. A second **live** photo/video
 POST with the same account, parent, normalised text, media bytes, and pin returns
 **200** with the existing row (no extra burst slot, no second top-level push).
@@ -7455,8 +7454,7 @@ Unsigned note (null or empty `eventId`) or missing recipient pubkey →
 Over-limit (gifts: 1 per second, 20 per sliding hour per account) → **429**
 `{ "error": "Too many payments" }` (`Retry-After: 1` when the 1-second window
 refused, `Retry-After: 10` for the hourly cap) — an account with role
-`founder` or staff tag `software_developer` is exempt and its attempts are not
-counted —
+`founder` or `software_developer` is exempt and its attempts are not counted —
 checked only after auth, amount, payable, and KEK checks succeed, so early
 400/404/401/503 do not consume quota. LNURL/zap or sign failure after the
 limiter still counts. Author-wallet zap failure (`noZap` or `not_zap`) →
@@ -7496,8 +7494,8 @@ never over Lightning.
   second, and at most 60 hearts per sliding hour across all notes. Over
   either cap → **429** `{ "error": "Too many payments" }` (`Retry-After: 1`
   for the per-note cooldown, `Retry-After: 10` for the hourly cap; attempt
-  `rate_limited` with `heart: true`). An account with role `founder` or staff
-  tag `software_developer` is exempt and its hearts are not counted.
+  `rate_limited` with `heart: true`). An account with role `founder` or
+  `software_developer` is exempt and its hearts are not counted.
 - When the heart is indexed, sats are credited, only the note author is
   notified (`notifyHeart` with the exact invoice amount), and no gift-reply or
   living-room zap notice is written. If the invoice lookup for a receipt fails twice, the receipt is
@@ -7646,8 +7644,8 @@ message-without-photo, and a non-UUID `id` are the same **404** (Postgres
 would otherwise throw on `uuid` and become 503). A live reply without an
 account whose author pubkey is not a recorded zapper (or that has no author
 pubkey) is the same **404** on every photo and video route, matching
-`GET /messages/:id`. Soft-hidden rows are **404** without a founder/moderator
-Bearer. A founder/moderator Bearer serves hidden-row bytes with
+`GET /messages/:id`. Soft-hidden rows are **404** without a at least moderator
+Bearer. A Bearer at least moderator serves hidden-row bytes with
 `Cache-Control: private, no-store` and `Vary: Authorization` instead of the
 live public cache header.
 
@@ -7679,7 +7677,7 @@ Public extra still (no bearer). Same handler for `.jpeg` / `.png` /
 `.webp` and indices **1–9**
 (`GET /messages/:id/photo/{1-9}.{jpg|jpeg|png|webp}`). There is **no**
 `/photo/0.jpg` (photo 0 remains `/photo.jpg`). Soft-hidden rows 404 even
-when extra bytes remain, unless a founder/moderator Bearer is present
+when extra bytes remain, unless a at least moderator Bearer is present
 (then the same staff `Cache-Control: private, no-store` as photo 0).
 Same live headers as photo 0 (`Content-Type`
 jpeg/png/webp, `Cache-Control: public, max-age=86400`,
@@ -7762,7 +7760,7 @@ claimed in `nostr_zap_payment` via `lower(payment_hash)`), so
 `hearts.length === heartCount` up to the 200-heart cap (`heartCount` itself is
 uncapped). A heart-query failure is the route's **503**.
 
-Unsigned/non-staff: hidden children are omitted. A founder/moderator Bearer
+Unsigned/non-staff: hidden children are omitted. A Bearer at least moderator
 is **200** `{ "messages", "hearts" }` from `listReplies(id, limit, true)` including
 hidden attributed children with hide stamps, `payable: false`, and `authorCanReceive: false`, whether
 the parent is live or hidden (live children stay live serialize).
@@ -7961,7 +7959,7 @@ stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
 session, and omits it for an external author. Live JSON also omits
 `deletedAt` and `deletedBy`. Unsigned and non-staff GET of a
 soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
-stamps in the body. A founder/moderator Bearer (`roleAtLeast(...,
+stamps in the body. A Bearer at least moderator (`roleAtLeast(...,
 'moderator')`, no `forum.read`) of a hidden row is **200** public JSON plus
 `deletedAt` ISO, `deletedBy.{id,name,role}`, `payable: false`,
 `authorCanReceive: false`, and `accountId` for 21gifts authors. A live reply with `accountId` null
@@ -7971,7 +7969,7 @@ zapper (checked via `isZapperPubkey` on every read, including during a
 and sets `payable` and `authorCanReceive` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
 that is not yet a recorded zapper) it is **404** `{ "error": "Not found" }`
 (same body as missing/hidden). A top-level note (parent id null), on both the
-live public body and the founder/moderator hidden body, includes `replyCount`
+live public body and the at least moderator hidden body, includes `replyCount`
 of live direct children with an account or a recorded zapper pubkey; 0 is
 included, not omitted; a reply omits `replyCount`. Photo and video bytes
 are never included. Soft-hidden rows
@@ -8241,7 +8239,7 @@ Includes `accountId` for a 21gifts author and omits it for an external row.
 Never includes `authorPubkey`, `eventId`, `nostrPublishState`,
 `payable`, `authorCanReceive`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec,
 or photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
-A founder/moderator session may GET the hidden permalink and photo/video.
+A at least moderator session may GET the hidden permalink and photo/video.
 No staff UNHIDE session route (`POST /debug/messages/:id/restore` remains
 `DEBUG_TOKEN` only).
 
@@ -8678,7 +8676,7 @@ Bearer session required. `:id` and `:messageId` are UUIDs. Body is only
 hit on `conversation_message_translation` for that text returns
 `{ "translatedText", "cached": true }` with no upstream call. Access matches
 `GET /conversations/:id` (`moderator_group` only for a moderator-group
-member; initiator is above moderator and qualifies).
+member; every account at least moderator can read it).
 
 Missing or invalid bearer → **401** `{ "error": "Unauthorized" }`.
 Non-uuid `:id` or `:messageId`, missing thread, no access, missing message,
@@ -8896,8 +8894,10 @@ missing, blank, or invalid zone does not refuse). `add`, `edit`,
 before the amount check.
 
 A comment hangs on the habit. It is not a forum post and not a Nostr
-note. Text is 1–2000 characters after trim. `deleteComment` requires
-initiator rank; a lower role is **403** `{ "error": "Forbidden" }`.
+note. Text is 1–2000 characters after trim. `deleteComment` requires at
+least moderator (`roleAtLeast(role, 'moderator')`); moderator and software
+developer may delete, while verified and basis are **403**
+`{ "error": "Forbidden" }`.
 
 `invoice` mints a BOLT11 invoice for the comment author's Lightning
 Address through the existing gift-invoice helper. Body `amountSats` must

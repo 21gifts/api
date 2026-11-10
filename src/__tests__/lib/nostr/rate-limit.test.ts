@@ -128,18 +128,14 @@ describe('reply limiter (PostRateLimiter with REPLY_POST_CAPS)', () => {
 });
 
 describe('forumRateLimitExempt', () => {
-  it('exempts a founder and the software_developer staff tag', () => {
+  it('exempts a founder and the software developer role only', () => {
     expect(forumRateLimitExempt({ role: 'founder' })).toBe(true);
-    expect(forumRateLimitExempt({ role: 'founder', staffTag: null })).toBe(true);
-    for (const role of ['basis', 'verified', 'moderator', 'initiator'] as AccountRole[]) {
-      expect(forumRateLimitExempt({ role, staffTag: 'software_developer' })).toBe(true);
-    }
+    expect(forumRateLimitExempt({ role: 'software_developer' })).toBe(true);
   });
 
-  it('limits every other member', () => {
-    for (const role of ['basis', 'verified', 'moderator', 'initiator'] as AccountRole[]) {
+  it('does not exempt moderators, initiators, fond, verified, or basis', () => {
+    for (const role of ['basis', 'verified', 'moderator', 'fond', 'initiator'] as AccountRole[]) {
       expect(forumRateLimitExempt({ role })).toBe(false);
-      expect(forumRateLimitExempt({ role, staffTag: null })).toBe(false);
     }
   });
 });

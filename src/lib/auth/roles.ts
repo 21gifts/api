@@ -5,6 +5,7 @@ export const ROLE_ORDER: readonly AccountRole[] = [
   'basis',
   'verified',
   'moderator',
+  'software_developer',
   'fond',
   'initiator',
   'founder',
@@ -14,6 +15,7 @@ const ROLE_RANK: Record<AccountRole, number> = {
   basis: 0,
   verified: 1,
   moderator: 2,
+  software_developer: 3,
   fond: 3,
   initiator: 4,
   founder: 5,
@@ -21,7 +23,8 @@ const ROLE_RANK: Record<AccountRole, number> = {
 
 /**
  * Rank of `role` from the rank map (basis 0, verified 1, moderator 2,
- * fond 3, initiator 4, founder 5). {@link ROLE_ORDER} is the identity list.
+ * software_developer 3, fond 3, initiator 4, founder 5). {@link ROLE_ORDER}
+ * is the identity list.
  *
  * @param role - Live account role.
  * @returns Integer rank 0–5.
@@ -36,7 +39,9 @@ export function roleRank(role: AccountRole): number {
  * Every permission check, including the daily payout roster, names a
  * minimum role and uses this function; an equality test on the caller's
  * role is a defect. Subject rank equality uses {@link sameRoleRank}
- * (state, not permission).
+ * (state, not permission). The named payout exception is
+ * {@link earnsModeratorGroupPay}; the roster permission is
+ * {@link canEditDailyPayoutRoster}.
  *
  * @param role - Caller's live role.
  * @param min - Minimum role that may proceed.
@@ -44,20 +49,6 @@ export function roleRank(role: AccountRole): number {
  */
 export function roleAtLeast(role: AccountRole, min: AccountRole): boolean {
   return roleRank(role) >= roleRank(min);
-}
-
-/**
- * Whether two roles share a numeric rank.
- *
- * Subject-state checks use this. Caller permission checks stay on
- * {@link roleAtLeast}. Founder is not the moderator rank.
- *
- * @param role - Live role.
- * @param other - Role whose rank is the comparison.
- * @returns `true` when {@link roleRank} values are equal.
- */
-export function sameRoleRank(role: AccountRole, other: AccountRole): boolean {
-  return roleRank(role) === roleRank(other);
 }
 
 /**
@@ -102,14 +93,31 @@ export function isModeratorGroupMember(account: {
 }
 
 /**
+ * Whether an account earns the moderator-group spend ping.
+ *
+ * The software developer is a member of the closed Moderators group with
+ * every moderator permission, but is not paid for moderator-group messages
+ * (user decision 2026-11-09). This is the named payout exception on top of
+ * {@link isModeratorGroupMember}; every other group member earns it.
+ *
+ * @param account - Role plus optional platform flag.
+ * @returns `true` for a non-platform group member except `software_developer`.
+ */
+export function earnsModeratorGroupPay(account: {
+  role: AccountRole;
+  isPlatform?: boolean;
+}): boolean {
+  return isModeratorGroupMember(account) && account.role !== 'software_developer';
+}
+
+/**
  * Whether the caller may read and edit the daily payout roster.
  *
- * The roster's minimum rank is `initiator`: true for `initiator` and
- * `founder`, false for `fond`, moderator, verified, and basis. This is a
- * plain {@link roleAtLeast} check.
+ * True for `initiator` and above. The software developer ranks below
+ * `initiator` and cannot edit the roster. This is the same rule as the app.
  *
  * @param role - Caller's live role.
- * @returns `true` when `role` is at least `initiator`.
+ * @returns `true` for at least `initiator`.
  */
 export function canEditDailyPayoutRoster(role: AccountRole): boolean {
   return roleAtLeast(role, 'initiator');

@@ -12,7 +12,6 @@ import {
   parseHeartSats,
   parseStoredFiat,
   parseStoredLocale,
-  staffTagOf,
   type Account,
   type AccountFiat,
   type AccountLocale,
@@ -34,15 +33,14 @@ import { receivingAddress } from '@/lib/receiving-address';
 /**
  * Public JSON shape of an account (eleven fields always present). Never
  * includes Nostr pubkey, ciphertext, or other key material. Omits `viewKey`
- * (operator debug listing only — not `/me` or passkey finish). Optional
- * `staffTag` is added only when set to `software_developer`.
+ * (operator debug listing only — not `/me` or passkey finish).
  */
 export interface AccountResponse {
   /** Opaque unique account id. */
   id: string;
   /** Legacy LNURL-auth linking key, or `null` for passkey accounts. */
   linkingKey: string | null;
-  /** Permission / forum display tier (`basis` \| `verified` \| `moderator` \| `initiator` \| `founder`). */
+  /** Permission / forum display tier (`basis` \| `verified` \| `moderator` \| `software_developer` \| `initiator` \| `founder`). */
   role: string;
   /** Display name, or `null` until set. */
   name: string | null;
@@ -63,11 +61,6 @@ export interface AccountResponse {
   createdAt: number;
   /** Epoch ms of first living-room rules agreement, or `null`. */
   rulesAgreedAt: number | null;
-  /**
-   * Staff display label. Present only as `software_developer` when set;
-   * omitted otherwise. Never JSON `null`. Not a permission role.
-   */
-  staffTag?: 'software_developer';
 }
 
 /**
@@ -302,8 +295,6 @@ export interface ViewProfileResponse {
    * `GET /members/:accountId`. `hearted` is false on this URL.
    */
   profileMessage: HeartedPublicMessage | null;
-  /** Present only when the account's staff label is `software_developer`. */
-  staffTag?: 'software_developer';
 }
 
 /**
@@ -313,14 +304,14 @@ export interface ViewProfileResponse {
  * Debug routes (`GET /debug/accounts`, `PATCH /debug/accounts/:id`) use
  * {@link serializeDebugAccount}, not this function. Does not include
  * `viewKey`, Nostr columns, or `isPlatform`. The eleven public fields stay
- * always present; `staffTag` is added only when set to `software_developer`.
+ * always present.
  *
  * `lightningAddress` is the account's receiving address (verified in-app
  * wallet) from {@link receivingAddress}, never the stored external address.
  *
  * @param account - Stored account.
  * @param lnurlServer - LNURL server config, or `undefined` when off (no receiving address).
- * @returns The eleven public fields, plus `staffTag` only when set.
+ * @returns The eleven public fields.
  */
 export function serializeAccount(
   account: Account,
@@ -340,10 +331,6 @@ export function serializeAccount(
     createdAt: account.createdAt,
     rulesAgreedAt: account.rulesAgreedAt,
   };
-  const tag = staffTagOf(account.staffTag);
-  if (tag !== null) {
-    body.staffTag = tag;
-  }
   return body;
 }
 
@@ -885,7 +872,6 @@ export async function serializeOwnerAccountWithPosts(
  *
  * Same visible identity as the member card: id, role, counts, and the
  * funding mark. Omits `linkingKey`, `viewKey`, and owner-only settings.
- * `staffTag` is present only for `software_developer`.
  *
  * @param account - Stored account.
  * @param hasPasskey - Whether the account already has a passkey credential.
@@ -906,7 +892,6 @@ export function serializeViewProfile(
   profileMessage: HeartedPublicMessage | null = null,
 ): ViewProfileResponse {
   const receiving = receivingAddress(account, lnurlServer);
-  const staffTag = staffTagOf(account.staffTag);
   return {
     id: account.id,
     name: account.name,
@@ -927,6 +912,5 @@ export function serializeViewProfile(
     fundingReviewedAt: facts.fundingReviewedAt,
     fundingReviewedByName: facts.fundingReviewedByName,
     profileMessage,
-    ...(staffTag === null ? {} : { staffTag }),
   };
 }

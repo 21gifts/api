@@ -4,7 +4,7 @@ import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import { roleAtLeast } from '@/lib/auth/roles';
-import { staffTagOf, type Account, type AccountRole, type AuthStore } from '@/lib/auth/store';
+import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
@@ -1316,7 +1316,6 @@ async function persistForumPost(
               undefined,
               true,
               undefined,
-              staffTagOf(account.staffTag),
             ),
           ],
         );
@@ -1550,7 +1549,6 @@ async function persistForumPost(
           undefined,
           true,
           undefined,
-          staffTagOf(account.staffTag),
         ),
       ],
     );
@@ -1944,7 +1942,6 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
           row.replyCount,
           true,
           undefined,
-          staffTagOf(author?.staffTag),
         );
       }),
     );
@@ -2107,7 +2104,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               row.replyCount,
               true,
               undefined,
-              staffTagOf(author?.staffTag),
             );
           }),
         );
@@ -2401,7 +2397,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                     deletedAt: row.deletedAt,
                     deletedBy,
                   },
-                  staffTagOf(author?.staffTag),
                 ),
               );
             } catch {
@@ -2428,7 +2423,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                 undefined,
                 true,
                 undefined,
-                staffTagOf(author?.staffTag),
               ),
             );
           } catch {
@@ -2801,7 +2795,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               await deps.store.countAttributedReplies(updated.id),
               undefined,
               undefined,
-              staffTagOf(author?.staffTag),
             ),
           ],
         );
@@ -2921,7 +2914,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               await deps.store.countAttributedReplies(updated.id),
               undefined,
               undefined,
-              staffTagOf(author?.staffTag),
             ),
           ],
         );
@@ -3007,7 +2999,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                 await deps.store.countAttributedReplies(row.id),
                 undefined,
                 undefined,
-                staffTagOf(author?.staffTag),
               ),
             ],
           );
@@ -3062,7 +3053,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               await deps.store.countAttributedReplies(updated.id),
               undefined,
               undefined,
-              staffTagOf(author?.staffTag),
             ),
           ],
         );
@@ -3160,7 +3150,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               await deps.store.countAttributedReplies(written.id),
               undefined,
               undefined,
-              staffTagOf(author?.staffTag),
             ),
           ],
         );
@@ -3410,7 +3399,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                     deletedAt: row.deletedAt,
                     deletedBy,
                   },
-                  staffTagOf(author?.staffTag),
                 ),
               ],
             );
@@ -3457,7 +3445,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                   : undefined,
                 true,
                 undefined,
-                staffTagOf(author?.staffTag),
               ),
             ],
           );

@@ -551,6 +551,34 @@ describe('replayPayoutWindow', () => {
     ]);
   });
 
+  it('does not replay a moderator payout for a software developer group message', async () => {
+    const h = await harness({ grants: [admitted(ADA)] });
+    await h.member(ADA, 'ada', 'software_developer');
+    await h.post(id(1), ADA, '2026-10-29T07:00:00.000Z', false);
+    const group = await h.conversations.ensureModeratorGroup(PLATFORM, new Date(FROM));
+    await h.conversations.appendMessage({
+      id: 'g-dev',
+      conversationId: group.id,
+      text: 'hi',
+      createdAt: new Date('2026-10-29T23:05:00.000Z'),
+      senderAccountId: ADA,
+      senderPubkey: null,
+      name: 'Member',
+      ...unsignedConversationDefaults(),
+    });
+    const result = await h.run();
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        eventId: 'g-dev',
+        payout: 'moderator',
+        status: 'skipped',
+        reason: 'not_eligible',
+        detail: 'not_moderator',
+      }),
+    ]);
+    expect(h.spend.pingOnDay).not.toHaveBeenCalled();
+  });
+
   it('skips a moderator message without a living-room post that day', async () => {
     const h = await harness({ grants: [admitted(ADA)] });
     await h.member(ADA, 'ada', 'moderator');

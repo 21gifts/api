@@ -130,7 +130,6 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('walletBackupSeenAt');
     expect(json).not.toHaveProperty('walletIntroSeen');
     expect(json).not.toHaveProperty('hadExternalWallet');
-    expect(json).not.toHaveProperty('staffTag');
     expect(json).not.toHaveProperty('sparkPubkey');
     expect(json).not.toHaveProperty('sparkWalletVerified');
     expect(json).not.toHaveProperty('sparkPubkeyVerifiedAt');
@@ -138,13 +137,10 @@ describe('serializeAccount', () => {
     expect(JSON.stringify(json)).not.toMatch(/nostr|npub|nsec/i);
   });
 
-  it('includes staffTag only when set to software_developer', () => {
-    const withTag = serializeAccount({ ...account, staffTag: 'software_developer' });
-    expect(withTag.staffTag).toBe('software_developer');
-    expect(Object.keys(withTag)).toHaveLength(12);
-    const withNull = serializeAccount({ ...account, staffTag: null });
-    expect(withNull).not.toHaveProperty('staffTag');
-    expect(Object.keys(withNull)).toHaveLength(11);
+  it('reads the software developer badge from role instead of a staff tag', () => {
+    const developer = serializeAccount({ ...account, role: 'software_developer' });
+    expect(developer.role).toBe('software_developer');
+    expect(Object.keys(developer)).toHaveLength(11);
   });
 });
 
@@ -254,18 +250,15 @@ describe('serializeDebugAccount', () => {
     expect(json.nostrNsecCiphertext).toBeNull();
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('aboutMe');
-    expect(json).not.toHaveProperty('staffTag');
     expect(serializeDebugAccount(account).isPlatform).toBe(false);
     expect(serializeDebugAccount(account).sessionRefused).toBe(false);
     expect(serializeDebugAccount({ ...account, sessionRefused: true }).sessionRefused).toBe(true);
     expect(serializeDebugAccount({ ...account, walletIntroSeen: true }).walletIntroSeen).toBe(true);
   });
 
-  it('includes staffTag on debug JSON only when set', () => {
-    expect(serializeDebugAccount(account)).not.toHaveProperty('staffTag');
-    expect(serializeDebugAccount({ ...account, staffTag: 'software_developer' }).staffTag).toBe(
-      'software_developer',
-    );
+  it('keeps the developer role in debug JSON without a separate label', () => {
+    const developer = serializeDebugAccount({ ...account, role: 'software_developer' });
+    expect(developer.role).toBe('software_developer');
   });
 
   it('includes notifyHearts on debug JSON and defaults an omitted value to true', () => {
@@ -434,15 +427,6 @@ describe('serializeOwnerAccount', () => {
     expect(json).not.toHaveProperty('isPlatform');
     expect(json).not.toHaveProperty('sessionRefused');
     expect(json).not.toHaveProperty('profileMessageId');
-    expect(json).not.toHaveProperty('staffTag');
-  });
-
-  it('includes staffTag on owner JSON only when set', () => {
-    expect(serializeOwnerAccount(account, false, null, false)).not.toHaveProperty('staffTag');
-    expect(
-      serializeOwnerAccount({ ...account, staffTag: 'software_developer' }, false, null, false)
-        .staffTag,
-    ).toBe('software_developer');
   });
 
   it('includes walletRequired and walletBackupSeenAt on owner JSON', () => {
@@ -1309,13 +1293,12 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');
-    expect(json).not.toHaveProperty('staffTag');
     expect(Object.keys(json)).toHaveLength(19);
   });
 
-  it('includes staffTag and the passed counts when they are set', () => {
+  it('includes the passed counts and role badge', () => {
     const json = serializeViewProfile(
-      { ...account, staffTag: 'software_developer' },
+      { ...account, role: 'software_developer' },
       false,
       null,
       false,
@@ -1329,7 +1312,7 @@ describe('serializeViewProfile', () => {
         fundingReviewedByName: 'Bea',
       },
     );
-    expect(json.staffTag).toBe('software_developer');
+    expect(json.role).toBe('software_developer');
     expect(json.postCount).toBe(2);
     expect(json.replyCount).toBe(1);
     expect(json.creditCount).toBe(3);
