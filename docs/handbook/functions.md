@@ -4833,7 +4833,8 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   After the locks, the insert reads `nowMs`. It first writes nothing and returns `unavailable`
   when the request arrived `SHOP_CREATION_INSERT_LIMIT_MS` (16 s) or longer ago or, for a payer,
   its abort signal is set. The payer route answers order 9. A charge creation that hits the
-  cutoff also writes nothing. Next, a `pos_charge_invoice` row of another charge (always another
+  cutoff returns `unavailable`, writes nothing, and leaves the pay link answering the pinned
+  Lightning request. Next, a `pos_charge_invoice` row of another charge (always another
   for a payer) stops the insert before anything is ended or inserted. It returns `mint_failed`
   and logs `shop.alert.duplicate_invoice`. A missing, non-pending, or expired charge is `skipped`.
   A payer then checks `pendingCharge` and returns `pending_charge` before any payment is ended.
@@ -4866,7 +4867,8 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   this attempt wrote, and returns `mint_failed`.
 
   If both insert attempts lose a conflict and neither holder read finds the winner, the insert
-  returns `unavailable`; the payer route answers order 9.
+  returns `unavailable`; the payer route answers order 9. A charge creation ends, and the pay
+  link keeps answering the pinned Lightning request.
 
   After a payer insert, `#startOffersFill` starts the unawaited `#fillOffers`. The fill runs the
   route-list, candidate-pair, spot, gas-price, quote, and offer checks outside the creation lock.

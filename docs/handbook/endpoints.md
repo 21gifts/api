@@ -139,9 +139,10 @@
   checks and the later insert, and never an Orchestra call. It then mints one BOLT11 with one 4 s
   external-call deadline outside the lock, runs the duplicate-hash checks, and inserts the
   payment with a Lightning-only first quote in one transaction that takes the payment hash
-  claim, then the account row lock. After those locks, this insert transaction writes nothing
-  when the request arrived 16 s ago or longer (the arrival is taken as the handler's first
-  statement) or the client disconnected (the request's abort signal). It answers 200
+  claim, then the account row lock. After those locks, this insert transaction returns
+  `unavailable` and writes nothing when the request arrived 16 s ago or longer (the arrival is
+  taken as the handler's first statement) or the client disconnected (the request's abort
+  signal). The route maps `unavailable` to order 9's 503. It answers 200
   `{ payment, expiresAt }` without awaiting any Orchestra call, while the background offers fill
   may already have started. The fill's route list has a 1 s external-call budget. Gas prices and
   quotes have a 3 s external-call deadline that starts when the fill's quote step starts and
@@ -191,7 +192,8 @@
   another charge's `pos_charge_invoice` row (502, nothing ended), then a pending charge (409
   `payment_open`, nothing ended), then a held payment hash. Only after those checks does an open
   payer payment end with `window` or `replaced` and the new payment get inserted. If both insert
-  attempts lose a conflict and neither holder read finds the winner, order 9 is returned. A
+  attempts lose a conflict and neither holder read finds the winner, the insert returns
+  `unavailable` and the route maps it to order 9. A
   failed route list, no candidate pair, no fresh spot, no quote budget, and no retained offer
   leave that 200 in place: the payment is already open Lightning-only. They do not answer 503.
 - **Used by:** The app's payment page for an entered amount; it falls back to `POST /pay/:username/invoice` on 503 and on other 4xx, and reloads the till charge on 409 `payment_open`.

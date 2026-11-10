@@ -1192,7 +1192,7 @@ local sections and then re-reads:
    a fetch answers today's pinned Lightning request. A payer creation never
    records against a charge; it reads `findChargeForPayment({ paymentHash })`
    instead: a hit stops as a failed mint with the alert. An error makes no write of its own,
-   skips the insert, and answers order 9.
+   skips the insert and returns `unavailable`; the payer route answers order 9.
 5. For a charge, gas prices and Orchestra quotes share a 3 s external-call
    deadline that starts when the quote step starts and also covers its
    stored-spot read. Read `eth_gasPrice` per chain and request one Orchestra
@@ -1234,14 +1234,15 @@ local sections and then re-reads:
    32 bits of the hash as a signed integer; an in-process map shared with
    the charge store on a memory boot), then the account row lock
    (`SELECT … FOR UPDATE`), and for a charge then the charge row lock.
-   Holding them, it writes nothing when its request arrived 16 s ago or
+   Holding them, it reads the clock and writes nothing when its request arrived 16 s ago or
    longer (`SHOP_CREATION_INSERT_LIMIT_MS`; the arrival of
    `POST /pay/:username/payment`, of the `POST /pos` that started the
-   charge's creation, or of the pay-link fetch that started it). The payer
-   route answers order 9 for that outcome. A payer also writes nothing when
-   the client has disconnected (the request's abort signal is set), and
-   that route answers order 9. A charge creation that hits the cutoff
-   writes nothing. A `pos_charge_invoice` row of another charge for the hash stops it
+   charge's creation, or of the pay-link fetch that started it). The insert returns
+   `unavailable`, and the payer route answers order 9 for that outcome. A payer
+   also returns `unavailable` and writes nothing when the client has disconnected (the request's
+   abort signal is set); that route answers order 9. A charge creation that hits the cutoff
+   ends without a payment, and the pay link keeps answering the pinned Lightning request. A
+   `pos_charge_invoice` row of another charge for the hash stops it
    before anything is ended or inserted, as a failed mint with
    `shop.alert.duplicate_invoice`. A charge that is no longer
    pending or has expired gets nothing; a payer with a pending charge gets
@@ -1267,7 +1268,9 @@ local sections and then re-reads:
    the charge's own payment holds uses that payment; a holder that appeared
    after the check rolls back as above, including the end of the `open`
    payment. If both insert attempts lose a conflict and no payment or charge
-   invoice holder is found, the insert returns order 9.
+   invoice holder is found, the insert returns `unavailable`. Only
+   `POST /pay/:username/payment` maps that result to order 9. A charge creation ends, and the pay
+   link keeps answering the pinned Lightning request.
 
 For a charge, the route list's 1 s starts at the recheck, so that lock
 wait shortens the fetch. The mint's 4 s and the quotes' 3 s start with
@@ -2134,19 +2137,21 @@ does not start it. A kept offer prevents it, even when the commit then writes no
 quote is written only while the payment is `open`, at least 45 s remain, `replacements` is
 unchanged, and its newest quote is the first quote or a newer Lightning-only row. A
 `findChargeForPayment` error, the insert at 16 s or later, a disconnected client, and the
-unseen-winner fallback after two insert conflicts still answer order 9.
+unseen-winner fallback after two insert conflicts return `unavailable`; this payer route maps
+that result to order 9.
 The api-wide counter is asked first and the account counter only when it
 allows. Orders 7 and 9 do not depend on the client address.
 
 The re-check commits before mint. It ends a lapsed `open` payment with `window` and expires
 overdue payer charges even if a later held-hash check returns order 8. After the insert locks,
-a request at least 16 s old or an aborted payer returns order 9 and writes nothing. A foreign
+a request at least 16 s old or an aborted payer returns `unavailable` and writes nothing; this
+route maps it to order 9. A foreign
 charge invoice then returns order 8 without ending a payment. A pending charge then returns
 order 4 without ending a payment. A held payment hash is checked next and leaves a still-open
 payment open. Only then does an open payer payment end with `window` when its `window_ends_at`
 is at or before the insert clock, or with `replaced` otherwise, before the new payment is
 inserted. Its window ends five minutes after creation. Two insert conflicts whose winner remains
-unseen return order 9.
+unseen return `unavailable`; this route maps it to order 9.
 
 **Response** `200`:
 

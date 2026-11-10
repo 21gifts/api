@@ -614,12 +614,14 @@ proxy forwards none.
 
 The creation re-check commits before mint. It ends a lapsed `open` payment with `window` and
 expires overdue payer charges even if a later held-hash check returns order 8. After the insert
-locks, a request at least 16 s old or an aborted payer returns order 9 and writes nothing. A
+locks, a request at least 16 s old or an aborted payer returns `unavailable` and writes nothing;
+this payer route maps it to order 9. A
 foreign charge invoice then returns order 8 without ending a payment. A pending charge then
 returns order 4 without ending a payment. A held payment hash is checked next and leaves a
 still-open payment open. Only then does an open payer payment end with `window` when its
 `window_ends_at` is at or before the insert clock, or with `replaced` otherwise, before the new
-payment is inserted. Two insert conflicts whose winner remains unseen return order 9. A payer
+payment is inserted. Two insert conflicts whose winner remains unseen return `unavailable`; this
+payer route maps it to order 9. A payer
 whose payment was replaced while sending still gets their transfer confirmed: the proof moves
 the `ended` payment to `accepted`, and the Tether settlement poll sees a different
 `quote.payment` and reports settled.
@@ -684,7 +686,8 @@ One procedure creates a shop payment, for a charge or for a payer:
    `posStore.findChargeForPayment({ paymentHash })`; a hit stops it as a
    failed mint (order 8) with `shop.alert.duplicate_invoice`, so that one settlement can never
    confirm both a charge and a payer's payment. When `findChargeForPayment` fails, that check
-   writes nothing, the insert is skipped, and the payer creation answers order 9. These reads
+   writes nothing, the insert is skipped, and the creation returns `unavailable`; the payer route
+   answers order 9. These reads
    run before the insert; the [Payment hash claim](#payment-hash-claim)
    closes the moment between them and the insert, across both
    containers.
@@ -704,19 +707,22 @@ One procedure creates a shop payment, for a charge or for a payer:
    The other container of a deploy keeps its own wait, so during a deploy an account can see two
    creations in 60 s. While the charge stays pending, the pay link stays pinned and
    `POST /pay/:username/payment` answers order 4. Order 7 applies during the wait only when no
-   charge is pending. Order 9 covers a `findChargeForPayment` error, an insert at 16 s or later,
-   a disconnected client, and the fallback after two insert conflicts whose winner is not found.
+   charge is pending. A `findChargeForPayment` error, an insert at 16 s or later, a disconnected
+   client, and the fallback after two insert conflicts whose winner is not found return
+   `unavailable`. Only the payer route maps that result to order 9. A charge creation ends, and
+   the pay link keeps answering the pinned Lightning request.
    For a payer, no offer is not an error: the payment is already open Lightning-only, and the
    offers fill inserts no second quote.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first takes the
-   [Payment hash claim](#payment-hash-claim) and then locks the account
-   row, as `POST /pos` does. After the locks, a request at least 16 s old writes nothing; a payer
-   returns order 9. An aborted payer does the same. A foreign charge invoice then returns order 8
+   [Payment hash claim](#payment-hash-claim), then locks the account row, and for a charge then
+   locks the `pos_charge` row (`SELECT … FOR UPDATE`). Only after those locks does it read the
+   clock. A request at least 16 s old writes nothing and returns `unavailable`; only the payer
+   route maps that result to order 9. An aborted payer also returns `unavailable`. A foreign
+   charge invoice then returns order 8
    without ending a payment. In that transaction:
-   - For a charge, the api locks the `pos_charge` row too
-     (`SELECT … FOR UPDATE`) and inserts only while the charge is still
-     `pending`. A charge that was cancelled, expired, or paid meanwhile
+   - For a charge, the api inserts only while the locked charge is still `pending`. A charge that
+     was cancelled, expired, or paid meanwhile
      gets no shop payment, and the sticker keeps today's behaviour.
    - For a payer, a pending charge returns order 4 (**409** `payment_open`) without ending a
      payment. A held payment hash is checked next and also leaves a still-open payment open. Only
@@ -756,19 +762,19 @@ One procedure creates a shop payment, for a charge or for a payer:
    `replaced` for a payer or `superseded` for a charge. The insert then
    runs once more. No answer ever carries another payer's amount. If both
    inserts lose a conflict and neither holder read finds the winner, the
-   insert returns order 9.
+   insert returns `unavailable`. Only `POST /pay/:username/payment` maps that result to order 9.
+   A charge creation ends, and the pay link keeps answering the pinned Lightning request.
 
 For a charge, three separate external-call budgets apply. The route
 list's 1 s starts at the recheck, so that lock wait shortens the fetch.
 The mint's 4 s and the quotes' 3 s start with their own steps. That is
 8 s of external-call budget in all. The insert's account lock, store,
-and transaction waits come on top. Step 8 is the hard limit. After it
-holds its locks, it writes nothing when the request arrived 16 s ago or
-longer (the time the api received it). A payer also writes nothing when
-the client has disconnected (the abort signal is set), and that route
-answers order 9.
-A charge creation that hits the cutoff writes nothing. The sticker stays
-on today's Lightning request. No creation inserts a payment once the
+and transaction waits come on top. Step 8 is the hard limit. After it holds its locks, it returns
+`unavailable` and writes nothing when the request arrived 16 s ago or longer (the time the api
+received it). An aborted payer returns the same. Only the payer route maps `unavailable` to
+order 9.
+A charge creation that hits the cutoff returns `unavailable` and writes nothing. The sticker
+stays on today's pinned Lightning request. No creation inserts a payment once the
 request is 16 s old or older. For a payer, the mint's 4 s deadline is the
 only external-call budget before the insert. The same lock, store, and
 16 s limit apply. The offers fill runs after the insert, in the
