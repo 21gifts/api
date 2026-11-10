@@ -48,7 +48,12 @@ import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spar
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
 import { parseWalletReport } from '@/lib/wallet-report';
-import { migrateWalletSchema, PostgresWalletStore } from '@/lib/wallet-store';
+import {
+  migrateWalletSchema,
+  PostgresWalletStore,
+  repairWalletPaymentPairs,
+  type WalletPaymentRecord,
+} from '@/lib/wallet-store';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
 import type { OrchestraClient } from '@/lib/orchestra';
@@ -2536,6 +2541,7 @@ describe('PostgresWalletStore', () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {
       await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
       await migrateWalletSchema(client);
       await migrateWalletSchema(client);
       await migrateDbChangeSchema(client);
@@ -2782,6 +2788,268 @@ describe('PostgresWalletStore', () => {
       expect(snapshotChanges[0]?.before).toBeNull();
       expect(snapshotChanges[0]?.after?.['account_id']).toBe(accountId);
       expect(Number(snapshotChanges[0]?.after?.['balance_sats'])).toBe(1000);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresWalletStore pairing by payment id', () => {
+  const setup = async (): Promise<{
+    client: SqlClient;
+    sql: SQL;
+    store: PostgresWalletStore;
+    newAccount: () => Promise<string>;
+    row: (id: string) => Promise<Record<string, unknown> | undefined>;
+  }> => {
+    const { client, sql } = createBunSqlClient(databaseUrl, { max: 8 });
+    await migrateAuthSchema(client);
+    await migrateMessageSchema(client);
+    await migrateWalletSchema(client);
+    await migrateDbChangeSchema(client);
+    const auth = new PostgresAuthStore(client);
+    const newAccount = async (): Promise<string> => {
+      const id = crypto.randomUUID();
+      const hex = id.replaceAll('-', '');
+      await auth.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `pair_${hex.slice(0, 16)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex.padEnd(64, 'e'),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      return id;
+    };
+    const row = async (accountId: string): Promise<Record<string, unknown> | undefined> =>
+      (
+        await client.query<Record<string, unknown>>(
+          `SELECT category, counterparty_account_id, updated_at, last_observed_at, description
+           FROM wallet_payment WHERE account_id = $1`,
+          [accountId],
+        )
+      )[0];
+    return { client, sql, store: new PostgresWalletStore(client), newAccount, row };
+  };
+
+  const base = Date.now() - 60_000;
+  const at = (offsetMs: number): Date => new Date(base + offsetMs);
+
+  /** An outgoing transfer the sender's wallet reported without any detail. */
+  const bare = (
+    accountId: string,
+    paymentId: string,
+    extra: Partial<WalletPaymentRecord> = {},
+  ): WalletPaymentRecord => ({
+    accountId,
+    paymentId,
+    direction: 'out',
+    status: 'completed',
+    amountSats: 500,
+    feeSats: 0,
+    paidAt: at(0),
+    method: 'spark',
+    paymentHash: null,
+    invoice: null,
+    destination: null,
+    description: null,
+    lnurlComment: null,
+    category: 'unknown',
+    counterpartyAccountId: null,
+    firstSeenAt: at(0),
+    updatedAt: at(0),
+    ...extra,
+  });
+
+  /** The receiver's side of the same transfer, categorized as a zap from `sender`. */
+  const zapIn = (
+    accountId: string,
+    paymentId: string,
+    sender: string,
+    extra: Partial<WalletPaymentRecord> = {},
+  ): WalletPaymentRecord =>
+    bare(accountId, paymentId, {
+      direction: 'in',
+      description: `zap:${'c'.repeat(64)}`,
+      category: 'gift',
+      counterpartyAccountId: sender,
+      ...extra,
+    });
+
+  test('fills either side in either order, names a shop, and never overwrites own categories', async () => {
+    const { client, sql, store, newAccount, row } = await setup();
+    const shopNoteId = crypto.randomUUID();
+    try {
+      const transfer = (): string => `pair-${crypto.randomUUID()}`;
+
+      // Categorized in-row first, bare out-row later.
+      const [s1, r1] = [await newAccount(), await newAccount()];
+      const p1 = transfer();
+      await store.upsertPayments([zapIn(r1, p1, s1, { updatedAt: at(1) })]);
+      await store.upsertPayments([bare(s1, p1, { updatedAt: at(2) })]);
+      expect(await row(s1)).toMatchObject({
+        category: 'gift',
+        counterparty_account_id: r1,
+        description: null,
+      });
+
+      // Bare out-row first, categorized in-row later fills the earlier row.
+      const [s2, r2] = [await newAccount(), await newAccount()];
+      const p2 = transfer();
+      await store.upsertPayments([bare(s2, p2, { updatedAt: at(1) })]);
+      expect((await row(s2))?.['category']).toBe('unknown');
+      await store.upsertPayments([zapIn(r2, p2, s2, { updatedAt: at(5) })]);
+      const filled = await row(s2);
+      expect(filled).toMatchObject({ category: 'gift', counterparty_account_id: r2 });
+      expect(new Date(filled?.['updated_at'] as string).getTime()).toBe(at(5).getTime());
+      // The watermark of the filled row stays its own last observation.
+      expect(new Date(filled?.['last_observed_at'] as string).getTime()).toBe(at(1).getTime());
+      const changes = await client.query<{ op: string; before: Record<string, unknown> }>(
+        `SELECT op, before FROM db_change
+         WHERE table_name = 'wallet_payment' AND after ->> 'account_id' = $1
+         ORDER BY id ASC`,
+        [s2],
+      );
+      expect(changes.map((change) => change.op)).toEqual(['INSERT', 'UPDATE']);
+      expect(changes[1]?.before['category']).toBe('unknown');
+
+      // Reverse direction: a bare in-row from a shop's resolved out-row is a shop payment.
+      const [shop, buyer] = [await newAccount(), await newAccount()];
+      await new PostgresMessageStore(client).create({
+        id: shopNoteId,
+        accountId: shop,
+        name: 'Shop',
+        text: 'Open today #21GiftsShop',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        shopAccount: { id: shop, username: null, name: 'Shop' },
+      });
+      const p3 = transfer();
+      await store.upsertPayments([bare(buyer, p3, { direction: 'in' })]);
+      await store.upsertPayments([
+        bare(shop, p3, { category: 'member', counterpartyAccountId: buyer, updatedAt: at(1) }),
+      ]);
+      expect(await row(buyer)).toMatchObject({ category: 'shop', counterparty_account_id: shop });
+
+      // A category the row's own fields determined is never replaced.
+      const [s4, r4] = [await newAccount(), await newAccount()];
+      const p4 = transfer();
+      await store.upsertPayments([bare(s4, p4, { category: 'outside_lightning' })]);
+      await store.upsertPayments([zapIn(r4, p4, s4, { updatedAt: at(1) })]);
+      expect(await row(s4)).toMatchObject({
+        category: 'outside_lightning',
+        counterparty_account_id: null,
+      });
+
+      // A third row makes the payment id ambiguous: nothing is paired.
+      const [s5, r5, x5] = [await newAccount(), await newAccount(), await newAccount()];
+      const p5 = transfer();
+      await store.upsertPayments([zapIn(r5, p5, s5), zapIn(x5, p5, s5)]);
+      await store.upsertPayments([bare(s5, p5, { updatedAt: at(1) })]);
+      expect(await row(s5)).toMatchObject({ category: 'unknown', counterparty_account_id: null });
+
+      // Same direction on two accounts is no pair.
+      const [s6, r6] = [await newAccount(), await newAccount()];
+      const p6 = transfer();
+      await store.upsertPayments([zapIn(r6, p6, s6, { direction: 'out' })]);
+      await store.upsertPayments([bare(s6, p6, { updatedAt: at(1) })]);
+      expect((await row(s6))?.['category']).toBe('unknown');
+    } finally {
+      // Other tests count the live shop notes of the shared database.
+      await client.execute('DELETE FROM message WHERE id = $1', [shopNoteId]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('concurrent reports of both sides always pair', async () => {
+    const { sql, store, newAccount, row } = await setup();
+    try {
+      for (let round = 0; round < 20; round += 1) {
+        const [sender, receiver] = [await newAccount(), await newAccount()];
+        const paymentId = `race-${crypto.randomUUID()}`;
+        await Promise.all([
+          store.upsertPayments([bare(sender, paymentId)]),
+          store.upsertPayments([zapIn(receiver, paymentId, sender)]),
+        ]);
+        expect(await row(sender)).toMatchObject({
+          category: 'gift',
+          counterparty_account_id: receiver,
+        });
+      }
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the repair fills exactly the eligible stored rows and a second run changes nothing', async () => {
+    const { client, sql, newAccount, row } = await setup();
+    try {
+      const insert = async (
+        record: WalletPaymentRecord,
+        lastObservedAt: Date | null,
+      ): Promise<void> => {
+        await client.execute(
+          `INSERT INTO wallet_payment (account_id, payment_id, direction, status, amount_sats,
+             fee_sats, paid_at, method, description, category, counterparty_account_id,
+             first_seen_at, updated_at, last_observed_at)
+           VALUES ($1,$2,$3,'completed',500,0,$4,'spark',$5,$6,$7,$8,$8,$9)`,
+          [
+            record.accountId,
+            record.paymentId,
+            record.direction,
+            record.paidAt,
+            record.description,
+            record.category,
+            record.counterpartyAccountId,
+            record.updatedAt,
+            lastObservedAt,
+          ],
+        );
+      };
+      const [sender, receiver, own, ownPeer, amb, ambA, ambB, lone] = [
+        await newAccount(),
+        await newAccount(),
+        await newAccount(),
+        await newAccount(),
+        await newAccount(),
+        await newAccount(),
+        await newAccount(),
+        await newAccount(),
+      ];
+      const stamp = crypto.randomUUID();
+      // Eligible: stored before pairing existed, without a watermark.
+      await insert(bare(sender, `repair-${stamp}`, { updatedAt: at(1) }), null);
+      await insert(zapIn(receiver, `repair-${stamp}`, sender, { updatedAt: at(2) }), at(2));
+      // Not eligible: own category, ambiguous id, no other side.
+      await insert(bare(own, `own-${stamp}`, { category: 'onchain' }), at(0));
+      await insert(zapIn(ownPeer, `own-${stamp}`, own), at(0));
+      await insert(bare(amb, `amb-${stamp}`), at(0));
+      await insert(zapIn(ambA, `amb-${stamp}`, amb), at(0));
+      await insert(zapIn(ambB, `amb-${stamp}`, amb), at(0));
+      await insert(bare(lone, `lone-${stamp}`), at(0));
+
+      const now = new Date();
+      expect(await repairWalletPaymentPairs(client, now)).toBeGreaterThanOrEqual(1);
+      const repaired = await row(sender);
+      expect(repaired).toMatchObject({ category: 'gift', counterparty_account_id: receiver });
+      expect(new Date(repaired?.['updated_at'] as string).getTime()).toBe(now.getTime());
+      // The pre-column row keeps its old watermark instead of the repair time.
+      expect(new Date(repaired?.['last_observed_at'] as string).getTime()).toBe(at(1).getTime());
+      expect(await row(receiver)).toMatchObject({
+        category: 'gift',
+        counterparty_account_id: sender,
+      });
+      expect(await row(own)).toMatchObject({ category: 'onchain', counterparty_account_id: null });
+      expect(await row(amb)).toMatchObject({ category: 'unknown', counterparty_account_id: null });
+      expect(await row(lone)).toMatchObject({ category: 'unknown', counterparty_account_id: null });
+
+      expect(await repairWalletPaymentPairs(client, new Date())).toBe(0);
     } finally {
       await closeIfPossible(sql);
     }

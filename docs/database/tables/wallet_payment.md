@@ -33,6 +33,7 @@ Source: [src/lib/wallet-store.ts](../../../src/lib/wallet-store.ts)
 | ------------------------------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `account_id`, `paid_at`, `payment_id` | No     | –     | `CREATE INDEX wallet_payment_account_paid_idx ON public.wallet_payment USING btree (account_id, paid_at DESC, payment_id DESC)` |
 | `account_id`, `payment_id`            | Yes    | –     | `CREATE UNIQUE INDEX wallet_payment_pkey ON public.wallet_payment USING btree (account_id, payment_id)`                         |
+| `payment_id`                          | No     | –     | `CREATE INDEX wallet_payment_payment_id_idx ON public.wallet_payment USING btree (payment_id)`                                  |
 
 ## Referenced by
 

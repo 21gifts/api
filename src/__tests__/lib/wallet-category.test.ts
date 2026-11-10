@@ -8,6 +8,7 @@ import { protoBytesField } from '@/lib/protobuf';
 import { encodeSparkInvoice } from '@/lib/spark-invoice';
 import {
   WALLET_PAYMENT_CATEGORIES,
+  walletAccountKind,
   walletPaymentClassifier,
   type WalletCategoryDeps,
 } from '@/lib/wallet-category';
@@ -133,6 +134,7 @@ interface State {
 function setup(withLnurlServer: boolean = true): {
   state: State;
   classify: ReturnType<typeof walletPaymentClassifier>;
+  deps: WalletCategoryDeps;
 } {
   const state: State = {
     accounts: new Map(),
@@ -173,7 +175,7 @@ function setup(withLnurlServer: boolean = true): {
     },
     ...(withLnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
   };
-  return { state, classify: walletPaymentClassifier(deps, OWN) };
+  return { state, classify: walletPaymentClassifier(deps, OWN), deps };
 }
 
 function spark(memo?: string, pubkey: string = OTHER_KEY): string {
@@ -492,5 +494,25 @@ describe('walletPaymentClassifier', () => {
     await expect(classify(payment({ paymentHash: 'a'.repeat(64) }))).rejects.toThrow(
       'lookup failed',
     );
+  });
+});
+
+describe('walletAccountKind', () => {
+  it('names the platform account, a live assigned shop, and any other account', async () => {
+    const { state, deps } = setup();
+    state.accounts.set(PLATFORM, account(PLATFORM, { isPlatform: true }));
+    state.accounts.set(SHOP, account(SHOP));
+    state.accounts.set(MEMBER, account(MEMBER));
+    state.shops = [
+      { id: 'note', accountId: SHOP, text: 'open daily #21GiftsShop' },
+      { id: 'tagged-wrong', accountId: MEMBER, text: '#21GiftsShopping' },
+      { id: 'unassigned', accountId: '', text: '#21giftsshop' },
+    ];
+    expect(await walletAccountKind(deps, PLATFORM)).toBe('platform');
+    expect(await walletAccountKind(deps, SHOP)).toBe('shop');
+    expect(await walletAccountKind(deps, MEMBER)).toBe('member');
+    expect(await walletAccountKind(deps, PAYER)).toBe('member');
+    // The platform needs no shop lookup.
+    expect(state.shopCalls).toBe(3);
   });
 });

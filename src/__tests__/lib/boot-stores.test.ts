@@ -925,6 +925,50 @@ describe('openBootStores', () => {
     );
   });
 
+  it('repairs wallet payment pairs after the db_change triggers and logs only the count', async () => {
+    const operations: string[] = [];
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        operations.push(text);
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        if (text.startsWith('UPDATE wallet_payment AS t')) {
+          return [{ account_id: 'a' }, { account_id: 'b' }, { account_id: 'c' }] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async (text: string) => {
+        operations.push(text);
+      },
+    };
+
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+    });
+
+    const lastTriggerIdx = operations.reduce(
+      (last, text, i) => (text.includes('trg_db_change') ? i : last),
+      -1,
+    );
+    const repairs = operations.filter((text) => text.startsWith('UPDATE wallet_payment AS t'));
+    expect(repairs).toHaveLength(1);
+    expect(repairs[0]).not.toContain('$2');
+    expect(
+      operations.findIndex((text) => text.startsWith('UPDATE wallet_payment AS t')),
+    ).toBeGreaterThan(lastTriggerIdx);
+    const logged = parsedEvents(warn).filter(
+      (event) => event['event'] === 'wallet_payment.pairs_repaired',
+    );
+    expect(logged).toHaveLength(1);
+    expect(Object.keys(logged[0] ?? {}).sort()).toEqual(['event', 'repaired', 'ts']);
+    expect(logged[0]?.['repaired']).toBe(3);
+  });
+
   it('links roster rows by legacy address only when the LNURL server is off', async () => {
     const queries: Array<{ text: string; params: readonly unknown[] | undefined }> = [];
     const client: SqlClient = {

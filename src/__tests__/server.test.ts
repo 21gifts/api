@@ -793,6 +793,45 @@ describe('createApp', () => {
     });
     expect(wallet.status).toBe(200);
     expect(await wallet.json()).toEqual({ acknowledgedIds: ['p1'] });
+    // The receiving side of the same transfer, without details, is paired by the default store,
+    // which names the payer through walletAccountKind.
+    await authStore.createAccount({
+      id: 'acc-default-peer',
+      linkingKey: `02${'c'.repeat(64)}`,
+      role: 'basis',
+      name: 'Cy',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await authStore.createSession({
+      token: 'tok-default-peer',
+      accountId: 'acc-default-peer',
+      createdAt: Date.now(),
+    });
+    const peer = await app.request('/me/wallet/report', {
+      method: 'POST',
+      headers: { ...headers, authorization: 'Bearer tok-default-peer' },
+      body: JSON.stringify({
+        balanceSats: 21,
+        syncedAt: new Date().toISOString(),
+        payments: [
+          {
+            id: 'p1',
+            direction: 'in',
+            status: 'completed',
+            amountSats: 21,
+            feeSats: 0,
+            timestamp: Math.floor(Date.now() / 1000),
+            method: 'spark',
+          },
+        ],
+      }),
+    });
+    expect(peer.status).toBe(200);
+    expect(await peer.json()).toEqual({ acknowledgedIds: ['p1'] });
     const events = await app.request('/me/events', {
       method: 'POST',
       headers,
