@@ -1772,6 +1772,36 @@ describe('FondQueueSink', () => {
     });
   });
 
+  it('uses the default clock UTC day when the body has no day', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-09T23:30:00.000Z'));
+    try {
+      const store = new InMemoryFondPayoutStore();
+      const sink = new FondQueueSink({ store });
+      expect(
+        await sink.deliver(ADDRESS, {
+          address: ADDRESS,
+          messageId: MESSAGE_ID,
+          amountUsd: 2,
+          comment: 'thanks',
+        }),
+      ).toEqual({ outcome: 'accepted' });
+      const rows = await store.listOpen('2026-11-09');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        kind: 'daily',
+        address: ADDRESS,
+        amountUsd: '2',
+        comment: 'thanks',
+        messageId: MESSAGE_ID,
+        groupMessageId: null,
+        status: 'owed',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('fails without inserting when amount or comment is invalid', async () => {
     const store = new InMemoryFondPayoutStore();
     const sink = new FondQueueSink({ store });
