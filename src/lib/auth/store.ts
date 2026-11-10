@@ -204,8 +204,9 @@ export interface Account {
    */
   notifyHearts?: boolean;
   /**
-   * Whole-sat amount one heart payment sends. Omitted / invalid → 1.
-   * Not public on member cards or view profiles.
+   * Whole-sat amount one heart payment sends. Omitted on create → 1; omitted
+   * on update keeps the stored amount. Invalid → 1. Not public on member
+   * cards or view profiles.
    */
   heartSats?: number;
   /**
@@ -1408,7 +1409,10 @@ export class InMemoryAuthStore implements AuthStore {
       ...rest,
       ...(username === undefined ? {} : { username }),
       sessionRefused: previous?.sessionRefused === true,
-      heartSats: parseHeartSats(account.heartSats),
+      heartSats:
+        account.heartSats === undefined
+          ? (previous?.heartSats ?? 1)
+          : parseHeartSats(account.heartSats),
       walletRequired: previous?.walletRequired === true,
       walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
       walletIntroSeen: previous?.walletIntroSeen === true || account.walletIntroSeen === true,

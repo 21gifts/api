@@ -536,7 +536,7 @@ export class PostgresAuthStore implements AuthStore {
              username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim(coalesce(username, '')) = '' THEN $15 ELSE username END,
              amount_unit = $16,
              notify_hearts = $17,
-             heart_sats = $18,
+             heart_sats = COALESCE($18, heart_sats),
              wallet_intro_seen = wallet_intro_seen OR $19
          WHERE id = $1
            AND (
@@ -564,7 +564,7 @@ export class PostgresAuthStore implements AuthStore {
           account.username ?? null,
           account.amountUnit ?? 'btc',
           account.notifyHearts !== false,
-          parseHeartSats(account.heartSats),
+          account.heartSats === undefined ? null : parseHeartSats(account.heartSats),
           account.walletIntroSeen === true,
         ],
       );
@@ -1194,8 +1194,8 @@ LIMIT $2`,
   /**
    * Account ids at the moderator rank or above.
    *
-   * @returns Ids from `SELECT id FROM account WHERE role IN
-   *   ('founder', 'moderator', 'initiator', 'fond')`.
+   * @returns Ids from
+   *   `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator', 'fond')`.
    */
   async listStaffAccountIds(): Promise<string[]> {
     const rows = await this.#sql.query<{ id: string }>(

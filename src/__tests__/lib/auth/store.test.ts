@@ -104,6 +104,27 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('acc'))?.heartSats).toBe(42);
   });
 
+  it('keeps the stored heartSats when an update omits it', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis' as const,
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    };
+    await store.createAccount(base);
+    await store.updateAccount({ ...base, heartSats: 21 });
+    await store.updateAccount({ ...base, name: 'Grace' });
+    expect((await store.getAccount('acc'))?.heartSats).toBe(21);
+    await store.updateAccount({ ...base, heartSats: 5 });
+    expect((await store.getAccount('acc'))?.heartSats).toBe(5);
+  });
+
   it('ignores a second createAccount with the same linkingKey', async () => {
     const store = new InMemoryAuthStore();
     const first = {
@@ -1891,6 +1912,7 @@ describe('InMemoryAuthStore', () => {
     });
     expect((await store.getAccount('never'))?.locale).toBeNull();
     expect((await store.getAccount('never'))?.fiat).toBeNull();
+    expect((await store.getAccount('never'))?.heartSats).toBe(1);
   });
 
   it('updateAccount leaves unset locale and fiat null', async () => {

@@ -406,7 +406,7 @@ describe('PostgresAuthStore', () => {
     );
     expect(update.text).toMatch(/amount_unit = \$16/);
     expect(update.text).toMatch(/notify_hearts = \$17/);
-    expect(update.text).toMatch(/heart_sats = \$18/);
+    expect(update.text).toMatch(/heart_sats = COALESCE\(\$18, heart_sats\)/);
     expect(update.text).toMatch(/wallet_intro_seen = wallet_intro_seen OR \$19/);
     expect(update.text).not.toMatch(/had_external_wallet/);
     expect(update.text).toMatch(/NOT EXISTS/);
@@ -436,7 +436,7 @@ describe('PostgresAuthStore', () => {
       null,
       'btc',
       true,
-      1,
+      null,
       false,
     ]);
     expect(insert.text).not.toMatch(/spark_pubkey/);
@@ -515,7 +515,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.executes[1]?.params[16]).toBe(true);
   });
 
-  it('maps heartSats and writes it as $21 on insert and $18 on update', async () => {
+  it('maps heartSats and keeps the stored amount when an update omits it', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     sql.nextRows = [{ ...ACCOUNT_ROW, heart_sats: 21 }];
@@ -541,9 +541,14 @@ describe('PostgresAuthStore', () => {
     await store.createAccount(account);
     expect(sql.executes[0]?.text).toMatch(/heart_sats/);
     expect(sql.executes[0]?.params[20]).toBe(21);
-    await store.updateAccount({ ...account, heartSats: 42 });
-    expect(sql.executes[1]?.text).toMatch(/heart_sats = \$18/);
-    expect(sql.executes[1]?.params[17]).toBe(42);
+    const { heartSats: _omit, ...withoutHeartSats } = account;
+    void _omit;
+    await store.updateAccount(withoutHeartSats);
+    expect(sql.executes[1]?.text).toMatch(/heart_sats = COALESCE\(\$18, heart_sats\)/);
+    expect(sql.executes[1]?.params[17]).toBeNull();
+    await store.updateAccount({ ...account, heartSats: 5 });
+    expect(sql.executes[2]?.text).toMatch(/heart_sats = COALESCE\(\$18, heart_sats\)/);
+    expect(sql.executes[2]?.params[17]).toBe(5);
   });
 
   it('writes a stored amountUnit as $19 on insert and $16 on update', async () => {

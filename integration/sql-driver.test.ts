@@ -2292,6 +2292,44 @@ describe('PostgresAuthStore wallet intro seen', () => {
   });
 });
 
+describe('PostgresAuthStore heart amount', () => {
+  test('an update without heartSats keeps 21 and a provided 5 replaces it', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const id = crypto.randomUUID();
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        heartSats: 21,
+      });
+
+      const created = await store.getAccount(id);
+      expect(created?.heartSats).toBe(21);
+      const { heartSats: _omit, ...withoutHeartSats } = created!;
+      void _omit;
+      await store.updateAccount({ ...withoutHeartSats, name: 'Renamed' });
+      expect((await store.getAccount(id))?.heartSats).toBe(21);
+
+      await store.updateAccount({ ...created!, heartSats: 5 });
+      expect((await store.getAccount(id))?.heartSats).toBe(5);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresMessageStore welcome gift', () => {
   test('a platform Welcome reply under the account notes counts, live or hidden', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
