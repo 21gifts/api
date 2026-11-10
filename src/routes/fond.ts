@@ -293,7 +293,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         todayRows = await deps.fondPayoutStore.listOpen(today);
         yesterdayRows = await deps.fondPayoutStore.listOpen(yesterday);
       } catch {
-        logEvent('fond.health.failed');
+        logEvent('fond.payouts.failed');
         return c.json({ status: 'unavailable' }, 503, HEALTH_NO_STORE);
       }
       const open = todayRows.length;

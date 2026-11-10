@@ -702,7 +702,7 @@ describe('GET /fond/health', () => {
     expect(await res.json()).toEqual({ status: 'unavailable' });
     expect(listOpen).toHaveBeenCalledTimes(1);
     expect(listOpen).toHaveBeenCalledWith(TODAY);
-    expect(events).toEqual(['fond.health.failed']);
+    expect(events).toEqual(['fond.payouts.failed']);
   });
 
   it('is unavailable when the yesterday read throws', async () => {
@@ -721,7 +721,7 @@ describe('GET /fond/health', () => {
     expect(await res.json()).toEqual({ status: 'unavailable' });
     expect(listOpen).toHaveBeenNthCalledWith(1, TODAY);
     expect(listOpen).toHaveBeenNthCalledWith(2, YESTERDAY);
-    expect(events).toEqual(['fond.health.failed']);
+    expect(events).toEqual(['fond.payouts.failed']);
   });
 
   it('reads the previous calendar day across a year boundary and a leap day', async () => {
