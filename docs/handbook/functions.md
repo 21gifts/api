@@ -4794,17 +4794,20 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   wait. No `candidatePairs` returns `unavailable` and starts the 60 s wait. A payer skips route,
   quote, and spot work before the insert. One mint uses `requestGiftInvoice` with a 4 s
   external-call deadline. Failure or another amount is `mint_failed`. If another shop payment
-  already holds the hash, `paymentForHash` returns `mint_failed` and logs
-  `shop.alert.duplicate_invoice` with this creation's `paymentId`, plus `holderPaymentId` and
-  `holderChargeId` when known. A charge's own shop payment is returned instead.
+  already holds the hash, `tx.paymentForHash` returns that `ShopPayment`; it returns `null` when
+  none does. After this read, `#create` returns a charge's own shop payment. For any other row,
+  `#create` returns `mint_failed` and logs `shop.alert.duplicate_invoice` with this creation's
+  `paymentId`, `holderPaymentId`, and `holderChargeId` when present.
 
   For a charge, `posStore.recordInvoice` runs in its own claim transaction, outside any shop
   transaction. `other_payment` is `mint_failed` with the alert, `not_open` is `skipped` without
   it, and `recorded` or `this_charge` continues. An error logs `pos.invoice.record_failed` with
   `accountId` and `paymentId`; its claim writes nothing and is `skipped`, so a fetch answers
-  today's pinned request. For a payer, `posStore.findChargeForPayment({ paymentHash })` returns
-  `mint_failed` with the alert on a hit. An error makes no write of its own, skips the insert,
-  returns `unavailable`, and makes the payer route answer order 9.
+  today's pinned request. For a payer, `posStore.findChargeForPayment({ paymentHash })` returns a
+  `PosCharge` or `undefined`. After a hit, `#create` stops creation as a failed mint (order 8),
+  logs `shop.alert.duplicate_invoice` with this creation's `paymentId` and `holderChargeId`, and
+  returns `mint_failed`. An error makes no write of its own, skips the insert, returns
+  `unavailable`, and makes the payer route answer order 9.
 
   For a charge, the stored spot comes from `fxSpot.latest()`, never a fetch. Without a USD rate
   whose `asOf` is younger than `SHOP_SPOT_MAX_AGE_MS` (10 minutes), no gas price or quote is
@@ -4835,11 +4838,13 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   transaction has already committed: a lapsed payment ended with `window` and overdue payer charges
   expired there stay changed if a later hash check returns `mint_failed`.
 
-  Before every `endPayment`, `hashHolder` reads the payment holding the BOLT11 hash. This charge's
-  own payment is used. Any other holder throws `HashHeldError` before anything is ended, so the
-  transaction writes nothing and an existing `open` payment stays `open` because it was never
-  ended. The catch logs `shop.alert.duplicate_invoice` and returns `mint_failed`. It deletes the
-  charge invoice only for a charge and only when this creation's `recordInvoice` wrote that row.
+  The first `hashHolder` read runs before `endPayment`. This charge's own payment is used. Any
+  other holder throws `HashHeldError` before a payment is ended. If `insertPayment` loses the
+  hash race, the second `hashHolder` read runs after `endPayment` and throws for a foreign holder.
+  When an open payment was ended, the rollback restores it to `open`, but its
+  `shop.payment.ended` log remains. The catch logs `shop.alert.duplicate_invoice` and returns
+  `mint_failed`. It deletes the charge invoice only for a charge and only when this creation's
+  `recordInvoice` wrote that row.
 
   With no holder, an `open` payment whose window ends at or before `nowMs` ends with `window`.
   Otherwise it ends with `superseded` for a charge or `replaced` for a payer. The transaction then
@@ -4858,10 +4863,11 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   After a payer insert, `#startOffersFill` starts the unawaited `#fillOffers`. The fill runs the
   route-list, candidate-pair, spot, gas-price, quote, and offer checks outside the creation lock.
   Only its short re-read and quote commit take that lock. A failed route list leaves the open
-  Lightning-only payment and 200 response unchanged and starts no wait. No candidate pair or no
-  offer retained after `checkOffer` and gas-price filtering also leaves them unchanged, but starts
-  the 60 s no-pair wait. One unreadable gas price drops only offers on that chain. The wait
-  depends only on the offer array being empty before the commit. Any retained offer prevents it.
+  Lightning-only payment and 200 response unchanged. No candidate pair or no offer retained after
+  `checkOffer` and gas-price filtering also leaves them unchanged. The 60 s no-pair wait starts
+  when there is no candidate pair or when no offer remains after `checkOffer` and gas-price
+  filtering. A failed route list does not start it. A retained offer prevents the wait even when
+  the commit writes nothing. One unreadable gas price drops only offers on that chain.
   The second quote is inserted only while the payment is `open`, at least 45 s remain,
   `replacements` is unchanged, and the newest quote is the Lightning-only first quote or a newer
   Lightning-only row. A stored deposit-address conflict drops only that offer, logs

@@ -800,9 +800,9 @@ when a stored offer already holds an offer's deposit address. That conflict
 drops only the offer and logs `shop.alert.shared_deposit_address`.
 The fill inserts no quote when the route list fails or there is no candidate pair. It also
 inserts no quote when the commit conditions fail. An unreadable gas price drops only offers on
-that chain. The 60 s no-pair wait starts only when the offer array is empty before the commit.
-A retained offer prevents the wait even when the commit later inserts nothing. A failed route
-list does not start the wait.
+that chain. The 60 s no-pair wait starts when there is no candidate pair or when no offer remains
+after `checkOffer` and gas-price filtering. A failed route list does not start it. A retained
+offer prevents the wait even when the commit writes nothing.
 The fill does not increment `replacements`; it is not a replacement.
 
 ### Payment hash claim
