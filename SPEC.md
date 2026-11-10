@@ -1158,8 +1158,9 @@ local sections and then re-reads:
 
 1. In one transaction, end a lapsed `open` payment of the account with
    `end_reason` `window`. For a charge, stop with its existing shop
-   payment, or when the charge is no longer pending or has expired. For a
-   payer, stop with 409 `payment_open` when a charge is pending. The
+   payment, or skip when the charge is missing, is no longer `pending`, or
+   its `expires_at` is at or before the re-check clock. For a payer, stop
+   with 409 `payment_open` when a charge is pending. The
    transaction first takes the account row lock (`SELECT … FOR UPDATE`),
    then the charge row lock for a charge, or for a payer the account's
    overdue pending charges, which it expires, and only then ends the lapsed
@@ -1265,7 +1266,8 @@ local sections and then re-reads:
    holds only the inserted offers. A lost insert on the payment hash that
    the charge's own payment holds uses that payment; a holder that appeared
    after the check rolls back as above, including the end of the `open`
-   payment.
+   payment. If both insert attempts lose a conflict and no payment or charge
+   invoice holder is found, the insert returns order 9.
 
 For a charge, the route list's 1 s starts at the recheck, so that lock
 wait shortens the fetch. The mint's 4 s and the quotes' 3 s start with
@@ -2115,7 +2117,7 @@ Same account lookup as `GET /pay/:username`. Checks run in this order:
 | 6     | The username is `invoice`, `cb`, or ends in `.`, or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` does not resolve.         | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 | 7     | The account's 60 s no-pair wait is running, or the api started 60 creations in the last minute, or this account started 10 (per process).                         | **503** `stablecoin_unavailable` as in order 6                                               |
 | 8     | The mint fails, the BOLT11 is for another amount, or its payment hash is already held by a shop payment or recorded against a charge (logs `pay.invoice_failed`). | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 9     | `findChargeForPayment` fails with an error, or the insert step finds the request at least 16 s old or its client disconnected.                                    | **503** `stablecoin_unavailable` as in order 6                                               |
+| 9     | `findChargeForPayment` fails, the insert finds the request at least 16 s old or its client disconnected, or both insert attempts lose an unseen conflict.         | **503** `stablecoin_unavailable` as in order 6                                               |
 
 Orders 4 and 6 run again under the account's creation lock (order 4 also
 inside the insert transaction); order 7 runs only there, once per creation.
@@ -2131,18 +2133,20 @@ than 10 minutes, no quote that passes `checkOffer`, or no readable gas price. A 
 does not start it. A kept offer prevents it, even when the commit then writes nothing. The second
 quote is written only while the payment is `open`, at least 45 s remain, `replacements` is
 unchanged, and its newest quote is the first quote or a newer Lightning-only row. A
-`findChargeForPayment` error, the insert at 16 s or later, and a disconnected client still answer
-order 9.
+`findChargeForPayment` error, the insert at 16 s or later, a disconnected client, and the
+unseen-winner fallback after two insert conflicts still answer order 9.
 The api-wide counter is asked first and the account counter only when it
 allows. Orders 7 and 9 do not depend on the client address.
 
 The re-check commits before mint. It ends a lapsed `open` payment with `window` and expires
-overdue payer charges even if a later held-hash check returns order 8. Inside the insert
-transaction, a held hash leaves a still-open payment open. The insert reads its clock after its
-locks. A pending till charge found there ends no payment, inserts nothing, and returns order 4.
-Without that charge or a hash conflict, an open payer payment ends with `window` when its
-`window_ends_at` is at or before that clock, and with `replaced` otherwise. The new payment is
-then created. Its window ends five minutes after creation.
+overdue payer charges even if a later held-hash check returns order 8. After the insert locks,
+a request at least 16 s old or an aborted payer returns order 9 and writes nothing. A foreign
+charge invoice then returns order 8 without ending a payment. A pending charge then returns
+order 4 without ending a payment. A held payment hash is checked next and leaves a still-open
+payment open. Only then does an open payer payment end with `window` when its `window_ends_at`
+is at or before the insert clock, or with `replaced` otherwise, before the new payment is
+inserted. Its window ends five minutes after creation. Two insert conflicts whose winner remains
+unseen return order 9.
 
 **Response** `200`:
 

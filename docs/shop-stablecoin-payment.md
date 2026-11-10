@@ -586,8 +586,8 @@ as for `POST /pay/:username/invoice`. The checks run in this order:
 | 5     | The amount is outside that pay request's minimum and maximum.                                                                                                     | **400** `{ "error": "Enter a whole number of sats" }`                                        |
 | 6     | A username without stablecoin rows (see Route details), or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` is not configured. | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 | 7     | The account's 60 s no-pair wait is running, or it started 10 creations in the last minute, or the api started 60 in the last minute.                              | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
-| 8     | The mint fails, or the BOLT11 amount differs.                                                                                                                     | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 9     | `findChargeForPayment` fails with an error (step 4), or step 8 finds its request at least 16 s old or its client disconnected.                                    | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 8     | The mint fails, the BOLT11 amount differs, or its payment hash is held by a shop payment or recorded against a charge.                                            | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
+| 9     | `findChargeForPayment` fails, step 8 finds its request at least 16 s old or its client disconnected, or both insert attempts lose an unseen conflict.             | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 
 Orders 1, 2, 3, 5, and 8 are the checks and texts of
 `POST /pay/:username/invoice`. Order 4 comes before the range check, because a
@@ -613,14 +613,16 @@ counter would add a database write before every Orchestra call. They do not depe
 proxy forwards none.
 
 The creation re-check commits before mint. It ends a lapsed `open` payment with `window` and
-expires overdue payer charges even if a later held-hash check returns order 8. Inside the insert
-transaction, a held hash does not end a still-open payment. The insert reads its clock after its
-locks. A pending till charge found there ends no payment, inserts nothing, and returns order 4.
-Without that charge or a hash conflict, an open payer payment ends with `window` when its
-`window_ends_at` is at or before that clock, and with `replaced` otherwise. The new payment is
-then created. A payer whose payment was replaced while sending still gets their transfer
-confirmed: the proof moves the `ended` payment to `accepted`, and the Tether settlement poll
-sees a different `quote.payment` and reports settled.
+expires overdue payer charges even if a later held-hash check returns order 8. After the insert
+locks, a request at least 16 s old or an aborted payer returns order 9 and writes nothing. A
+foreign charge invoice then returns order 8 without ending a payment. A pending charge then
+returns order 4 without ending a payment. A held payment hash is checked next and leaves a
+still-open payment open. Only then does an open payer payment end with `window` when its
+`window_ends_at` is at or before the insert clock, or with `replaced` otherwise, before the new
+payment is inserted. Two insert conflicts whose winner remains unseen return order 9. A payer
+whose payment was replaced while sending still gets their transfer confirmed: the proof moves
+the `ended` payment to `accepted`, and the Tether settlement poll sees a different
+`quote.payment` and reports settled.
 
 Order 7 limits what one stranger can cost. It also means a stranger can
 switch off the stablecoin rows of one shop, or of all shops, for a minute. The next payer then pays by Lightning invoice, and a
@@ -645,9 +647,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    re-reads.
    `translate-note.ts` keeps in-flight work in a map the same way.
 2. Re-check the state under the lock: expire overdue charges for a payer, end a lapsed `open`
-   payment of the account with `end_reason` `window`, stop when the payment to create
-   already exists, stop for a charge that is no longer pending, and for a
-   payer stop with order 4 when a charge is now pending.
+   payment of the account with `end_reason` `window`, and stop when the payment to create already
+   exists. A charge is skipped when it is missing, is no longer `pending`, or its `expires_at` is
+   at or before the re-check clock. A payer stops with order 4 when a charge is now pending.
 3. For a charge, read the route list and select the candidate pairs
    ([Methods](#methods)). A payer skips this step here; its offers fill
    reads the route list after step 8.
@@ -702,28 +704,27 @@ One procedure creates a shop payment, for a charge or for a payer:
    The other container of a deploy keeps its own wait, so during a deploy an account can see two
    creations in 60 s. While the charge stays pending, the pay link stays pinned and
    `POST /pay/:username/payment` answers order 4. Order 7 applies during the wait only when no
-   charge is pending. Order 9 is only a `findChargeForPayment` error, an insert at 16 s or later,
-   or a disconnected client. For a payer, no offer is not an error: the payment is already open
-   Lightning-only, and the offers fill inserts no second quote.
+   charge is pending. Order 9 covers a `findChargeForPayment` error, an insert at 16 s or later,
+   a disconnected client, and the fallback after two insert conflicts whose winner is not found.
+   For a payer, no offer is not an error: the payment is already open Lightning-only, and the
+   offers fill inserts no second quote.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first takes the
    [Payment hash claim](#payment-hash-claim) and then locks the account
-   row, as `POST /pos` does. In that transaction:
+   row, as `POST /pos` does. After the locks, a request at least 16 s old writes nothing; a payer
+   returns order 9. An aborted payer does the same. A foreign charge invoice then returns order 8
+   without ending a payment. In that transaction:
    - For a charge, the api locks the `pos_charge` row too
      (`SELECT … FOR UPDATE`) and inserts only while the charge is still
      `pending`. A charge that was cancelled, expired, or paid meanwhile
      gets no shop payment, and the sticker keeps today's behaviour.
-   - For a payer, the first quote is Lightning-only: its `transferAmounts`
-     has only the Lightning entry, and its expiry is `window_ends_at`. The
-     transaction inserts no offers. A pending charge means nothing is
-     written, and the answer is order 4 (**409** `payment_open`). The insert
-     reads its clock after the locks. An `open` payer payment ends with
-     `window` when `window_ends_at` is at or before that clock, and with
-     `replaced` otherwise. This happens only after the hash claim found no
-     other payment holding the hash, so a `payment_hash` conflict ends
-     nothing in this insert transaction. The re-check in step 2 has already
-     committed, so its expired payer charges and a lapsed payment ended with
-     `window` stay changed.
+   - For a payer, a pending charge returns order 4 (**409** `payment_open`) without ending a
+     payment. A held payment hash is checked next and also leaves a still-open payment open. Only
+     then does an `open` payer payment end with `window` when `window_ends_at` is at or before the
+     insert clock, or with `replaced` otherwise, before the new payment is inserted. Its first
+     quote is Lightning-only: its `transferAmounts` has only the Lightning entry, its expiry is
+     `window_ends_at`, and it has no offers. The re-check in step 2 has already committed, so its
+     expired payer charges and a lapsed payment ended with `window` stay changed.
 
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
@@ -753,7 +754,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    answers order 4. Otherwise a payment whose window ends at or before the
    insert clock ends with `window`; one whose window still runs ends with
    `replaced` for a payer or `superseded` for a charge. The insert then
-   runs once more. No answer ever carries another payer's amount.
+   runs once more. No answer ever carries another payer's amount. If both
+   inserts lose a conflict and neither holder read finds the winner, the
+   insert returns order 9.
 
 For a charge, three separate external-call budgets apply. The route
 list's 1 s starts at the recheck, so that lock wait shortens the fetch.

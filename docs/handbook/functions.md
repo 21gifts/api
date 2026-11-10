@@ -4785,8 +4785,9 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   (`#recheckCreation`, under the creation lock) first locks the account row. For a charge it then
   locks that charge row. For a payer, `pendingCharge` instead expires overdue pending charges;
   it is not a `SELECT … FOR UPDATE` of a charge row. Only then does the transaction end a lapsed
-  `open` payment (`window`). A charge with a shop payment returns it, a charge no longer pending
-  is `skipped`, and a payer with a pending charge is `pending_charge`. `offersStablecoins`, the
+  `open` payment (`window`). A charge with a shop payment returns it. A charge is `skipped` when
+  it is missing, is no longer `pending`, or its `expiresAt` is at or before `startMs`, the
+  re-check clock. A payer with a pending charge is `pending_charge`. `offersStablecoins`, the
   no-pair wait, and the counters can return `unavailable`.
 
   For a charge, the route list is reused only until its `validForMs` has passed since the request
@@ -4834,16 +4835,17 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   its abort signal is set. The payer route answers order 9. A charge creation that hits the
   cutoff also writes nothing. Next, a `pos_charge_invoice` row of another charge (always another
   for a payer) stops the insert before anything is ended or inserted. It returns `mint_failed`
-  and logs `shop.alert.duplicate_invoice`. A payer then checks `pendingCharge` and returns
-  `pending_charge` before any payment is ended.
+  and logs `shop.alert.duplicate_invoice`. A missing, non-pending, or expired charge is `skipped`.
+  A payer then checks `pendingCharge` and returns `pending_charge` before any payment is ended.
+  The first `hashHolder` read follows and also runs before `endPayment`.
 
   These no-write results cover only the insert transaction. The earlier `#recheckCreation`
   transaction has already committed: a lapsed payment ended with `window` and overdue payer charges
   expired there stay changed if a later hash check returns `mint_failed`.
 
-  The first `hashHolder` read runs before `endPayment`. This charge's own payment is used. Any
-  other holder throws `HashHeldError` before a payment is ended. If `insertPayment` loses the
-  hash race, the second `hashHolder` read runs after `endPayment` and throws for a foreign holder.
+  This charge's own hash holder is used. Any other holder throws `HashHeldError` before a payment
+  is ended. If `insertPayment` loses the hash race, the second `hashHolder` read runs after
+  `endPayment` and throws for a foreign holder.
   When an open payment was ended, the rollback restores it to `open`, but its
   `shop.payment.ended` log remains. The catch logs `shop.alert.duplicate_invoice` and returns
   `mint_failed`. It deletes the charge invoice only for a charge and only when this creation's
@@ -4862,6 +4864,9 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   check. This can happen on a memory boot because `InMemoryPosStore.recordInvoice` does not wait
   for the transaction. The same catch logs the alert, conditionally deletes only the invoice row
   this attempt wrote, and returns `mint_failed`.
+
+  If both insert attempts lose a conflict and neither holder read finds the winner, the insert
+  returns `unavailable`; the payer route answers order 9.
 
   After a payer insert, `#startOffersFill` starts the unawaited `#fillOffers`. The fill runs the
   route-list, candidate-pair, spot, gas-price, quote, and offer checks outside the creation lock.

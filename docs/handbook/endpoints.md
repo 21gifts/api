@@ -187,11 +187,13 @@
   log `pay.invoice_failed`; a held hash also logs `shop.alert.duplicate_invoice`. A
   `findChargeForPayment` error answers 503 `stablecoin_unavailable`. That check writes nothing,
   and the insert is skipped. Inside the insert transaction, after its locks, the checks are: first
-  a request at least 16 s old or a
-  disconnected client (order 9, 503, nothing written), then another charge's
-  `pos_charge_invoice` row (502), then a pending charge (409 `payment_open`). A failed route list,
-  no candidate pair, no fresh spot, no quote budget, and no retained offer leave that 200 in
-  place: the payment is already open Lightning-only. They do not answer 503.
+  a request at least 16 s old or a disconnected client (order 9, 503, nothing written), then
+  another charge's `pos_charge_invoice` row (502, nothing ended), then a pending charge (409
+  `payment_open`, nothing ended), then a held payment hash. Only after those checks does an open
+  payer payment end with `window` or `replaced` and the new payment get inserted. If both insert
+  attempts lose a conflict and neither holder read finds the winner, order 9 is returned. A
+  failed route list, no candidate pair, no fresh spot, no quote budget, and no retained offer
+  leave that 200 in place: the payment is already open Lightning-only. They do not answer 503.
 - **Used by:** The app's payment page for an entered amount; it falls back to `POST /pay/:username/invoice` on 503 and on other 4xx, and reloads the till charge on 409 `payment_open`.
 - **Auth:** none.
 
