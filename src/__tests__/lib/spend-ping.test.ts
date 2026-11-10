@@ -1798,7 +1798,7 @@ describe('FondQueueSink', () => {
         status: 'owed',
       });
     } finally {
-      vi.useRealTimers();
+      now.mockRestore();
     }
   });
 

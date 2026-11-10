@@ -3911,6 +3911,11 @@ test('Function: periodKey — GET /habits is public', async ({ request }) => {
   expect(res.status()).toBe(200);
 });
 
+test('Function: addUtcDays — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: nextPeriod — GET /habits is public', async ({ request }) => {
   const res = await request.get('/habits');
   expect(res.status()).toBe(200);

@@ -26,6 +26,7 @@ import {
 } from '@/lib/fond-payout-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
+import { addUtcDays } from '@/lib/member-habit';
 import type { FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
 import { normalizeUuid } from '@/lib/uuid';
@@ -116,22 +117,6 @@ function listRow(row: FondPayoutRow): FondPayoutListRow {
 /** UTC day key `YYYY-MM-DD`. */
 function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
-}
-
-/** One UTC calendar day, in milliseconds. Exact integer, not a day index. */
-const UTC_DAY_MS = 86_400_000;
-
-/**
- * UTC day key one calendar day before `day`.
- *
- * Subtracts one UTC day from that day's midnight. Month and year boundaries
- * stay on the calendar; the result does not use local time or a floating day count.
- *
- * @param day - UTC day key `YYYY-MM-DD` from {@link utcDay}.
- * @returns The previous UTC day key.
- */
-function previousUtcDay(day: string): string {
-  return utcDay(Date.parse(`${day}T00:00:00.000Z`) - UTC_DAY_MS);
 }
 
 /** Positive decimal text accepted for the spot and committed USD strings. */
@@ -255,7 +240,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       }
       const nowMs = deps.now();
       const today = utcDay(nowMs);
-      const yesterday = previousUtcDay(today);
+      const yesterday = addUtcDays(today, -1);
       let todayRows: FondPayoutRow[];
       let yesterdayRows: FondPayoutRow[];
       try {
