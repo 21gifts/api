@@ -614,11 +614,13 @@ proxy forwards none.
 
 The creation re-check commits before mint. It ends a lapsed `open` payment with `window` and
 expires overdue payer charges even if a later held-hash check returns order 8. Inside the insert
-transaction, a held hash does not end a still-open payment. With no hash conflict, that payment
-ends with `replaced` and the new payment is created. A payer whose payment was replaced while
-sending still gets their transfer confirmed: the proof moves the `ended` payment to
-`accepted`, and the Tether settlement poll sees a different
-`quote.payment` and reports settled.
+transaction, a held hash does not end a still-open payment. The insert reads its clock after its
+locks. A pending till charge found there ends no payment, inserts nothing, and returns order 4.
+Without that charge or a hash conflict, an open payer payment ends with `window` when its
+`window_ends_at` is at or before that clock, and with `replaced` otherwise. The new payment is
+then created. A payer whose payment was replaced while sending still gets their transfer
+confirmed: the proof moves the `ended` payment to `accepted`, and the Tether settlement poll
+sees a different `quote.payment` and reports settled.
 
 Order 7 limits what one stranger can cost. It also means a stranger can
 switch off the stablecoin rows of one shop, or of all shops, for a minute. The next payer then pays by Lightning invoice, and a
@@ -716,12 +718,14 @@ One procedure creates a shop payment, for a charge or for a payer:
    - For a payer, the first quote is Lightning-only: its `transferAmounts`
      has only the Lightning entry, and its expiry is `window_ends_at`. The
      transaction inserts no offers. A pending charge means nothing is
-     written, and the answer is order 4 (**409** `payment_open`). An `open` payer-opened
-     payment is ended with `end_reason` `replaced` before the insert,
-     after the hash claim found no
+     written, and the answer is order 4 (**409** `payment_open`). The insert
+     reads its clock after the locks. An `open` payer payment ends with
+     `window` when `window_ends_at` is at or before that clock, and with
+     `replaced` otherwise. This happens only after the hash claim found no
      other payment holding the hash, so a `payment_hash` conflict ends
-     nothing in this insert transaction. The re-check in step 2 has already committed, so its
-     expired payer charges and a lapsed payment ended with `window` stay changed.
+     nothing in this insert transaction. The re-check in step 2 has already
+     committed, so its expired payer charges and a lapsed payment ended with
+     `window` stay changed.
 
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
@@ -747,10 +751,11 @@ One procedure creates a shop payment, for a charge or for a payer:
    that row is the shop payment of this charge, or of this payer
    request, the api uses it, the fetch answers as for an open amount,
    and the background creation from `POST /pos` ends. When it is another
-   `open` payment of the account, the rules above apply: a payer request
-   ends it with `replaced`, or answers order 4 when a charge is pending,
-   and a charge ends it with `superseded`; then the insert runs once
-   more. No answer ever carries another payer's amount.
+   `open` payment of the account, the rules above apply. A pending charge
+   answers order 4. Otherwise a payment whose window ends at or before the
+   insert clock ends with `window`; one whose window still runs ends with
+   `replaced` for a payer or `superseded` for a charge. The insert then
+   runs once more. No answer ever carries another payer's amount.
 
 For a charge, three separate external-call budgets apply. The route
 list's 1 s starts at the recheck, so that lock wait shortens the fetch.
@@ -788,15 +793,16 @@ A throw logs `shop.creation.failed` once with `accountId` and
 
 The fill then runs one transaction under the account row lock. It
 inserts a quote with the passing offers only when the payment is still
-`open`, at least 45 s remain before `window_ends_at`, and the payment's
-newest quote is still the Lightning-only first quote. A Lightning-only
-row written by a fetch after the fill read its starting quote still lets
-the fill insert its offers quote, when the other conditions still hold.
-The fill inserts no quote when the route list fails, there is no candidate pair, or no offer
-remains after the offer and gas-price checks. An unreadable gas price drops only offers on that
-chain; other retained offers are written. No candidate pair, no fresh spot, no quote budget, and
-no retained offer start the account's 60 s no-pair wait. A failed route list does not start the
-wait.
+`open`, at least 45 s remain before `window_ends_at`, `replacements` is
+unchanged, and the payment's newest quote is still the Lightning-only
+first quote or a newer Lightning-only row. The quote row is inserted even
+when a stored offer already holds an offer's deposit address. That conflict
+drops only the offer and logs `shop.alert.shared_deposit_address`.
+The fill inserts no quote when the route list fails or there is no candidate pair. It also
+inserts no quote when the commit conditions fail. An unreadable gas price drops only offers on
+that chain. The 60 s no-pair wait starts only when the offer array is empty before the commit.
+A retained offer prevents the wait even when the commit later inserts nothing. A failed route
+list does not start the wait.
 The fill does not increment `replacements`; it is not a replacement.
 
 ### Payment hash claim

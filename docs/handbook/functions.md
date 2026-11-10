@@ -4823,12 +4823,12 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   These are external-call budgets; the insert's account lock, store, and transaction waits come
   on top. For a payer, the mint's 4 s is the only external-call budget before the insert.
 
-  After the locks, the insert first writes nothing and returns `unavailable` when the request
-  arrived `SHOP_CREATION_INSERT_LIMIT_MS` (16 s) or longer ago or, for a payer, its abort signal
-  is set. The payer route answers order 9. A charge creation that hits the cutoff also writes
-  nothing. Next, a `pos_charge_invoice` row of another charge (always another for a payer) stops
-  the insert before anything is ended or inserted. It returns `mint_failed` and logs
-  `shop.alert.duplicate_invoice`. A payer then checks `pendingCharge` and returns
+  After the locks, the insert reads `nowMs`. It first writes nothing and returns `unavailable`
+  when the request arrived `SHOP_CREATION_INSERT_LIMIT_MS` (16 s) or longer ago or, for a payer,
+  its abort signal is set. The payer route answers order 9. A charge creation that hits the
+  cutoff also writes nothing. Next, a `pos_charge_invoice` row of another charge (always another
+  for a payer) stops the insert before anything is ended or inserted. It returns `mint_failed`
+  and logs `shop.alert.duplicate_invoice`. A payer then checks `pendingCharge` and returns
   `pending_charge` before any payment is ended.
 
   These no-write results cover only the insert transaction. The earlier `#recheckCreation`
@@ -4841,13 +4841,15 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   ended. The catch logs `shop.alert.duplicate_invoice` and returns `mint_failed`. It deletes the
   charge invoice only for a charge and only when this creation's `recordInvoice` wrote that row.
 
-  With no holder, the transaction ends the account's `open` payment (`window`, `superseded`, or
-  `replaced`), then inserts the payment. Its window is the charge's `expiresAt`, or five minutes
-  for a payer. It also inserts the first quote and its offers; a payer's quote is Lightning-only
-  with `window_ends_at` and has no offers. `ON CONFLICT (deposit_address)` drops an offer and logs
-  `shop.alert.shared_deposit_address`. If `insertPayment` loses a race, the second `hashHolder`
-  read happens after `endPayment`. A foreign holder throws `HashHeldError`, which rolls the
-  transaction back, including that end, so the previous payment remains `open`. A second
+  With no holder, an `open` payment whose window ends at or before `nowMs` ends with `window`.
+  Otherwise it ends with `superseded` for a charge or `replaced` for a payer. The transaction then
+  inserts the payment. Its window is the charge's `expiresAt`, or five minutes for a payer. It
+  also inserts the first quote and its offers; a payer's quote is Lightning-only with
+  `window_ends_at` and has no offers. `ON CONFLICT (deposit_address)` drops an offer and logs
+  `shop.alert.shared_deposit_address`; the quote row remains inserted. If `insertPayment` loses
+  a race, the second `hashHolder` read happens after `endPayment`. A foreign holder throws
+  `HashHeldError`, which rolls the transaction back, including that end, so the previous payment
+  remains `open`. A second
   `chargeIdForInvoice` read does the same if another charge claimed the hash after the first
   check. This can happen on a memory boot because `InMemoryPosStore.recordInvoice` does not wait
   for the transaction. The same catch logs the alert, conditionally deletes only the invoice row
@@ -4858,9 +4860,13 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   Only its short re-read and quote commit take that lock. A failed route list leaves the open
   Lightning-only payment and 200 response unchanged and starts no wait. No candidate pair or no
   offer retained after `checkOffer` and gas-price filtering also leaves them unchanged, but starts
-  the 60 s no-pair wait. One unreadable gas price drops only offers on that chain; other retained
-  offers are written and prevent the wait. Any other fill failure leaves the payment and response
-  unchanged.
+  the 60 s no-pair wait. One unreadable gas price drops only offers on that chain. The wait
+  depends only on the offer array being empty before the commit. Any retained offer prevents it.
+  The second quote is inserted only while the payment is `open`, at least 45 s remain,
+  `replacements` is unchanged, and the newest quote is the Lightning-only first quote or a newer
+  Lightning-only row. A stored deposit-address conflict drops only that offer, logs
+  `shop.alert.shared_deposit_address`, and leaves the quote row inserted. Any other fill failure
+  leaves the payment and response unchanged.
 
   `startForCharge(account, charge, requestArrivedMs)` runs the charge creation in the background
   through `createForCharge`, so it registers the charge's in-flight creation and a scan right

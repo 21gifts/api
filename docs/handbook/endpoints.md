@@ -147,20 +147,24 @@
   quotes have a 3 s external-call deadline that starts when the fill's quote step starts and
   covers its stored-spot read. It keeps quotes only when they pass `checkOffer`, then drops each
   offer whose chain's gas price is unreadable. It sets `minFee` to `recommendedMinFee`. It inserts
-  a second quote with every retained offer only when the payment is still `open`, at least 45 s
-  remain in its window, and its newest quote is still that first quote or a Lightning-only row
-  written after the fill read it. The fill's external calls run outside the creation lock. The
-  lock covers only its short re-read and commit, which can wait longer than those budgets. The
-  fill does not increment `replacements`. A failed route list inserts no quote and starts no wait.
-  No candidate pair, or no offer left after `checkOffer` and gas-price filtering, inserts no quote
-  and starts the 60 s no-pair wait. No fresh spot or quote budget leaves no offer. An unreadable
-  gas price drops only offers on that chain; other retained offers are written and prevent the
-  wait. The creation re-check commits before mint: it ends a lapsed `open` payment with `window`
-  and expires overdue payer charges. Those changes remain when a later hash check stops creation. In
-  the insert transaction, `hashHolder` and `chargeIdForInvoice` write nothing and do not end a
-  still-open payment when the hash is held. 200 `{ payment, expiresAt }` where `expiresAt` is the
-  window end, five minutes after creation. The route group is always mounted; a payment opens
-  only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve.
+  a second quote only when the payment is still `open`, at least 45 s remain in its window,
+  `replacements` is unchanged, and its newest quote is still that first quote or a newer
+  Lightning-only row. The quote contains each retained offer whose deposit address the unique
+  index accepts. A conflict with a stored offer drops only that offer, logs
+  `shop.alert.shared_deposit_address`, and leaves the quote row inserted. The fill's external
+  calls run outside the creation lock. The lock covers only its short re-read and commit, which
+  can wait longer than those budgets. The fill does not increment `replacements`. A failed route
+  list inserts no quote and starts no wait. No candidate pair, or no offer left after
+  `checkOffer` and gas-price filtering, inserts no quote and starts the 60 s no-pair wait. No
+  fresh spot or quote budget leaves no offer. An unreadable gas price drops only offers on that
+  chain. Any retained offer prevents the wait, even when the commit conditions later fail and no
+  second quote is written. The creation re-check commits before mint: it ends a lapsed `open`
+  payment with `window` and expires overdue payer charges. Those changes remain when a later hash
+  check stops creation. In the insert transaction, `hashHolder` and `chargeIdForInvoice` write
+  nothing and do not end a still-open payment when the hash is held. 200
+  `{ payment, expiresAt }` where `expiresAt` is the window end, five minutes after creation. The
+  route group is always mounted; a payment opens only when `LNURL_SERVER_URL` and
+  `PUBLIC_BASE_URL` resolve.
 - **Errors:** The route and creation checks begin in this order: 404 `{ error: 'Not found' }` for
   an invalid username, unknown account, or no receiving address (no verified wallet, or the
   LNURL server is not configured);
