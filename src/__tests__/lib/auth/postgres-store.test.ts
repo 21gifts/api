@@ -93,15 +93,16 @@ describe('PostgresAuthStore nostr keys', () => {
     expect(await store.listAccountIdsWithoutNostrKey(5)).toEqual(['acc']);
   });
 
-  it('listStaffAccountIds selects founder and moderator ids', async () => {
+  it('listStaffAccountIds selects founder, moderator, initiator, and fond ids', async () => {
     const sql = new MockSql();
-    sql.nextRows = [{ id: 'f1' }, { id: 'm1' }];
+    sql.nextRows = [{ id: 'f1' }, { id: 'm1' }, { id: 'i1' }, { id: 'd1' }];
     const ids = await new PostgresAuthStore(sql).listStaffAccountIds();
     expect(sql.queries[0]?.text).toBe(
-      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`,
+      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator', 'fond')`,
     );
     expect(sql.queries[0]?.text).toContain('initiator');
-    expect(ids).toEqual(['f1', 'm1']);
+    expect(sql.queries[0]?.text).toContain('fond');
+    expect(ids).toEqual(['f1', 'm1', 'i1', 'd1']);
   });
 
   it('listLegacyPayoutHandles maps account ids to the legacy address local part', async () => {
@@ -199,6 +200,7 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.location).toBeNull();
     expect(mapped?.notificationLevel).toBe('all');
     expect(mapped?.notifyHearts).toBe(true);
+    expect(mapped?.heartSats).toBe(1);
     expect(mapped?.amountUnit).toBe('btc');
     expect(mapped?.username).toBeNull();
     expect(mapped?.walletRequired).toBe(false);
@@ -219,6 +221,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/wallet_required/);
     expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at/);
     expect(sql.queries[0]?.text).toMatch(/wallet_intro_seen/);
+    expect(sql.queries[0]?.text).toMatch(/heart_sats/);
     expect(sql.queries[0]?.text).toMatch(
       /\(lightning_address IS NOT NULL AND btrim\(lightning_address\) <> ''\) AS had_external_wallet/,
     );
@@ -381,6 +384,7 @@ describe('PostgresAuthStore', () => {
       null,
       'btc',
       true,
+      1,
       false,
     ]);
     const update = sql.executes[1]!;
@@ -402,7 +406,8 @@ describe('PostgresAuthStore', () => {
     );
     expect(update.text).toMatch(/amount_unit = \$16/);
     expect(update.text).toMatch(/notify_hearts = \$17/);
-    expect(update.text).toMatch(/wallet_intro_seen = wallet_intro_seen OR \$18/);
+    expect(update.text).toMatch(/heart_sats = COALESCE\(\$18, heart_sats\)/);
+    expect(update.text).toMatch(/wallet_intro_seen = wallet_intro_seen OR \$19/);
     expect(update.text).not.toMatch(/had_external_wallet/);
     expect(update.text).toMatch(/NOT EXISTS/);
     expect(update.text).not.toMatch(/IS NOT DISTINCT FROM/);
@@ -431,6 +436,7 @@ describe('PostgresAuthStore', () => {
       null,
       'btc',
       true,
+      null,
       false,
     ]);
     expect(insert.text).not.toMatch(/spark_pubkey/);
@@ -507,6 +513,42 @@ describe('PostgresAuthStore', () => {
     await store.updateAccount({ ...account, notifyHearts: true });
     expect(sql.executes[1]?.text).toMatch(/notify_hearts = \$17/);
     expect(sql.executes[1]?.params[16]).toBe(true);
+  });
+
+  it('maps heartSats and keeps the stored amount when an update omits it', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ ...ACCOUNT_ROW, heart_sats: 21 }];
+    expect((await store.getAccount('acc'))?.heartSats).toBe(21);
+    sql.nextRows = [{ ...ACCOUNT_ROW, heart_sats: '21' }];
+    expect((await store.getAccount('acc'))?.heartSats).toBe(21);
+    sql.nextRows = [{ ...ACCOUNT_ROW, heart_sats: null }];
+    expect((await store.getAccount('acc'))?.heartSats).toBe(1);
+    sql.nextRows = [{ ...ACCOUNT_ROW, heart_sats: 0 }];
+    expect((await store.getAccount('acc'))?.heartSats).toBe(1);
+    const account = {
+      id: 'acc',
+      linkingKey: ACCOUNT_ROW.linking_key,
+      role: 'basis' as const,
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      heartSats: 21,
+    };
+    await store.createAccount(account);
+    expect(sql.executes[0]?.text).toMatch(/heart_sats/);
+    expect(sql.executes[0]?.params[20]).toBe(21);
+    const { heartSats: _omit, ...withoutHeartSats } = account;
+    void _omit;
+    await store.updateAccount(withoutHeartSats);
+    expect(sql.executes[1]?.text).toMatch(/heart_sats = COALESCE\(\$18, heart_sats\)/);
+    expect(sql.executes[1]?.params[17]).toBeNull();
+    await store.updateAccount({ ...account, heartSats: 5 });
+    expect(sql.executes[2]?.text).toMatch(/heart_sats = COALESCE\(\$18, heart_sats\)/);
+    expect(sql.executes[2]?.params[17]).toBe(5);
   });
 
   it('writes a stored amountUnit as $19 on insert and $16 on update', async () => {
@@ -996,6 +1038,13 @@ describe('PostgresAuthStore', () => {
     expect((await store.getAccount('acc'))?.role).toBe('founder');
     sql.nextRows = [{ ...ACCOUNT_ROW, role: 'initiator' }];
     expect((await store.getAccount('acc'))?.role).toBe('initiator');
+  });
+
+  it('maps the fond account role from ROLE_ORDER', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ ...ACCOUNT_ROW, role: 'fond' }];
+    expect((await store.getAccount('acc'))?.role).toBe('fond');
   });
 
   it('rejects an unknown account role', async () => {

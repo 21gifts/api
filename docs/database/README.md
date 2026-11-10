@@ -4,13 +4,13 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 61
-- Columns: 581
+- Tables: 62
+- Columns: 599
 - Foreign keys: 59
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
-| [`account`](tables/account.md)                                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 34      | 1            |
+| [`account`](tables/account.md)                                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 35      | 1            |
 | [`account_image`](tables/account_image.md)                                       | [src/lib/banner-store.ts](../../src/lib/banner-store.ts)               | 4       | 1            |
 | [`address_verification`](tables/address_verification.md)                         | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 4       | 1            |
 | [`api_log`](tables/api_log.md)                                                   | [src/lib/api-log.ts](../../src/lib/api-log.ts)                         | 14      | 1            |
@@ -28,6 +28,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`daily_roster_entry`](tables/daily_roster_entry.md)                             | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 5       | 1            |
 | [`db_change`](tables/db_change.md)                                               | [src/lib/db-change.ts](../../src/lib/db-change.ts)                     | 7       | 0            |
 | [`diagnostic_event`](tables/diagnostic_event.md)                                 | [src/lib/diagnostic-log.ts](../../src/lib/diagnostic-log.ts)           | 5       | 0            |
+| [`fond_payout`](tables/fond_payout.md)                                           | [src/lib/fond-payout-store.ts](../../src/lib/fond-payout-store.ts)     | 17      | 0            |
 | [`funding_grant`](tables/funding_grant.md)                                       | [src/lib/funding-store.ts](../../src/lib/funding-store.ts)             | 8       | 2            |
 | [`gift`](tables/gift.md)                                                         | [docs/schema/gift.sql](../../docs/schema/gift.sql)                     | 19      | 0            |
 | [`held_share_box`](tables/held_share_box.md)                                     | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 5       | 1            |

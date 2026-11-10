@@ -9,6 +9,7 @@ import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import {
   parseAmountUnit,
+  parseHeartSats,
   parseStoredFiat,
   parseStoredLocale,
   staffTagOf,
@@ -71,9 +72,10 @@ interface AccountRow {
   spark_pubkey?: string | null;
   spark_pubkey_verified_at?: Date | string | null;
   notify_hearts?: boolean | null;
+  heart_sats?: number | string | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag, spark_pubkey, spark_pubkey_verified_at, notify_hearts, wallet_intro_seen, (lightning_address IS NOT NULL AND btrim(lightning_address) <> '') AS had_external_wallet`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag, spark_pubkey, spark_pubkey_verified_at, notify_hearts, heart_sats, wallet_intro_seen, (lightning_address IS NOT NULL AND btrim(lightning_address) <> '') AS had_external_wallet`;
 
 /** Escape `\`, `%`, and `_` so they are LIKE literals. Does not append `%`. */
 function mentionLikePattern(prefix: string): string {
@@ -219,8 +221,8 @@ export class PostgresAuthStore implements AuthStore {
         );
       }
       await this.#sql.execute(
-        `INSERT INTO account (id, linking_key, role, name, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit, notify_hearts, wallet_intro_seen)
-         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), to_timestamp($11::double precision / 1000.0), $12, $13, $14, $15, $16, $17, to_timestamp($18::double precision / 1000.0), $19, $20, $21)
+        `INSERT INTO account (id, linking_key, role, name, forum_laws_dismissed, created_at, view_key, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, wallet_required, wallet_backup_seen_at, amount_unit, notify_hearts, heart_sats, wallet_intro_seen)
+         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7, to_timestamp($8::double precision / 1000.0), $9, to_timestamp($10::double precision / 1000.0), to_timestamp($11::double precision / 1000.0), $12, $13, $14, $15, $16, $17, to_timestamp($18::double precision / 1000.0), $19, $20, $21, $22)
          ON CONFLICT (linking_key) DO NOTHING`,
         [
           account.id,
@@ -243,6 +245,7 @@ export class PostgresAuthStore implements AuthStore {
           account.walletBackupSeenAt ?? null,
           account.amountUnit ?? 'btc',
           account.notifyHearts !== false,
+          parseHeartSats(account.heartSats),
           account.walletIntroSeen === true,
         ],
       );
@@ -533,7 +536,8 @@ export class PostgresAuthStore implements AuthStore {
              username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim(coalesce(username, '')) = '' THEN $15 ELSE username END,
              amount_unit = $16,
              notify_hearts = $17,
-             wallet_intro_seen = wallet_intro_seen OR $18
+             heart_sats = COALESCE($18, heart_sats),
+             wallet_intro_seen = wallet_intro_seen OR $19
          WHERE id = $1
            AND (
              $2::text IS NULL
@@ -560,6 +564,7 @@ export class PostgresAuthStore implements AuthStore {
           account.username ?? null,
           account.amountUnit ?? 'btc',
           account.notifyHearts !== false,
+          account.heartSats === undefined ? null : parseHeartSats(account.heartSats),
           account.walletIntroSeen === true,
         ],
       );
@@ -1189,11 +1194,12 @@ LIMIT $2`,
   /**
    * Account ids at the moderator rank or above.
    *
-   * @returns Ids from `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`.
+   * @returns Ids from
+   *   `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator', 'fond')`.
    */
   async listStaffAccountIds(): Promise<string[]> {
     const rows = await this.#sql.query<{ id: string }>(
-      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`,
+      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator', 'fond')`,
     );
     return rows.map((row) => row.id);
   }
@@ -1681,6 +1687,9 @@ function mapAccount(row: AccountRow): Account | undefined {
     profileMessageId: row.profile_message_id ?? null,
     notificationLevel: parseNotificationLevel(row.notification_level),
     notifyHearts: row.notify_hearts !== false,
+    heartSats: parseHeartSats(
+      typeof row.heart_sats === 'string' ? Number(row.heart_sats) : row.heart_sats,
+    ),
     amountUnit: parseAmountUnit(row.amount_unit),
     locale: parseStoredLocale(row.locale),
     fiat: parseStoredFiat(row.fiat),

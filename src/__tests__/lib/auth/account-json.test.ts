@@ -122,6 +122,7 @@ describe('serializeAccount', () => {
     expect(json).not.toHaveProperty('aboutMe');
     expect(json).not.toHaveProperty('notificationLevel');
     expect(json).not.toHaveProperty('notifyHearts');
+    expect(json).not.toHaveProperty('heartSats');
     expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');
@@ -273,6 +274,12 @@ describe('serializeDebugAccount', () => {
     expect(serializeDebugAccount({ ...account, notifyHearts: true }).notifyHearts).toBe(true);
   });
 
+  it('includes heartSats on debug JSON and normalizes missing values to 1', () => {
+    expect(serializeDebugAccount(account).heartSats).toBe(1);
+    expect(serializeDebugAccount({ ...account, heartSats: 21 }).heartSats).toBe(21);
+    expect(serializeDebugAccount({ ...account, heartSats: 0 }).heartSats).toBe(1);
+  });
+
   it('includes sparkPubkey and sparkPubkeyVerifiedAt on debug JSON', () => {
     const pubkey = `02${'a'.repeat(64)}`;
     const unset = serializeDebugAccount(account);
@@ -390,6 +397,7 @@ describe('serializeOwnerAccount', () => {
       aboutMessageId: null,
       notificationLevel: 'all',
       notifyHearts: true,
+      heartSats: 1,
       amountUnit: 'btc',
       locale: null,
       fiat: null,
@@ -502,6 +510,16 @@ describe('serializeOwnerAccount', () => {
     expect(
       serializeOwnerAccount({ ...account, notifyHearts: true }, false, null, false).notifyHearts,
     ).toBe(true);
+  });
+
+  it('includes heartSats on owner JSON and defaults omitted or invalid to 1', () => {
+    expect(serializeOwnerAccount(account, false, null, false).heartSats).toBe(1);
+    expect(serializeOwnerAccount({ ...account, heartSats: 21 }, false, null, false).heartSats).toBe(
+      21,
+    );
+    expect(serializeOwnerAccount({ ...account, heartSats: -1 }, false, null, false).heartSats).toBe(
+      1,
+    );
   });
 
   it('includes a stored amountUnit on owner JSON', () => {
@@ -1287,6 +1305,7 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('profileMessageId');
     expect(json).not.toHaveProperty('notificationLevel');
     expect(json).not.toHaveProperty('notifyHearts');
+    expect(json).not.toHaveProperty('heartSats');
     expect(json).not.toHaveProperty('amountUnit');
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');

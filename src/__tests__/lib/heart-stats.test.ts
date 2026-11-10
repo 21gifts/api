@@ -9,6 +9,7 @@ function invoice(row: {
   paymentHash: string | null;
   result?: MessageInvoiceAttempt['result'];
   heart?: boolean;
+  amountSats?: number;
 }): MessageInvoiceAttempt {
   return {
     id: row.id,
@@ -16,7 +17,7 @@ function invoice(row: {
     messageId: row.messageId,
     payerAccountId: row.payerAccountId,
     authorAccountId: 'author',
-    amountSats: 1,
+    amountSats: row.amountSats ?? 1,
     lightningAddress: null,
     zapRequest: { content: 'hi' },
     result: row.result ?? 'ok',
@@ -50,7 +51,7 @@ describe('heartStats', () => {
     expect(stats.get('msg-1')).toEqual({ heartCount: 1, hearted: true });
   });
 
-  it('counts two claimed hearts and sets hearted only for a matching payer', async () => {
+  it('counts a 21-sat heart and a 1-sat heart as two and sets hearted only for a matching payer', async () => {
     const store = new InMemoryMessageStore();
     const firstHash = 'AA'.repeat(32);
     const secondHash = 'BB'.repeat(32);
@@ -62,6 +63,7 @@ describe('heartStats', () => {
         paymentHash: firstHash,
         result: 'ok',
         heart: true,
+        amountSats: 21,
       }),
     );
     await store.recordInvoiceAttempt(
@@ -72,6 +74,7 @@ describe('heartStats', () => {
         paymentHash: secondHash,
         result: 'ok',
         heart: true,
+        amountSats: 1,
       }),
     );
     await store.claimZapPayment(firstHash, 'receipt-1', new Date('2026-08-28T12:00:00.000Z'));

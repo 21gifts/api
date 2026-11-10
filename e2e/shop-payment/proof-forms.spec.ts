@@ -17,6 +17,7 @@ import {
   paymentStatus,
   proofAnswer,
   verifiedShop,
+  waitForStablecoinOffers,
 } from './fixtures';
 
 test.afterEach(async ({ request }) => {
@@ -58,6 +59,7 @@ test('a signed raw transaction (hex) is checked, broadcast, its receipt read, th
   const shop = await verifiedShop(request, 'hex');
   await control.behave(shop.username, { submit: 'accept', completeAfterMs: 500 });
   const opened = await openPayerPayment(request, shop.username, 2_600);
+  await waitForStablecoinOffers(request, shop.username, ['polygon-usdt']);
   const detail = await fetchDetail(request, shop.username, 'polygon-usdt');
   const raw = await signedTransfer(detail);
   // A wallet retries a 5xx; the third answer is final.
@@ -95,6 +97,7 @@ test('a hex transaction mined after the proof request is not submitted until the
     mineAfterMs: 20_000,
   });
   const opened = await openPayerPayment(request, shop.username, 2_650);
+  await waitForStablecoinOffers(request, shop.username, ['polygon-usdt']);
   const detail = await fetchDetail(request, shop.username, 'polygon-usdt');
   const raw = await signedTransfer(detail);
   const hash = keccak256(raw);
@@ -128,6 +131,7 @@ test('a hex transfer to another address is refused and never broadcast', async (
   const control = new Control(request);
   const shop = await verifiedShop(request, 'hexbad');
   await openPayerPayment(request, shop.username, 2_700);
+  await waitForStablecoinOffers(request, shop.username, ['arbitrum-usdt']);
   const detail = await fetchDetail(request, shop.username, 'arbitrum-usdt');
   const payer = privateKeyToAccount(`0x${randomBytes(32).toString('hex')}`);
   const elsewhere = randomBytes(20).toString('hex');

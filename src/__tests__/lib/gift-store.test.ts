@@ -44,6 +44,13 @@ describe('InMemoryGiftStore', () => {
     expect(listed).not.toBe(seed);
   });
 
+  it('reports seeded outbound invoices by BOLT11', async () => {
+    const store = new InMemoryGiftStore([], [], ['lnbc1']);
+    expect(await store.hasOutboundInvoice('lnbc1')).toBe(true);
+    expect(await store.hasOutboundInvoice('lnbc2')).toBe(false);
+    expect(await new InMemoryGiftStore().hasOutboundInvoice('lnbc1')).toBe(false);
+  });
+
   it('dumps stored gift fields newest-first', async () => {
     const listed = await new InMemoryGiftStore([EARLY, LATE]).listDebug(10);
     expect(listed.map((row) => row.amountSats)).toEqual([2, 1]);
@@ -75,6 +82,18 @@ describe('QueryGiftStore', () => {
       async () => ['acc-a'],
     );
     expect(await store.listLegacyWelcomeAccountIds()).toEqual(['acc-a']);
+  });
+
+  it('runs the invoice lookup, or reports no gift without one', async () => {
+    expect(await new QueryGiftStore(async () => []).hasOutboundInvoice('lnbc1')).toBe(false);
+    const store = new QueryGiftStore(
+      async () => [],
+      undefined,
+      undefined,
+      async (invoice) => invoice === 'lnbc1',
+    );
+    expect(await store.hasOutboundInvoice('lnbc1')).toBe(true);
+    expect(await store.hasOutboundInvoice('lnbc2')).toBe(false);
   });
 
   it('returns the injected query result', async () => {

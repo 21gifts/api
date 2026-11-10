@@ -21,6 +21,7 @@ import { debugRoutes } from '@/routes/debug';
 import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
+import { fondRoutes } from '@/routes/fond';
 import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { messagesRoutes } from '@/routes/messages';
 import { resolveActivityPing } from '@/lib/ocp-activity';
@@ -111,9 +112,12 @@ import {
 } from '@/lib/nostr/rate-limit';
 import {
   resolveAllowedOrigins,
+  resolveFondUsername,
   resolveFreePaymentsConfig,
   resolveLnurlServerConfig,
+  resolvePayoutSigner,
   resolveShopPaymentConfig,
+  type PayoutSigner,
 } from '@/lib/config';
 import { InMemorySparkInvoiceStore, type SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
@@ -127,6 +131,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
+import { InMemoryFondPayoutStore, type FondPayoutStore } from '@/lib/fond-payout-store';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
 import { lnurlServerRoutes } from '@/routes/lnurl-server';
 import { webhookRoutes } from '@/routes/webhooks';
@@ -242,10 +247,13 @@ export interface AppDeps {
    */
   spendApiToken?: string;
   /**
-   * Spend-worker ping after a new top-level forum post or a `moderator_group`
-   * persist (default: `resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now, rosterStore, accounts, lnurlServer })`). Unset
-   * `SPEND_URL` or `SPEND_API_TOKEN` → omitted; `POST /messages` and
-   * `POST /conversations/:id` still 200.
+   * Payout ping after a new top-level forum post or a `moderator_group`
+   * persist (default: `resolveSpendPing` with env, fetch, gift store, clock,
+   * roster store, payout store, accounts, and LNURL server). With
+   * `PAYOUT_SIGNER` unset/`spend`, unset `SPEND_URL` or `SPEND_API_TOKEN`
+   * omits it; `PAYOUT_SIGNER=fond` needs neither and queues into
+   * `fond_payout`. `POST /messages` and `POST /conversations/:id` still 200
+   * when omitted.
    */
   spendPing?: SpendPing;
   /**
@@ -259,6 +267,22 @@ export interface AppDeps {
    * Boot injects the same instance used by {@link resolveSpendPing}.
    */
   rosterStore?: DailyRosterStore;
+  /**
+   * Durable Fond payout queue (default: a fresh
+   * {@link InMemoryFondPayoutStore}). Boot injects the Postgres adapter when
+   * `DATABASE_URL` is set and passes it to {@link resolveSpendPing}.
+   */
+  fondPayoutStore?: FondPayoutStore;
+  /**
+   * Payout signer (default: `resolvePayoutSigner(env)`). `fond` queues
+   * decided instructions instead of POSTing to spend.
+   */
+  payoutSigner?: PayoutSigner;
+  /**
+   * The one account allowed on `/fond/*` (default:
+   * `resolveFondUsername(env)`).
+   */
+  fondUsername?: string;
   /**
    * Forum top-level note limiter shared with zap compose ingest (default: a
    * new {@link PostRateLimiter}). Boot injects one instance into both
@@ -631,12 +655,16 @@ export function createApp(deps: AppDeps = {}): Hono {
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
   setAddressRefKey(spendApiToken);
   const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
+  const fondPayoutStore = deps.fondPayoutStore ?? new InMemoryFondPayoutStore();
+  const payoutSigner = deps.payoutSigner ?? resolvePayoutSigner(env);
+  const fondUsername = deps.fondUsername ?? resolveFondUsername(env);
   const spendPing =
     deps.spendPing ??
-    resolveSpendPing(process.env, fetchImpl, {
+    resolveSpendPing(env, fetchImpl, {
       gifts: giftStore,
       now,
       rosterStore,
+      fondPayoutStore,
       accounts: store,
       ...(lnurlServer === null ? {} : { lnurlServer }),
     });
@@ -1194,6 +1222,32 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...receivingDeps,
       giftStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
+    }),
+  );
+  app.route(
+    '/fond',
+    fondRoutes({
+      authStore: store,
+      fondPayoutStore,
+      payoutSigner,
+      fondUsername,
+      now,
+      fetchImpl,
+      ...receivingDeps,
+      actions: {
+        store: invoiceStore,
+        authStore: store,
+        messageStore,
+        now,
+        fetchImpl,
+        ...receivingDeps,
+        conversationStore,
+        fundingStore,
+        recoveryShareRequiredFrom,
+        gifts: giftStore,
+        giftStore,
+        ...(giftRecorder === undefined ? {} : { giftRecorder }),
+      },
     }),
   );
   app.route(

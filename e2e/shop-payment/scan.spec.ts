@@ -16,6 +16,7 @@ import {
   sticker,
   tetherWallet,
   verifiedShop,
+  waitForStablecoinOffers,
   walletHttp,
 } from './fixtures';
 import { getOpenCryptoPayPayment, parseOpenCryptoPayLink, withQuery } from './tether-client';
@@ -55,6 +56,7 @@ test('an expired quote is QUOTE_EXPIRED', async ({ request }) => {
   // which passes the offer check's 45 s.
   await control.behave(shop.username, { quoteTtlMs: 78_000 });
   await openPayerPayment(request, shop.username, 2_000);
+  await waitForStablecoinOffers(request, shop.username, ['ethereum-usdt']);
   const run = await tetherWallet(request, control).pay(sticker(shop.username), {
     railId: 'ethereum-usdt',
     beforeDetail: async (payment) => {
@@ -73,6 +75,7 @@ test('a pair that is not offered is RAIL_UNAVAILABLE', async ({ request }) => {
   const shop = await verifiedShop(request, 'norail');
   await control.behave(shop.username, { refusePairs: ['polygon:USDT'] });
   await openPayerPayment(request, shop.username, 2_000);
+  await waitForStablecoinOffers(request, shop.username, ['arbitrum-usdt']);
   const run = await tetherWallet(request, control).pay(sticker(shop.username), {
     railId: 'polygon-usdt',
   });
@@ -111,6 +114,11 @@ test('the pay request and a detail of an open amount are the bodies the contract
   const control = new Control(request);
   const shop = await verifiedShop(request, 'body');
   const opened = await openPayerPayment(request, shop.username, 1_500);
+  await waitForStablecoinOffers(request, shop.username, [
+    'ethereum-usdt',
+    'arbitrum-usdt',
+    'polygon-usdt',
+  ]);
   const http = walletHttp(request);
   const link = parseOpenCryptoPayLink(sticker(shop.username));
   const answer = await http.get(link?.url ?? '', 20_000);

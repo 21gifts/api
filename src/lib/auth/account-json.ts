@@ -9,6 +9,7 @@ import {
 import { bytesToHex } from '@/lib/auth/hex';
 import {
   parseAmountUnit,
+  parseHeartSats,
   parseStoredFiat,
   parseStoredLocale,
   staffTagOf,
@@ -73,7 +74,7 @@ export interface AccountResponse {
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
- * `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
+ * `notifyHearts`, `heartSats`, `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
  * `walletBackupSeenAt`, `walletIntroSeen`, `hadExternalWallet`, `sparkPubkey`,
  * `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,
  * `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged
@@ -129,6 +130,11 @@ export interface OwnerAccountResponse extends AccountResponse {
    * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
    */
   notifyHearts: boolean;
+  /**
+   * Whole-sat amount one heart payment sends. Default `1`. Owner-only;
+   * omitted from public member cards and view profiles.
+   */
+  heartSats: number;
   /**
    * Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. Owner-only;
    * omitted from public member cards and view profiles.
@@ -386,6 +392,8 @@ export interface DebugAccountResponse extends AccountResponse {
   notificationLevel: NotificationLevel;
   /** Owner preference for heart-tip notifications. Default `true`. */
   notifyHearts: boolean;
+  /** Whole-sat amount one heart payment sends. Default `1`. */
+  heartSats: number;
   /** Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. */
   amountUnit: AmountUnit;
   /**
@@ -598,6 +606,7 @@ export function serializeDebugAccount(
     profileMessageId: account.profileMessageId ?? null,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
     notifyHearts: account.notifyHearts !== false,
+    heartSats: parseHeartSats(account.heartSats),
     amountUnit: parseAmountUnit(account.amountUnit),
     locale: parseStoredLocale(account.locale),
     fiat: parseStoredFiat(account.fiat),
@@ -679,7 +688,7 @@ export function serializeDebugAccountDetail(
  *   for the current verified wallet. Defaults to `false`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
- * `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
+ * `notificationLevel`, `notifyHearts`, `heartSats`, `amountUnit`, `locale`, `fiat`, `funding`,
  * `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`,
  * `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`,
  * `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,
@@ -709,6 +718,7 @@ export function serializeOwnerAccount(
     aboutMessageId: aboutMessageIdFor(account, aboutMe),
     notificationLevel: parseNotificationLevel(account.notificationLevel),
     notifyHearts: account.notifyHearts !== false,
+    heartSats: parseHeartSats(account.heartSats),
     amountUnit: parseAmountUnit(account.amountUnit),
     locale: parseStoredLocale(account.locale),
     fiat: parseStoredFiat(account.fiat),
@@ -784,7 +794,7 @@ export interface OwnerFundingLookup {
  *   when it is omitted, the field is false and that method is not called.
  * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
+ *   `notificationLevel`, `notifyHearts`, `heartSats`, `amountUnit`, `locale`, `fiat`, `funding`,
  *   `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`,
  *   `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`,
  *   `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,

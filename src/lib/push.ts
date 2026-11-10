@@ -282,7 +282,8 @@ export function buildZapPushPayload(args: {
  * Heart-tip payload for the note author only.
  *
  * Title is the collapsed payer name, or `Someone` when blank. Body is
- * exactly `Sent you a heart.` `url` is
+ * exactly `Sent you a heart.` The amount is carried in the in-app
+ * notification row, not this push body. `url` is
  * `/messages/${encodeURIComponent(noteId)}`. Tag is `heart:<replyId>`.
  *
  * @param args - Tag id, payer name, and note id to open.

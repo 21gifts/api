@@ -34,6 +34,7 @@ import {
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
 import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { InMemoryFondPayoutStore, PostgresFondPayoutStore } from '@/lib/fond-payout-store';
 import { PostgresWalletStore } from '@/lib/wallet-store';
 import { PostgresMemberEventStore } from '@/lib/member-event-store';
 import { PostgresShopIdentityStore } from '@/lib/shop-identity';
@@ -94,6 +95,7 @@ describe('openBootStores', () => {
       apiLogStore,
       fundingStore,
       rosterStore,
+      fondPayoutStore,
       bannerStore,
       listDbChange,
       debugDbStore,
@@ -121,6 +123,7 @@ describe('openBootStores', () => {
     expect(apiLogStore).toBeUndefined();
     expect(fundingStore).toBeUndefined();
     expect(rosterStore).toBeInstanceOf(InMemoryDailyRosterStore);
+    expect(fondPayoutStore).toBeInstanceOf(InMemoryFondPayoutStore);
     expect(bannerStore).toBeUndefined();
     expect(listDbChange).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
@@ -156,6 +159,7 @@ describe('openBootStores', () => {
       apiLogStore,
       fundingStore,
       rosterStore,
+      fondPayoutStore,
       bannerStore,
       debugDbStore,
       walletStore,
@@ -177,6 +181,7 @@ describe('openBootStores', () => {
     expect(apiLogStore).toBeUndefined();
     expect(fundingStore).toBeUndefined();
     expect(rosterStore).toBeInstanceOf(InMemoryDailyRosterStore);
+    expect(fondPayoutStore).toBeInstanceOf(InMemoryFondPayoutStore);
     expect(bannerStore).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
     expect(walletStore).toBeUndefined();
@@ -251,6 +256,7 @@ describe('openBootStores', () => {
       diagnosticStore,
       fundingStore,
       rosterStore,
+      fondPayoutStore,
       bannerStore,
       debugDbStore,
       sparkInvoiceStore,
@@ -287,6 +293,7 @@ describe('openBootStores', () => {
     expect(diagnosticStore).toBeInstanceOf(PostgresDiagnosticStore);
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
     expect(rosterStore).toBeInstanceOf(PostgresDailyRosterStore);
+    expect(fondPayoutStore).toBeInstanceOf(PostgresFondPayoutStore);
     expect(bannerStore).toBeInstanceOf(PostgresBannerStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
     expect(sparkInvoiceStore).toBeInstanceOf(PostgresSparkInvoiceStore);
@@ -322,6 +329,7 @@ describe('openBootStores', () => {
     expect(executes.some((q) => q.includes('trust_edge'))).toBe(true);
     expect(executes.some((q) => q.includes('funding_grant'))).toBe(true);
     expect(executes.some((q) => q.includes('daily_roster'))).toBe(true);
+    expect(executes.some((q) => q.includes('fond_payout'))).toBe(true);
     expect(executes.some((q) => q.includes('api_log'))).toBe(true);
     expect(executes.some((q) => q.includes('db_change'))).toBe(true);
     const trustIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS trust_edge/i.test(q));
@@ -461,13 +469,16 @@ describe('openBootStores', () => {
     const diagnosticInserts: unknown[] = [];
     const legacyQueries: string[] = [];
     const client: SqlClient = {
-      query: async <T>(text: string): Promise<T[]> => {
+      query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
         if (text.includes('min(paid_at)')) {
           throw new Error('range query failed');
         }
         if (text.includes('split_part(btrim(a.lightning_address)')) {
           legacyQueries.push(text.replace(/\s+/g, ' '));
           return [{ id: 'acc-legacy' }] as T[];
+        }
+        if (text.includes('lightning_invoice = $1')) {
+          return (params?.[0] === 'lnbc' ? [{ present: 1 }] : []) as T[];
         }
         if (text.includes('lightning_invoice')) {
           return [
@@ -573,6 +584,8 @@ describe('openBootStores', () => {
     expect(typeof listDbChange).toBe('function');
     expect(await listDbChange?.(10)).toEqual([]);
     expect(await giftStore?.listLegacyWelcomeAccountIds?.()).toEqual(['acc-legacy']);
+    expect(await giftStore?.hasOutboundInvoice?.('lnbc')).toBe(true);
+    expect(await giftStore?.hasOutboundInvoice?.('missing')).toBe(false);
     expect(legacyQueries).toHaveLength(1);
     for (const clause of [
       'SELECT DISTINCT a.id::text AS id FROM account a JOIN gift g',

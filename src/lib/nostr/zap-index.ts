@@ -741,6 +741,7 @@ export async function settleInvoiceManually(args: {
         nowMs: args.now(),
         auth: args.auth,
         payerAccountId: invoice.payerAccountId,
+        amountSats: invoice.amountSats,
         ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
         ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
         ...(payer === undefined ? {} : { payerName: payer.name ?? 'Someone' }),
@@ -1756,6 +1757,7 @@ async function ingestOneReceipt(
           nowMs: args.now(),
           auth: args.auth,
           payerAccountId: invoice.payerAccountId,
+          amountSats,
           ...(args.notificationStore === undefined
             ? {}
             : { notifications: args.notificationStore }),

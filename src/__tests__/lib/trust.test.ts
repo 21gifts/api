@@ -32,17 +32,18 @@ function edge(
 
 describe('isStaffRole', () => {
   it('is true from moderator upwards only', () => {
-    const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'initiator', 'founder'];
-    expect(roles.filter(isStaffRole)).toEqual(['moderator', 'initiator', 'founder']);
+    const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'fond', 'initiator', 'founder'];
+    expect(roles.filter(isStaffRole)).toEqual(['moderator', 'fond', 'initiator', 'founder']);
   });
 });
 
 describe('isChainAccount', () => {
   it('is true for every role at least verified', () => {
-    const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'initiator', 'founder'];
+    const roles: AccountRole[] = ['basis', 'verified', 'moderator', 'fond', 'initiator', 'founder'];
     expect(roles.filter((role) => isChainAccount(account({ id: role, role })))).toEqual([
       'verified',
       'moderator',
+      'fond',
       'initiator',
       'founder',
     ]);
@@ -271,11 +272,12 @@ describe('buildTrustChain', () => {
     );
   });
 
-  it('sorts founder, then moderator, then verified; oldest createdAt then id', () => {
+  it('sorts founder, initiator, fond, moderator, then verified; oldest createdAt then id', () => {
     const verifiedLate = account({ id: 'v2', role: 'verified', createdAt: 3, name: 'V2' });
     const verifiedEarly = account({ id: 'v1', role: 'verified', createdAt: 2, name: 'V1' });
     const verifiedTieHigh = account({ id: 'v9', role: 'verified', createdAt: 2, name: 'V9' });
     const initiatorEarly = account({ id: 'i', role: 'initiator', createdAt: 4, name: 'Init' });
+    const fond = account({ id: 'd', role: 'fond', createdAt: 5, name: 'Fond' });
     const moderator = account({ id: 'm', role: 'moderator', createdAt: 9, name: 'Mod' });
     const founderLate = account({ id: 'f2', role: 'founder', createdAt: 8, name: 'F2' });
     const founderEarly = account({ id: 'f1', role: 'founder', createdAt: 1, name: 'F1' });
@@ -293,6 +295,7 @@ describe('buildTrustChain', () => {
         verifiedTieHigh,
         verifiedEarly,
         initiatorEarly,
+        fond,
         moderator,
         founderLate,
         founderEarly,
@@ -300,8 +303,18 @@ describe('buildTrustChain', () => {
       ],
       [],
     );
-    expect(chain.nodes.map((node) => node.id)).toEqual(['f1', 'f2', 'i', 'm', 'v1', 'v9', 'v2']);
+    expect(chain.nodes.map((node) => node.id)).toEqual([
+      'f1',
+      'f2',
+      'i',
+      'd',
+      'm',
+      'v1',
+      'v9',
+      'v2',
+    ]);
     expect(chain.nodes[2]).toEqual({ id: 'i', name: 'Init', role: 'initiator' });
+    expect(chain.nodes[3]).toEqual({ id: 'd', name: 'Fond', role: 'fond' });
     expect(chain.nodes[0]).toEqual({ id: 'f1', name: 'F1', role: 'founder' });
     expect(chain.nodes[0]).not.toHaveProperty('lightningAddress');
     expect(chain.nodes[0]).not.toHaveProperty('viewKey');

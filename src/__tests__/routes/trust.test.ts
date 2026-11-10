@@ -2350,55 +2350,43 @@ describe('POST /trust/*', () => {
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
     });
 
-    it('returns 200 and leaves role initiator when the caller already confirmed the subject', async () => {
-      const { authStore, trustStore } = await staffed([
-        account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
-      ]);
-      await trustStore.insertEdge({
-        id: 'confirm',
-        subjectId: SUBJECT,
-        actorId: MOD,
-        kind: 'moderator_confirm',
-        createdAt: 1,
-      });
-      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
-        accountId: SUBJECT,
-      });
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'initiator' });
-      expect((await authStore.getAccount(SUBJECT))?.role).toBe('initiator');
-      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['confirm']);
-    });
+    it.each(['initiator', 'fond', 'founder'] as const)(
+      'returns 200 and leaves role %s when the caller already confirmed the subject',
+      async (role) => {
+        const { authStore, trustStore } = await staffed([
+          account({ id: SUBJECT, role, name: 'Sub' }),
+        ]);
+        await trustStore.insertEdge({
+          id: 'confirm',
+          subjectId: SUBJECT,
+          actorId: MOD,
+          kind: 'moderator_confirm',
+          createdAt: 1,
+        });
+        const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+          accountId: SUBJECT,
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role });
+        expect((await authStore.getAccount(SUBJECT))?.role).toBe(role);
+        expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['confirm']);
+      },
+    );
 
-    it('returns 409 and leaves role founder when the caller already confirmed a founder', async () => {
-      const { authStore, trustStore } = await staffed([
-        account({ id: SUBJECT, role: 'founder', name: 'Sub' }),
-      ]);
-      await trustStore.insertEdge({
-        id: 'confirm',
-        subjectId: SUBJECT,
-        actorId: MOD,
-        kind: 'moderator_confirm',
-        createdAt: 1,
-      });
-      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
-        accountId: SUBJECT,
-      });
-      expect(res.status).toBe(409);
-      expect((await authStore.getAccount(SUBJECT))?.role).toBe('founder');
-    });
-
-    it('returns 409 when confirming an initiator subject with no caller-owned confirm edge', async () => {
-      const { authStore, trustStore } = await staffed([
-        account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
-      ]);
-      const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
-        accountId: SUBJECT,
-      });
-      expect(res.status).toBe(409);
-      expect((await authStore.getAccount(SUBJECT))?.role).toBe('initiator');
-      expect(await trustStore.listEdges()).toEqual([]);
-    });
+    it.each(['initiator', 'fond', 'founder'] as const)(
+      'returns 409 when confirming a %s subject with no caller-owned confirm edge',
+      async (role) => {
+        const { authStore, trustStore } = await staffed([
+          account({ id: SUBJECT, role, name: 'Sub' }),
+        ]);
+        const res = await post(mount(authStore, trustStore), '/trust/confirm-moderator', 'mod', {
+          accountId: SUBJECT,
+        });
+        expect(res.status).toBe(409);
+        expect((await authStore.getAccount(SUBJECT))?.role).toBe(role);
+        expect(await trustStore.listEdges()).toEqual([]);
+      },
+    );
 
     it('returns 200 idempotently when the caller already confirmed the subject', async () => {
       const { authStore, trustStore } = await staffed([
@@ -3626,37 +3614,53 @@ describe('POST /trust/*', () => {
       );
     });
 
-    it('returns 409 when appointing an initiator subject with no caller-owned appoint edge', async () => {
-      const { authStore, trustStore } = await staffed([
-        account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
-      ]);
-      const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
-        accountId: SUBJECT,
-      });
-      expect(res.status).toBe(409);
-      expect((await authStore.getAccount(SUBJECT))?.role).toBe('initiator');
-      expect(await trustStore.listEdges()).toEqual([]);
-    });
+    it.each(['initiator', 'fond'] as const)(
+      'returns 409 when appointing a %s subject with no caller-owned appoint edge',
+      async (role) => {
+        const { authStore, trustStore } = await staffed([
+          account({ id: SUBJECT, role, name: 'Sub' }),
+        ]);
+        const res = await post(
+          mount(authStore, trustStore),
+          '/trust/appoint-moderator',
+          'founder',
+          {
+            accountId: SUBJECT,
+          },
+        );
+        expect(res.status).toBe(409);
+        expect((await authStore.getAccount(SUBJECT))?.role).toBe(role);
+        expect(await trustStore.listEdges()).toEqual([]);
+      },
+    );
 
-    it('returns 200 and leaves role initiator when the caller already appointed the subject', async () => {
-      const { authStore, trustStore } = await staffed([
-        account({ id: SUBJECT, role: 'initiator', name: 'Sub' }),
-      ]);
-      await trustStore.insertEdge({
-        id: 'appoint',
-        subjectId: SUBJECT,
-        actorId: FOUNDER,
-        kind: 'moderator_appoint',
-        createdAt: 1,
-      });
-      const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
-        accountId: SUBJECT,
-      });
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role: 'initiator' });
-      expect((await authStore.getAccount(SUBJECT))?.role).toBe('initiator');
-      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['appoint']);
-    });
+    it.each(['initiator', 'fond'] as const)(
+      'returns 200 and leaves role %s when the caller already appointed the subject',
+      async (role) => {
+        const { authStore, trustStore } = await staffed([
+          account({ id: SUBJECT, role, name: 'Sub' }),
+        ]);
+        await trustStore.insertEdge({
+          id: 'appoint',
+          subjectId: SUBJECT,
+          actorId: FOUNDER,
+          kind: 'moderator_appoint',
+          createdAt: 1,
+        });
+        const res = await post(
+          mount(authStore, trustStore),
+          '/trust/appoint-moderator',
+          'founder',
+          {
+            accountId: SUBJECT,
+          },
+        );
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ id: SUBJECT, name: 'Sub', role });
+        expect((await authStore.getAccount(SUBJECT))?.role).toBe(role);
+        expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['appoint']);
+      },
+    );
 
     it('still returns 200 when push enqueue throws', async () => {
       const { authStore, trustStore } = await staffed([

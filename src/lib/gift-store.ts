@@ -195,6 +195,14 @@ export interface GiftStore {
    * @returns Account ids (any order, no duplicates).
    */
   listLegacyWelcomeAccountIds?(): Promise<string[]>;
+
+  /**
+   * Whether an outbound gift was already recorded for `lightningInvoice`.
+   *
+   * @param lightningInvoice - Stored BOLT11.
+   * @returns `true` when the outbound gift exists.
+   */
+  hasOutboundInvoice?(lightningInvoice: string): Promise<boolean>;
 }
 
 /**
@@ -210,6 +218,7 @@ export class InMemoryGiftStore implements GiftStore {
   constructor(
     private readonly rows: readonly GiftRow[] = [],
     private readonly legacyWelcomeAccountIds: readonly string[] = [],
+    private readonly outboundInvoices: readonly string[] = [],
   ) {}
 
   /**
@@ -228,6 +237,16 @@ export class InMemoryGiftStore implements GiftStore {
    */
   listLegacyWelcomeAccountIds(): Promise<string[]> {
     return Promise.resolve([...this.legacyWelcomeAccountIds]);
+  }
+
+  /**
+   * Whether a seed row carries this BOLT11.
+   *
+   * @param lightningInvoice - Stored BOLT11.
+   * @returns `true` when a seed row carries it.
+   */
+  hasOutboundInvoice(lightningInvoice: string): Promise<boolean> {
+    return Promise.resolve(this.outboundInvoices.includes(lightningInvoice));
   }
 
   /**
@@ -277,11 +296,13 @@ export class QueryGiftStore implements GiftStore {
    * @param debugQuery - Optional full-column dump loader.
    * @param legacyWelcomeQuery - Optional loader of the accounts whose legacy
    *   external address already received a welcome gift.
+   * @param invoiceQuery - Optional gift lookup by stored BOLT11.
    */
   constructor(
     private readonly query: () => Promise<GiftRow[]>,
     private readonly debugQuery?: () => Promise<GiftDebugRow[]>,
     private readonly legacyWelcomeQuery?: () => Promise<string[]>,
+    private readonly invoiceQuery?: (lightningInvoice: string) => Promise<boolean>,
   ) {}
 
   /**
@@ -300,6 +321,18 @@ export class QueryGiftStore implements GiftStore {
    */
   listLegacyWelcomeAccountIds(): Promise<string[]> {
     return this.legacyWelcomeQuery === undefined ? Promise.resolve([]) : this.legacyWelcomeQuery();
+  }
+
+  /**
+   * Runs `invoiceQuery`.
+   *
+   * @param lightningInvoice - Stored BOLT11.
+   * @returns Its result, or `false` when no invoice query was given.
+   */
+  hasOutboundInvoice(lightningInvoice: string): Promise<boolean> {
+    return this.invoiceQuery === undefined
+      ? Promise.resolve(false)
+      : this.invoiceQuery(lightningInvoice);
   }
 
   /**

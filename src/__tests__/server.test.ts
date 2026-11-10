@@ -114,6 +114,63 @@ describe('createApp', () => {
     expect(res.status).toBe(200);
   });
 
+  it('uses the injected env for FOND_USERNAME', async () => {
+    const authStore = new InMemoryAuthStore();
+    const now = 1_700_000_000_000;
+    await authStore.createAccount({
+      id: 'alice',
+      linkingKey: null,
+      role: 'fond',
+      name: 'Alice',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: now,
+      rulesAgreedAt: null,
+      username: 'alice',
+      isPlatform: false,
+    });
+    await authStore.tryCreateSession({
+      token: 'alice-session',
+      accountId: 'alice',
+      createdAt: now,
+    });
+    await authStore.createAccount({
+      id: 'tondo-fond',
+      linkingKey: null,
+      role: 'fond',
+      name: 'Tondo Fond',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: now,
+      rulesAgreedAt: null,
+      username: 'tondo-fond',
+      isPlatform: false,
+    });
+    await authStore.tryCreateSession({
+      token: 'tondo-fond-session',
+      accountId: 'tondo-fond',
+      createdAt: now,
+    });
+    const app = createApp({
+      authStore,
+      now: () => now,
+      env: { PAYOUT_SIGNER: 'fond', FOND_USERNAME: 'alice' },
+    });
+
+    const ok = await app.request('/fond/payouts', {
+      headers: { authorization: 'Bearer alice-session' },
+    });
+    expect(ok.status).toBe(200);
+
+    const denied = await app.request('/fond/payouts', {
+      headers: { authorization: 'Bearer tondo-fond-session' },
+    });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: 'Fond only' });
+  });
+
   it('mounts /favicon.ico', async () => {
     const app = createApp();
     const res = await app.request('/favicon.ico');
@@ -1735,9 +1792,14 @@ describe('createApp shop payments in USDT and USDC', () => {
     const { fetchImpl, seen } = walletLnurlFetch('wally');
     const app = createApp({ env: SHOP_ENV, authStore, fetchImpl });
     const res = await postPayment(app);
-    // The fake Orchestra answers 500, so no pair commits (order 9).
-    expect(res.status).toBe(503);
-    expect(seen.some((request) => request.url.startsWith('https://orchestra.example/'))).toBe(true);
+    // The payment opens Lightning-only before the fake Orchestra's 500. Its
+    // offers fill still asks Orchestra in the background.
+    expect(res.status).toBe(200);
+    await vi.waitFor(() =>
+      expect(seen.some((request) => request.url.startsWith('https://orchestra.example/'))).toBe(
+        true,
+      ),
+    );
   });
 
   it('uses an injected service for every shop route', async () => {

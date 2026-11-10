@@ -194,6 +194,7 @@ if (import.meta.main) {
     trustStore,
     fundingStore,
     rosterStore,
+    fondPayoutStore,
     debugDbStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
@@ -215,6 +216,7 @@ if (import.meta.main) {
   const lnurlServer = resolveLnurlServerConfig(process.env) ?? undefined;
   const spendPing = resolveSpendPing(process.env, globalThis.fetch, {
     rosterStore,
+    fondPayoutStore,
     accounts: authStore,
     ...(giftStore === undefined ? {} : { gifts: giftStore }),
     ...(lnurlServer === undefined ? {} : { lnurlServer }),
@@ -294,6 +296,7 @@ if (import.meta.main) {
     ...(trustStore === undefined ? {} : { trustStore }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
     rosterStore,
+    fondPayoutStore,
     ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),
     ...(debugDbStore === undefined ? {} : { debugDbStore }),
     ...(bun === undefined ? {} : { mergeDb: bun.mergeDb }),

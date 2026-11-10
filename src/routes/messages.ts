@@ -41,6 +41,7 @@ import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
   MESSAGE_PHOTO_MAX_BYTES,
+  POSITIVE_SATS_BODY_ERROR,
   decodeForumPhoto,
   decodeMessageFeedCursor,
   encodeMessageFeedCursor,
@@ -1794,7 +1795,8 @@ const translateBody = z.object({
  * `firstPostFree` while the caller has no top-level note besides its profile note),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
- * (`accountId` when the stored author id is non-null), staff `DELETE /messages/:id` (soft-hide)
+ * (`accountId` when the stored author id is non-null, plus `hearts` with each
+ * sender and exact sat amount), staff `DELETE /messages/:id` (soft-hide)
  * plus best-effort NIP-09 and Cloudflare media purge when publisher+kek are
  * set),
  * staff `GET /messages/hidden` (moderator session log), public
@@ -1834,7 +1836,8 @@ const translateBody = z.object({
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (`accountId` when
- * the stored author id is non-null), `DELETE /:id`, staff `PATCH /:id/place`,
+ * the stored author id is non-null and `hearts` senders with exact sats),
+ * `DELETE /:id`, staff `PATCH /:id/place`,
  * staff `PATCH /:id/shop-account`, staff `PATCH /:id/text`, staff
  * `PATCH /:id/photos`, and staff `GET /:id/edits` (moderator session; no `forum.read`),
  * staff `GET /hidden` (moderator session; no `forum.read`), public
@@ -2371,6 +2374,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         const rows = await deps.store.listReplies(id, MESSAGE_LIST_LIMIT, isStaff);
+        const heartSenders = await deps.store.heartSenders(id);
+        const heartAccountIds = [...new Set(heartSenders.map((heart) => heart.accountId))];
+        const heartAccounts = new Map(
+          (await deps.authStore.getAccounts(heartAccountIds)).map((heartAccount) => [
+            heartAccount.id,
+            heartAccount,
+          ]),
+        );
         const messages = [];
         for (const row of rows) {
           if (row.deletedAt !== null) {
@@ -2432,6 +2443,23 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               account === null ? null : account.id,
               messages,
             ),
+            hearts: heartSenders.map((heart) => {
+              const heartAccount = heartAccounts.get(heart.accountId);
+              return {
+                accountId: heart.accountId,
+                name: heartAccount?.name ?? '',
+                ...(heartAccount?.username === undefined || heartAccount.username === null
+                  ? {}
+                  : { username: heartAccount.username }),
+                ...(heartAccount === undefined ? {} : { role: heartAccount.role }),
+                sats: heart.sats,
+                amountUsd: heart.amountUsd,
+                amountChf: heart.amountChf,
+                amountEur: heart.amountEur,
+                amountPhp: heart.amountPhp,
+                createdAt: heart.createdAt.toISOString(),
+              };
+            }),
           },
           200,
         );
@@ -3484,29 +3512,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
-      }
-      if (heart && parsed.data.sats !== 1) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: messageIdParam,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: UNKNOWN_ACCOUNT_ID,
-            amountSats: 0,
-            lightningAddress: null,
-            zapRequest: null,
-            result: 'bad_body',
-            httpStatus: 400,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: 'A heart sends 1 sat' }, 400);
+        return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
       const amountMsat = parsed.data.sats * 1000;
       const invoiceText = normalizeForumText(parsed.data.text ?? '');
@@ -3553,7 +3559,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
+        return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
       const row = await deps.store.getById(messageIdParam);
       if (row === undefined || row.deletedAt !== null) {

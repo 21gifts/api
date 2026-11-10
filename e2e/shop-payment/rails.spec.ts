@@ -17,6 +17,7 @@ import {
   sticker,
   tetherWallet,
   verifiedShop,
+  waitForStablecoinOffers,
 } from './fixtures';
 
 const RAILS = [
@@ -36,6 +37,7 @@ for (const rail of RAILS) {
       const shop = await verifiedShop(request, `a-${rail.chainId}`);
       await control.behave(shop.username, { submit: 'accept', completeAfterMs: 500 });
       const opened = await openPayerPayment(request, shop.username, 2_100);
+      await waitForStablecoinOffers(request, shop.username, [rail.railId]);
       const seen: TransferResult[] = [];
       const run = await tetherWallet(request, control, {}, seen).pay(sticker(shop.username), {
         railId: rail.railId,
@@ -68,6 +70,7 @@ for (const rail of RAILS) {
       const shop = await verifiedShop(request, `b-${rail.chainId}`);
       await control.behave(shop.username, { submit: 'fail-first', completeAfterMs: 500 });
       const opened = await openPayerPayment(request, shop.username, 3_300);
+      await waitForStablecoinOffers(request, shop.username, [rail.railId]);
       const run = await tetherWallet(request, control).pay(sticker(shop.username), {
         railId: rail.railId,
       });
@@ -93,6 +96,7 @@ for (const rail of RAILS) {
       const shop = await verifiedShop(request, `c-${rail.chainId}`);
       await control.behave(shop.username, { submit: 'accept', completeAfterMs: null });
       const opened = await openPayerPayment(request, shop.username, 4_400);
+      await waitForStablecoinOffers(request, shop.username, [rail.railId]);
       const seen: TransferResult[] = [];
       const wallet = tetherWallet(request, control, { detect: 'completed' }, seen);
       const run = await wallet.pay(sticker(shop.username), { railId: rail.railId });
@@ -116,6 +120,7 @@ for (const rail of RAILS) {
       const shop = await verifiedShop(request, `d-${rail.chainId}`);
       await control.behave(shop.username, { submit: 'accept', completeAfterMs: null });
       const opened = await openPayerPayment(request, shop.username, 5_500);
+      await waitForStablecoinOffers(request, shop.username, [rail.railId]);
       const seen: TransferResult[] = [];
       const wallet = tetherWallet(request, control, { detect: 'running' }, seen);
       const run = await wallet.pay(sticker(shop.username), { railId: rail.railId });
@@ -138,6 +143,7 @@ test('a user-operation hash is proved when the bundler receipt has no transactio
   const shop = await verifiedShop(request, 'uop');
   await control.behave(shop.username, { submit: 'accept', completeAfterMs: 500 });
   const opened = await openPayerPayment(request, shop.username, 2_200);
+  await waitForStablecoinOffers(request, shop.username, ['arbitrum-usdt']);
   const seen: TransferResult[] = [];
   const wallet = tetherWallet(request, control, { userOpOnly: true }, seen);
   const run = await wallet.pay(sticker(shop.username), { railId: 'arbitrum-usdt' });

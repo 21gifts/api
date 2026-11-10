@@ -243,9 +243,10 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
 /**
  * Whether the account may receive a spend ping / spend invoice today.
  *
- * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
- * other role is true (passkey and living-room post still gate issue). From
- * that UTC day, true iff {@link inGrantProgramToday} and, once
+ * `basis` is always false; `fond` is eligible. Before
+ * {@link FUNDING_REQUIRED_FROM_UTC}, every other role is true (passkey and
+ * living-room post still gate issue). From that UTC day, true iff
+ * {@link inGrantProgramToday} and, once
  * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
  * rejected, and missing grants are then false, and so is a grant without a
  * required share.
