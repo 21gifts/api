@@ -1890,6 +1890,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Read a repayment marker.
 - **Inputs:** Invoice description, or null.
 - **Returns / side effects:** `{ dayIndex, recipientAccountId }`, or null. No I/O.
+- **Used by:** `account-activity` (drops repayment invoices), `zap-index`, and `walletHeartRoutes` (repayment rows of `POST /me/wallet/hearts`).
 
 ## Function: REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS
 
@@ -4549,9 +4550,9 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: walletHeartRoutes
 
-- **Purpose:** Hono group mounted at `/` that serves `POST /me/wallet/hearts`. Order: bearer session (401), per-account rate limit with its own `IpRateLimiter` keyed by the account id, `HEART_LOOKUPS_PER_MINUTE` (60) per 60 seconds (429), body cap `HEART_LOOKUP_BODY_LIMIT_BYTES` (8192) via `readCappedText` (413), JSON and `{ hashes: string[] }` of 1 to 32 hashes of 64 hex digits (400), then sequential `findOkInvoiceByPaymentHash` (lowercase) and `getById` lookups. Duplicates collapse in first-seen order. A row is kept only when `heart` is true and the caller is the payer or the author; otherwise it is omitted. A missing or empty `messageId` is skipped. `authorName` and `text` are trimmed, then clipped to 80 and 240 Unicode code points with a trailing `…` when characters are dropped. `deleted` is true when the note is missing or `deletedAt` is set.
+- **Purpose:** Hono group mounted at `/` that serves `POST /me/wallet/hearts`. Order: bearer session (401), per-account rate limit with its own `IpRateLimiter` keyed by the account id, `HEART_LOOKUPS_PER_MINUTE` (60) per 60 seconds (429), body cap `HEART_LOOKUP_BODY_LIMIT_BYTES` (8192) via `readCappedText` (413), JSON and `{ hashes: string[] }` of 1 to 32 hashes of 64 hex digits (400), then sequential `findOkInvoiceByPaymentHash` (lowercase) and `getById` lookups. Duplicates collapse in first-seen order. A `hearts` row is kept only when `heart` is true and the caller is the payer or the author. An invoice that is not a heart and whose description parses with `parseRepaymentDescription` becomes a `repayments` row `{ paymentHash, messageId, dayIndex, termDays, role, authorName, text, deleted }` when the caller is the stored `payerAccountId` (`role` `borrower`) or `authorAccountId` (`role` `giver`); `dayIndex` comes from the description and `termDays` is the credit note's `goalTermDays` or null. Anything else is omitted, and a hash lands in at most one array. A missing or empty `messageId` is skipped. `authorName` and `text` are trimmed, then clipped to 80 and 240 Unicode code points with a trailing `…` when characters are dropped. `deleted` is true when the note is missing or `deletedAt` is set.
 - **Inputs:** `authStore`, `messages` (`findOkInvoiceByPaymentHash`, `getById`), `now`, optional `limiter`.
-- **Returns / side effects:** 200 `{ hearts }`. A lookup failure logs `wallet_hearts.lookup.failed` with `accountId` only and answers 503 `{ error: 'Heart lookup is unavailable' }` with no partial list. Never logs hashes, memos, or note text.
+- **Returns / side effects:** 200 `{ hearts, repayments }`. A lookup failure logs `wallet_hearts.lookup.failed` with `accountId` only and answers 503 `{ error: 'Heart lookup is unavailable' }` with no partial list. Never logs hashes, memos, or note text.
 - **Used by:** `createApp`.
 
 ## Function: bolt11Descriptions
