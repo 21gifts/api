@@ -304,8 +304,14 @@ function extractPeerAddress(env: unknown, req: Request): PeerAddress {
   ) {
     return { supported: false, address: null };
   }
-  const lookup = (server as { requestIP: (r: Request) => unknown }).requestIP;
-  const socket = lookup(req);
+  // Call through the server so `requestIP` keeps its `this` binding (it is a
+  // native Bun method); never let a lookup failure become a 500.
+  let socket: unknown;
+  try {
+    socket = (server as { requestIP: (r: Request) => unknown }).requestIP(req);
+  } catch {
+    return { supported: true, address: null };
+  }
   if (
     socket !== null &&
     typeof socket === 'object' &&

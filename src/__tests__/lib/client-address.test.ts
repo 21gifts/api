@@ -103,6 +103,32 @@ describe('clientRateLimitKey — unknown / unreadable transport', () => {
       ),
     ).toBe('ip:9.9.9.9');
   });
+
+  it('calls requestIP with its server as `this` (Bun exposes it as a native method)', () => {
+    // A method that depends on `this` fails if requestIP is invoked unbound, which
+    // is exactly how Bun's server.requestIP behaves at runtime.
+    const boundServer = {
+      peer: DIRECT_PEER,
+      requestIP(this: { peer: string }): { address: string } {
+        if (typeof this?.peer !== 'string') {
+          throw new TypeError('requestIP called without its server as `this`');
+        }
+        return { address: this.peer };
+      },
+    };
+    expect(clientRateLimitKey(ctx(boundServer, {}), {})).toBe(`peer:${DIRECT_PEER}`);
+  });
+
+  it('treats a throwing requestIP as an unreadable peer (no 500, no key)', () => {
+    const throwingServer = {
+      requestIP: (): { address: string } => {
+        throw new Error('socket closed');
+      },
+    };
+    expect(
+      clientRateLimitKey(ctx(throwingServer, { 'cf-connecting-ip': '1.2.3.4' }), {}),
+    ).toBeNull();
+  });
 });
 
 describe('clientRateLimitKey — TRUSTED_PROXY_CIDRS configuration', () => {
