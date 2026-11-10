@@ -45,7 +45,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ## Role values
 
-`basis`, `verified`, `moderator`, `software_developer`, `fond`, `initiator`, `founder`.
+`basis`, `verified`, `moderator`, `software_developer`, `fond`, `initiator`, `founder`
 
 ## Indexes
 

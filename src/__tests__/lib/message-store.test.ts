@@ -2437,8 +2437,8 @@ describe('InMemoryMessageStore', () => {
       'pop-high',
       'pop-low',
       'paid',
-      'staff-unpaid',
       'developer-unpaid',
+      'staff-unpaid',
       'b',
       'a',
     ]);
@@ -2449,12 +2449,7 @@ describe('InMemoryMessageStore', () => {
       cursor: null,
       staffAccountIds: emptyStaff,
     });
-    expect(unpaid.map((row) => row.id)).toEqual([
-      'developer-unpaid',
-      'staff-unpaid',
-      'b',
-      'a',
-    ]);
+    expect(unpaid.map((row) => row.id)).toEqual(['developer-unpaid', 'staff-unpaid', 'b', 'a']);
     const active = await store.listFeed({
       limit: 10,
       mode: 'active',
@@ -2531,7 +2526,7 @@ describe('InMemoryMessageStore', () => {
       cursor: { k: 't', c: last.createdAt, i: last.id },
       staffAccountIds: emptyStaff,
     });
-    expect(secondPage.map((row) => row.id)).toEqual(['paid', 'staff-unpaid']);
+    expect(secondPage.map((row) => row.id)).toEqual(['paid', 'developer-unpaid']);
     const tieTime = new Date('2026-07-01T00:00:00.000Z');
     const tied = new InMemoryMessageStore([
       { ...EARLY, id: 'z-tie', createdAt: tieTime },

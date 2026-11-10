@@ -1935,14 +1935,7 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
         const author = authors[i];
         const pay = messagePay(row, author, deps.lnurlServer);
         const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-        return serializeMessage(
-          row,
-          pay,
-          role,
-          row.replyCount,
-          true,
-          undefined,
-        );
+        return serializeMessage(row, pay, role, row.replyCount, true, undefined);
       }),
     );
     const last = page[page.length - 1];
@@ -2097,14 +2090,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const author = authors[i];
             const pay = messagePay(row, author, deps.lnurlServer);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-            return serializeMessage(
-              row,
-              pay,
-              role,
-              row.replyCount,
-              true,
-              undefined,
-            );
+            return serializeMessage(row, pay, role, row.replyCount, true, undefined);
           }),
         );
         let nextCursor: string | undefined;
@@ -2387,17 +2373,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
               const deletedBy = await resolveDeletedBy(deps.authStore, row);
               messages.push(
-                serializeMessage(
-                  row,
-                  NOT_PAYABLE,
-                  role,
-                  undefined,
-                  true,
-                  {
-                    deletedAt: row.deletedAt,
-                    deletedBy,
-                  },
-                ),
+                serializeMessage(row, NOT_PAYABLE, role, undefined, true, {
+                  deletedAt: row.deletedAt,
+                  deletedBy,
+                }),
               );
             } catch {
               // One child must not 503 the thread (invalid createdAt, author lookup).
@@ -2415,16 +2394,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             const pay =
               row.accountId === null ? NOT_PAYABLE : messagePay(kept, author, deps.lnurlServer);
-            messages.push(
-              serializeMessage(
-                kept,
-                pay,
-                role,
-                undefined,
-                true,
-                undefined,
-              ),
-            );
+            messages.push(serializeMessage(kept, pay, role, undefined, true, undefined));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
             continue;

@@ -13775,16 +13775,8 @@ describe('platform-note compose fee picks the note limiter', () => {
   it.each([
     ['founder', 'top-level', { role: 'founder' as const }],
     ['founder', 'reply', { role: 'founder' as const }],
-    [
-      'software_developer',
-      'top-level',
-      { role: 'software_developer' as const },
-    ],
-    [
-      'software_developer',
-      'reply',
-      { role: 'software_developer' as const },
-    ],
+    ['software_developer', 'top-level', { role: 'software_developer' as const }],
+    ['software_developer', 'reply', { role: 'software_developer' as const }],
   ])('lets a %s %s compose past a refusing limiter without asking it', async (_l, kind, patch) => {
     const { store, auth } = await composeSetup(patch);
     const l = limiters();

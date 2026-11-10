@@ -27,13 +27,7 @@ import { encodeSparkAddress } from '@/lib/spark-address';
  * staff feature role in the Moderators group.
  */
 export type AccountRole =
-  | 'basis'
-  | 'verified'
-  | 'moderator'
-  | 'software_developer'
-  | 'fond'
-  | 'initiator'
-  | 'founder';
+  'basis' | 'verified' | 'moderator' | 'software_developer' | 'fond' | 'initiator' | 'founder';
 
 /**
  * Owner fan-out filter. Omitted / unknown → `all`.
