@@ -44,7 +44,7 @@ interface IpBits {
  * default trust anchor. Source: https://www.cloudflare.com/ips/. Override with
  * `TRUSTED_PROXY_CIDRS` for other proxies or to disable header trust entirely.
  */
-export const DEFAULT_CLOUDFLARE_CIDRS: readonly string[] = [
+const DEFAULT_CLOUDFLARE_CIDRS: readonly string[] = [
   '173.245.48.0/20',
   '103.21.244.0/22',
   '103.22.200.0/22',
@@ -100,10 +100,9 @@ function ipv6ToBig(ip: string): bigint | null {
   let address = ip;
   // Fold an embedded IPv4 tail (e.g. "::ffff:1.2.3.4") into two hextets.
   if (address.includes('.')) {
+    // Reached only from ipToBits, which calls this with a colon present, so
+    // lastIndexOf(':') is always >= 0 here.
     const lastColon = address.lastIndexOf(':');
-    if (lastColon < 0) {
-      return null;
-    }
     const v4 = ipv4ToBig(address.slice(lastColon + 1));
     if (v4 === null) {
       return null;
@@ -151,7 +150,7 @@ function ipv6ToBig(ip: string): bigint | null {
  * @param ip - Address literal.
  * @returns The parsed address, or `null` when it is not a valid literal.
  */
-export function ipToBits(ip: string): IpBits | null {
+function ipToBits(ip: string): IpBits | null {
   const trimmed = ip.trim();
   if (trimmed.includes(':')) {
     const value = ipv6ToBig(trimmed);
@@ -180,7 +179,7 @@ function maskFor(bits: number, prefix: number): bigint {
  * @param spec - CIDR string; a bare address is treated as a host route.
  * @returns The parsed block, or `null` when it is malformed.
  */
-export function parseCidr(spec: string): Cidr | null {
+function parseCidr(spec: string): Cidr | null {
   const trimmed = spec.trim();
   const slash = trimmed.indexOf('/');
   const addrPart = slash < 0 ? trimmed : trimmed.slice(0, slash);
@@ -230,7 +229,7 @@ function resolveCidrSpecs(raw: string | undefined): readonly string[] {
  * @param raw - Raw `TRUSTED_PROXY_CIDRS` value, or `undefined` for the default.
  * @returns The trusted blocks.
  */
-export function parseTrustedProxyCidrs(raw: string | undefined): Cidr[] {
+function parseTrustedProxyCidrs(raw: string | undefined): Cidr[] {
   const cidrs: Cidr[] = [];
   for (const spec of resolveCidrSpecs(raw)) {
     const cidr = parseCidr(spec);
@@ -251,7 +250,7 @@ const cidrCache = new Map<string, Cidr[]>();
  * @param env - Environment variables.
  * @returns The trusted proxy CIDR blocks.
  */
-export function loadTrustedProxyCidrs(env: Record<string, string | undefined>): Cidr[] {
+function loadTrustedProxyCidrs(env: Record<string, string | undefined>): Cidr[] {
   const raw = env['TRUSTED_PROXY_CIDRS'];
   const key = raw === undefined ? DEFAULT_SPEC_KEY : raw;
   const cached = cidrCache.get(key);
@@ -292,7 +291,7 @@ interface PeerAddress {
  * @param req - The raw request.
  * @returns Whether a peer lookup exists and the address it returned.
  */
-export function extractPeerAddress(env: unknown, req: Request): PeerAddress {
+function extractPeerAddress(env: unknown, req: Request): PeerAddress {
   if (env === null || (typeof env !== 'object' && typeof env !== 'function')) {
     return { supported: false, address: null };
   }
@@ -336,7 +335,7 @@ export function extractPeerAddress(env: unknown, req: Request): PeerAddress {
  * @param trustedProxies - Trusted proxy egress ranges.
  * @returns A stable key, or `null` when the client cannot be identified.
  */
-export function resolveRateLimitKey(
+function resolveRateLimitKey(
   peer: PeerAddress,
   headerIp: string | null,
   trustedProxies: readonly Cidr[],
