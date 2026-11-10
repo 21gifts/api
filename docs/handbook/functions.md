@@ -4730,7 +4730,7 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 - **Returns / side effects:** 200 `{ counterparties }`; 401 `{ error: 'Unauthorized' }`, 429 `{ error: 'Too many requests' }`, 413 `{ error: 'Request body is too large' }`, 400 `{ error: 'Invalid counterparty lookup' }`, or 503 `{ error: 'Counterparty lookup is unavailable' }`. Store failures log `wallet_counterparties.lookup.failed` with only `accountId`; invoices, hashes and usernames are never logged.
 - **Used by:** `createApp`.
 
-The request id only correlates results. Invoice and payment hash are the lookup keys.
+The request id only correlates results. Invoice and payment hash are trimmed before matching, as in the wallet report. An invoice that becomes empty is treated as absent.
 
 ## Function: walletHeartRoutes
 
