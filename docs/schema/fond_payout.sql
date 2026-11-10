@@ -1,6 +1,7 @@
 -- Decided payout instructions the `fond` member pays from its own wallet
 -- when PAYOUT_SIGNER=fond. The ping path writes the amount and comment the
--- API already decided; the /fond routes request the invoice and post proof.
+-- API already decided; the /fond invoice route issues the invoice and the
+-- paid worker detects its settlement.
 -- Dedupe matches spend: one daily/moderator row per (utc_day, kind, address),
 -- one welcome row ever per address. No ENUM types: text + CHECK constraints.
 
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS fond_payout (
   invoice_id text,
   payment_hash text,
   bolt11 text,
+  spark_invoice text,
   amount_msat bigint,
   claimed_at timestamptz NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -29,6 +31,7 @@ ALTER TABLE fond_payout ADD CONSTRAINT fond_payout_status_check
   CHECK (status IN ('owed', 'issuing', 'invoiced', 'settling', 'paid', 'failed'));
 ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS amount_msat bigint;
 ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS claimed_at timestamptz NULL;
+ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS spark_invoice text NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
   ON fond_payout (utc_day, kind, address)
   WHERE kind IN ('daily', 'moderator');

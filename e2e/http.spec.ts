@@ -1656,6 +1656,11 @@ test('POST /debug/shop-proofs/:id/retry is 404 when LNURL server is off', async 
   expect(await res.text()).toBe('404 Not Found');
 });
 
+test('GET /fond/health is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
+  const res = await request.get('/fond/health');
+  expect(res.status()).toBe(404);
+});
+
 test('GET /fond/payouts is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
   const res = await request.get('/fond/payouts');
   expect(res.status()).toBe(404);
@@ -1663,12 +1668,5 @@ test('GET /fond/payouts is 404 when PAYOUT_SIGNER is unset', async ({ request })
 
 test('POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
   const res = await request.post('/fond/payouts/:id/invoice');
-  expect(res.status()).toBe(404);
-});
-
-test('POST /fond/payouts/:id/proof is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
-  const res = await request.post('/fond/payouts/:id/proof', {
-    data: { preimage: 'a'.repeat(64) },
-  });
   expect(res.status()).toBe(404);
 });

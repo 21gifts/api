@@ -1052,4 +1052,18 @@ describe('process entry store wiring', () => {
     expect(passed).toBeGreaterThan(taken);
     expect(source).toContain('...(contactStore === undefined ? {} : { contactStore })');
   });
+
+  it('starts the Fond paid worker only for a Fond payout signer, next to the POS worker', () => {
+    const source = readFileSync(join(process.cwd(), 'src/index.ts'), 'utf8');
+    const pos = source.indexOf('startPosPaidWorker({');
+    const signer = source.indexOf("if (payoutSigner === 'fond') {");
+    const fond = source.indexOf('startFondPaidWorker({');
+    const close = source.indexOf('});', fond);
+    expect(pos).toBeGreaterThanOrEqual(0);
+    expect(signer).toBeGreaterThan(pos);
+    expect(fond).toBeGreaterThan(signer);
+    expect(close).toBeGreaterThan(fond);
+    expect(source.slice(fond, close)).toContain('store: fondPayoutStore');
+    expect(source.slice(fond, close)).toContain('fondUsername: resolveFondUsername(process.env)');
+  });
 });

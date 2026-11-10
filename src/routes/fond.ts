@@ -1,16 +1,17 @@
 /**
- * Member-session routes for the single `fond` account that pays the queued
- * payout instructions from its own in-app wallet. The routes are mounted
- * always; they answer 404 unless `PAYOUT_SIGNER=fond`.
+ * Routes for the Fond payout queue. Mounted always; they answer 404 unless
+ * `PAYOUT_SIGNER=fond`.
  *
- * The API decides every payout in the ping path. These routes only request
- * the recipient invoice, convert the stored USD amount at the current spot,
- * and accept the preimage as proof. Never log addresses, preimages, or
- * invoices.
+ * `GET /health` is public and unauthenticated. It reports whether queued
+ * payouts are being paid. The other routes are the member session of the
+ * single `fond` account that pays the queued instructions from its own
+ * in-app wallet. The API decides every payout in the ping path. Those routes
+ * only request the recipient invoice and convert the stored USD amount at the
+ * current spot. The API's paid worker detects settlement itself. Never log
+ * addresses, payment hashes, BOLT11, or Spark invoices.
  */
 
 import { Hono } from 'hono';
-import { z } from 'zod';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { canSignFondPayouts } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
@@ -18,25 +19,22 @@ import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { LnurlServerConfig, PayoutSigner } from '@/lib/config';
 import {
   FOND_CLAIM_LEASE_MS,
+  FOND_OVERDUE_MS,
   type FondPayoutRow,
   type FondPayoutStore,
 } from '@/lib/fond-payout-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
-import type { FiatAmounts } from '@/lib/money';
-import { preimageMatchesHash } from '@/lib/proof';
+import { addUtcDays } from '@/lib/member-habit';
+import { accountByReceivingAddress } from '@/lib/receiving-address';
+import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import { normalizeUuid } from '@/lib/uuid';
 import { bearerToken } from '@/routes/me';
 import {
-  GIFT_PROOF_MISMATCH,
   issueGiftInvoice,
-  settleProvenGift,
   type GiftActionDeps,
   type IssueGiftInvoiceResult,
 } from '@/routes/invoices';
-
-/** Body schema for `POST /fond/payouts/:id/proof`. */
-const proofBody = z.object({ preimage: z.string() });
 
 /** Collaborators the `/fond` routes need. */
 export interface FondRouteDeps {
@@ -54,7 +52,11 @@ export interface FondRouteDeps {
   fetchImpl: FetchFn;
   /** LNURL server config; omitted when off. */
   lnurlServer?: LnurlServerConfig;
-  /** Extracted issue/proof collaborators (stores, recorder, funding, gifts). */
+  /** `true` when free in-app payments are on (Spark invoices on the invoice route). */
+  freePayments?: boolean;
+  /** Random bytes for the Spark invoice id; default `crypto.getRandomValues`. */
+  randomBytes?: (length: number) => Uint8Array;
+  /** Extracted issue collaborators (stores, recorder, funding, gifts). */
   actions: GiftActionDeps;
 }
 
@@ -64,6 +66,7 @@ interface FondPayoutListRow {
   kind: string;
   status: string;
   utcDay: string;
+  paymentHash: string | null;
 }
 
 /** `503` body when the spot is missing or unusable. */
@@ -75,14 +78,14 @@ export const FOND_AMOUNT_BELOW_ONE_SAT = 'Amount below one sat';
 /** `409` body while another request owns the `issuing` claim. */
 export const FOND_INVOICE_IN_PROGRESS = 'Invoice in progress';
 
-/** `409` body while another proof owns the `settling` claim. */
-export const FOND_PROOF_IN_PROGRESS = 'Proof in progress';
-
 /** `403` body for a session that is not the Fond account. */
 export const FOND_ONLY = 'Fond only';
 
 /** `503` body when a payout store read or transition throws. */
 const PAYOUTS_UNAVAILABLE = 'Payouts are unavailable';
+
+/** `Cache-Control` for every `GET /fond/health` answer. The probe must not be cached. */
+const HEALTH_NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
 /**
  * Resolve the session account for a `/fond` request.
@@ -104,7 +107,9 @@ async function sessionAccount(
 
 /** Open row projection for `GET /fond/payouts`. */
 function listRow(row: FondPayoutRow): FondPayoutListRow {
-  return { id: row.id, kind: row.kind, status: row.status, utcDay: row.utcDay };
+  const paymentHash =
+    row.status === 'invoiced' || row.status === 'settling' ? row.paymentHash : null;
+  return { id: row.id, kind: row.kind, status: row.status, utcDay: row.utcDay, paymentHash };
 }
 
 /** UTC day key `YYYY-MM-DD`. */
@@ -203,10 +208,61 @@ async function refusedInvoice(
 }
 
 /**
- * Build the `/fond` route group for the fond payer.
+ * Build the recipient's fee-free Spark invoice for one payout invoice.
+ *
+ * Only when free in-app payments are on and the stored address resolves to a
+ * verified in-app wallet (`accountByReceivingAddress`). The memo names the
+ * BOLT11 payment hash, like `zap:<paymentHash>` for zaps. An encoding or
+ * account-lookup failure logs `fond.spark_invoice.issue_failed` and resolves
+ * `null`, so the BOLT11 stays payable over Lightning.
+ *
+ * @param deps - Route collaborators.
+ * @param address - Stored recipient Lightning Address.
+ * @param paymentHash - BOLT11 payment hash.
+ * @param amountMsat - Invoice amount in millisatoshis (whole sats).
+ * @returns `spark1…`, or `null` when the feature is off, the recipient has no
+ *   verified wallet, or issuing failed.
+ */
+async function payoutSparkInvoice(
+  deps: FondRouteDeps,
+  address: string,
+  paymentHash: string,
+  amountMsat: number,
+): Promise<string | null> {
+  if (deps.freePayments !== true) {
+    return null;
+  }
+  try {
+    const receiver = await accountByReceivingAddress(
+      deps.actions.authStore,
+      address,
+      deps.lnurlServer,
+    );
+    if (receiver === undefined) {
+      return null;
+    }
+    const randomBytes =
+      deps.randomBytes ?? ((length: number) => crypto.getRandomValues(new Uint8Array(length)));
+    return encodeSparkInvoice({
+      identityPublicKey: receiver.receiving.sparkPubkey,
+      id: uuidV7(deps.now(), randomBytes(10)),
+      memo: `fond:${paymentHash}`,
+      amountSats: Math.floor(amountMsat / 1000),
+    });
+  } catch {
+    logEvent('fond.spark_invoice.issue_failed');
+    return null;
+  }
+}
+
+/**
+ * Build the `/fond` route group.
+ *
+ * `GET /health` is public and does not read a session. The other routes are
+ * the fond payer's session routes.
  *
  * @param deps - Auth, queue, switch, username, clock, fetch, LNURL config,
- *   and the extracted issue/proof collaborators.
+ *   free-payment switch, and the extracted issue collaborators.
  * @returns Hono app mounted at `/fond`.
  */
 export function fondRoutes(deps: FondRouteDeps): Hono {
@@ -224,6 +280,31 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
   };
 
   return new Hono()
+    .get('/health', async (c) => {
+      if (deps.payoutSigner !== 'fond') {
+        return c.json({ error: 'Not found' }, 404, HEALTH_NO_STORE);
+      }
+      const nowMs = deps.now();
+      const today = utcDay(nowMs);
+      const yesterday = addUtcDays(today, -1);
+      let todayRows: FondPayoutRow[];
+      let yesterdayRows: FondPayoutRow[];
+      try {
+        todayRows = await deps.fondPayoutStore.listOpen(today);
+        yesterdayRows = await deps.fondPayoutStore.listOpen(yesterday);
+      } catch {
+        logEvent('fond.payouts.failed');
+        return c.json({ status: 'unavailable' }, 503, HEALTH_NO_STORE);
+      }
+      const open = todayRows.length;
+      const overdue =
+        todayRows.filter((row) => nowMs - row.createdAt.getTime() > FOND_OVERDUE_MS).length +
+        yesterdayRows.length;
+      if (overdue > 0) {
+        return c.json({ status: 'overdue', open, overdue }, 503, HEALTH_NO_STORE);
+      }
+      return c.json({ status: 'ok', open }, 200, HEALTH_NO_STORE);
+    })
     .get('/payouts', async (c) => {
       if (deps.payoutSigner !== 'fond') {
         return c.json({ error: 'Not found' }, 404);
@@ -267,7 +348,15 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         if (row.bolt11 === null || row.paymentHash === null) {
           return c.json({ error: 'Not payable' }, 409);
         }
-        return c.json({ id: row.id, bolt11: row.bolt11, paymentHash: row.paymentHash }, 200);
+        return c.json(
+          {
+            id: row.id,
+            bolt11: row.bolt11,
+            paymentHash: row.paymentHash,
+            sparkInvoice: row.sparkInvoice,
+          },
+          200,
+        );
       }
       if (row.status === 'issuing') {
         const cutoff = new Date(deps.now() - FOND_CLAIM_LEASE_MS);
@@ -316,7 +405,12 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
             current.paymentHash !== null
           ) {
             return c.json(
-              { id: current.id, bolt11: current.bolt11, paymentHash: current.paymentHash },
+              {
+                id: current.id,
+                bolt11: current.bolt11,
+                paymentHash: current.paymentHash,
+                sparkInvoice: current.sparkInvoice,
+              },
               200,
             );
           }
@@ -369,11 +463,18 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         const refusal = await refusedInvoice(deps, row.id, result);
         return c.json({ error: refusal.error }, refusal.status);
       }
+      const sparkInvoice = await payoutSparkInvoice(
+        deps,
+        row.address,
+        result.invoice.paymentHash,
+        amountMsat,
+      );
       try {
         const stored = await deps.fondPayoutStore.setInvoiced(row.id, {
           invoiceId: result.invoice.id,
           paymentHash: result.invoice.paymentHash,
           bolt11: result.invoice.pr,
+          sparkInvoice,
           amountMsat,
         });
         if (stored === undefined) {
@@ -389,184 +490,9 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           id: row.id,
           bolt11: result.invoice.pr,
           paymentHash: result.invoice.paymentHash,
+          sparkInvoice,
         },
         200,
       );
-    })
-    .post('/payouts/:id/proof', async (c) => {
-      if (deps.payoutSigner !== 'fond') {
-        return c.json({ error: 'Not found' }, 404);
-      }
-      const denied = await authGate(c.req.header('authorization'));
-      if (denied !== null) {
-        return c.json({ error: denied.error }, denied.status);
-      }
-      const id = normalizeUuid(c.req.param('id'));
-      if (id === null) {
-        return c.json({ error: 'Not found' }, 404);
-      }
-      let raw: unknown;
-      try {
-        raw = await c.req.json();
-      } catch {
-        return c.json({ error: 'Expected a JSON body with preimage' }, 400);
-      }
-      const parsed = proofBody.safeParse(raw);
-      if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with preimage' }, 400);
-      }
-      let row: Awaited<ReturnType<FondPayoutStore['get']>>;
-      try {
-        row = await deps.fondPayoutStore.get(id);
-      } catch {
-        logEvent('fond.proof.failed');
-        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-      }
-      if (row === undefined) {
-        return c.json({ error: 'Not found' }, 404);
-      }
-      if (
-        (row.status !== 'invoiced' && row.status !== 'settling' && row.status !== 'paid') ||
-        row.invoiceId === null ||
-        row.paymentHash === null ||
-        row.bolt11 === null ||
-        row.amountMsat === null
-      ) {
-        return c.json({ error: 'Not invoiced' }, 409);
-      }
-      if (!preimageMatchesHash(parsed.data.preimage, row.paymentHash)) {
-        return c.json({ error: GIFT_PROOF_MISMATCH }, 400);
-      }
-      if (row.status === 'paid') {
-        logEvent('fond.payout.paid', { id: row.id });
-        return c.json({ status: 'paid', id: row.id }, 200);
-      }
-      if (row.status === 'settling') {
-        const cutoff = new Date(deps.now() - FOND_CLAIM_LEASE_MS);
-        if (row.claimedAt === null || row.claimedAt >= cutoff) {
-          return c.json({ error: FOND_PROOF_IN_PROGRESS }, 409);
-        }
-        let giftExists: boolean;
-        try {
-          giftExists = (await deps.actions.giftStore?.hasOutboundInvoice?.(row.bolt11)) ?? false;
-        } catch {
-          logEvent('fond.proof.failed');
-          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-        }
-        if (giftExists) {
-          let recovered: FondPayoutRow | undefined;
-          try {
-            recovered = await deps.fondPayoutStore.markStaleSettlingPaid(row.id, cutoff);
-          } catch {
-            logEvent('fond.proof.failed');
-            return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-          }
-          if (recovered === undefined) {
-            logEvent('fond.proof.failed');
-            return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-          }
-          logEvent('fond.payout.paid', { id: row.id });
-          return c.json({ status: 'paid', id: row.id }, 200);
-        }
-        let restored: FondPayoutRow | undefined;
-        try {
-          restored = await deps.fondPayoutStore.restoreStaleSettling(row.id, cutoff);
-        } catch {
-          logEvent('fond.proof.failed');
-          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-        }
-        if (restored === undefined) {
-          logEvent('fond.proof.failed');
-          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-        }
-        row = restored;
-      }
-      let claimed: FondPayoutRow | undefined;
-      try {
-        claimed = await deps.fondPayoutStore.claimSettlement(row.id);
-      } catch {
-        logEvent('fond.proof.failed');
-        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-      }
-      if (claimed === undefined) {
-        let current: FondPayoutRow | undefined;
-        try {
-          current = await deps.fondPayoutStore.get(row.id);
-        } catch {
-          logEvent('fond.proof.failed');
-          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-        }
-        if (current?.status === 'paid') {
-          logEvent('fond.payout.paid', { id: row.id });
-          return c.json({ status: 'paid', id: row.id }, 200);
-        }
-        if (current?.status === 'settling') {
-          return c.json({ error: FOND_PROOF_IN_PROGRESS }, 409);
-        }
-        return c.json({ error: 'Not invoiced' }, 409);
-      }
-      const paidAt = deps.now();
-      const fiat: FiatAmounts = { usd: row.amountUsd, chf: null, eur: null, php: null };
-      const invoiceId = row.invoiceId;
-      const bolt11 = row.bolt11;
-      const paymentHash = row.paymentHash;
-      const amountMsat = row.amountMsat;
-      if (invoiceId === null || bolt11 === null || paymentHash === null || amountMsat === null) {
-        try {
-          const released = await deps.fondPayoutStore.releaseSettlement(row.id);
-          if (released === undefined) {
-            logEvent('fond.proof.revert_failed', { id: row.id });
-          }
-        } catch {
-          logEvent('fond.proof.revert_failed', { id: row.id });
-        }
-        logEvent('fond.proof.failed');
-        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-      }
-      try {
-        await settleProvenGift(
-          deps.actions,
-          {
-            id: invoiceId,
-            address: row.address,
-            pr: bolt11,
-            paymentHash,
-            amountMsat,
-            createdAt: paidAt,
-            expiresAt: paidAt,
-            comment: row.comment,
-            ...(row.messageId === null ? {} : { messageId: row.messageId }),
-            ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
-            amountUsd: row.amountUsd,
-          },
-          paidAt,
-          deps.fondUsername,
-          fiat,
-          row.kind,
-        );
-      } catch {
-        try {
-          const released = await deps.fondPayoutStore.releaseSettlement(row.id);
-          if (released === undefined) {
-            logEvent('fond.proof.revert_failed', { id: row.id });
-          }
-        } catch {
-          logEvent('fond.proof.revert_failed', { id: row.id });
-        }
-        logEvent('fond.proof.failed');
-        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-      }
-      let stored: FondPayoutRow | undefined;
-      try {
-        stored = await deps.fondPayoutStore.markPaid(row.id);
-      } catch {
-        stored = undefined;
-      }
-      if (stored === undefined) {
-        logEvent('fond.proof.failed');
-        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-      }
-      logEvent('fond.payout.paid', { id: row.id });
-      return c.json({ status: 'paid', id: row.id }, 200);
     });
 }

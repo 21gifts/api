@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addUtcDays,
   comparePeriod,
   dayKey,
   isValidTimeZone,
@@ -9,6 +10,18 @@ import {
   weekKey,
   weeklyRatableThrough,
 } from '../../lib/member-habit';
+
+describe('addUtcDays', () => {
+  it('shifts across month end, year end, and leap day with both offsets', () => {
+    expect(addUtcDays('2026-10-31', 1)).toBe('2026-11-01');
+    expect(addUtcDays('2026-12-31', 1)).toBe('2027-01-01');
+    expect(addUtcDays('2027-01-01', -1)).toBe('2026-12-31');
+    expect(addUtcDays('2028-02-29', 1)).toBe('2028-03-01');
+    expect(addUtcDays('2028-03-01', -1)).toBe('2028-02-29');
+    expect(addUtcDays('2026-11-09', -1)).toBe('2026-11-08');
+    expect(addUtcDays('2026-11-09', 2)).toBe('2026-11-11');
+  });
+});
 
 describe('isValidTimeZone', () => {
   it('accepts IANA zones and rejects empty or invalid names', () => {

@@ -3,14 +3,23 @@
  * member pays from its own in-app wallet when `PAYOUT_SIGNER=fond`.
  *
  * A row is written by the ping path with the already-decided amount and
- * comment. The member-session `/fond` routes then request the invoice and
- * post the proof. Column layout matches `docs/schema/fond_payout.sql`.
+ * comment. The member-session `/fond` route then requests the invoice; the
+ * paid worker detects its settlement. Column layout matches
+ * `docs/schema/fond_payout.sql`.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
 
 /** How long an `issuing` or `settling` claim is trusted before restart recovery. */
 export const FOND_CLAIM_LEASE_MS = 120_000;
+
+/**
+ * How long an open row may wait before `GET /fond/health` reports it overdue.
+ *
+ * Fifteen minutes. This is not the claim lease (`FOND_CLAIM_LEASE_MS`), which
+ * only bounds one invoice request or settlement claim.
+ */
+export const FOND_OVERDUE_MS = 15 * 60_000;
 
 /** Payout kinds the API decides. Matches the `kind` CHECK constraint. */
 export type FondPayoutKind = 'daily' | 'moderator' | 'welcome';
@@ -46,6 +55,8 @@ export interface FondPayoutRow {
   paymentHash: string | null;
   /** Invoice BOLT11, or `null`. */
   bolt11: string | null;
+  /** Fee-free Spark invoice for the BOLT11, or `null` when none was issued. */
+  sparkInvoice: string | null;
   /** Invoice amount in millisatoshis, or `null` before `setInvoiced`. */
   amountMsat: number | null;
   /** Time the row entered `issuing` or `settling`, or `null` in a stable state. */
@@ -84,6 +95,11 @@ export interface FondPayoutInvoice {
   paymentHash: string;
   /** Invoice BOLT11. */
   bolt11: string;
+  /**
+   * Fee-free Spark invoice, or `null`/omitted when issuing it failed or was
+   * off. Omitted callers store `NULL`.
+   */
+  sparkInvoice?: string | null;
   /** Invoice amount in millisatoshis. */
   amountMsat: number;
 }
@@ -173,7 +189,7 @@ export interface FondPayoutStore {
   /**
    * Atomically claim one `invoiced` row for settlement by moving it to
    * `settling`. The lock is distinct from the terminal `paid` status, so a
-   * concurrent proof can tell a running settlement from a finished one.
+   * concurrent tick can tell a running settlement from a finished one.
    *
    * @param id - Row id.
    * @returns The claimed row, or `undefined` when the row is missing or not invoiced.
@@ -208,7 +224,7 @@ export interface FondPayoutStore {
 
   /**
    * Move a `settling` row back to `invoiced` when settlement failed, so a
-   * later proof can settle again.
+   * later worker tick can settle again.
    *
    * @param id - Row id.
    * @returns The updated row, or `undefined` when the row is missing or not settling.
@@ -233,6 +249,7 @@ export const FOND_PAYOUT_SCHEMA_SQL: readonly string[] = [
   invoice_id text,
   payment_hash text,
   bolt11 text,
+  spark_invoice text,
   amount_msat bigint,
   claimed_at timestamptz NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -243,6 +260,7 @@ export const FOND_PAYOUT_SCHEMA_SQL: readonly string[] = [
     CHECK (status IN ('owed', 'issuing', 'invoiced', 'settling', 'paid', 'failed'))`,
   `ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS amount_msat bigint`,
   `ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS claimed_at timestamptz NULL`,
+  `ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS spark_invoice text NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
     ON fond_payout (utc_day, kind, address)
     WHERE kind IN ('daily', 'moderator')`,
@@ -314,6 +332,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       invoiceId: null,
       paymentHash: null,
       bolt11: null,
+      sparkInvoice: null,
       amountMsat: null,
       claimedAt: null,
       createdAt: at,
@@ -417,6 +436,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       invoiceId: invoice.invoiceId,
       paymentHash: invoice.paymentHash,
       bolt11: invoice.bolt11,
+      sparkInvoice: invoice.sparkInvoice ?? null,
       amountMsat: invoice.amountMsat,
     }));
   }
@@ -571,6 +591,7 @@ interface FondPayoutSqlRow {
   invoice_id: string | null;
   payment_hash: string | null;
   bolt11: string | null;
+  spark_invoice: string | null;
   amount_msat: number | string | bigint | null;
   claimed_at: Date | string | null;
   created_at: Date | string;
@@ -578,8 +599,8 @@ interface FondPayoutSqlRow {
 }
 
 const FOND_PAYOUT_SELECT = `id, utc_day, kind, address, amount_usd, comment, message_id,
-  group_message_id, status, failure, invoice_id, payment_hash, bolt11, amount_msat, claimed_at,
-  created_at, updated_at`;
+  group_message_id, status, failure, invoice_id, payment_hash, bolt11, spark_invoice, amount_msat,
+  claimed_at, created_at, updated_at`;
 
 /** Date-only text for a driver `date` value. */
 function isoDay(value: string | Date): string {
@@ -615,6 +636,7 @@ function mapRow(row: FondPayoutSqlRow): FondPayoutRow {
     invoiceId: row.invoice_id,
     paymentHash: row.payment_hash,
     bolt11: row.bolt11,
+    sparkInvoice: row.spark_invoice,
     amountMsat: millisatoshis(row.amount_msat),
     claimedAt: row.claimed_at === null ? null : timestamp(row.claimed_at),
     createdAt: timestamp(row.created_at),
@@ -767,10 +789,18 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
 SET status = 'invoiced', failure = NULL, claimed_at = NULL,
-    invoice_id = $2, payment_hash = $3, bolt11 = $4, amount_msat = $5, updated_at = now()
+    invoice_id = $2, payment_hash = $3, bolt11 = $4, spark_invoice = $5, amount_msat = $6,
+    updated_at = now()
 WHERE id = $1 AND status = 'issuing'
 RETURNING ${FOND_PAYOUT_SELECT}`,
-      [id, invoice.invoiceId, invoice.paymentHash, invoice.bolt11, invoice.amountMsat],
+      [
+        id,
+        invoice.invoiceId,
+        invoice.paymentHash,
+        invoice.bolt11,
+        invoice.sparkInvoice ?? null,
+        invoice.amountMsat,
+      ],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapRow(row);

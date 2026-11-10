@@ -2572,6 +2572,18 @@ test('Function: startPosPaidWorker — the LNURL server is off on the default bo
   expect((await request.get('/healthz')).status()).toBe(200);
   expect((await request.get('/pos')).status()).toBe(401);
 });
+test('Function: runFondPaidTick — PAYOUT_SIGNER is not fond on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+  expect((await request.get('/fond/payouts')).status()).toBe(404);
+});
+test('Function: startFondPaidWorker — PAYOUT_SIGNER is not fond on the default boot', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+  expect((await request.get('/fond/payouts')).status()).toBe(404);
+});
 test('Function: ingestZapReceipt — free in-app payments are off on the default boot', async ({
   request,
 }) => {
@@ -3907,6 +3919,11 @@ test('Function: weekKey — GET /habits is public', async ({ request }) => {
 });
 
 test('Function: periodKey — GET /habits is public', async ({ request }) => {
+  const res = await request.get('/habits');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: addUtcDays — GET /habits is public', async ({ request }) => {
   const res = await request.get('/habits');
   expect(res.status()).toBe(200);
 });
