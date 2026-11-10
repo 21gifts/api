@@ -1173,8 +1173,8 @@ local sections and then re-reads:
 3. For a charge, read the route list and select the candidate pairs. A
    failed route-list fetch, or one the route-list budget refuses → stop (no
    stablecoin until a fetch succeeds; the next creation fetches again). No
-   candidate pair → stop and start the account's 60 s no-pair wait. A payer
-   skips this step here; its offers fill reads the route list after step 8.
+   candidate pair → stop; step 7 defines the no-pair wait. A payer skips this
+   step here; its offers fill reads the route list after step 8.
 4. Mint one BOLT11 for the sats with one 4 s deadline for both LNURL calls.
    A failed mint or a BOLT11 of another amount stops the procedure as a
    failed mint. A payment hash that another charge's or a payer's shop
@@ -1220,12 +1220,14 @@ local sections and then re-reads:
    too: `check` `body` for an HTTP 200 whose body does not parse, `http`
    for a request sent without an HTTP 200 answer (another 2xx included),
    and `budget` when no request could be sent.
-7. For a charge, none kept after the offer and gas-price checks → stop and start the 60 s no-pair
-   wait. For a pending charge, the pay link stays pinned and
-   `POST /pay/:username/payment` answers order 4. Order 7 applies during the
-   wait only when no charge is pending. For a payer, none kept is not an
-   error: the payment is already open Lightning-only, and the offers fill
-   inserts no second quote.
+7. For a charge, the 60 s no-pair wait starts when there is no candidate pair, or when
+   `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger
+   than 10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route
+   list does not start it. A kept offer prevents it, even when the commit then writes nothing.
+   For a pending charge, the pay link stays pinned and `POST /pay/:username/payment` answers
+   order 4. Order 7 applies during the wait only when no charge is pending. For a payer, no offer
+   is not an error: the payment is already open Lightning-only, and the offers fill inserts no
+   second quote.
 8. In one transaction that first takes the payment hash claim
    (`SELECT pg_advisory_xact_lock($1, $2)`: a fixed namespace and the first
    32 bits of the hash as a signed integer; an in-process map shared with
@@ -1296,10 +1298,11 @@ stored offer already holds an offer's deposit address. That conflict drops
 only the offer and logs `shop.alert.shared_deposit_address`. The fill inserts
 no quote when the route list fails or there is no candidate pair. It also
 inserts no quote when the commit conditions fail. An unreadable gas price
-drops only offers on that chain. The 60 s no-pair wait starts when there is no
-candidate pair or when no offer remains after `checkOffer` and gas-price filtering. A failed
-route list does not start it. A retained offer prevents the wait even when the commit writes
-nothing. The fill does not increment `replacements`.
+drops only offers on that chain. The 60 s no-pair wait starts when there is no candidate pair,
+or when `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot
+younger than 10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed
+route list does not start it. A kept offer prevents it, even when the commit then writes nothing.
+The fill does not increment `replacements`.
 
 **States.** `shop_payment.status` is `open`, `accepted`, `paid`, or
 `ended`; every change is one conditional update. `open` → `ended` when the
@@ -2120,14 +2123,16 @@ A store failure during the creation → **Response** `502` `{ "error":
 "Lightning Address could not be resolved" }` (logs `pay.failed`), the
 answer of order 2: the page cannot tell whether a payment opened, so it
 repeats the request as after any other 5xx.
-The offers fill runs after the payer's insert, in the background. The
-route does not wait for it. A failed route list, no candidate pair, no
-fresh spot, no quote budget, and no offer retained after offer and gas-price checks leave the
-answer at 200: the payment is already open Lightning-only. An unreadable gas price drops only
-offers on that chain. A retained offer prevents the 60 s no-pair wait. The second quote is
-written only while the payment is `open`, at least 45 s remain, `replacements` is unchanged,
-and its newest quote is the first quote or a newer Lightning-only row. A `findChargeForPayment`
-error, the insert at 16 s or later, and a disconnected client still answer order 9.
+The offers fill runs after the payer's insert, in the background. The route does not wait for it.
+A failed route list, no candidate pair, or no offer leaves the answer at 200: the payment is
+already open Lightning-only. The 60 s no-pair wait starts when there is no candidate pair, or
+when `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger
+than 10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list
+does not start it. A kept offer prevents it, even when the commit then writes nothing. The second
+quote is written only while the payment is `open`, at least 45 s remain, `replacements` is
+unchanged, and its newest quote is the first quote or a newer Lightning-only row. A
+`findChargeForPayment` error, the insert at 16 s or later, and a disconnected client still answer
+order 9.
 The api-wide counter is asked first and the account counter only when it
 allows. Orders 7 and 9 do not depend on the client address.
 

@@ -154,11 +154,11 @@
   `shop.alert.shared_deposit_address`, and leaves the quote row inserted. The fill's external
   calls run outside the creation lock. The lock covers only its short re-read and commit, which
   can wait longer than those budgets. The fill does not increment `replacements`. A failed route
-  list inserts no quote. The 60 s no-pair wait starts when there is no candidate pair or when no
-  offer remains after `checkOffer` and gas-price filtering. A failed route list does not start it.
-  A retained offer prevents the wait even when the commit writes nothing. No fresh spot or quote
-  budget leaves no offer. An unreadable gas price drops only offers on that chain. The creation
-  re-check commits before mint: it ends a lapsed `open`
+  list inserts no quote. The 60 s no-pair wait starts when there is no candidate pair, or when
+  `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger than
+  10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list
+  does not start it. A kept offer prevents it, even when the commit then writes nothing. The
+  creation re-check commits before mint: it ends a lapsed `open`
   payment with `window` and expires overdue payer charges. Those changes remain when a later hash
   check stops creation. In the insert transaction, `hashHolder` and `chargeIdForInvoice` write
   nothing and do not end a still-open payment when the hash is held. 200

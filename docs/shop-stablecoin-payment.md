@@ -695,18 +695,16 @@ One procedure creates a shop payment, for a charge or for a payer:
    [Methods](#methods).
 6. For a charge, keep each quote that commits, passes [Offer checks](#offer-checks), and has a
    readable gas price for its chain. An unreadable gas price drops only offers on that chain.
-7. For a charge, when none is kept after those checks, write nothing, and the account's next
-   creation in this container waits 60 s; the other container of a deploy
-   keeps its own wait, so during a deploy an account can see two creations
-   in 60 s. While the charge stays pending, the pay link stays pinned and
-   `POST /pay/:username/payment` answers order 4. Order 7 applies during the
-   wait only when no charge is pending. Order 9 is only a
-   `findChargeForPayment` error, an insert at 16 s or later, or a disconnected
-   client. For a payer, no committed pair is not an error: the payment is
-   already open Lightning-only, and the offers fill inserts no second quote.
-   Except when the route-list fetch failed, an empty candidate list or no
-   retained offer also starts the account's 60 s no-pair wait, as described for
-   `POST /pay/:username/payment` above.
+7. For a charge, the 60 s no-pair wait starts when there is no candidate pair, or when
+   `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger
+   than 10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route
+   list does not start it. A kept offer prevents it, even when the commit then writes nothing.
+   The other container of a deploy keeps its own wait, so during a deploy an account can see two
+   creations in 60 s. While the charge stays pending, the pay link stays pinned and
+   `POST /pay/:username/payment` answers order 4. Order 7 applies during the wait only when no
+   charge is pending. Order 9 is only a `findChargeForPayment` error, an insert at 16 s or later,
+   or a disconnected client. For a payer, no offer is not an error: the payment is already open
+   Lightning-only, and the offers fill inserts no second quote.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first takes the
    [Payment hash claim](#payment-hash-claim) and then locks the account
@@ -800,9 +798,10 @@ when a stored offer already holds an offer's deposit address. That conflict
 drops only the offer and logs `shop.alert.shared_deposit_address`.
 The fill inserts no quote when the route list fails or there is no candidate pair. It also
 inserts no quote when the commit conditions fail. An unreadable gas price drops only offers on
-that chain. The 60 s no-pair wait starts when there is no candidate pair or when no offer remains
-after `checkOffer` and gas-price filtering. A failed route list does not start it. A retained
-offer prevents the wait even when the commit writes nothing.
+that chain. The 60 s no-pair wait starts when there is no candidate pair, or when
+`#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger than
+10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list does
+not start it. A kept offer prevents it, even when the commit then writes nothing.
 The fill does not increment `replacements`; it is not a replacement.
 
 ### Payment hash claim

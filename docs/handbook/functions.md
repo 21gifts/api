@@ -4791,7 +4791,7 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
   For a charge, the route list is reused only until its `validForMs` has passed since the request
   started. A failed fetch, or one refused by the route budget, returns `unavailable` without the
-  wait. No `candidatePairs` returns `unavailable` and starts the 60 s wait. A payer skips route,
+  wait. No `candidatePairs` returns `unavailable`; the rule below applies. A payer skips route,
   quote, and spot work before the insert. One mint uses `requestGiftInvoice` with a 4 s
   external-call deadline. Failure or another amount is `mint_failed`. If another shop payment
   already holds the hash, `tx.paymentForHash` returns that `ShopPayment`; it returns `null` when
@@ -4818,7 +4818,10 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   gas price drops only offers on that chain; offers on other chains remain. `minFee` is
   `recommendedMinFee`. A failed quote logs `shop.offer.rejected` with `check` `body` for an HTTP
   200 body that does not parse, `http` for a request sent without an HTTP 200, or `budget` when no
-  request could be sent. No retained offer returns `unavailable` and starts the 60 s wait.
+  request could be sent. The 60 s no-pair wait starts when there is no candidate pair, or when
+  `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger than
+  10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list
+  does not start it. A kept offer prevents it, even when the commit then writes nothing.
 
   The insert transaction takes `ShopTx.claimPaymentHash`, then the account row lock, and only for
   a charge then the charge row lock. For a charge, the route list's 1 s starts at the re-check, so
@@ -4863,11 +4866,11 @@ A missing pin and an empty label tell the caller the same thing. The create and 
   After a payer insert, `#startOffersFill` starts the unawaited `#fillOffers`. The fill runs the
   route-list, candidate-pair, spot, gas-price, quote, and offer checks outside the creation lock.
   Only its short re-read and quote commit take that lock. A failed route list leaves the open
-  Lightning-only payment and 200 response unchanged. No candidate pair or no offer retained after
-  `checkOffer` and gas-price filtering also leaves them unchanged. The 60 s no-pair wait starts
-  when there is no candidate pair or when no offer remains after `checkOffer` and gas-price
-  filtering. A failed route list does not start it. A retained offer prevents the wait even when
-  the commit writes nothing. One unreadable gas price drops only offers on that chain.
+  Lightning-only payment and 200 response unchanged. No candidate pair or no offer also leaves
+  them unchanged. The 60 s no-pair wait starts when there is no candidate pair, or when
+  `#requestOffers` returns no offer for any reason: no quote budget left, no USD spot younger than
+  10 minutes, no quote that passes `checkOffer`, or no readable gas price. A failed route list
+  does not start it. A kept offer prevents it, even when the commit then writes nothing.
   The second quote is inserted only while the payment is `open`, at least 45 s remain,
   `replacements` is unchanged, and the newest quote is the Lightning-only first quote or a newer
   Lightning-only row. A stored deposit-address conflict drops only that offer, logs
