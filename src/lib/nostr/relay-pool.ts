@@ -203,9 +203,12 @@ class RelayConnection {
     call.timer = setTimeout(() => {
       // A socket that sent nothing since this frame went out may be half-open.
       const silent = call.sent && this.open && this.received === call.receivedAtSend;
+      // Captured first: a failing CLOSE in settle may already drop this socket,
+      // and the drop below must then be a no-op, not a second failure.
+      const socket = this.socket;
       call.settle(false);
       if (silent) {
-        this.drop(this.socket);
+        this.drop(socket);
       }
     }, timeoutMs);
     if (this.open) {

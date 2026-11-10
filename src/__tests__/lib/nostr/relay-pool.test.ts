@@ -204,6 +204,22 @@ describe('NostrRelayPool', () => {
       await expect(next).resolves.toBe(true);
     });
 
+    it('counts one drop when the CLOSE of a silent timed-out query throws', async () => {
+      const q = startQuery(pool, URL_A, 200);
+      const socket = factory.last();
+      socket.emit('open');
+      socket.throwOnSend = true;
+      vi.advanceTimersByTime(200);
+      await q.promise;
+      expect(socket.closed).toBe(true);
+      const at = Date.now();
+      startQuery(pool, URL_A, 10_000);
+      while (factory.sockets.length === 1) {
+        vi.advanceTimersByTime(10);
+      }
+      expect(Date.now() - at).toBe(100);
+    });
+
     it('ends calls that time out while the socket is still connecting', async () => {
       const q = startQuery(pool, URL_A, 100);
       const ack = pool.publish({ id: 'e1' }, URL_A, 100);
