@@ -592,18 +592,17 @@ as for `POST /pay/:username/invoice`. The checks run in this order:
 Orders 1, 2, 3, 5, and 8 are the checks and texts of
 `POST /pay/:username/invoice`. Order 4 comes before the range check, because a
 pending charge pins that range to the charge amount. Orders 4 and 6 run again
-under the creation lock. Order 7 runs only there, once per creation. The lock
-covers those local checks and the insert. For a charge, the route list, mint,
-and quotes run outside it. The payer's creation skips the route list and
-quotes; its offers fill runs them after the insert, in the background.
-A store failure during creation logs `pay.failed`; the page cannot tell whether
-a payment opened, so it repeats the request after order 2's 502 as after any
-other 5xx.
-No Orchestra call is awaited while
-the lock is held, because `IpRateLimiter.allow` records every
-call it allows: the api-wide counter is asked first, and the account
-counter only when it allows, so a refusal by the account counter leaves
-one extra hit on the api-wide counter at most. The counters in order 7 are two `IpRateLimiter` instances, keyed by
+under the creation lock. The lock covers those local checks and the insert. For
+a charge, the route list, mint, and quotes run outside it. The payer's creation
+skips the route list and quotes; its offers fill runs them after the insert, in
+the background. No Orchestra call is awaited while the lock is held. Order 7
+runs only there, once per creation. `IpRateLimiter.allow` records every call it
+allows. The api-wide counter is asked first, and the account counter only when
+it allows, so a refusal by the account counter leaves one extra hit on the
+api-wide counter at most. A store failure during creation logs `pay.failed`;
+the page cannot tell whether a payment opened, so it repeats the request after
+order 2's 502 as after any other 5xx. The counters in order 7 are two
+`IpRateLimiter` instances, keyed by
 the account id as `src/routes/wallet-report.ts` does and by one fixed
 key for the whole api; they count started creations in their 60 s
 window. Like every `IpRateLimiter`, each container of a deploy keeps its
@@ -694,9 +693,11 @@ One procedure creates a shop payment, for a charge or for a payer:
    creation in this container waits 60 s; the other container of a deploy
    keeps its own wait, so during a deploy an account can see two creations
    in 60 s. Until then a fetch answers today's pinned Lightning request,
-   and `POST /pay/:username/payment` answers order 9. For a payer, no
-   committed pair is not an error: the payment is already open
-   Lightning-only, and the offers fill simply inserts no second quote.
+   and `POST /pay/:username/payment` answers order 7. Order 9 is only a
+   `findChargeForPayment` error, an insert at 16 s or later, or a disconnected
+   client. For a payer, no committed pair is not an error: the payment is
+   already open Lightning-only, and the offers fill simply inserts no second
+   quote.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first takes the
    [Payment hash claim](#payment-hash-claim) and then locks the account
