@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
+import { parseRepaymentDescription } from '@/lib/credit-repayment';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
@@ -24,7 +25,7 @@ const PAYMENT_HASH_PATTERN = /^[0-9a-f]{64}$/i;
 export interface WalletHeartRouteDeps {
   /** Session store used by {@link resolveSession}. */
   authStore: AuthStore;
-  /** Forum invoice and note lookups. */
+  /** Forum invoice and note lookups (hearts and repayment credit notes). */
   messages: Pick<MessageStore, 'findOkInvoiceByPaymentHash' | 'getById'>;
   /** Clock returning epoch milliseconds. */
   now: () => number;
@@ -70,7 +71,7 @@ function parseHeartLookupHashes(body: unknown): string[] | null {
  * Build the authenticated heart lookup route mounted at `/`.
  *
  * @param deps - Auth, message store, clock, and optional limiter dependencies.
- * @returns A Hono app serving `POST /me/wallet/hearts`.
+ * @returns A Hono app serving `POST /me/wallet/hearts` (heart rows and repayment rows).
  */
 export function walletHeartRoutes(deps: WalletHeartRouteDeps): Hono {
   const limiter = deps.limiter ?? new IpRateLimiter(HEART_LOOKUPS_PER_MINUTE);
@@ -106,13 +107,25 @@ export function walletHeartRoutes(deps: WalletHeartRouteDeps): Hono {
       text: string;
       deleted: boolean;
     }> = [];
+    const repayments: Array<{
+      paymentHash: string;
+      messageId: string;
+      dayIndex: number;
+      termDays: number | null;
+      role: 'borrower' | 'giver';
+      authorName: string;
+      text: string;
+      deleted: boolean;
+    }> = [];
     try {
       for (const paymentHash of hashes) {
         const invoice = await deps.messages.findOkInvoiceByPaymentHash(paymentHash);
         if (invoice === undefined) {
           continue;
         }
-        if (invoice.heart !== true) {
+        const repayment =
+          invoice.heart === true ? null : parseRepaymentDescription(invoice.description);
+        if (invoice.heart !== true && repayment === null) {
           continue;
         }
         if (invoice.payerAccountId !== account.id && invoice.authorAccountId !== account.id) {
@@ -127,9 +140,22 @@ export function walletHeartRoutes(deps: WalletHeartRouteDeps): Hono {
         const noteText =
           row === undefined ? '' : clipToCodePoints(row.text.trim(), TEXT_MAX_CODE_POINTS);
         const deleted = row === undefined || row.deletedAt !== null;
-        hearts.push({
+        if (repayment === null) {
+          hearts.push({
+            paymentHash,
+            messageId: invoice.messageId,
+            authorName,
+            text: noteText,
+            deleted,
+          });
+          continue;
+        }
+        repayments.push({
           paymentHash,
           messageId: invoice.messageId,
+          dayIndex: repayment.dayIndex,
+          termDays: row?.goalTermDays ?? null,
+          role: invoice.payerAccountId === account.id ? 'borrower' : 'giver',
           authorName,
           text: noteText,
           deleted,
@@ -139,6 +165,6 @@ export function walletHeartRoutes(deps: WalletHeartRouteDeps): Hono {
       logEvent('wallet_hearts.lookup.failed', { accountId: account.id });
       return c.json({ error: 'Heart lookup is unavailable' }, 503);
     }
-    return c.json({ hearts }, 200);
+    return c.json({ hearts, repayments }, 200);
   });
 }

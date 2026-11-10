@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
+import { repaymentDescription } from '@/lib/credit-repayment';
 import type { MessageInvoiceAttempt } from '@/lib/message-store';
 import { HEART_LOOKUP_BODY_LIMIT_BYTES, walletHeartRoutes } from '@/routes/wallet-hearts';
 
@@ -80,6 +81,7 @@ function invoice(row: {
   payerAccountId: string;
   authorAccountId: string;
   heart: boolean;
+  description?: string;
 }): MessageInvoiceAttempt {
   return {
     id: `inv-${row.paymentHash.slice(0, 8)}`,
@@ -94,7 +96,7 @@ function invoice(row: {
     httpStatus: 200,
     pr: 'lnbc1',
     paymentHash: row.paymentHash,
-    description: null,
+    description: row.description ?? null,
     descriptionHash: null,
     isNip57Invoice: true,
     lnurlResponse: null,
@@ -107,6 +109,7 @@ function note(row: {
   name: string;
   text: string;
   deletedAt?: Date | null;
+  goalTermDays?: number;
 }): MessageRow {
   return {
     id: row.id,
@@ -117,6 +120,7 @@ function note(row: {
     hasPhoto: false,
     ...unsignedNostrDefaults(),
     deletedAt: row.deletedAt === undefined ? null : row.deletedAt,
+    ...(row.goalTermDays === undefined ? {} : { goalTermDays: row.goalTermDays }),
   };
 }
 
@@ -287,6 +291,7 @@ describe('POST /me/wallet/hearts', () => {
           deleted: false,
         },
       ],
+      repayments: [],
     });
   });
 
@@ -315,6 +320,7 @@ describe('POST /me/wallet/hearts', () => {
           deleted: false,
         },
       ],
+      repayments: [],
     });
   });
 
@@ -333,7 +339,7 @@ describe('POST /me/wallet/hearts', () => {
     messages.notes.set('msg-gift', note({ id: 'msg-gift', name: 'Ada', text: 'Gift' }));
     const response = await post(app, { hashes: [HASH_C] });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ hearts: [] });
+    expect(await response.json()).toEqual({ hearts: [], repayments: [] });
   });
 
   it('omits a heart of a third account', async () => {
@@ -351,14 +357,14 @@ describe('POST /me/wallet/hearts', () => {
     messages.notes.set('msg-third', note({ id: 'msg-third', name: 'Ada', text: 'Secret' }));
     const response = await post(app, { hashes: [HASH_D] });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ hearts: [] });
+    expect(await response.json()).toEqual({ hearts: [], repayments: [] });
   });
 
   it('omits an unknown hash', async () => {
     const { app } = await mount();
     const response = await post(app, { hashes: [HASH_E] });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ hearts: [] });
+    expect(await response.json()).toEqual({ hearts: [], repayments: [] });
   });
 
   it('returns a duplicate hash once', async () => {
@@ -386,6 +392,7 @@ describe('POST /me/wallet/hearts', () => {
           deleted: false,
         },
       ],
+      repayments: [],
     });
   });
 
@@ -414,6 +421,7 @@ describe('POST /me/wallet/hearts', () => {
           deleted: false,
         },
       ],
+      repayments: [],
     });
   });
 
@@ -449,6 +457,7 @@ describe('POST /me/wallet/hearts', () => {
           deleted: false,
         },
       ],
+      repayments: [],
     });
   });
 
@@ -485,6 +494,7 @@ describe('POST /me/wallet/hearts', () => {
           deleted: true,
         },
       ],
+      repayments: [],
     });
   });
 
@@ -512,6 +522,7 @@ describe('POST /me/wallet/hearts', () => {
           deleted: true,
         },
       ],
+      repayments: [],
     });
   });
 
@@ -539,7 +550,7 @@ describe('POST /me/wallet/hearts', () => {
     });
     const response = await post(app, { hashes: [HASH_A, HASH_B] });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ hearts: [] });
+    expect(await response.json()).toEqual({ hearts: [], repayments: [] });
   });
 
   it('returns 503 and logs only the account id when a lookup throws', async () => {
@@ -587,5 +598,256 @@ describe('POST /me/wallet/hearts', () => {
     const response = await post(app, { hashes: [HASH_A] });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: 'Heart lookup is unavailable' });
+  });
+  describe('repayments', () => {
+    const BORROWER = '44444444-4444-4444-8444-444444444444';
+
+    function repayInvoice(row: {
+      paymentHash: string;
+      messageId: string;
+      payerAccountId: string;
+      authorAccountId: string;
+      dayIndex: number;
+    }): MessageInvoiceAttempt {
+      return invoice({
+        paymentHash: row.paymentHash,
+        messageId: row.messageId,
+        payerAccountId: row.payerAccountId,
+        authorAccountId: row.authorAccountId,
+        heart: false,
+        description: repaymentDescription(row.dayIndex, row.authorAccountId),
+      });
+    }
+
+    it('returns a giver row when the caller is the repaid giver', async () => {
+      const { app, messages } = await mount();
+      messages.invoices.set(
+        HASH_A,
+        repayInvoice({
+          paymentHash: HASH_A,
+          messageId: 'credit-1',
+          payerAccountId: BORROWER,
+          authorAccountId: ACCOUNT,
+          dayIndex: 3,
+        }),
+      );
+      messages.notes.set(
+        'credit-1',
+        note({ id: 'credit-1', name: '  Bo  ', text: '  Credit note  ', goalTermDays: 30 }),
+      );
+      const response = await post(app, { hashes: [HASH_A] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        hearts: [],
+        repayments: [
+          {
+            paymentHash: HASH_A,
+            messageId: 'credit-1',
+            dayIndex: 3,
+            termDays: 30,
+            role: 'giver',
+            authorName: 'Bo',
+            text: 'Credit note',
+            deleted: false,
+          },
+        ],
+      });
+    });
+
+    it('returns a borrower row when the caller paid the repayment', async () => {
+      const { app, messages } = await mount();
+      messages.invoices.set(
+        HASH_B,
+        repayInvoice({
+          paymentHash: HASH_B,
+          messageId: 'credit-2',
+          payerAccountId: ACCOUNT,
+          authorAccountId: AUTHOR,
+          dayIndex: 0,
+        }),
+      );
+      messages.notes.set('credit-2', note({ id: 'credit-2', name: 'Ada', text: 'My credit' }));
+      const response = await post(app, { hashes: [HASH_B.toUpperCase()] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        hearts: [],
+        repayments: [
+          {
+            paymentHash: HASH_B,
+            messageId: 'credit-2',
+            dayIndex: 0,
+            termDays: null,
+            role: 'borrower',
+            authorName: 'Ada',
+            text: 'My credit',
+            deleted: false,
+          },
+        ],
+      });
+    });
+
+    it('omits a repayment between two other accounts', async () => {
+      const { app, messages } = await mount();
+      messages.invoices.set(
+        HASH_C,
+        repayInvoice({
+          paymentHash: HASH_C,
+          messageId: 'credit-3',
+          payerAccountId: BORROWER,
+          authorAccountId: OTHER,
+          dayIndex: 1,
+        }),
+      );
+      messages.notes.set('credit-3', note({ id: 'credit-3', name: 'Bo', text: 'Secret' }));
+      const response = await post(app, { hashes: [HASH_C] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ hearts: [], repayments: [] });
+    });
+
+    it('checks the stored giver column, not the account in the description', async () => {
+      const { app, messages } = await mount();
+      messages.invoices.set(
+        HASH_D,
+        invoice({
+          paymentHash: HASH_D,
+          messageId: 'credit-4',
+          payerAccountId: BORROWER,
+          authorAccountId: OTHER,
+          heart: false,
+          description: repaymentDescription(2, ACCOUNT),
+        }),
+      );
+      const response = await post(app, { hashes: [HASH_D] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ hearts: [], repayments: [] });
+    });
+
+    it('marks a missing credit note deleted with empty name, text, and null term', async () => {
+      const { app, messages } = await mount();
+      messages.invoices.set(
+        HASH_E,
+        repayInvoice({
+          paymentHash: HASH_E,
+          messageId: 'credit-gone',
+          payerAccountId: BORROWER,
+          authorAccountId: ACCOUNT,
+          dayIndex: 7,
+        }),
+      );
+      const response = await post(app, { hashes: [HASH_E] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        hearts: [],
+        repayments: [
+          {
+            paymentHash: HASH_E,
+            messageId: 'credit-gone',
+            dayIndex: 7,
+            termDays: null,
+            role: 'giver',
+            authorName: '',
+            text: '',
+            deleted: true,
+          },
+        ],
+      });
+    });
+
+    it('omits a repayment whose messageId is empty', async () => {
+      const { app, messages } = await mount();
+      messages.invoices.set(
+        HASH_F,
+        repayInvoice({
+          paymentHash: HASH_F,
+          messageId: '',
+          payerAccountId: BORROWER,
+          authorAccountId: ACCOUNT,
+          dayIndex: 1,
+        }),
+      );
+      const response = await post(app, { hashes: [HASH_F] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ hearts: [], repayments: [] });
+    });
+
+    it('sorts mixed hashes into the right array and keeps the heart row shape', async () => {
+      const { app, messages } = await mount();
+      messages.invoices.set(
+        HASH_A,
+        invoice({
+          paymentHash: HASH_A,
+          messageId: 'msg-heart',
+          payerAccountId: ACCOUNT,
+          authorAccountId: AUTHOR,
+          heart: true,
+          description: repaymentDescription(9, ACCOUNT),
+        }),
+      );
+      messages.notes.set('msg-heart', note({ id: 'msg-heart', name: 'Ada', text: 'Heart' }));
+      messages.invoices.set(
+        HASH_B,
+        repayInvoice({
+          paymentHash: HASH_B,
+          messageId: 'credit-mix',
+          payerAccountId: BORROWER,
+          authorAccountId: ACCOUNT,
+          dayIndex: 4,
+        }),
+      );
+      messages.notes.set(
+        'credit-mix',
+        note({
+          id: 'credit-mix',
+          name: 'Bo',
+          text: 'Credit',
+          goalTermDays: 14,
+          deletedAt: new Date(START),
+        }),
+      );
+      messages.invoices.set(
+        HASH_C,
+        invoice({
+          paymentHash: HASH_C,
+          messageId: 'msg-gift',
+          payerAccountId: ACCOUNT,
+          authorAccountId: AUTHOR,
+          heart: false,
+        }),
+      );
+      const response = await post(app, { hashes: [HASH_C, HASH_B, HASH_E, HASH_A] });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        hearts: Array<Record<string, unknown>>;
+        repayments: Array<Record<string, unknown>>;
+      };
+      expect(Object.keys(body).sort()).toEqual(['hearts', 'repayments']);
+      expect(body.hearts).toHaveLength(1);
+      expect(Object.keys(body.hearts[0] ?? {}).sort()).toEqual([
+        'authorName',
+        'deleted',
+        'messageId',
+        'paymentHash',
+        'text',
+      ]);
+      expect(body.hearts[0]).toEqual({
+        paymentHash: HASH_A,
+        messageId: 'msg-heart',
+        authorName: 'Ada',
+        text: 'Heart',
+        deleted: false,
+      });
+      expect(body.repayments).toEqual([
+        {
+          paymentHash: HASH_B,
+          messageId: 'credit-mix',
+          dayIndex: 4,
+          termDays: 14,
+          role: 'giver',
+          authorName: 'Bo',
+          text: 'Credit',
+          deleted: true,
+        },
+      ]);
+    });
   });
 });
