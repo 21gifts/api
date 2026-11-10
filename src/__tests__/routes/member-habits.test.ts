@@ -1233,7 +1233,7 @@ describe('memberHabitRoutes', () => {
     expect(listed[0]?.comments[0]?.name).toBe('');
   });
 
-  it('deleteComment allows moderator and founder, rejects verified and an unknown role, and 404s when missing', async () => {
+  it('deleteComment allows moderator and above, rejects verified and an unknown role, and 404s when missing', async () => {
     async function seed(role: AccountRole): Promise<Response> {
       const store = new InMemoryMemberHabitStore();
       await store.add(sampleHabit({ id: 'h', accountId: 'owner', role: 'basis' }));
@@ -1255,6 +1255,8 @@ describe('memberHabitRoutes', () => {
     }
     expect((await seed('verified')).status).toBe(403);
     expect((await seed('moderator')).status).toBe(200);
+    expect((await seed('fond')).status).toBe(200);
+    expect((await seed('initiator')).status).toBe(200);
     expect((await seed('founder')).status).toBe(200);
     expect((await seed('guest' as AccountRole)).status).toBe(403);
     const store = new InMemoryMemberHabitStore();

@@ -530,6 +530,80 @@ describe('debugRoutes', () => {
     ).toBe(true);
   });
 
+  it('PATCH sets the role to fond', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'fond' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; role: string };
+    expect(body.role).toBe('fond');
+    expect((await store.getAccount('acc'))?.role).toBe('fond');
+  });
+
+  it('PATCH refuses fond together with platform:true', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'fond', platform: true }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'The fond role cannot be the platform account' });
+    expect((await store.getAccount('acc'))?.role).toBe('basis');
+  });
+
+  it('PATCH refuses fond on the existing platform account', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'founder',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'fond' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'The platform account cannot be fond' });
+    expect((await store.getAccount('acc'))?.role).toBe('founder');
+  });
+
   it('PATCH sets sessionRefused', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

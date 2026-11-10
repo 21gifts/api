@@ -372,3 +372,41 @@ export function resolveShopPaymentConfig(
     refundAddress: refund.toLowerCase(),
   };
 }
+
+/** Which collaborator delivers a decided payout instruction. */
+export type PayoutSigner = 'spend' | 'fond';
+
+/** Default account allowed on the `/fond/*` routes. */
+export const DEFAULT_FOND_USERNAME = 'tondo-fond';
+
+/**
+ * Resolve `PAYOUT_SIGNER`.
+ *
+ * Unset, blank, or `spend` → `'spend'` (the legacy HTTP spend ping).
+ * `fond` → `'fond'` (the queue a Fond member pays from its own wallet).
+ *
+ * @param env - Environment slice.
+ * @returns The payout signer.
+ * @throws Error with message `Invalid PAYOUT_SIGNER` for any other value.
+ */
+export function resolvePayoutSigner(env: Record<string, string | undefined>): PayoutSigner {
+  const raw = (env['PAYOUT_SIGNER'] ?? '').trim().toLowerCase();
+  if (raw === '' || raw === 'spend') {
+    return 'spend';
+  }
+  if (raw === 'fond') {
+    return 'fond';
+  }
+  throw new Error('Invalid PAYOUT_SIGNER');
+}
+
+/**
+ * Resolve `FOND_USERNAME`: the one account allowed on the `/fond/*` routes.
+ *
+ * @param env - Environment slice.
+ * @returns The trimmed lower-case username, or {@link DEFAULT_FOND_USERNAME}.
+ */
+export function resolveFondUsername(env: Record<string, string | undefined>): string {
+  const raw = (env['FOND_USERNAME'] ?? '').trim().toLowerCase();
+  return raw === '' ? DEFAULT_FOND_USERNAME : raw;
+}

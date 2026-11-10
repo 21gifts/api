@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { roleAtLeast, sameRoleRank } from '@/lib/auth/roles';
+import { roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
@@ -400,7 +400,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         if (confirmEdge.actorId !== caller.id) {
           return c.json({ error: 'Conflict' }, 409);
         }
-        if (sameRoleRank(subject.role, 'moderator')) {
+        if (roleAtLeast(subject.role, 'moderator')) {
           await clearModeratorProposalNotifications(deps, subject.id);
           await notifySubjectAppointed(deps, subject, caller);
           return c.json(accountSummary(subject), 200);
@@ -606,7 +606,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         if (appointEdge.actorId !== caller.id) {
           return c.json({ error: 'Conflict' }, 409);
         }
-        if (sameRoleRank(subject.role, 'moderator')) {
+        if (roleAtLeast(subject.role, 'moderator')) {
           await clearModeratorProposalNotifications(deps, subject.id);
           await notifySubjectAppointed(deps, subject, caller);
           return c.json(accountSummary(subject), 200);
@@ -623,7 +623,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
         await notifySubjectAppointed(deps, subject, caller);
         return c.json(accountSummary(updated), 200);
       }
-      if (sameRoleRank(subject.role, 'moderator')) {
+      if (roleAtLeast(subject.role, 'moderator')) {
         return c.json({ error: 'Conflict' }, 409);
       }
       const updated = { ...subject, role: 'moderator' as const };

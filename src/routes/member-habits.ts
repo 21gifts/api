@@ -475,7 +475,7 @@ export function memberHabitRoutes(deps: {
         if (isSundayRestHeader(nowMs, c.req.header('Time-Zone'))) {
           return c.json({ error: 'SUNDAY_REST' }, 403);
         }
-        if (!roleAtLeast(account.role, 'initiator')) {
+        if (!roleAtLeast(account.role, 'moderator')) {
           return c.json({ error: 'Forbidden' }, 403);
         }
         if (!isUuid(body.id)) {

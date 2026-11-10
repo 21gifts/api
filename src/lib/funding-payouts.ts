@@ -93,9 +93,10 @@ function weekDays(nowMs: number): PayoutMatrix['days'] {
 /**
  * Whether the stored grant entitles this role on `day`.
  *
- * `basis` is never entitled. Admitted is entitled from `admittedAt`'s UTC
- * day (or every day when `admittedAt` is null). A stored `trialUtcDate`
- * entitles that one day even when the status is no longer `trial`.
+ * `basis` is never entitled; `fond` is entitled. Admitted is entitled from
+ * `admittedAt`'s UTC day (or every day when `admittedAt` is null). A stored
+ * `trialUtcDate` entitles that one day even when the status is no longer
+ * `trial`.
  *
  * @param role - Live role.
  * @param grant - Stored grant, if any.
