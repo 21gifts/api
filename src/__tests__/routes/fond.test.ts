@@ -477,7 +477,7 @@ describe('fondRoutes switch and auth', () => {
 });
 
 describe('GET /fond/payouts', () => {
-  it("lists today's open rows oldest first with only id, kind, status, and utcDay", async () => {
+  it("lists today's open rows with id, kind, status, utcDay, and paymentHash", async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());
     await payouts.enqueue(rowInput({ id: 'older', address: 'bob@example.com' }));
@@ -492,9 +492,12 @@ describe('GET /fond/payouts', () => {
       expect(Object.keys(row as Record<string, unknown>).sort()).toEqual([
         'id',
         'kind',
+        'paymentHash',
         'status',
         'utcDay',
       ]);
+      expect(row as Record<string, unknown>).not.toHaveProperty('bolt11');
+      expect(row as Record<string, unknown>).not.toHaveProperty('address');
     }
   });
 
@@ -538,13 +541,48 @@ describe('GET /fond/payouts', () => {
 
     const res = await app.request('/fond/payouts', { headers: authHeader() });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
+    const body = (await res.json()) as { payouts: Array<Record<string, unknown>> };
+    expect(body).toEqual({
       payouts: expect.arrayContaining([
-        { id: ROW_ID, kind: 'daily', status: 'owed', utcDay: TODAY },
-        { id: 'issuing', kind: 'daily', status: 'issuing', utcDay: TODAY },
-        { id: 'invoiced', kind: 'daily', status: 'invoiced', utcDay: TODAY },
-        { id: 'settling', kind: 'daily', status: 'settling', utcDay: TODAY },
+        { id: ROW_ID, kind: 'daily', status: 'owed', utcDay: TODAY, paymentHash: null },
+        { id: 'issuing', kind: 'daily', status: 'issuing', utcDay: TODAY, paymentHash: null },
+        { id: 'invoiced', kind: 'daily', status: 'invoiced', utcDay: TODAY, paymentHash: 'h' },
+        { id: 'settling', kind: 'daily', status: 'settling', utcDay: TODAY, paymentHash: 'h2' },
       ]),
+    });
+    for (const row of body.payouts) {
+      expect(row).not.toHaveProperty('bolt11');
+      expect(row).not.toHaveProperty('address');
+    }
+  });
+
+  it('returns null paymentHash for an invoiced row without a stored hash', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ id: 'invoiced', address: 'v@example.com' }));
+    await payouts.claimForInvoice('invoiced', TODAY);
+    await payouts.setInvoiced('invoiced', {
+      invoiceId: 'i',
+      paymentHash: 'h',
+      bolt11: 'b',
+      amountMsat: 1_000_000,
+    });
+    const row = (await payouts.get('invoiced')) as NonNullable<
+      Awaited<ReturnType<typeof payouts.get>>
+    >;
+    vi.spyOn(payouts, 'listOpen').mockResolvedValueOnce([{ ...row, paymentHash: null }]);
+
+    const res = await app.request('/fond/payouts', { headers: authHeader() });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      payouts: [
+        {
+          id: 'invoiced',
+          kind: 'daily',
+          status: 'invoiced',
+          utcDay: TODAY,
+          paymentHash: null,
+        },
+      ],
     });
   });
 

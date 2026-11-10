@@ -1691,7 +1691,7 @@ Operator inspection of external Nostr identities that have earned visibility or 
 
 ## Endpoint: GET /fond/payouts
 
-- **Purpose:** Member-session list for the Fond payer. Routed only when `PAYOUT_SIGNER=fond` (404 otherwise). Returns `{ payouts: [{ id, kind, status, utcDay }] }` for the current UTC day's `owed`, `issuing`, `invoiced`, and `settling` rows, oldest first, so the payer sees and retries them. No addresses, amounts, comments, or invoices in the body.
+- **Purpose:** Member-session list for the Fond payer. Routed only when `PAYOUT_SIGNER=fond` (404 otherwise). Returns `{ payouts: [{ id, kind, status, utcDay, paymentHash }] }` for the current UTC day's `owed`, `issuing`, `invoiced`, and `settling` rows, oldest first, so the payer sees and retries them. `paymentHash` is the stored `payment_hash` for an `invoiced` or `settling` row, and `null` for an `owed` or `issuing` row or when an `invoiced`/`settling` row has no stored hash. The hash lets a payer that reloaded prove a `settling` row, which the invoice route answers 409 `Not payable`. A payment hash is not secret: it is inside every BOLT11 and is the proof target. No addresses, amounts, comments, or invoices in the body; the hash is not an invoice.
 - **Errors:** 404 when the switch is not `fond`; 401 without a session; 403 `{ error: 'Fond only' }` unless the account is at least `fond`, has username `FOND_USERNAME`, and is not the platform account; 503 `{ error: 'Payouts are unavailable' }` when the store throws.
 - **Used by:** the Fond member's in-app payout screen.
 - **Auth:** member session Bearer of the Fond account.

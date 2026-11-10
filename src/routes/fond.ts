@@ -68,6 +68,7 @@ interface FondPayoutListRow {
   kind: string;
   status: string;
   utcDay: string;
+  paymentHash: string | null;
 }
 
 /** `503` body when the spot is missing or unusable. */
@@ -111,7 +112,9 @@ async function sessionAccount(
 
 /** Open row projection for `GET /fond/payouts`. */
 function listRow(row: FondPayoutRow): FondPayoutListRow {
-  return { id: row.id, kind: row.kind, status: row.status, utcDay: row.utcDay };
+  const paymentHash =
+    row.status === 'invoiced' || row.status === 'settling' ? row.paymentHash : null;
+  return { id: row.id, kind: row.kind, status: row.status, utcDay: row.utcDay, paymentHash };
 }
 
 /** UTC day key `YYYY-MM-DD`. */
