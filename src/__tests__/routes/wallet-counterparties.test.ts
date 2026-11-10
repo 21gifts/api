@@ -160,7 +160,7 @@ describe('POST /me/wallet/counterparties', () => {
         body: JSON.stringify({
           payments: [
             { id: 'a', direction, invoice: 42, paymentHash: 'invalid' },
-            { id: 'a', direction, invoice: 'second' },
+            { id: 'a', direction: direction === 'in' ? 'out' : 'in', invoice: 'second' },
             { id: 'ambiguous', direction, invoice: 'x' },
             { id: 'missing', direction, invoice: 'x' },
             { id: 'none', direction, invoice: 'x' },
@@ -278,7 +278,12 @@ describe('POST /me/wallet/counterparties', () => {
         headers,
         body: JSON.stringify({ payments: [{ id: 'a', direction, invoice: 'invoice' }] }),
       };
-      for (const change of [{ isPlatform: true }, { username: '' }, { username: null }]) {
+      for (const change of [
+        { isPlatform: true },
+        { username: '' },
+        { username: '   ' },
+        { username: null },
+      ]) {
         vi.spyOn(auth, 'getAccount').mockImplementation(async (id) => {
           const account = await original(id);
           return id === sender && account !== undefined ? { ...account, ...change } : account;
