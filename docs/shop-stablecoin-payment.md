@@ -694,10 +694,11 @@ One procedure creates a shop payment, for a charge or for a payer:
 7. For a charge, when none is kept, write nothing, and the account's next
    creation in this container waits 60 s; the other container of a deploy
    keeps its own wait, so during a deploy an account can see two creations
-   in 60 s. While the charge stays pending, the pay link stays pinned and
-   `POST /pay/:username/payment` answers order 4 only if the insert transaction
-   reaches its pending-charge check; its earlier 16 s or client-abort exit
-   answers order 9. Order 7 applies during the
+   in 60 s. While a charge is pending, the pay link stays pinned and
+   `POST /pay/:username/payment` answers order 4 after the account lookup or at the creation-lock
+   recheck before the no-pair wait, counters, mint, and insert; inside the insert transaction, its
+   locks come first, the 16 s or client-abort exit answers order 9, and only a transaction that
+   passes that exit can then answer order 4 for a pending charge. Order 7 applies during the
    wait only when no charge is pending. Order 9 is only a
    `findChargeForPayment` error, an insert at 16 s or later, or a disconnected
    client. For a payer, no committed pair is not an error: the payment is
