@@ -93,10 +93,18 @@ export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsSer
     rmSync(mediaDir, { recursive: true, force: true });
     throw error;
   }
+  let closed = false;
   const close = async (): Promise<void> => {
-    await context.dispose();
-    await stopChild(child);
-    rmSync(mediaDir, { recursive: true, force: true });
+    if (closed) {
+      return;
+    }
+    closed = true;
+    try {
+      await context.dispose();
+    } finally {
+      await stopChild(child);
+      rmSync(mediaDir, { recursive: true, force: true });
+    }
   };
 
   const deadline = Date.now() + 30_000;
