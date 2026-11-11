@@ -31,7 +31,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
  * Exposes `GET /` (list), `GET /:id` (detail with nested auth rows),
  * `POST /` (provision), `PATCH /:id`
- * (set role, the official platform flag, and/or sessionRefused),
+ * (set role, username alone, the official platform flag, or sessionRefused),
  * `POST /:id/session` (mint a member bearer), and `POST /merge` (fold accounts).
  */
 
@@ -105,17 +105,26 @@ function provisionUsername(name: string, id: string, taken: Set<string>): string
   return normalizeUsername(allocateNip05Local(name, id, taken));
 }
 
-/** Body schema for operator role, platform flag, and session refusal. */
+/** Body schema for operator role, username alone, platform flag, and session refusal. */
 const patchBody = z
   .object({
     role: z.enum(['basis', 'verified', 'moderator', 'initiator', 'founder', 'fond']).optional(),
+    username: z.string().optional(),
     platform: z.boolean().optional(),
     sessionRefused: z.boolean().optional(),
   })
   .strict()
   .refine(
     (body) =>
-      body.role !== undefined || body.platform !== undefined || body.sessionRefused !== undefined,
+      body.role !== undefined ||
+      body.username !== undefined ||
+      body.platform !== undefined ||
+      body.sessionRefused !== undefined,
+  )
+  .refine(
+    (body) =>
+      body.username === undefined ||
+      (body.role === undefined && body.platform === undefined && body.sessionRefused === undefined),
   );
 
 /** One row in the operator provision body. Unknown keys are refused. */
@@ -350,7 +359,17 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         return c.json(
           {
             error:
-              'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
+              'Expected a JSON body with a "role" string, "username" string, platform boolean, and/or sessionRefused boolean',
+          },
+          400,
+        );
+      }
+      const username =
+        parsed.data.username === undefined ? undefined : normalizeUsername(parsed.data.username);
+      if (username === null) {
+        return c.json(
+          {
+            error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
           },
           400,
         );
@@ -358,6 +377,15 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       const existing = await deps.store.getAccount(c.req.param('id'));
       if (existing === undefined) {
         return c.json({ error: 'Not found' }, 404);
+      }
+      if (username !== undefined && existing.isPlatform === true) {
+        return c.json({ error: 'The platform account cannot be renamed' }, 409);
+      }
+      if (username !== undefined) {
+        const owner = await deps.store.getAccountByUsername(username);
+        if (owner !== undefined && owner.id !== existing.id) {
+          return c.json({ error: 'Username is already in use' }, 409);
+        }
       }
       const roleAfter = parsed.data.role ?? existing.role;
       const platformAfter = parsed.data.platform ?? existing.isPlatform === true;
@@ -373,6 +401,17 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         );
       }
       const updated = { ...existing };
+      let renamedTo: string | undefined;
+      if (username !== undefined) {
+        const renamed = await deps.store.renameUsername(existing.id, username);
+        if (!renamed.ok) {
+          return renamed.reason === 'taken'
+            ? c.json({ error: 'Username is already in use' }, 409)
+            : c.json({ error: 'Not found' }, 404);
+        }
+        updated.username = username;
+        renamedTo = username;
+      }
       if (parsed.data.role !== undefined) {
         updated.role = parsed.data.role;
       }
@@ -392,6 +431,12 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       }
       if (parsed.data.role !== undefined) {
         logEvent('debug.accounts.role_set', { accountId: updated.id, role: updated.role });
+      }
+      if (renamedTo !== undefined) {
+        logEvent('debug.accounts.username_renamed', {
+          accountId: updated.id,
+          username: renamedTo,
+        });
       }
       if (parsed.data.platform !== undefined) {
         logEvent('debug.accounts.platform_set', {

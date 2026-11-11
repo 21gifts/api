@@ -1772,6 +1772,73 @@ describe('PostgresAuthStore setUsername', () => {
   });
 });
 
+describe('PostgresAuthStore renameUsername', () => {
+  test('renames a verified account and maps a taken handle', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      const original = `rn_orig_${stamp}`.slice(0, 32);
+      const renamed = `rn_next_${stamp}`.slice(0, 32);
+      const other = `rn_other_${stamp}`.slice(0, 32);
+      const id = crypto.randomUUID();
+      const otherId = crypto.randomUUID();
+      const pubkey = `02${hex64()}`;
+
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: original,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      expect((await store.claimSparkPubkey(id, pubkey))?.wrote).toBe(true);
+      expect(await store.markSparkPubkeyVerified(id, pubkey, original, Date.now())).toBe(true);
+
+      expect(await store.renameUsername(id, renamed)).toEqual({
+        ok: true,
+        previous: original,
+      });
+      expect(await store.getAccount(id)).toMatchObject({
+        username: renamed,
+        sparkPubkeyVerifiedAt: expect.any(Number),
+      });
+      expect(await store.getAccountByUsername(original)).toBeUndefined();
+
+      await store.createAccount({
+        id: otherId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: other,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now() + 1,
+        rulesAgreedAt: null,
+      });
+      expect(await store.renameUsername(id, other)).toEqual({ ok: false, reason: 'taken' });
+      expect(await store.renameUsername(crypto.randomUUID(), other)).toEqual({
+        ok: false,
+        reason: 'missing',
+      });
+      expect((await store.getAccount(id))?.username).toBe(renamed);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresSparkInvoiceStore', () => {
   test('issue, re-issue, list open, settle once, and db_change', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);

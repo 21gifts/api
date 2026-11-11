@@ -466,13 +466,13 @@ export interface SessionGate {
 }
 
 /**
- * Result of {@link AuthStore.setUsername}: the username this write replaced,
- * or why the write did not run.
+ * Result of {@link AuthStore.setUsername} or {@link AuthStore.renameUsername}:
+ * the username this write replaced, or why the write did not run.
  *
  * `{ ok: true, previous }` carries the replaced handle (`null` when none was
- * set). `{ ok: false, reason }` is `'frozen'` when the wallet is verified,
- * `'taken'` when another account owns the username, or `'missing'` when the
- * account does not exist.
+ * set). `{ ok: false, reason }` is `'frozen'` when {@link AuthStore.setUsername}
+ * refuses a verified wallet, `'taken'` when another account owns the username,
+ * or `'missing'` when the account does not exist.
  */
 export type SetUsernameResult =
   { ok: true; previous: string | null } | { ok: false; reason: 'frozen' | 'taken' | 'missing' };
@@ -491,8 +491,9 @@ export interface AuthStore {
    * matching no row or swallowed unique_violation). A stored non-blank username
    * is kept, and so is the username of an account with a verified wallet
    * (`sparkPubkeyVerifiedAt` set); only a blank one is filled, so a write from
-   * an older snapshot cannot undo a rename. Renames go through
-   * {@link AuthStore.setUsername}. The other
+   * an older snapshot cannot undo a rename. Member renames go through
+   * {@link AuthStore.setUsername}; operator renames go through
+   * {@link AuthStore.renameUsername}. The other
    * fields are written. Wallet columns (`sparkPubkey`, `sparkPubkeyVerifiedAt`)
    * are never written here. `walletIntroSeen` is only ever raised to true
    * (a stale `false` does not clear a stored `true`); `hadExternalWallet` is
@@ -511,6 +512,20 @@ export interface AuthStore {
    *   when the account does not exist.
    */
   setUsername(accountId: string, username: string): Promise<SetUsernameResult>;
+  /**
+   * Operator rename of an account, including an account whose wallet is
+   * verified. Reports the username it replaced.
+   *
+   * The caller validates the username with `normalizeUsername`; this method
+   * only enforces the store's case-insensitive uniqueness and existence rules.
+   *
+   * @param accountId - Account id.
+   * @param username - Normalized username (see `normalizeUsername`).
+   * @returns `{ ok: true, previous }` with the replaced username (`null` when
+   *   none was set); `{ ok: false, reason }` with `'taken'` when another
+   *   account owns the username, or `'missing'` when the account does not exist.
+   */
+  renameUsername(accountId: string, username: string): Promise<SetUsernameResult>;
   /**
    * Set `walletBackupSeenAt` to `now` when it is still null. Other columns
    * stay unchanged.
@@ -1435,6 +1450,14 @@ export class InMemoryAuthStore implements AuthStore {
     }
     if (typeof current.sparkPubkeyVerifiedAt === 'number') {
       return { ok: false, reason: 'frozen' };
+    }
+    return this.renameUsername(accountId, username);
+  }
+
+  async renameUsername(accountId: string, username: string): Promise<SetUsernameResult> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return { ok: false, reason: 'missing' };
     }
     if (this.#usernameTaken(username, accountId)) {
       return { ok: false, reason: 'taken' };

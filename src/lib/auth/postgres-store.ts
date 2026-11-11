@@ -605,6 +605,28 @@ export class PostgresAuthStore implements AuthStore {
     return { ok: false, reason: 'frozen' };
   }
 
+  async renameUsername(accountId: string, username: string): Promise<SetUsernameResult> {
+    try {
+      const rows = await this.#sql.query<{ previous: string | null }>(
+        `UPDATE account AS a SET username = $2
+           FROM (SELECT id, username AS previous FROM account WHERE id = $1 FOR UPDATE) AS before
+          WHERE a.id = before.id
+          RETURNING before.previous`,
+        [accountId, username],
+      );
+      const row = rows[0];
+      if (row !== undefined) {
+        return { ok: true, previous: row.previous ?? null };
+      }
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return { ok: false, reason: 'taken' };
+      }
+      throw error;
+    }
+    return { ok: false, reason: 'missing' };
+  }
+
   async claimProfileMessageId(
     accountId: string,
     expectedId: string | null,

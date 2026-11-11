@@ -954,6 +954,50 @@ test('PATCH /debug/accounts/:id without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('PATCH /debug/accounts/:id renames and refuses the session in two calls', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const username = `e2e-rename-${stamp}`.slice(0, 32);
+  const renamed = `e2e-renamed-${stamp}`.slice(0, 32);
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name: `E2eRename ${stamp}`, username }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; username: string }> })
+    .accounts;
+  const id = accounts.find((row) => row.username === username)?.id;
+  expect(typeof id).toBe('string');
+
+  const res = await request.patch(`/debug/accounts/${id}`, {
+    headers: DEBUG,
+    data: { username: ` ${renamed.toUpperCase()} ` },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { username: string };
+  expect(body.username).toBe(renamed);
+
+  const refused = await request.patch(`/debug/accounts/${id}`, {
+    headers: DEBUG,
+    data: { sessionRefused: true },
+  });
+  expect(refused.status()).toBe(200);
+  expect(((await refused.json()) as { sessionRefused: boolean }).sessionRefused).toBe(true);
+
+  const renamedLookup = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(renamedLookup.status()).toBe(200);
+  const after = (
+    (await renamedLookup.json()) as {
+      accounts: Array<{ id: string; username: string }>;
+    }
+  ).accounts;
+  expect(after.some((row) => row.id === id && row.username === renamed)).toBe(true);
+  expect(after.some((row) => row.username === username)).toBe(false);
+});
+
 test('GET /debug/contacts without bearer is 401', async ({ request }) => {
   const res = await request.get('/debug/contacts');
   expect(res.status()).toBe(401);
