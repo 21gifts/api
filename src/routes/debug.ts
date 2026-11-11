@@ -409,8 +409,8 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             ? c.json({ error: 'Username is already in use' }, 409)
             : c.json({ error: 'Not found' }, 404);
         }
-        renamedTo = username;
-        updated.username = renamedTo;
+        updated.username = username;
+        renamedTo = username ?? undefined;
       }
       if (parsed.data.role !== undefined) {
         updated.role = parsed.data.role;
