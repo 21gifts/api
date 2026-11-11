@@ -9004,9 +9004,9 @@ nothing.
 **Member invoices.** `POST /pay/:username/invoice` without a pending charge
 stores its Spark invoice in `member_spark_invoice` (`docs/schema/spark_invoice.sql`):
 `invoice` (primary key), `kind` (`pay`), `account_id`, `receiver_pubkey`
-(the verified wallet key the invoice pays), `amount_sats`, `created_at`,
-`expires_at` (60 minutes after `created_at`, the same window as zap
-invoices), and `status` (`open` / `notified`). Covered by `trg_db_change`.
+(the verified wallet key the invoice pays), `amount_sats`, `created_at` (read
+from the clock after `pr` is minted, just before the store), `expires_at` (60
+minutes after `created_at`, the same window as zap invoices), and `status` (`open` / `notified`). Covered by `trg_db_change`.
 The route has no session, so each account keeps at most 20 open member
 invoices: the one just stored plus its 19 newest other open ones. Storing one
 more deletes the oldest of the others in the same statement, and a payment of

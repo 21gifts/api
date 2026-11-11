@@ -295,8 +295,10 @@ function sparkMemo(comment: unknown, commentAllowed: number | undefined): string
  * and the memo from {@link sparkMemo} (built only when the feature is on).
  * It is stored as a `pay` member invoice that expires after
  * {@link SPARK_INVOICE_WINDOW_MS}, so the Spark invoice worker pushes to the
- * member once it is paid. A store failure logs `pay.spark_invoice.store_failed`
- * and still returns the invoice; only the push is lost.
+ * member once it is paid. The clock is read here, after the Lightning invoice
+ * was minted, so the window and the invoice id start when the invoice is
+ * stored. A store failure logs `pay.spark_invoice.store_failed` and still
+ * returns the invoice; only the push is lost.
  *
  * @param deps - Route collaborators.
  * @param account - The receiving member.
@@ -304,7 +306,6 @@ function sparkMemo(comment: unknown, commentAllowed: number | undefined): string
  * @param amountSats - Accepted amount in whole sats.
  * @param comment - The posted `comment`, unchecked.
  * @param commentAllowed - The member's LNURL-pay `commentAllowed`.
- * @param issuedAtMs - Clock for the invoice id (epoch ms).
  * @returns The Spark invoice, or `null` when free in-app payments are off.
  */
 async function memberSparkInvoice(
@@ -314,12 +315,12 @@ async function memberSparkInvoice(
   amountSats: number,
   comment: unknown,
   commentAllowed: number | undefined,
-  issuedAtMs: number,
 ): Promise<string | null> {
   const store = deps.sparkInvoices;
   if (store === undefined) {
     return null;
   }
+  const issuedAtMs = deps.now();
   const memo = sparkMemo(comment, commentAllowed);
   const randomBytes =
     deps.randomBytes ?? ((length: number) => crypto.getRandomValues(new Uint8Array(length)));
@@ -470,7 +471,6 @@ export function payRoutes(deps: PayRouteDeps): Hono {
           amountSats,
           parsed.comment,
           metadata.commentAllowed,
-          issuedAtMs,
         );
       } else {
         const attached = await attachToCharge(

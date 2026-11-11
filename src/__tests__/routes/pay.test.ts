@@ -944,6 +944,48 @@ describe('till payments on POST /pay/:username/invoice', () => {
     ]);
   });
 
+  it('starts the member Spark invoice window when it is stored, after a slow mint', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    const storedAt = NOW_MS + 120_000;
+    let clock = NOW_MS;
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return metadataResponse(1000, WIDE_MAX_SENDABLE);
+      }
+      clock = storedAt;
+      return invoiceResponse();
+    };
+    const sparkInvoices = new InMemorySparkInvoiceStore();
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore: new InMemoryPosStore(),
+        now: () => clock,
+        lnurlServer: LNURL_SERVER,
+        sparkInvoices,
+        randomBytes: ONES,
+      }),
+    );
+    const invoice = encodeSparkInvoice({
+      identityPublicKey: WALLET_PUBKEY,
+      id: uuidV7(storedAt, new Uint8Array(10).fill(1)),
+      amountSats: PR_SATS,
+    });
+    expect(await (await mint(app)).json()).toMatchObject({ sparkInvoice: invoice });
+    expect(await sparkInvoices.listOpenMember(new Date(storedAt))).toEqual([
+      expect.objectContaining({
+        invoice,
+        createdAt: new Date(storedAt),
+        expiresAt: new Date(storedAt + SPARK_INVOICE_WINDOW_MS),
+      }),
+    ]);
+  });
+
   it('still returns the member Spark invoice when storing it fails', async () => {
     const sparkInvoices = new InMemorySparkInvoiceStore();
     vi.spyOn(sparkInvoices, 'issueMember').mockRejectedValue(new Error('down'));
