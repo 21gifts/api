@@ -32,10 +32,16 @@ function delay(ms: number): Promise<void> {
 }
 
 async function stopChild(child: ChildProcess): Promise<void> {
+  if (child.pid === undefined) {
+    return;
+  }
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
-  const exited = new Promise<void>((resolveExit) => child.once('exit', () => resolveExit()));
+  const exited = new Promise<void>((resolveExit) => {
+    child.once('exit', () => resolveExit());
+    child.once('close', () => resolveExit());
+  });
   child.kill('SIGTERM');
   const timedOut = await Promise.race([exited.then(() => false), delay(5_000).then(() => true)]);
   if (timedOut) {
