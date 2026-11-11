@@ -38,8 +38,7 @@ export function roleRank(role: AccountRole): number {
  * can do everything a lower rank can; equal ranks can do the same things.
  * Every permission check, including the daily payout roster, names a
  * minimum role and uses this function; an equality test on the caller's
- * role is a defect. Subject rank equality uses {@link sameRoleRank}
- * (state, not permission). The named payout exception is
+ * role is a defect. The named payout exception is
  * {@link earnsModeratorGroupPay}; the roster permission is
  * {@link canEditDailyPayoutRoster}.
  *

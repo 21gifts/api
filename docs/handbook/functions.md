@@ -3778,7 +3778,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: roleAtLeast
 
-- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. True when `roleRank(role)` is ≥ `roleRank(min)`. Every role inherits every right of the ranks below it; `software_developer` and `fond` inherit every moderator right. Every permission names a minimum role; an equality test on the caller's role is a defect. The named payout exception is `earnsModeratorGroupPay`. Subject rank equality uses `sameRoleRank`, not this caller check.
+- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. True when `roleRank(role)` is ≥ `roleRank(min)`. Every role inherits every right of the ranks below it; `software_developer` and `fond` inherit every moderator right. Every permission names a minimum role; an equality test on the caller's role is a defect. The named payout exception is `earnsModeratorGroupPay`.
 - **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
 - **Returns / side effects:** boolean (`roleRank(role) >= roleRank(min)`). No I/O.
 - **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`, `canEditDailyPayoutRoster`.
