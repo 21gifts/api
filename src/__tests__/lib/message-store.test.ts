@@ -13756,6 +13756,34 @@ describe('shop identity on message rows', () => {
     expect(await store.markRepaymentPartPaid({ ...row, partIndex: 5 })).toBeUndefined();
   });
 
+  it('returns a Date-backed idempotent Postgres repayment part', async () => {
+    const paidAt = new Date('2026-11-12T12:00:00.000Z');
+    const sql = new MockSql();
+    sql.queryQueue = [[], [{ units: '6', sats: '7', paid_at: paidAt }]];
+    const store = new PostgresMessageStore(sql);
+
+    expect(
+      await store.markRepaymentPartPaid({
+        messageId: 'm1',
+        dayIndex: 2,
+        recipientAccountId: 'giver',
+        partIndex: 3,
+        units: 6n,
+        sats: 7,
+        shareUnits: 10n,
+        paidAt: new Date('2026-11-11T12:00:00.000Z'),
+      }),
+    ).toEqual({
+      messageId: 'm1',
+      dayIndex: 2,
+      recipientAccountId: 'giver',
+      partIndex: 3,
+      units: 6n,
+      sats: 7,
+      paidAt,
+    });
+  });
+
   it('settles both Postgres repayment forms and leaves a foreign claim untouched', async () => {
     const paidAt = new Date('2026-11-11T12:00:00.000Z');
     const legacySql = new MockSql();
