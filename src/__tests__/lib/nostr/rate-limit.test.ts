@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import type { AccountRole } from '@/lib/auth/store';
 import {
   forumRateLimitExempt,
   HEART_HOUR_CAP,
@@ -128,15 +127,17 @@ describe('reply limiter (PostRateLimiter with REPLY_POST_CAPS)', () => {
 });
 
 describe('forumRateLimitExempt', () => {
-  it('exempts a founder and the software developer role only', () => {
-    expect(forumRateLimitExempt({ role: 'founder' })).toBe(true);
+  it('exempts every account at least software_developer', () => {
     expect(forumRateLimitExempt({ role: 'software_developer' })).toBe(true);
+    expect(forumRateLimitExempt({ role: 'initiator' })).toBe(true);
+    expect(forumRateLimitExempt({ role: 'founder' })).toBe(true);
   });
 
-  it('does not exempt moderators, initiators, fond, verified, or basis', () => {
-    for (const role of ['basis', 'verified', 'moderator', 'fond', 'initiator'] as AccountRole[]) {
-      expect(forumRateLimitExempt({ role })).toBe(false);
-    }
+  it('does not exempt any account below software_developer', () => {
+    expect(forumRateLimitExempt({ role: 'basis' })).toBe(false);
+    expect(forumRateLimitExempt({ role: 'verified' })).toBe(false);
+    expect(forumRateLimitExempt({ role: 'moderator' })).toBe(false);
+    expect(forumRateLimitExempt({ role: 'fond' })).toBe(false);
   });
 });
 

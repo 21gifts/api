@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { earnsModeratorGroupPay } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import {
@@ -826,6 +827,7 @@ export async function issueGiftInvoice(
           thread !== undefined &&
           thread.kind === 'moderator_group' &&
           row.senderAccountId === account.id &&
+          earnsModeratorGroupPay(account) &&
           platform !== undefined
         ) {
           resolvedGroupMessageId = input.groupMessageId;

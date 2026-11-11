@@ -38,10 +38,10 @@ export function roleRank(role: AccountRole): number {
  * can do everything a lower rank can; equal ranks can do the same things.
  * Every permission check, including the daily payout roster, names a
  * minimum role and uses this function; an equality test on the caller's
- * role is a defect. Two named functions carve out `software_developer` on
- * purpose: {@link earnsModeratorGroupPay} (no moderator-group payout) and
- * `forumRateLimitExempt` (founder and `software_developer` skip the forum
- * rate limits). The roster permission is {@link canEditDailyPayoutRoster}.
+ * role is a defect. The one named exception is
+ * {@link earnsModeratorGroupPay} (no moderator-group payout for
+ * `software_developer`). The roster permission is
+ * {@link canEditDailyPayoutRoster}.
  *
  * @param role - Caller's live role.
  * @param min - Minimum role that may proceed.
@@ -97,8 +97,7 @@ export function isModeratorGroupMember(account: {
  *
  * The software developer is a member of the closed Moderators group with
  * every moderator permission, but is not paid for moderator-group messages
- * (user decision 2026-11-09). This is one of the two named
- * `software_developer` carve-outs (the other is `forumRateLimitExempt`): no
+ * (user decision 2026-11-09). This is the one named exception: no
  * moderator-group payout for `software_developer`. Every other
  * {@link isModeratorGroupMember} earns it.
  *

@@ -369,10 +369,9 @@ same things. Every route that names a role names the **minimum** role:
 that rank or higher. Permission text names the minimum rank only. Do not write
 "moderator or initiator" or „Moderator oder Initiator“. Permission checks use
 `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role
-is a defect. Two named functions carve out `software_developer` on purpose:
-`earnsModeratorGroupPay` (no moderator-group payout) and
-`forumRateLimitExempt` (founder and `software_developer` skip the forum rate
-limits). The daily payout roster is `roleAtLeast(role, 'initiator')`, so the
+is a defect. The one named exception is `earnsModeratorGroupPay` (no
+moderator-group payout for `software_developer`); `forumRateLimitExempt` is a
+normal minimum (`roleAtLeast(role, 'software_developer')`). The daily payout roster is `roleAtLeast(role, 'initiator')`, so the
 software developer, fond, and moderator are excluded. A state check on the
 _subject_ of an action
 names its minimum too when the rule is cumulative: a
@@ -5322,7 +5321,7 @@ gated by `forum.post` only (`DEBUG_TOKEN` settle does not pass `postLimiter`
 or `replyLimiter`; limiter denial applies to worker ingest that shares the
 `POST /messages` limiters: the top-level budget when the created note is
 top-level, including an `inReplyTo:` target reset to top-level, and the reply
-budget when it is a reply; a `founder` or `software_developer` payer is
+budget when it is a reply; a payer at least `software_developer` (`software_developer`, `initiator`, `founder`) is
 exempt). Missing `forum.post` fields dequeue the receipt without creating a row.
 A created top-level post fans out `notifyForumPost` and `spendPing` only
 when `eligibleToday` (same gate as `POST /messages`; ineligible logs
@@ -6563,9 +6562,12 @@ after that id is resolved: a resolved moderator payout is recorded as
 per account, whichever address it went to. Stores `comment` on the invoice whenever it is sent, so a `Welcome` invoice without `messageId` is still recorded as a welcome gift on proof; with `messageId` it stores `messageId` and `comment` (or `''`).
 When `groupMessageId` is set (no `messageId`), the living-room post gate
 still applies. The id is display-only: it is stored only when it is that
-address's message in the closed `moderator_group` thread and an
-`isPlatform` account exists; otherwise the invoice is still issued, the
-field is omitted, and `invoice.group_message_ignored` is logged. A missing
+address's message in the closed `moderator_group` thread, the sender
+`earnsModeratorGroupPay` (`isModeratorGroupMember` except `software_developer`),
+and an `isPlatform` account exists; otherwise the invoice is still issued, the
+field is omitted, and `invoice.group_message_ignored` is logged. A software
+developer's group message is therefore never resolved and cannot be paid a
+moderator stipend. A missing
 conversation store or a failing lookup never blocks the **200**.
 
 When `SPEND_API_TOKEN` is unset or blank:
@@ -7210,7 +7212,7 @@ calendar day. A reply never spends top-level budget and a top-level note
 never spends reply budget. Over-limit posters get **429**
 `{ "error": "Too many messages" }` (log event `messages.rate_limited`) with
 `Retry-After: 1` when the 1-second window refused and `Retry-After: 10` when
-the hourly or daily cap refused. An account with role `founder` or `software_developer` is exempt from both budgets, and its posts are not
+the hourly or daily cap refused. An account at least `software_developer` (`software_developer`, `initiator`, `founder`) is exempt from both budgets, and its posts are not
 counted. A second **live** photo/video
 POST with the same account, parent, normalised text, media bytes, and pin returns
 **200** with the existing row (no extra burst slot, no second top-level push).
@@ -7465,8 +7467,8 @@ Unsigned note (null or empty `eventId`) or missing recipient pubkey →
 **503** `{ "error": "Messages are unavailable" }` (before the limiter).
 Over-limit (gifts: 1 per second, 20 per sliding hour per account) → **429**
 `{ "error": "Too many payments" }` (`Retry-After: 1` when the 1-second window
-refused, `Retry-After: 10` for the hourly cap) — an account with role
-`founder` or `software_developer` is exempt and its attempts are not counted —
+refused, `Retry-After: 10` for the hourly cap) — an account at least
+`software_developer` (`software_developer`, `initiator`, `founder`) is exempt and its attempts are not counted —
 checked only after auth, amount, payable, and KEK checks succeed, so early
 400/404/401/503 do not consume quota. LNURL/zap or sign failure after the
 limiter still counts. Author-wallet zap failure (`noZap` or `not_zap`) →
@@ -7506,8 +7508,8 @@ never over Lightning.
   second, and at most 60 hearts per sliding hour across all notes. Over
   either cap → **429** `{ "error": "Too many payments" }` (`Retry-After: 1`
   for the per-note cooldown, `Retry-After: 10` for the hourly cap; attempt
-  `rate_limited` with `heart: true`). An account with role `founder` or
-  `software_developer` is exempt and its hearts are not counted.
+  `rate_limited` with `heart: true`). An account at least `software_developer`
+  (`software_developer`, `initiator`, `founder`) is exempt and its hearts are not counted.
 - When the heart is indexed, sats are credited, only the note author is
   notified (`notifyHeart` with the exact invoice amount), and no gift-reply or
   living-room zap notice is written. If the invoice lookup for a receipt fails twice, the receipt is
