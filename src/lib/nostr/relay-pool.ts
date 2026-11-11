@@ -76,6 +76,20 @@ function openWebSocket(url: string): WebSocketLike {
 }
 
 /**
+ * Serialize a frame or a part of it.
+ *
+ * @param value - Value to serialize.
+ * @returns JSON text, or `undefined` when `value` cannot be serialized (a cycle or a `bigint`).
+ */
+function serialize(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Close a socket and ignore a throw from it.
  *
  * @param socket - Socket to close.
@@ -124,20 +138,20 @@ class RelayConnection {
   /**
    * Send one REQ and hand each EVENT payload for it to `onEvent`.
    *
-   * @param filter - NIP-01 filter.
+   * @param filterJson - NIP-01 filter, already serialized.
    * @param timeoutMs - Deadline for EOSE, counted from this call.
    * @param onEvent - Receives the raw third element of each matching EVENT frame.
    * @returns Resolves on EOSE, CLOSED, timeout, drop, or pool close; never rejects.
    */
   subscribe(
-    filter: Record<string, unknown>,
+    filterJson: string,
     timeoutMs: number,
     onEvent: (payload: unknown) => void,
   ): Promise<void> {
     this.serial += 1;
     const subId = `q-${this.serial}`;
     return new Promise((resolve) => {
-      const call = new PendingCall(JSON.stringify(['REQ', subId, filter]), () => {
+      const call = new PendingCall(`["REQ","${subId}",${filterJson}]`, () => {
         this.subscriptions.delete(subId);
         this.calls.delete(call);
         if (call.sent && this.open) {
@@ -154,15 +168,15 @@ class RelayConnection {
   /**
    * Send one EVENT and wait for the OK frame with its id.
    *
-   * @param event - Signed event with a string `id`.
+   * @param frame - The serialized `["EVENT", event]` frame.
    * @param eventId - The event's id.
    * @param timeoutMs - Deadline for OK, counted from this call.
    * @returns `true` only for `["OK", id, true]`; never rejects.
    */
-  publish(event: Record<string, unknown>, eventId: string, timeoutMs: number): Promise<boolean> {
+  publish(frame: string, eventId: string, timeoutMs: number): Promise<boolean> {
     return new Promise((resolve) => {
       const waiting = this.publishes.get(eventId) ?? new Set<PendingCall>();
-      const call = new PendingCall(JSON.stringify(['EVENT', event]), (ok) => {
+      const call = new PendingCall(frame, (ok) => {
         waiting.delete(call);
         if (waiting.size === 0) {
           this.publishes.delete(eventId);
@@ -422,7 +436,8 @@ export class NostrRelayPool {
    * @param url - Relay WebSocket URL.
    * @param timeoutMs - Deadline for EOSE in milliseconds.
    * @param onEvent - Receives the raw payload of each EVENT for this REQ.
-   * @returns Resolves when the REQ ends; never rejects.
+   * @returns Resolves when the REQ ends, and at once for a closed pool or a
+   *   filter that cannot be serialized; never rejects.
    */
   query(
     filter: Record<string, unknown>,
@@ -430,10 +445,11 @@ export class NostrRelayPool {
     timeoutMs: number,
     onEvent: (payload: unknown) => void,
   ): Promise<void> {
-    if (this.closed) {
+    const filterJson = serialize(filter);
+    if (this.closed || filterJson === undefined) {
       return Promise.resolve();
     }
-    return this.connection(url).subscribe(filter, timeoutMs, onEvent);
+    return this.connection(url).subscribe(filterJson, timeoutMs, onEvent);
   }
 
   /**
@@ -443,14 +459,16 @@ export class NostrRelayPool {
    * @param url - Relay WebSocket URL.
    * @param timeoutMs - Deadline for OK in milliseconds.
    * @returns `true` when the relay accepted the event; `false` on rejection,
-   *   timeout, drop, a missing string `id`, or a closed pool.
+   *   timeout, drop, a missing string `id`, an event that cannot be serialized,
+   *   or a closed pool. No connection is opened when it fails before sending.
    */
   publish(event: Record<string, unknown>, url: string, timeoutMs: number): Promise<boolean> {
     const eventId = event['id'];
-    if (this.closed || typeof eventId !== 'string') {
+    const frame = serialize(['EVENT', event]);
+    if (this.closed || typeof eventId !== 'string' || frame === undefined) {
       return Promise.resolve(false);
     }
-    return this.connection(url).publish(event, eventId, timeoutMs);
+    return this.connection(url).publish(frame, eventId, timeoutMs);
   }
 
   /** Close every connection and fail every waiting call. Later calls fail at once. */

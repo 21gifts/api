@@ -442,6 +442,35 @@ describe('NostrRelayPool', () => {
     await expect(pool.publish({ kind: 1 }, URL_A, 1_000)).resolves.toBe(false);
     expect(factory.sockets).toHaveLength(0);
   });
+
+  describe('values that cannot be serialized', () => {
+    const cyclic = (): Record<string, unknown> => {
+      const value: Record<string, unknown> = { kinds: [1] };
+      value['self'] = value;
+      return value;
+    };
+    /** Connections the pool holds (private; read only to prove nothing is kept). */
+    const held = (): number =>
+      (pool as unknown as { connections: Map<string, unknown> }).connections.size;
+
+    it.each([
+      ['a cyclic filter', cyclic()],
+      ['a bigint filter', { kinds: [1], since: 1n }],
+    ])('resolves a query with %s without a connection', async (_name, filter) => {
+      await expect(pool.query(filter, URL_A, 1_000, () => undefined)).resolves.toBeUndefined();
+      expect(factory.sockets).toHaveLength(0);
+      expect(held()).toBe(0);
+    });
+
+    it.each([
+      ['a cyclic event', { ...cyclic(), id: 'e1' }],
+      ['a bigint event', { id: 'e1', kind: 1, created_at: 1n }],
+    ])('fails a publish of %s without a connection', async (_name, event) => {
+      await expect(pool.publish(event, URL_A, 1_000)).resolves.toBe(false);
+      expect(factory.sockets).toHaveLength(0);
+      expect(held()).toBe(0);
+    });
+  });
 });
 
 describe('NostrRelayPool defaults', () => {

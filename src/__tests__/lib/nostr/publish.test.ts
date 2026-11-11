@@ -74,6 +74,17 @@ describe('WebsocketNostrPublisher', () => {
     pool.close();
   });
 
+  it('is ok: false for an event that cannot be serialized, without opening a socket', async () => {
+    const publisher = new WebsocketNostrPublisher(pool);
+    const cyclic: Record<string, unknown> = { id: 'abc123', kind: 1 };
+    cyclic['self'] = cyclic;
+    await expect(publisher.publish(cyclic, ['wss://a', 'wss://b'], 20)).resolves.toEqual([
+      { url: 'wss://a', ok: false },
+      { url: 'wss://b', ok: false },
+    ]);
+    expect(factory.sockets).toHaveLength(0);
+  });
+
   it('returns [] for empty urls', async () => {
     const pub = new WebsocketNostrPublisher(pool);
     await expect(pub.publish(event, [], 20)).resolves.toEqual([]);

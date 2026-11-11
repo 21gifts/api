@@ -38,6 +38,14 @@ describe('WebsocketNostrQuerier', () => {
     pool.close();
   });
 
+  it('returns [] for a filter that cannot be serialized, without opening a socket', async () => {
+    const querier = new WebsocketNostrQuerier(pool);
+    await expect(
+      querier.query({ kinds: [1], since: 1n }, ['wss://a', 'wss://b'], 20),
+    ).resolves.toEqual([]);
+    expect(factory.sockets).toHaveLength(0);
+  });
+
   it('returns [] for empty urls without opening a socket', async () => {
     const querier = new WebsocketNostrQuerier(pool);
     await expect(querier.query({ kinds: [1] }, [], 20)).resolves.toEqual([]);
