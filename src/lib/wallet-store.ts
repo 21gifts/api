@@ -1,6 +1,7 @@
 /** Persistence ports and adapters for wallet balance snapshots and payments. */
 
 import type { SqlClient } from '@/lib/auth/sql';
+import { utcDayKey } from '@/lib/funding';
 import type {
   WalletAccountKind,
   WalletPaymentClass,
@@ -354,7 +355,7 @@ export class InMemoryWalletStore implements WalletStore {
   dailyBalances(): Promise<WalletBalanceSnapshot[]> {
     const byAccountDay = new Map<string, WalletBalanceSnapshot>();
     for (const row of this.#balances) {
-      const key = `${row.accountId}\u0000${row.receivedAt.toISOString().slice(0, 10)}`;
+      const key = `${row.accountId}\u0000${utcDayKey(row.receivedAt.getTime())}`;
       const current = byAccountDay.get(key);
       if (current === undefined || isLaterBalance(row, current)) {
         byAccountDay.set(key, row);

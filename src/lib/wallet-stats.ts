@@ -3,6 +3,8 @@
  * value leaves this module.
  */
 
+import { utcDayKey } from '@/lib/funding';
+import { addUtcDays } from '@/lib/member-habit';
 import { satsToBtcString } from '@/lib/money';
 import type { WalletBalanceSnapshot } from '@/lib/wallet-store';
 
@@ -34,17 +36,6 @@ export interface WalletStats {
   asOf: string | null;
   /** Gap-free UTC days from the first visible snapshot through today. */
   balanceOverTime: WalletBalanceDay[];
-}
-
-function utcDay(instant: Date): string {
-  return instant.toISOString().slice(0, 10);
-}
-
-function nextUtcDay(day: string): string {
-  const year = Number(day.slice(0, 4));
-  const month = Number(day.slice(5, 7));
-  const date = Number(day.slice(8, 10));
-  return new Date(Date.UTC(year, month - 1, date + 1)).toISOString().slice(0, 10);
 }
 
 /** UTF-8 byte order, the same order as Postgres `uuid` text comparison for hex ids. */
@@ -93,8 +84,8 @@ export function buildWalletStats(
   rows: readonly WalletBalanceSnapshot[],
   nowMs: number,
 ): WalletStats {
-  const endDay = new Date(nowMs).toISOString().slice(0, 10);
-  const visibleRows = rows.filter((row) => utcDay(row.receivedAt) <= endDay);
+  const endDay = utcDayKey(nowMs);
+  const visibleRows = rows.filter((row) => utcDayKey(row.receivedAt.getTime()) <= endDay);
   if (visibleRows.length === 0) {
     return emptyWalletStats();
   }
@@ -103,7 +94,7 @@ export function buildWalletStats(
   let firstDay: string | undefined;
   let latestVisibleRow: WalletBalanceSnapshot | undefined;
   for (const row of visibleRows) {
-    const day = utcDay(row.receivedAt);
+    const day = utcDayKey(row.receivedAt.getTime());
     firstDay = firstDay === undefined || day < firstDay ? day : firstDay;
     latestVisibleRow =
       latestVisibleRow === undefined || isLater(row, latestVisibleRow) ? row : latestVisibleRow;
@@ -116,7 +107,7 @@ export function buildWalletStats(
 
   const snapshotsByDay = new Map<string, WalletBalanceSnapshot[]>();
   for (const row of byAccountDay.values()) {
-    const day = utcDay(row.receivedAt);
+    const day = utcDayKey(row.receivedAt.getTime());
     const rowsOnDay = snapshotsByDay.get(day) ?? [];
     rowsOnDay.push(row);
     snapshotsByDay.set(day, rowsOnDay);
@@ -124,7 +115,7 @@ export function buildWalletStats(
   const balances = new Map<string, number>();
   const balanceOverTime: WalletBalanceDay[] = [];
   const first = firstDay as string;
-  for (let day = first; day <= endDay; day = nextUtcDay(day)) {
+  for (let day = first; day <= endDay; day = addUtcDays(day, 1)) {
     for (const row of snapshotsByDay.get(day) ?? []) {
       balances.set(row.accountId, row.balanceSats);
     }
