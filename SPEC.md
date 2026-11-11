@@ -10,7 +10,7 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
 or a round trip through sats does not fill or replace it. This file does not
 describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-11-09 (Orchestra never delays Lightning: a pay-link fetch starts or joins a pending charge's creation but answers at once; `POST /pay/:username/payment` opens Lightning-first and fills stablecoin offers in the background; a fetch starts or joins a quote replacement but answers at once, and a Lightning-only fallback row does not defeat an in-flight offers quote). Before that, 2026-11-05 (`RECOVERY_SHARE_REQUIRED_FROM`: a payout needs the 21.gifts recovery share only from that UTC day; 2026-10-30: held-share boxes: `GET /me/held-shares`, `PUT /me/held-shares/:id`, and `DELETE /me/held-shares/:id`, always mounted, store a social recovery holder's shares as opaque boxes the api cannot open; the payout gate is unchanged. Also `POST /debug/spend-ping` also takes a window `{ from, to, dryRun? }` and replays every payout trigger in it: daily payouts and moderator stipends on each event's own UTC day for an account that passes the payout gate now, recovery share included, welcome gifts through the welcome path). Before that, 2026-10-29 (social recovery per [docs/social-recovery.md](docs/social-recovery.md): `POST /auth/passkey/recovery/begin` and `POST /auth/passkey/recovery/finish`, behind the app build check and the login switch, store a pending recovery for a new passkey and wallet key, proven by the old wallet's verified lookup and its signature; `POST /lnurlpay/:pubkey/transfer` forwards the Lightning address transfer and commits it; `PUT /me/recovery-share` stores the encrypted 21.gifts share; `GET /me/previous-wallets` and `DELETE /me/previous-wallets/:sparkPubkey` list and drop the previous wallets; these four are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `POST /lnurlpay/:pubkey/recover` also passes a pending recovery's new key and settles a forwarded recovery; `POST /auth/passkey/authenticate/finish` answers 409 `recovery_pending` for the new passkey of a pending recovery; owner JSON `socialRecoverySetUp`; from the grant gate day `eligibleToday` also requires a 21.gifts recovery share for the current verified wallet, with no start date of its own; `POST /me/events` accepts `recovery_done`; `RECOVERY_SHARE_KEK` is required with `DATABASE_URL`; an account merge deletes the source's recovery rows). Before that, 2026-10-21 (`GET /accounts/by-username/:username` is an exact username lookup: 200 `{ id, username, name }`, stored `username` and stored `name` including null). Before that, 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; the insert refuses when its one post-lock clock read finds the request at least 16 s old or the payer disconnected; the pay link waited at most until 8 s after its fetch arrived (removed 2026-11-09); the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
+**Status**: living document. Last revised 2026-11-09 (Orchestra never delays Lightning: a pay-link fetch starts or joins a pending charge's creation but answers at once; `POST /pay/:username/payment` opens Lightning-first and fills stablecoin offers in the background; a fetch starts or joins a quote replacement but answers at once, and a Lightning-only fallback row does not defeat an in-flight offers quote). Before that, 2026-11-05 (`RECOVERY_SHARE_REQUIRED_FROM`: a payout needs the 21.gifts recovery share only from that UTC day; 2026-10-30: held-share boxes: `GET /me/held-shares`, `PUT /me/held-shares/:id`, and `DELETE /me/held-shares/:id`, always mounted, store a social recovery holder's shares as opaque boxes the api cannot open; the payout gate is unchanged. Also `POST /debug/spend-ping` also takes a window `{ from, to, dryRun? }` and replays every payout trigger in it: daily payouts and moderator stipends on each event's own UTC day for an account that passes the payout gate now, recovery share included, welcome gifts through the welcome path). Before that, 2026-10-29 (social recovery per [docs/social-recovery.md](docs/social-recovery.md): `POST /auth/passkey/recovery/begin` and `POST /auth/passkey/recovery/finish`, behind the app build check and the login switch, store a pending recovery for a new passkey and wallet key, proven by the old wallet's verified lookup and its signature; `POST /lnurlpay/:pubkey/transfer` forwards the Lightning address transfer and commits it; `PUT /me/recovery-share` stores the encrypted 21.gifts share; `GET /me/previous-wallets` and `DELETE /me/previous-wallets/:sparkPubkey` list and drop the previous wallets; these four are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `POST /lnurlpay/:pubkey/recover` also passes a pending recovery's new key and settles a forwarded recovery; `POST /auth/passkey/authenticate/finish` answers 409 `recovery_pending` for the new passkey of a pending recovery; owner JSON `socialRecoverySetUp`; from the grant gate day `eligibleToday` also requires a 21.gifts recovery share for the current verified wallet, with no start date of its own; `POST /me/events` accepts `recovery_done`; `RECOVERY_SHARE_KEK` is required with `DATABASE_URL`; an account merge deletes the source's recovery rows). Before that, 2026-10-21 (`GET /accounts/by-username/:username` is an exact username lookup: 200 `{ id, username, name }`, stored `username` and stored `name` including null). Before that, 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waited at most until 8 s after its fetch arrived (removed 2026-11-09); the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
 ---
 
 ## Implemented HTTP surface (normative)
@@ -1158,9 +1158,8 @@ local sections and then re-reads:
 
 1. In one transaction, end a lapsed `open` payment of the account with
    `end_reason` `window`. For a charge, stop with its existing shop
-   payment, or skip when the charge is missing, is no longer `pending`, or
-   its `expires_at` is at or before the re-check clock. For a payer, stop
-   with 409 `payment_open` when a charge is pending. The
+   payment, or when the charge is no longer pending or has expired. For a
+   payer, stop with 409 `payment_open` when a charge is pending. The
    transaction first takes the account row lock (`SELECT … FOR UPDATE`),
    then the charge row lock for a charge, or for a payer the account's
    overdue pending charges, which it expires, and only then ends the lapsed
@@ -1174,8 +1173,8 @@ local sections and then re-reads:
 3. For a charge, read the route list and select the candidate pairs. A
    failed route-list fetch, or one the route-list budget refuses → stop (no
    stablecoin until a fetch succeeds; the next creation fetches again). No
-   candidate pair → stop; step 7 defines the no-pair wait. A payer skips this
-   step here; its offers fill reads the route list after step 8.
+   candidate pair → stop and start the account's 60 s no-pair wait. A payer
+   skips this step here; its offers fill reads the route list after step 8.
 4. Mint one BOLT11 for the sats with one 4 s deadline for both LNURL calls.
    A failed mint or a BOLT11 of another amount stops the procedure as a
    failed mint. A payment hash that another charge's or a payer's shop
@@ -1188,11 +1187,11 @@ local sections and then re-reads:
    and returns `recorded`, `this_charge`, `other_payment`, or `not_open`:
    `other_payment` stops as a failed mint with the alert, `not_open` stops
    quietly, and the other two go on. When `recordInvoice` fails with an
-   error, `pos.invoice.record_failed` is logged and that claim writes nothing. The creation
-   leaves no payment; the pay link answers from the state at that time. A payer creation never
+   error, `pos.invoice.record_failed` is logged and nothing is written, so
+   a fetch answers today's pinned Lightning request. A payer creation never
    records against a charge; it reads `findChargeForPayment({ paymentHash })`
-   instead: a hit stops as a failed mint with the alert. An error makes no write of its own,
-   skips the insert and returns `unavailable`; the payer route answers order 9.
+   instead: a hit stops as a failed mint with the alert, and an error writes
+   nothing and answers order 9.
 5. For a charge, gas prices and Orchestra quotes share a 3 s external-call
    deadline that starts when the quote step starts and also covers its
    stored-spot read. Read `eth_gasPrice` per chain and request one Orchestra
@@ -1216,35 +1215,30 @@ local sections and then re-reads:
    and the check runs in BigInt with no rounding,
    `amountIn × 10^16 × 100 ≤ sats × rate × 10^decimals × 105`. Without a
    fresh rate the check fails. A quote whose chain's gas price
-   could not be read is not kept either; offers on other chains are unaffected. A failed check logs
+   could not be read is not kept either. A failed check logs
    `shop.offer.rejected` with the check name. A quote that failed logs it
    too: `check` `body` for an HTTP 200 whose body does not parse, `http`
    for a request sent without an HTTP 200 answer (another 2xx included),
    and `budget` when no request could be sent.
-7. For a charge, the 60 s no-pair wait starts when there is no candidate pair, or
-   `#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget,
-   no USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that
-   passes `checkOffer`, or no readable gas price). A failed route list does not start it. A kept
-   offer prevents it, even when the commit then writes nothing.
-   This creation leaves no payment; the pay link answers from the state at that time. While the
-   charge is pending, `POST /pay/:username/payment` answers order 4. Order 7 applies during the
-   wait only when no charge is pending. For a payer, no offer is not an error: the payment is
-   already open Lightning-only, and the offers fill inserts no second quote.
+7. For a charge, none kept → stop and start the 60 s no-pair wait. For a
+   pending charge, the pay link stays pinned and
+   `POST /pay/:username/payment` answers order 4. Order 7 applies during the
+   wait only when no charge is pending. For a payer, none kept is not an
+   error: the payment is already open Lightning-only, and the offers fill
+   inserts no second quote.
 8. In one transaction that first takes the payment hash claim
    (`SELECT pg_advisory_xact_lock($1, $2)`: a fixed namespace and the first
    32 bits of the hash as a signed integer; an in-process map shared with
    the charge store on a memory boot), then the account row lock
    (`SELECT … FOR UPDATE`), and for a charge then the charge row lock.
-   Holding them, it reads the clock once and writes nothing when its request arrived 16 s ago or
+   Holding them, it writes nothing when its request arrived 16 s ago or
    longer (`SHOP_CREATION_INSERT_LIMIT_MS`; the arrival of
    `POST /pay/:username/payment`, of the `POST /pos` that started the
-   charge's creation, or of the pay-link fetch that started it). The insert returns
-   `unavailable`, and the payer route answers order 9 for that outcome. A payer
-   also returns `unavailable` and writes nothing when the client has disconnected (the request's
-   abort signal is set); that route answers order 9. A charge creation that hits the cutoff
-   leaves no payment; the pay link answers from the state at that time. Later work in this
-   transaction does not check the request age again. The next check is a
-   `pos_charge_invoice` row of another charge for the hash, which stops it
+   charge's creation, or of the pay-link fetch that started it). The payer
+   route answers order 9 for that outcome. A payer also writes nothing when
+   the client has disconnected (the request's abort signal is set), and
+   that route answers order 9. A charge creation that hits the cutoff
+   writes nothing. A `pos_charge_invoice` row of another charge for the hash stops it
    before anything is ended or inserted, as a failed mint with
    `shop.alert.duplicate_invoice`. A charge that is no longer
    pending or has expired gets nothing; a payer with a pending charge gets
@@ -1255,10 +1249,7 @@ local sections and then re-reads:
    transaction back, logs `shop.alert.duplicate_invoice`, deletes the
    charge invoice row only when step 4 of this attempt inserted it, and
    ends as a failed mint, so nothing else is written and an `open` payment
-   stays `open`. This no-write result is limited to the insert transaction. The re-check in step 1
-   has already committed, so a lapsed payment ended with `window` stays changed. For a payer,
-   overdue pending charges expired there also stay changed when a later hash check fails.
-   Otherwise an `open` payment of the account ends (`window`
+   stays `open`. Otherwise an `open` payment of the account ends (`window`
    when its window passed, else `superseded` for a charge or `replaced` for
    a payer), then the payment is inserted with its first quote and offers.
    A payer's first quote is Lightning-only: its `transferAmounts` has only
@@ -1269,19 +1260,15 @@ local sections and then re-reads:
    holds only the inserted offers. A lost insert on the payment hash that
    the charge's own payment holds uses that payment; a holder that appeared
    after the check rolls back as above, including the end of the `open`
-   payment. If both insert attempts lose a conflict and no payment or charge
-   invoice holder is found, the insert returns `unavailable`. Only
-   `POST /pay/:username/payment` maps that result to order 9. A charge creation leaves no payment;
-   the pay link answers from the state at that time.
+   payment.
 
 For a charge, the route list's 1 s starts at the recheck, so that lock
 wait shortens the fetch. The mint's 4 s and the quotes' 3 s start with
 their own steps. Those three are external-call budgets, 8 s in all. The
-insert's account lock, store, and transaction waits come on top. Step 8
-checks the request age once after those locks. Later awaits and the insert
-can finish after 16 s. For a payer, the mint's 4 s is the only external-call
-budget before the insert. The same waits and one-time check apply. The offers
-fill runs after the insert.
+insert's account lock, store, and transaction waits come on top. Step 8's
+16 s cutoff is the hard limit on an insert. For a payer, the mint's 4 s
+is the only external-call budget before the insert. The same insert waits
+and the same 16 s cutoff apply. The offers fill runs after the insert.
 
 Every external call runs outside a database transaction. The quote expiry
 (`quote.expiration`) is the earliest of `window_ends_at` and every offer's
@@ -1297,22 +1284,16 @@ creation lock. The lock covers only the short re-read and commit, which
 can wait longer than the external-call budgets. No request handler awaits
 the fill. A concurrent pay-link fetch does not start a second fill and
 does not wait for this one. A throw logs `shop.creation.failed` once
-with `accountId` and `paymentId`. One transaction locks the account row,
-reads the clock, and then locks the `shop_payment` row. It inserts a quote
-with the passing offers only when the locked payment is still `open`, at
-least 45 s remain before `window_ends_at`, `replacements` is unchanged, and
-the payment's newest quote is still the Lightning-only first quote or a
-newer Lightning-only row. The quote row is inserted even when a
-stored offer already holds an offer's deposit address. That conflict drops
-only the offer and logs `shop.alert.shared_deposit_address`. The fill inserts
-no quote when the route list fails or there is no candidate pair. It also
-inserts no quote when the commit conditions fail. An unreadable gas price
-drops only offers on that chain. The 60 s no-pair wait starts when there is no candidate pair, or
-`#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget, no
-USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that passes
-`checkOffer`, or no readable gas price). A failed route list does not start it. A kept offer
-prevents it, even when the commit then writes nothing.
-The fill does not increment `replacements`.
+with `accountId` and `paymentId`. One transaction under the account row
+lock inserts a quote with the passing offers only when the payment is still
+`open`, at least 45 s remain before `window_ends_at`, and the payment's
+newest quote is still the Lightning-only first quote. A Lightning-only row
+written by a fetch after the run read its starting quote is not newer. The
+fill inserts no quote when the route list fails, there is no candidate pair,
+there is no fresh spot, there is no quote budget, or no offer passes. No
+candidate pair, no fresh spot, no quote budget, and no passing offer start the
+60 s no-pair wait. A failed route list does not start the wait. The fill does
+not increment `replacements`.
 
 **States.** `shop_payment.status` is `open`, `accepted`, `paid`, or
 `ended`; every change is one conditional update. `open` → `ended` when the
@@ -1323,10 +1304,10 @@ its proofs is accepted. `open`, `ended`, or `accepted` (not closed) →
 `paid` when its BOLT11 settles. `accepted` → `ended` when the accepted
 proof is refunded, fails, or is refused without another proof taking its
 place (`orchestra_refunded`, `orchestra_failed`, `proof_refused`), or when
-an unpaid read at least 10 minutes after the BOLT11 expiry closes it
-(`expired_unpaid`). That read sets `closed_at` on a payment that is not
-paid. A failed read at or after that time leaves the payment unclosed and is
-retried at the same cadence; a paid or closed payment never changes again.
+the final settlement read finds the BOLT11 unpaid (`expired_unpaid`). The
+final settlement read, 10 minutes after the BOLT11 expiry, sets
+`closed_at` on a payment that is not paid; a paid or closed payment never
+changes again.
 
 **Error body.** Every error on the callback, the proof, and the wait route,
 and every error on the pay link, is:
@@ -1746,21 +1727,19 @@ rows by their own next-try column, oldest first:
 2. **Settlement:** the LUD-21 `GET /verify/<paymentHash>` read of the
    charge watch (`verifyLightningPayment`) for payments that are neither
    paid nor closed, `accepted` and charge-backed payments first, every 5 s
-   for 15 minutes after creation, then every 30 s. Before 10 minutes after
-   the BOLT11 expiry, the next read is capped at that time. Each read is
-   applied under the locks of a charge-backed payment: the account row, then the
+   for 15 minutes after creation, then every 30 s, and a final read 10
+   minutes after the BOLT11 expiry. Each read is applied under the lock of
+   locks of a charge-backed payment: the account row, then the
    `pos_charge` row, then the `shop_payment` row; when an account merge
    moved the payment between the unlocked read and the lock, the account
    it moved to is locked instead (`lockAccountOf`, at most two locks; a
    payment still moving is left for the next tick). A payer's payment locks
-   only its `shop_payment` row. Settled → `paid`. `markPaid` runs only for
-   a charge that is still `pending` or `expired`; a payer payment and a
-   missing charge row skip it. A charge already paid by another invoice
-   logs `shop.alert.double_settled`; a cancelled charge logs
-   `shop.alert.cancelled_settled` and stays cancelled. An unpaid read at or
-   after that time closes the payment; a failed read leaves it unclosed and
-   schedules another read one cadence later. An `accepted` payment then
-   ends with `expired_unpaid` and logs
+   only its `shop_payment` row. Settled → `paid`, and `markPaid` for its
+   charge (a charge already paid by another invoice logs
+   `shop.alert.double_settled`; a cancelled charge logs
+   `shop.alert.cancelled_settled` and stays cancelled). Only a successful
+   final read that reports the invoice unpaid closes the payment; an
+   `accepted` payment then ends with `expired_unpaid` and logs
    `shop.alert.accepted_unpaid`, an `open` one ends with `window`, and
    both log `shop.payment.ended` with the reason. The duty waits until
    every read of the tick and its write have ended before it rethrows the
@@ -2127,7 +2106,7 @@ Same account lookup as `GET /pay/:username`. Checks run in this order:
 | 6     | The username is `invoice`, `cb`, or ends in `.`, or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` does not resolve.         | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 | 7     | The account's 60 s no-pair wait is running, or the api started 60 creations in the last minute, or this account started 10 (per process).                         | **503** `stablecoin_unavailable` as in order 6                                               |
 | 8     | The mint fails, the BOLT11 is for another amount, or its payment hash is already held by a shop payment or recorded against a charge (logs `pay.invoice_failed`). | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 9     | `findChargeForPayment` fails, the insert finds the request at least 16 s old or its client disconnected, or both insert attempts lose an unseen conflict.         | **503** `stablecoin_unavailable` as in order 6                                               |
+| 9     | `findChargeForPayment` fails with an error, or the insert step finds the request at least 16 s old or its client disconnected.                                    | **503** `stablecoin_unavailable` as in order 6                                               |
 
 Orders 4 and 6 run again under the account's creation lock (order 4 also
 inside the insert transaction); order 7 runs only there, once per creation.
@@ -2135,32 +2114,18 @@ A store failure during the creation → **Response** `502` `{ "error":
 "Lightning Address could not be resolved" }` (logs `pay.failed`), the
 answer of order 2: the page cannot tell whether a payment opened, so it
 repeats the request as after any other 5xx.
-The offers fill runs after the payer's insert, in the background. The route does not wait for it.
-A failed route list, no candidate pair, or no offer leaves the answer at 200: the payment is
-already open Lightning-only. The 60 s no-pair wait starts when there is no candidate pair, or
-`#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget, no
-USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that passes
-`checkOffer`, or no readable gas price). A failed route list does not start it. A kept offer
-prevents it, even when the commit then writes nothing. The second
-quote's commit locks the account row, reads the clock, and then locks the `shop_payment` row. It
-writes the quote only while the locked payment is `open`, at least 45 s remain, `replacements`
-is unchanged, and its newest quote is the first quote or a newer Lightning-only row. A
-`findChargeForPayment` error, a post-lock clock read that finds the request at least 16 s old, a
-disconnected client, and the unseen-winner fallback after two insert conflicts return
-`unavailable`; this payer route maps that result to order 9.
+The offers fill runs after the payer's insert, in the background. The
+route does not wait for it. A failed route list, no candidate pair, no
+fresh spot, no quote budget, and no passing offer leave the answer at
+200: the payment is already open Lightning-only. A `findChargeForPayment`
+error, the insert at 16 s or later, and a disconnected client still
+answer order 9.
 The api-wide counter is asked first and the account counter only when it
 allows. Orders 7 and 9 do not depend on the client address.
 
-The re-check commits before mint. It ends a lapsed `open` payment with `window` and expires
-overdue payer charges even if a later held-hash check returns order 8. After the insert locks,
-one clock read returns `unavailable` without a write when it finds the request at least 16 s old
-or the payer aborted; this route maps it to order 9. The age is not checked again. A foreign
-charge invoice then returns order 8 without ending a payment. A pending charge then returns
-order 4 without ending a payment. A held payment hash is checked next and leaves a still-open
-payment open. Only then does an open payer payment end with `window` when its `window_ends_at`
-is at or before the insert clock, or with `replaced` otherwise, before the new payment is
-inserted. Its window ends five minutes after creation. Two insert conflicts whose winner remains
-unseen return `unavailable`; this route maps it to order 9.
+An `open` payer-opened payment of the account is always replaced: it ends
+with `end_reason` `replaced` and the new payment is created. Its window
+ends five minutes after creation.
 
 **Response** `200`:
 
@@ -4735,11 +4700,9 @@ funding grants are **409**
 with a shop payment that is neither `paid` nor closed is **409**
 `{ "error": "A payment is already open" }` and nothing changes, because
 that payment's BOLT11 still pays the source account's wallet, which the
-merge does not carry over. At least 10 minutes after the BOLT11 expired,
-an unpaid read closes it; a failed read leaves it unclosed and is retried at
-the same cadence. The merge can be repeated after the payment is paid or
-closed. A source with an unexpired pending till charge while the survivor
-has an `open` shop
+merge does not carry over; the merge can be repeated after the final
+settlement read, 10 minutes after the BOLT11 expired. A source with an
+unexpired pending till charge while the survivor has an `open` shop
 payment and no unexpired pending till charge of its own is the same
 **409** and nothing changes, so a till charge never lands next to another
 payment's open amount. Both refusals are checked under the locks of both

@@ -129,79 +129,8 @@
 
 ## Endpoint: POST /pay/:username/payment
 
-- **Purpose:** Public, unauthenticated opening of a shop payment for an amount the payer entered
-  on the payment page (`docs/shop-stablecoin-payment.md`). Same account lookup as
-  `GET /pay/:username`, then body `{ amountSats: number }` (an integer of at least 1;
-  `comment` is ignored). Runs `ShopPayments.createForPayer`: under the account's in-process
-  creation lock it first re-checks for a pending charge, then applies the 60 s no-pair wait and
-  the two creation counters (60 per minute for the api, 10 per minute per account, per process);
-  a pending charge stops the creation before the wait is checked. That lock covers these local
-  checks and the later insert, and never an Orchestra call. It then mints one BOLT11 with one 4 s
-  external-call deadline outside the lock, runs the duplicate-hash checks, and inserts the
-  payment with a Lightning-only first quote in one transaction that takes the payment hash
-  claim, then the account row lock. After those locks, this insert transaction reads the clock
-  once. It returns `unavailable` and writes nothing when that read finds the request at least
-  16 s old (the arrival is taken as the handler's first statement) or the client disconnected
-  (the request's abort signal). It does not check the request age again. The route maps
-  `unavailable` to order 9's 503. It answers 200
-  `{ payment, expiresAt }` without awaiting any Orchestra call, while the background offers fill
-  may already have started. The fill's route list has a 1 s external-call budget. Gas prices and
-  quotes have a 3 s external-call deadline that starts when the fill's quote step starts and
-  covers its stored-spot read. It keeps quotes only when they pass `checkOffer`, then drops each
-  offer whose chain's gas price is unreadable. It sets `minFee` to `recommendedMinFee`. The
-  commit transaction locks the account row, reads the clock, and then locks the `shop_payment`
-  row. It inserts a second quote only when the locked payment is still `open`, at least 45 s
-  remain in its window, `replacements` is unchanged, and its newest quote is still that first
-  quote or a newer Lightning-only row. The quote contains each retained offer whose deposit
-  address the unique index accepts. A conflict with a stored offer drops only that offer, logs
-  `shop.alert.shared_deposit_address`, and leaves the quote row inserted. The fill's external
-  calls run outside the creation lock. The lock covers only its short re-read and commit, which
-  can wait longer than those budgets. The fill does not increment `replacements`. A failed route
-  list inserts no quote. The 60 s no-pair wait starts when there is no candidate pair, or
-  `#requestOffers` returns an empty offer list, whatever the cause (for example no quote budget,
-  no USD spot younger than 10 minutes, a quote request without a parsed HTTP 200, no quote that
-  passes `checkOffer`, or no readable gas price). A failed route list does not start it. A kept
-  offer prevents it, even when the commit then writes nothing. The
-  creation re-check commits before mint: it ends a lapsed `open`
-  payment with `window` and expires overdue payer charges. Those changes remain when a later hash
-  check stops creation. In the insert transaction, a holder found before `endPayment` writes
-  nothing and does not end a still-open payment. A foreign holder found by the second
-  `hashHolder` or `chargeIdForInvoice` read rolls the row change back, so the payment stays `open`; the
-  `shop.payment.ended` log from that `endPayment` remains. 200
-  `{ payment, expiresAt }` where `expiresAt` is the window end, five minutes after creation. The
-  route group is always mounted; a payment opens only when `LNURL_SERVER_URL` and
-  `PUBLIC_BASE_URL` resolve.
-- **Errors:** The route and creation checks begin in this order: 404 `{ error: 'Not found' }` for
-  an invalid username, unknown account, or no receiving address (no verified wallet, or the
-  LNURL server is not configured);
-  502 `{ error: 'Lightning Address could not be resolved' }` when the wallet's pay request cannot
-  be resolved or the store throws (also a store throw during the creation, which logs
-  `pay.failed`; the page then repeats the request); 400
-  `{ error: 'Enter a whole number of sats' }` for missing or invalid JSON or an amount that is not
-  an integer of at least 1; 409
-  `{ error: 'A payment is already open', code: 'payment_open' }` while a till charge is pending,
-  first checked by the route and again under the creation lock before the no-pair wait; 400
-  `{ error: 'Enter a whole number of sats' }` for an amount outside the pay request's range; 503
-  `{ error: 'Stablecoin payment is unavailable', code: 'stablecoin_unavailable' }` for the
-  usernames `invoice`, `cb`, or ending in `.`, when `resolveShopPaymentConfig` is off, during the
-  no-pair wait with no pending charge, or over a creation counter; 502
-  `{ error: 'Lightning Address could not be resolved' }` when the mint fails, the BOLT11 is for
-  another amount, or its payment hash is already held by another shop payment or recorded
-  against a charge. `paymentForHash` checks for another shop payment immediately after the mint;
-  `hashHolder` checks again in the insert transaction. `findChargeForPayment` before the insert
-  and `chargeIdForInvoice` in the insert transaction check for the charge invoice. These failures
-  log `pay.invoice_failed`; a held hash also logs `shop.alert.duplicate_invoice`. A
-  `findChargeForPayment` error answers 503 `stablecoin_unavailable`. That check writes nothing,
-  and the insert is skipped. Inside the insert transaction, after its locks, one clock read first
-  checks for a request at least 16 s old or a disconnected client (order 9, 503, nothing
-  written), then another charge's `pos_charge_invoice` row (502, nothing ended), then a pending
-  charge (409 `payment_open`, nothing ended), then a held payment hash. Only after those checks
-  does an open payer payment end with `window` or `replaced` and the new payment get inserted. If
-  both insert
-  attempts lose a conflict and neither holder read finds the winner, the insert returns
-  `unavailable` and the route maps it to order 9. A
-  failed route list or any no-pair-wait cause above leaves that 200 in place: the payment is
-  already open Lightning-only. They do not answer 503.
+- **Purpose:** Public, unauthenticated opening of a shop payment for an amount the payer entered on the payment page (`docs/shop-stablecoin-payment.md`). Same account lookup as `GET /pay/:username`, then body `{ amountSats: number }` (an integer of at least 1; `comment` is ignored). Runs `ShopPayments.createForPayer`: under the account's in-process creation lock it first re-checks for a pending charge, then applies the 60 s no-pair wait and the two creation counters (60 per minute for the api, 10 per minute per account, per process); a pending charge stops the creation before the wait is checked. That lock covers these local checks and the later insert, and never an Orchestra call. It then mints one BOLT11 with one 4 s external-call deadline outside the lock, runs the duplicate-hash checks, and inserts the payment with a Lightning-only first quote in one transaction that takes the payment hash claim, then the account row lock. After those locks, this insert transaction writes nothing when the request arrived 16 s ago or longer (the arrival is taken as the handler's first statement) or the client disconnected (the request's abort signal). It answers 200 `{ payment, expiresAt }` without awaiting any Orchestra call, while the background offers fill may already have started. The fill's route list has a 1 s external-call budget. Gas prices and quotes have a 3 s external-call deadline that starts when the fill's quote step starts and covers its stored-spot read. It keeps the quotes that pass `checkOffer`, and inserts a second quote with the passing offers only when the payment is still `open`, at least 45 s remain in its window, and its newest quote is still that first quote or a Lightning-only row written after the fill read it. The fill's external calls run outside the creation lock. The lock covers only its short re-read and commit, which can wait longer than those budgets. The fill does not increment `replacements`. It inserts no quote when the route list fails, there is no candidate pair, there is no fresh spot, there is no quote budget, or no offer passes. No candidate pair, no fresh spot, no quote budget, and no passing offer start the 60 s no-pair wait. A failed route list does not start the wait. An `open` payer-opened payment of the account ends with `replaced` (`window` when its window passed); when the BOLT11's payment hash is already held by another shop payment or recorded against a charge, the insert transaction stops before anything is written, so that `open` payment stays `open`. 200 `{ payment, expiresAt }` where `expiresAt` is the window end, five minutes after creation. The route group is always mounted; a payment opens only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve.
+- **Errors:** In this order: 404 `{ error: 'Not found' }` for an invalid username, unknown account, or no receiving address (no verified wallet, or the LNURL server is not configured); 502 `{ error: 'Lightning Address could not be resolved' }` when the wallet's pay request cannot be resolved or the store throws (also a store throw during the creation, which logs `pay.failed`; the page then repeats the request); 400 `{ error: 'Enter a whole number of sats' }` for missing or invalid JSON or an amount that is not an integer of at least 1; 409 `{ error: 'A payment is already open', code: 'payment_open' }` while a till charge is pending (checked again under the lock, before the no-pair wait, and again in the insert transaction); 400 `{ error: 'Enter a whole number of sats' }` for an amount outside the pay request's range; 503 `{ error: 'Stablecoin payment is unavailable', code: 'stablecoin_unavailable' }` for the usernames `invoice`, `cb`, or ending in `.`, when `resolveShopPaymentConfig` is off, during the no-pair wait with no pending charge, or over a creation counter; 502 `{ error: 'Lightning Address could not be resolved' }` when the mint fails, the BOLT11 is for another amount, or its payment hash is already held by another shop payment or recorded against a charge (`findChargeForPayment` after the mint, and the `pos_charge_invoice` read in the insert transaction; logs `pay.invoice_failed`, and a held hash also `shop.alert.duplicate_invoice`); 503 `stablecoin_unavailable` when `findChargeForPayment` fails with an error (nothing written), or when the insert transaction finds the request 16 s old or older or its client disconnected (order 9, nothing written). A failed route list, no candidate pair, no fresh spot, no quote budget, and no passing quote leave that 200 in place: the payment is already open Lightning-only. They do not answer 503.
 - **Used by:** The app's payment page for an entered amount; it falls back to `POST /pay/:username/invoice` on 503 and on other 4xx, and reloads the till charge on 409 `payment_open`.
 - **Auth:** none.
 
@@ -968,7 +897,7 @@
 
 ## Endpoint: POST /pos
 
-- **Purpose:** Bearer required. `{ amountSats }` alone, an integer ≥ 1, is 201 and stores `amountCurrency`, `amount`, `amountUsd`, `amountChf`, `amountEur`, and `amountPhp` as null. `amountCurrency` without `amount`, or `amount` without `amountCurrency`, is 400 `{ error: 'Expected amountCurrency and amount together' }`. A bad amount or a bad currency is 400 `{ error: 'Expected a typed fiat amount' }`. A fiat body is `{ amountSats, amountCurrency, amount }`. `amountSats` is the integer the client sent. `amount` is that string after trim and one comma-to-dot, fraction kept (`"12.00"` stays `"12.00"`). The typed currency's numeric column stays null; JSON `amount` and the matching `amountXxx` are that string. The other three are frozen two-decimal strings (`typedAmount * (spot[other] / spot[typed])`, half-up to cents) or null. A missing spot leg, a rate that cannot be parsed, or a spot read that throws does not fail the charge. Requires a username and a receiving address (`receivingAddress`: the verified wallet, resolved internally against the LNURL server). Resolves that address and rejects amounts whose millisats (`amountSats * 1000`) fall outside inclusive `minSendable`..`maxSendable`. One unexpired pending charge at a time. The insert enforces that again (`pos_charge_account_pending_idx`, and the in-memory store rejects before append), so a second request that already passed the earlier read is still 409. 201 `{ charge }` with `expiresAt` five minutes after `now`. After a successful insert, when optional `messageStore` and `activity` are both set, the handler lists live assigned `#21GiftsShop` notes for this account and best-effort POSTs each to the OpenCryptoPay map at the charge `createdAt`. GET and DELETE do not ping. A map failure, unknown shop, blank configuration, or thrown list does not change 201. While pending, `GET /.well-known/lnurlp/:username` sets both sendable bounds of the wallet pay request to that millisat amount. Callback and metadata stay unchanged. When `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, `ShopPayments.createCharge` inserts the charge and ends the account's `open` shop payment (`superseded`, or `window` when its window passed) in one transaction under the account row lock, without waiting for the creation lock, then starts the shop payment creation for the charge in the background when stablecoin rows are on (`shop.creation.failed` with `accountId`, `chargeId`, and the error's `name`, `code`, and `errno` on failure; the response is unchanged). That creation reads the clock once after its insert locks and writes nothing when the read finds this request at least 16 s old (arrival is the handler's first statement). It does not check the age again. A shop payment never causes 409.
+- **Purpose:** Bearer required. `{ amountSats }` alone, an integer ≥ 1, is 201 and stores `amountCurrency`, `amount`, `amountUsd`, `amountChf`, `amountEur`, and `amountPhp` as null. `amountCurrency` without `amount`, or `amount` without `amountCurrency`, is 400 `{ error: 'Expected amountCurrency and amount together' }`. A bad amount or a bad currency is 400 `{ error: 'Expected a typed fiat amount' }`. A fiat body is `{ amountSats, amountCurrency, amount }`. `amountSats` is the integer the client sent. `amount` is that string after trim and one comma-to-dot, fraction kept (`"12.00"` stays `"12.00"`). The typed currency's numeric column stays null; JSON `amount` and the matching `amountXxx` are that string. The other three are frozen two-decimal strings (`typedAmount * (spot[other] / spot[typed])`, half-up to cents) or null. A missing spot leg, a rate that cannot be parsed, or a spot read that throws does not fail the charge. Requires a username and a receiving address (`receivingAddress`: the verified wallet, resolved internally against the LNURL server). Resolves that address and rejects amounts whose millisats (`amountSats * 1000`) fall outside inclusive `minSendable`..`maxSendable`. One unexpired pending charge at a time. The insert enforces that again (`pos_charge_account_pending_idx`, and the in-memory store rejects before append), so a second request that already passed the earlier read is still 409. 201 `{ charge }` with `expiresAt` five minutes after `now`. After a successful insert, when optional `messageStore` and `activity` are both set, the handler lists live assigned `#21GiftsShop` notes for this account and best-effort POSTs each to the OpenCryptoPay map at the charge `createdAt`. GET and DELETE do not ping. A map failure, unknown shop, blank configuration, or thrown list does not change 201. While pending, `GET /.well-known/lnurlp/:username` sets both sendable bounds of the wallet pay request to that millisat amount. Callback and metadata stay unchanged. When `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, `ShopPayments.createCharge` inserts the charge and ends the account's `open` shop payment (`superseded`, or `window` when its window passed) in one transaction under the account row lock, without waiting for the creation lock, then starts the shop payment creation for the charge in the background when stablecoin rows are on (`shop.creation.failed` with `accountId`, `chargeId`, and the error's `name`, `code`, and `errno` on failure; the response is unchanged). That creation writes nothing 16 s or more after this request arrived (taken as the handler's first statement). A shop payment never causes 409.
 - **Errors:** 401 Unauthorized; 400 Expected a JSON body with an integer "amountSats"; 400 `{ error: 'Expected amountCurrency and amount together' }`; 400 `{ error: 'Expected a typed fiat amount' }`; 400 Set a username first; 400 `{ error: 'Set up your wallet first', code: 'wallet_required' }` (no verified wallet); 400 Amount is outside the wallet range; 409 A payment is already open; 502 Lightning Address could not be resolved.
 - **Used by:** App `/pos` amount form.
 - **Auth:** `Authorization: Bearer` session.
