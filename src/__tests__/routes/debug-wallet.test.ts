@@ -363,7 +363,7 @@ describe('debugWalletRoutes', () => {
       headers: { authorization: 'Bearer secret' },
     });
     expect(res.status).toBe(503);
-    await expect(res.json()).resolves.toEqual({ error: 'Wallet is unavailable' });
+    await expect(res.json()).resolves.toEqual({ error: 'Wallet data is unavailable' });
     const events = parsedEvents(warn);
     expect(events).toContainEqual(
       expect.objectContaining({ event: 'debug.wallet.failed', accountId: ACCOUNT_ID }),

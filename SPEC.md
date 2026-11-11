@@ -4538,7 +4538,7 @@ opaque cursor when another row exists and is omitted on the last page. Every
 `WalletPaymentRecord` field is JSON, with dates as ISO strings. Unknown or
 non-UUID id → **Response** `404`; malformed limit or cursor → **Response**
 `400`. `DEBUG_TOKEN` and `DEBUG_READ_TOKEN` both read this route. A store
-failure → **Response** `503` `{ "error": "Wallet is unavailable" }`.
+failure → **Response** `503` `{ "error": "Wallet data is unavailable" }`.
 
 ### `POST /debug/accounts`
 

@@ -252,7 +252,7 @@ export function debugWalletRoutes(deps: DebugWalletRouteDeps): Hono {
       return c.json(body, 200);
     } catch {
       logEvent('debug.wallet.failed', { accountId: id });
-      return c.json({ error: 'Wallet is unavailable' }, 503);
+      return c.json({ error: 'Wallet data is unavailable' }, 503);
     }
   });
 }

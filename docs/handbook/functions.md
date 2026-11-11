@@ -2403,7 +2403,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 - **Purpose:** Hono app for `GET /debug/accounts/:id/wallet`. It authenticates through `classifyDebugDbBearer` (write and read tokens both pass), 404s a non-UUID or unknown account, validates a decimal `limit` from 1 to 500 (default 50) and the cursor, fetches `limit + 1` payments, and returns the newest balance plus one page. `nextCursor` is present only when the extra row exists. The balance age is floored and never negative.
 - **Inputs:** `DebugWalletRouteDeps`: `walletStore`, `authStore`, `debugToken`, optional `debugReadToken`, and optional `now` (default `Date.now`).
-- **Returns / side effects:** 503 `Debug is not configured`; 401 `Unauthorized`; 404 `Not found`; 400 `Invalid limit` or `Invalid cursor`; 200 `{ accountId, balance, payments, nextCursor? }`; 503 `Wallet is unavailable` on a store throw. Logs `debug.wallet.shown` with `{ accountId, count }` or `debug.wallet.failed` with `{ accountId }`, never amounts, invoices, or counterparties.
+- **Returns / side effects:** 503 `Debug is not configured`; 401 `Unauthorized`; 404 `Not found`; 400 `Invalid limit` or `Invalid cursor`; 200 `{ accountId, balance, payments, nextCursor? }`; 503 `Wallet data is unavailable` on a store throw. Logs `debug.wallet.shown` with `{ accountId, count }` or `debug.wallet.failed` with `{ accountId }`, never amounts, invoices, or counterparties.
 - **Used by:** `createApp` at `/debug/accounts`, registered before `debugRoutes` so the write-token middleware does not reject `DEBUG_READ_TOKEN`.
 
 ## Function: PostgresDebugDbStore
