@@ -1056,6 +1056,7 @@ describe('GET /fond/payments', () => {
         amountSats: 1_000,
         feeSats: 0,
         paidAt: PAID_A,
+        category: 'member',
         counterpartyAccountId: ALICE,
       }),
       walletPayment({
@@ -1066,6 +1067,7 @@ describe('GET /fond/payments', () => {
         amountSats: 21,
         feeSats: 2,
         paidAt: PAID_B,
+        category: 'platform',
         counterpartyAccountId: PLATFORM,
       }),
       walletPayment({
@@ -1117,6 +1119,7 @@ describe('GET /fond/payments', () => {
         status: 'completed',
         amountSats: 3,
         paidAt: PAID_C,
+        category: 'member',
         counterpartyAccountId: MISSING,
       }),
       walletPayment({
@@ -1180,6 +1183,7 @@ describe('GET /fond/payments', () => {
         status: 'completed',
         amountSats: 5,
         paidAt: PAID_A,
+        category: 'member',
         counterpartyAccountId: NO_USERNAME,
       }),
     ]);
@@ -1198,6 +1202,62 @@ describe('GET /fond/payments', () => {
       ],
       next: null,
     });
+  });
+
+  it.each([
+    ['member', { accountId: ALICE, username: 'alice', name: 'Alice' }],
+    ['shop', null],
+    ['platform', null],
+    ['gift', null],
+    ['outside_lightning', null],
+    ['onchain', null],
+    ['unknown', null],
+  ] as const)('names a counterparty only for %s rows', async (category, expected) => {
+    const { app, auth, walletStore } = await makeApp();
+    await counterparty(auth, ALICE, 'alice', 'Alice');
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: `category-${category}`,
+        status: 'completed',
+        category,
+        counterpartyAccountId: ALICE,
+      }),
+    ]);
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      payments: Array<{ counterparty: unknown }>;
+    };
+    expect(body.payments[0]?.counterparty).toEqual(expected);
+  });
+
+  it('returns a null counterparty for a member row without one', async () => {
+    const { app, walletStore } = await makeApp();
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        category: 'member',
+        counterpartyAccountId: null,
+      }),
+    ]);
+    const res = await app.request('/fond/payments');
+    const body = (await res.json()) as { payments: Array<{ counterparty: unknown }> };
+    expect(body.payments[0]?.counterparty).toBeNull();
+  });
+
+  it('returns a null counterparty for a member row whose account no longer exists', async () => {
+    const { app, walletStore } = await makeApp();
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        category: 'member',
+        counterpartyAccountId: MISSING,
+      }),
+    ]);
+    const res = await app.request('/fond/payments');
+    const body = (await res.json()) as { payments: Array<{ counterparty: unknown }> };
+    expect(body.payments[0]?.counterparty).toBeNull();
   });
 
   it('returns an opaque id that does not expose the stored payment id', async () => {
@@ -1263,6 +1323,86 @@ describe('GET /fond/payments', () => {
     );
   });
 
+  it('carries only the paid time and public id in the cursor', async () => {
+    const { app, walletStore } = await makeApp();
+    const rows = Array.from({ length: 51 }, (_, index) =>
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: `private-${index}`,
+        status: 'completed',
+        paidAt: new Date(NOW - index * 1_000),
+      }),
+    );
+    await walletStore.upsertPayments(rows);
+    const res = await app.request('/fond/payments');
+    const body = (await res.json()) as { next: string };
+    const decoded = JSON.parse(Buffer.from(body.next, 'base64url').toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(decoded).sort()).toEqual(['id', 'paidAt']);
+    expect(decoded['id']).toMatch(/^[0-9a-f]{16}$/);
+    expect(decoded['paidAt']).toEqual(rows[49]?.paidAt.toISOString());
+    expect(Buffer.from(body.next, 'base64url').toString('utf8')).not.toContain('private-');
+
+    const list = vi.spyOn(walletStore, 'listPayments');
+    const second = await app.request(`/fond/payments?before=${body.next}`);
+    const secondBody = (await second.json()) as { payments: Array<{ id: string }> };
+    expect(second.status).toBe(200);
+    expect(secondBody.payments).toHaveLength(1);
+    expect(list).toHaveBeenNthCalledWith(1, 'fond-account', Number.MAX_SAFE_INTEGER, undefined, {
+      status: 'completed',
+      paidAt: rows[49]?.paidAt,
+    });
+    expect(list).toHaveBeenNthCalledWith(
+      2,
+      'fond-account',
+      51,
+      { paidAt: rows[49]?.paidAt, paymentId: rows[49]?.paymentId },
+      { status: 'completed' },
+    );
+  });
+
+  it('rejects a cursor whose public id is not a completed payment at that time', async () => {
+    const { app, walletStore } = await makeApp();
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'known',
+        status: 'completed',
+        paidAt: PAID_A,
+      }),
+    ]);
+    const unknown = Buffer.from(
+      JSON.stringify({ paidAt: PAID_A.toISOString(), id: '0'.repeat(16) }),
+      'utf8',
+    ).toString('base64url');
+    const res = await app.request(`/fond/payments?before=${unknown}`);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid cursor' });
+  });
+
+  it('rejects a valid public id paired with a different paid time', async () => {
+    const { app, walletStore } = await makeApp();
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'known',
+        status: 'completed',
+        paidAt: PAID_A,
+      }),
+    ]);
+    const first = await app.request('/fond/payments');
+    const firstBody = (await first.json()) as { payments: Array<{ id: string }> };
+    const mismatched = Buffer.from(
+      JSON.stringify({ paidAt: PAID_B.toISOString(), id: firstBody.payments[0]?.id }),
+      'utf8',
+    ).toString('base64url');
+    const res = await app.request(`/fond/payments?before=${mismatched}`);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid cursor' });
+  });
+
   it.each([
     ['not-base64', '%%%'],
     ['non-canonical base64url', 'AB'],
@@ -1278,31 +1418,52 @@ describe('GET /fond/payments', () => {
     ],
     [
       'non-string time',
-      Buffer.from(JSON.stringify({ paidAt: 1, paymentId: 'p' }), 'utf8').toString('base64url'),
+      Buffer.from(JSON.stringify({ paidAt: 1, id: 'a'.repeat(16) }), 'utf8').toString('base64url'),
     ],
     [
       'non-ISO time',
       Buffer.from(
-        JSON.stringify({ paidAt: '2026-11-11T13:31:01.000X', paymentId: 'p' }),
+        JSON.stringify({ paidAt: '2026-11-11T13:31:01.000X', id: 'a'.repeat(16) }),
         'utf8',
       ).toString('base64url'),
     ],
     [
-      'non-string payment id',
-      Buffer.from(JSON.stringify({ paidAt: PAID_A.toISOString(), paymentId: 1 }), 'utf8').toString(
+      'non-string id',
+      Buffer.from(JSON.stringify({ paidAt: PAID_A.toISOString(), id: 1 }), 'utf8').toString(
         'base64url',
       ),
     ],
     [
-      'empty payment id',
-      Buffer.from(JSON.stringify({ paidAt: PAID_A.toISOString(), paymentId: '' }), 'utf8').toString(
+      'empty id',
+      Buffer.from(JSON.stringify({ paidAt: PAID_A.toISOString(), id: '' }), 'utf8').toString(
         'base64url',
       ),
     ],
     [
-      'long payment id',
+      'uppercase id',
       Buffer.from(
-        JSON.stringify({ paidAt: PAID_A.toISOString(), paymentId: 'p'.repeat(257) }),
+        JSON.stringify({ paidAt: PAID_A.toISOString(), id: 'A'.repeat(16) }),
+        'utf8',
+      ).toString('base64url'),
+    ],
+    [
+      'non-hex id',
+      Buffer.from(
+        JSON.stringify({ paidAt: PAID_A.toISOString(), id: 'g'.repeat(16) }),
+        'utf8',
+      ).toString('base64url'),
+    ],
+    [
+      'short id',
+      Buffer.from(
+        JSON.stringify({ paidAt: PAID_A.toISOString(), id: 'a'.repeat(15) }),
+        'utf8',
+      ).toString('base64url'),
+    ],
+    [
+      'legacy paymentId key',
+      Buffer.from(
+        JSON.stringify({ paidAt: PAID_A.toISOString(), paymentId: 'p' }),
         'utf8',
       ).toString('base64url'),
     ],

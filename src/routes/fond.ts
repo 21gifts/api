@@ -32,11 +32,7 @@ import { addUtcDays } from '@/lib/member-habit';
 import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import { normalizeUuid } from '@/lib/uuid';
-import type {
-  WalletPaymentCursor,
-  WalletPaymentRecord,
-  WalletStore,
-} from '@/lib/wallet-store';
+import type { WalletPaymentRecord, WalletStore } from '@/lib/wallet-store';
 import { bearerToken } from '@/routes/me';
 import {
   issueGiftInvoice,
@@ -109,8 +105,14 @@ const PAYMENTS_PAGE_SIZE = 50;
 /** Canonical unpadded base64url text. */
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
-/** Largest stored wallet payment id (same bound as the wallet report parser). */
-const PAYMENT_ID_MAX_LENGTH = 256;
+/** Public payment id: first 16 lowercase hex characters of its SHA-256 digest. */
+const PUBLIC_PAYMENT_ID_RE = /^[0-9a-f]{16}$/;
+
+/** Exclusive `(paidAt, public id)` position of a `GET /fond/payments` page. */
+interface FondPaymentsCursor {
+  paidAt: Date;
+  id: string;
+}
 
 /** Known account on the other side of a Fond payment. */
 interface FondPaymentCounterparty {
@@ -133,11 +135,11 @@ interface FondPaymentListRow {
  * Encode the last row of a page as an opaque cursor.
  *
  * @param row - Last returned payment.
- * @returns Canonical unpadded base64url JSON `{ paidAt, paymentId }`.
+ * @returns Canonical unpadded base64url JSON `{ paidAt, id }` with only the public id.
  */
 function encodeFondPaymentsCursor(row: WalletPaymentRecord): string {
   return Buffer.from(
-    JSON.stringify({ paidAt: row.paidAt.toISOString(), paymentId: row.paymentId }),
+    JSON.stringify({ paidAt: row.paidAt.toISOString(), id: publicPaymentId(row.paymentId) }),
     'utf8',
   ).toString('base64url');
 }
@@ -148,7 +150,7 @@ function encodeFondPaymentsCursor(row: WalletPaymentRecord): string {
  * @param raw - `before` query value, or `undefined` when omitted.
  * @returns The exclusive cursor, `null` for the first page, or `false` when invalid.
  */
-function decodeFondPaymentsCursor(raw: string | undefined): WalletPaymentCursor | null | false {
+function decodeFondPaymentsCursor(raw: string | undefined): FondPaymentsCursor | null | false {
   if (raw === undefined) {
     return null;
   }
@@ -171,19 +173,18 @@ function decodeFondPaymentsCursor(raw: string | undefined): WalletPaymentCursor 
   if (
     Object.keys(parsed).length !== 2 ||
     !Object.hasOwn(parsed, 'paidAt') ||
-    !Object.hasOwn(parsed, 'paymentId')
+    !Object.hasOwn(parsed, 'id')
   ) {
     return false;
   }
   const record = parsed as Record<string, unknown>;
   const paidAtText = record['paidAt'];
-  const paymentId = record['paymentId'];
+  const id = record['id'];
   if (
     typeof paidAtText !== 'string' ||
     paidAtText.length !== 24 ||
-    typeof paymentId !== 'string' ||
-    paymentId.length < 1 ||
-    paymentId.length > PAYMENT_ID_MAX_LENGTH
+    typeof id !== 'string' ||
+    !PUBLIC_PAYMENT_ID_RE.test(id)
   ) {
     return false;
   }
@@ -191,7 +192,7 @@ function decodeFondPaymentsCursor(raw: string | undefined): WalletPaymentCursor 
   if (Number.isNaN(paidAt.getTime()) || paidAt.toISOString() !== paidAtText) {
     return false;
   }
-  return { paidAt, paymentId };
+  return { paidAt, id };
 }
 
 /**
@@ -202,6 +203,14 @@ function decodeFondPaymentsCursor(raw: string | undefined): WalletPaymentCursor 
  */
 function publicPaymentId(paymentId: string): string {
   return createHash('sha256').update(paymentId, 'utf8').digest('hex').slice(0, 16);
+}
+
+/** The completed payment whose public id a cursor names, if any. */
+function cursorPayment(
+  rows: readonly WalletPaymentRecord[],
+  id: string,
+): WalletPaymentRecord | null {
+  return rows.find((row) => publicPaymentId(row.paymentId) === id) ?? null;
 }
 
 /**
@@ -215,10 +224,11 @@ function publicPaymentRow(
   row: WalletPaymentRecord,
   counterparties: ReadonlyMap<string, FondPaymentCounterparty>,
 ): FondPaymentListRow {
+  // Only a member-to-member transfer or a direct member payout names the other account.
+  // A gift category can come from a conversation invoice, whose payer stays private.
+  const counterpartyAccountId = row.category === 'member' ? row.counterpartyAccountId : null;
   const counterparty =
-    row.counterpartyAccountId === null
-      ? null
-      : (counterparties.get(row.counterpartyAccountId) ?? null);
+    counterpartyAccountId === null ? null : (counterparties.get(counterpartyAccountId) ?? null);
   return {
     id: publicPaymentId(row.paymentId),
     direction: row.direction,
@@ -509,23 +519,40 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (decodedBefore === false) {
         return c.json({ error: 'Invalid cursor' }, 400, FOND_NO_STORE);
       }
-      const before: WalletPaymentCursor | undefined = decodedBefore ?? undefined;
+      const before: FondPaymentsCursor | null = decodedBefore;
       try {
         const account = await deps.authStore.getAccountByUsername(deps.fondUsername);
         if (account === undefined || !canSignFondPayouts(account, deps.fondUsername)) {
           return c.json({ payments: [], next: null }, 200, FOND_NO_STORE);
         }
+        let keyset: { paidAt: Date; paymentId: string } | undefined;
+        if (before !== null) {
+          const matching = await deps.walletStore.listPayments(
+            account.id,
+            Number.MAX_SAFE_INTEGER,
+            undefined,
+            { status: 'completed', paidAt: before.paidAt },
+          );
+          const cursorRow = cursorPayment(matching, before.id);
+          if (cursorRow === null) {
+            return c.json({ error: 'Invalid cursor' }, 400, FOND_NO_STORE);
+          }
+          keyset = { paidAt: cursorRow.paidAt, paymentId: cursorRow.paymentId };
+        }
         const rows = await deps.walletStore.listPayments(
           account.id,
           PAYMENTS_PAGE_SIZE + 1,
-          before,
-          'completed',
+          keyset,
+          { status: 'completed' },
         );
         const hasMore = rows.length > PAYMENTS_PAGE_SIZE;
         const page = rows.slice(0, PAYMENTS_PAGE_SIZE);
         const counterpartyIds = [
           ...new Set(
-            page.map((row) => row.counterpartyAccountId).filter((id): id is string => id !== null),
+            page
+              .filter((row) => row.category === 'member')
+              .map((row) => row.counterpartyAccountId)
+              .filter((id): id is string => id !== null),
           ),
         ];
         const counterparties = new Map<string, FondPaymentCounterparty>();

@@ -3374,10 +3374,12 @@ describe('PostgresWalletStore', () => {
 
       const store = new PostgresWalletStore(client);
       const paidAt = new Date('2026-11-11T13:31:01.000Z');
+      const olderPaidAt = new Date('2026-11-11T13:30:01.000Z');
       const row = (
         account: string,
         paymentId: string,
         status: 'pending' | 'completed',
+        when = paidAt,
       ): WalletPaymentRecord => ({
         accountId: account,
         paymentId,
@@ -3385,7 +3387,7 @@ describe('PostgresWalletStore', () => {
         status,
         amountSats: 1,
         feeSats: 0,
-        paidAt,
+        paidAt: when,
         method: 'spark',
         paymentHash: null,
         invoice: null,
@@ -3404,18 +3406,53 @@ describe('PostgresWalletStore', () => {
       await store.upsertPayments([
         ...completedIds.map((id) => row(accountId, id, 'completed')),
         row(accountId, 'pending', 'pending'),
+        row(accountId, 'older', 'completed', olderPaidAt),
         row(otherId, 'other', 'completed'),
       ]);
 
-      const first = await store.listPayments(accountId, 51, undefined, 'completed');
-      expect(first.map((item) => item.paymentId)).toEqual([...completedIds].reverse());
+      const completedDescending = [...completedIds].reverse();
+      const first = await store.listPayments(accountId, 51, undefined, {
+        status: 'completed',
+      });
+      expect(first.map((item) => item.paymentId)).toEqual(completedDescending);
+      const tail = await store.listPayments(
+        accountId,
+        51,
+        { paidAt, paymentId: 'p-00' },
+        { status: 'completed' },
+      );
+      expect(tail.map((item) => item.paymentId)).toEqual(['older']);
       const second = await store.listPayments(
         accountId,
         51,
         { paidAt, paymentId: 'p-01' },
-        'completed',
+        { status: 'completed' },
       );
-      expect(second.map((item) => item.paymentId)).toEqual(['p-00']);
+      expect(second.map((item) => item.paymentId)).toEqual(['p-00', 'older']);
+      const exactPaidAt = await store.listPayments(accountId, 100, undefined, { paidAt });
+      expect(exactPaidAt.map((item) => item.paymentId)).toEqual([
+        'pending',
+        ...completedDescending,
+      ]);
+      const exactPaidAtAfter = await store.listPayments(
+        accountId,
+        100,
+        { paidAt, paymentId: 'pending' },
+        { paidAt },
+      );
+      expect(exactPaidAtAfter.map((item) => item.paymentId)).toEqual(completedDescending);
+      const exactCompleted = await store.listPayments(accountId, 100, undefined, {
+        status: 'completed',
+        paidAt,
+      });
+      expect(exactCompleted.map((item) => item.paymentId)).toEqual(completedDescending);
+      const exactCompletedAfter = await store.listPayments(
+        accountId,
+        100,
+        { paidAt, paymentId: 'p-01' },
+        { status: 'completed', paidAt },
+      );
+      expect(exactCompletedAfter.map((item) => item.paymentId)).toEqual(['p-00']);
     } finally {
       await closeIfPossible(sql);
     }
