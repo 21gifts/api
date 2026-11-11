@@ -39,7 +39,6 @@ const EMPTY_STATS = {
   firstPaidAt: null,
   lastPaidAt: null,
   spendOverTime: [],
-  byRecipient: [],
   byMonth: [],
   fx: {
     quote: 'BTC-USD',
@@ -63,7 +62,9 @@ describe('GET /gifts/stats', () => {
   it('returns empty stats from the default store without calling rates', async () => {
     const res = await createApp().request('/gifts/stats');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(EMPTY_STATS);
+    const body: unknown = await res.json();
+    expect(body).toEqual(EMPTY_STATS);
+    expect(body).not.toHaveProperty('byRecipient');
   });
 
   it('aggregates sats and leaves fiat null when the gift stores none', async () => {
@@ -194,13 +195,12 @@ describe('GET /gifts/stats', () => {
       giftCount: number;
       totalSats: number;
       recipientCount: number;
-      byRecipient: Array<{ recipient: string }>;
       spendOverTime: Array<{ day: string; sats: number }>;
     };
     expect(body.giftCount).toBe(1);
     expect(body.totalSats).toBe(1000);
     expect(body.recipientCount).toBe(1);
-    expect(body.byRecipient.map((r) => r.recipient)).toEqual(['alice']);
+    expect(body).not.toHaveProperty('byRecipient');
     expect(body.spendOverTime).toEqual([
       expect.objectContaining({ day: '2026-06-01', sats: 1000 }),
     ]);

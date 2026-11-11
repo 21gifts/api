@@ -1093,6 +1093,7 @@ test('GET /gifts/stats is empty without a database', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
   const body = await res.json();
+  expect(body).not.toHaveProperty('byRecipient');
   expect(body).toEqual({
     totalSats: 0,
     totalBtc: '0.00000000',
@@ -1105,7 +1106,6 @@ test('GET /gifts/stats is empty without a database', async ({ request }) => {
     firstPaidAt: null,
     lastPaidAt: null,
     spendOverTime: [],
-    byRecipient: [],
     byMonth: [],
     fx: {
       quote: 'BTC-USD',
@@ -1120,6 +1120,7 @@ test('GET /gifts/stats?recipient=alice is empty without a database', async ({ re
   const res = await request.get('/gifts/stats?recipient=alice');
   expect(res.status()).toBe(200);
   const body = await res.json();
+  expect(body).not.toHaveProperty('byRecipient');
   expect(body).toEqual({
     totalSats: 0,
     totalBtc: '0.00000000',
@@ -1132,7 +1133,6 @@ test('GET /gifts/stats?recipient=alice is empty without a database', async ({ re
     firstPaidAt: null,
     lastPaidAt: null,
     spendOverTime: [],
-    byRecipient: [],
     byMonth: [],
     fx: {
       quote: 'BTC-USD',
