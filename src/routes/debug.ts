@@ -366,7 +366,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       }
       const username =
         parsed.data.username === undefined ? undefined : normalizeUsername(parsed.data.username);
-      if (parsed.data.username !== undefined && username === null) {
+      if (username === null) {
         return c.json(
           {
             error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
@@ -410,7 +410,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             : c.json({ error: 'Not found' }, 404);
         }
         updated.username = username;
-        renamedTo = username ?? undefined;
+        renamedTo = username;
       }
       if (parsed.data.role !== undefined) {
         updated.role = parsed.data.role;
