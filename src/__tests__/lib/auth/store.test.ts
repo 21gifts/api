@@ -2759,6 +2759,36 @@ describe('InMemoryAuthStore setUsername', () => {
     const store = new InMemoryAuthStore();
     expect(await store.setUsername('missing', 'ada')).toEqual({ ok: false, reason: 'missing' });
   });
+
+  it('renames a wallet-verified account and reports the previous handle', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    expect(await store.renameUsername('acc', 'grace')).toEqual({
+      ok: true,
+      previous: 'ada',
+    });
+    expect(await store.getAccount('acc')).toMatchObject({
+      username: 'grace',
+      sparkPubkeyVerifiedAt: 10,
+    });
+  });
+
+  it('refuses a rename to another account handle and to a missing account', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    await account(store, 'other', { username: 'grace', viewKey: 'b'.repeat(64) });
+    expect(await store.renameUsername('acc', 'GRACE')).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+    expect(await store.renameUsername('missing', 'ada')).toEqual({
+      ok: false,
+      reason: 'missing',
+    });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
 });
 
 describe('InMemoryAuthStore social recovery', () => {

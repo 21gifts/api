@@ -2437,6 +2437,55 @@ describe('PostgresAuthStore setUsername', () => {
   });
 });
 
+describe('PostgresAuthStore renameUsername', () => {
+  it('updates a wallet-verified account with FOR UPDATE and previous', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ previous: 'ada' }];
+    expect(await new PostgresAuthStore(sql).renameUsername('acc', 'grace')).toEqual({
+      ok: true,
+      previous: 'ada',
+    });
+    expect(sql.queries[0]?.text).toMatch(/UPDATE account AS a SET username = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
+    expect(sql.queries[0]?.text).not.toMatch(/spark_pubkey_verified_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING before\.previous/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'grace']);
+  });
+
+  it('returns previous null when the account had no username', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ previous: null }];
+    expect(await new PostgresAuthStore(sql).renameUsername('acc', 'ada')).toEqual({
+      ok: true,
+      previous: null,
+    });
+  });
+
+  it('maps SQLSTATE 23505 from Bun errno to taken', async () => {
+    const sql = new MockSql();
+    sql.queryError = Object.assign(new Error('duplicate key'), { errno: '23505' });
+    expect(await new PostgresAuthStore(sql).renameUsername('acc', 'ada')).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+  });
+
+  it('returns missing when the update matches no row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).renameUsername('missing', 'ada')).toEqual({
+      ok: false,
+      reason: 'missing',
+    });
+  });
+
+  it('rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('boom');
+    await expect(new PostgresAuthStore(sql).renameUsername('acc', 'ada')).rejects.toThrow('boom');
+  });
+});
+
 describe('PostgresAuthStore social recovery', () => {
   const OLD = `02${'1'.repeat(64)}`;
   const NEW = `03${'2'.repeat(64)}`;
