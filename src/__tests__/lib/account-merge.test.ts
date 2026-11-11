@@ -92,8 +92,11 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           ) {
             return (options.legacyRepayments ?? []) as T[];
           }
-          if (text.includes('WITH named AS') && text.includes('message_credit_payer_snapshot')) {
+          if (text.includes('WITH payers AS') && text.includes('message_credit_payer_snapshot')) {
             return (options.repaymentPayers ?? []) as T[];
+          }
+          if (text.includes('payer_account_id IS NULL') && text.includes('SUM(r.sats)')) {
+            return [{ sats: 0 }] as T[];
           }
           if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
             return [];
@@ -233,7 +236,7 @@ describe('mergeAccounts', () => {
     expect(queries[normalized]?.params).toEqual([INTO]);
   });
 
-  it('converts a legacy fiat share with its original schedule units before merging identities', async () => {
+  it('uses oldest ingests to convert a legacy fiat share before merging', async () => {
     const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const paidAt = new Date('2026-11-11T12:00:00.000Z');
     const { db, queries } = fakeDatabase({
@@ -271,10 +274,14 @@ describe('mergeAccounts', () => {
     const identityMove = queries.findIndex((query) =>
       query.text.includes('UPDATE message_repayment_part AS part'),
     );
+    const canonicalPayers = queries.find((query) => query.text.includes('nostr_zap_ingest'));
 
     expect(converted?.params).toEqual([messageId, 0, FROM, '100', 5000, paidAt]);
     expect(converted?.text).toContain('SELECT $1::uuid, $2::integer, $3::uuid');
     expect(converted?.text).toContain('$4::bigint, $5::bigint, $6::timestamptz');
+    expect(canonicalPayers?.text).toContain('ORDER BY created_at ASC, id ASC');
+    expect(canonicalPayers?.text).not.toContain('ORDER BY created_at DESC');
+    expect(canonicalPayers?.params).toEqual([messageId, true, null]);
     expect(deleted?.params).toEqual([messageId, 0, FROM]);
     expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
   });

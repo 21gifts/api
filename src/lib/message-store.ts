@@ -1990,6 +1990,20 @@ interface CreditPayerSnapshotPreview {
   units: bigint;
 }
 
+/** Raw canonical payer totals selected from the oldest indexed ingest per receipt. */
+interface CreditPayerQueryRow {
+  account_id: string;
+  sats: string | number;
+  usd: string | null;
+  chf: string | null;
+  eur: string | null;
+  php: string | null;
+  debt_frozen: boolean | string;
+  goal_currency: string | null;
+  snapshot_currency: string | null;
+  snapshot_units: string | number | null;
+}
+
 /** A repayment row written together with its payment-hash claim. */
 type RepaymentSettlement =
   | {
@@ -4466,23 +4480,23 @@ export class InMemoryMessageStore implements MessageStore {
       ) {
         continue;
       }
-      const ingest = this.#zapIngests
-        .filter(
-          (row) =>
-            row.receiptId === eventId && row.outcome === 'indexed' && row.messageId === messageId,
-        )
-        .sort((a, b) => {
-          const byTime = b.createdAt.getTime() - a.createdAt.getTime();
-          return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
-        })[0];
+      const ingest = this.#oldestIndexedIngest(eventId, messageId);
       const amount =
         currency === 'USD'
-          ? (ingest?.amountUsd ?? receipt.fiat?.usd)
+          ? ingest === undefined
+            ? receipt.fiat?.usd
+            : ingest.amountUsd
           : currency === 'CHF'
-            ? (ingest?.amountChf ?? receipt.fiat?.chf)
+            ? ingest === undefined
+              ? receipt.fiat?.chf
+              : ingest.amountChf
             : currency === 'EUR'
-              ? (ingest?.amountEur ?? receipt.fiat?.eur)
-              : (ingest?.amountPhp ?? receipt.fiat?.php);
+              ? ingest === undefined
+                ? receipt.fiat?.eur
+                : ingest.amountEur
+              : ingest === undefined
+                ? receipt.fiat?.php
+                : ingest.amountPhp;
       const units = amount === null || amount === undefined ? null : fiatAmountToCents(amount);
       const current = totals.get(receipt.payerAccountId) ?? { sats: 0, units: 0n };
       current.sats += receipt.sats;
@@ -4621,7 +4635,16 @@ export class InMemoryMessageStore implements MessageStore {
     recipientAccountId: string;
     dueSats: number;
     paidAt: Date;
-  }): Promise<void> {
+  }): Promise<boolean> {
+    const existing = this.#repayments.find(
+      (item) =>
+        item.messageId === row.messageId &&
+        item.dayIndex === row.dayIndex &&
+        item.recipientAccountId === row.recipientAccountId,
+    );
+    if (existing !== undefined) {
+      return Promise.resolve(existing.dueSats === row.dueSats);
+    }
     if (
       this.#repaymentParts.some(
         (part) =>
@@ -4630,24 +4653,16 @@ export class InMemoryMessageStore implements MessageStore {
           part.recipientAccountId === row.recipientAccountId,
       )
     ) {
-      return Promise.resolve();
+      return Promise.resolve(false);
     }
-    const existing = this.#repayments.find(
-      (item) =>
-        item.messageId === row.messageId &&
-        item.dayIndex === row.dayIndex &&
-        item.recipientAccountId === row.recipientAccountId,
-    );
-    if (existing === undefined) {
-      this.#repayments.push({
-        messageId: row.messageId,
-        dayIndex: row.dayIndex,
-        recipientAccountId: row.recipientAccountId,
-        dueSats: row.dueSats,
-        paidAt: new Date(row.paidAt.getTime()),
-      });
-    }
-    return Promise.resolve();
+    this.#repayments.push({
+      messageId: row.messageId,
+      dayIndex: row.dayIndex,
+      recipientAccountId: row.recipientAccountId,
+      dueSats: row.dueSats,
+      paidAt: new Date(row.paidAt.getTime()),
+    });
+    return Promise.resolve(true);
   }
 
   listRepaymentParts(messageId: string): Promise<RepaymentPartRow[]> {
@@ -4750,7 +4765,15 @@ export class InMemoryMessageStore implements MessageStore {
         return false;
       }
       if (settlement.kind === 'legacy') {
-        await this.#markRepaymentPaidUnlocked(settlement);
+        const stored = await this.#markRepaymentPaidUnlocked(settlement);
+        if (!stored) {
+          this.#zapPayments.delete(paymentHash.toLowerCase());
+          logEvent('repayment.settlement.conflict', {
+            messageId: settlement.messageId,
+            dayIndex: settlement.dayIndex,
+          });
+          return false;
+        }
       } else {
         const stored = await this.#markRepaymentPartPaidUnlocked(settlement);
         if (stored === undefined) {
@@ -8303,18 +8326,33 @@ export class PostgresMessageStore implements MessageStore {
       php: string | null;
     }[]
   > {
-    const rows = await this.#sql.query<{
-      account_id: string;
-      sats: string | number;
-      usd: string | null;
-      chf: string | null;
-      eur: string | null;
-      php: string | null;
-      debt_frozen: boolean | string;
-      goal_currency: string | null;
-      snapshot_currency: string | null;
-      snapshot_units: string | number | null;
-    }>(
+    const rows = await this.#creditPayerRows(messageId, undefined);
+    return rows.map((row) => {
+      const debtFrozen = row.debt_frozen === true || row.debt_frozen === 't';
+      const snapshotCurrency = row.snapshot_currency ?? (debtFrozen ? row.goal_currency : null);
+      const frozen =
+        row.snapshot_units === null || row.snapshot_units === undefined
+          ? debtFrozen
+            ? '0.00'
+            : null
+          : storedAmountFromCents(BigInt(row.snapshot_units));
+      return {
+        accountId: row.account_id,
+        sats: Number(row.sats),
+        usd: snapshotCurrency === 'USD' ? frozen : row.usd,
+        chf: snapshotCurrency === 'CHF' ? frozen : row.chf,
+        eur: snapshotCurrency === 'EUR' ? frozen : row.eur,
+        php: snapshotCurrency === 'PHP' ? frozen : row.php,
+      };
+    });
+  }
+
+  #creditPayerRows(
+    messageId: string,
+    through: Date | null | undefined,
+  ): Promise<CreditPayerQueryRow[]> {
+    const useFundedBoundary = through === undefined;
+    return this.#sql.query<CreditPayerQueryRow>(
       `WITH payers AS (
        SELECT r.payer_account_id AS account_id,
               SUM(r.sats)::bigint AS sats,
@@ -8337,36 +8375,32 @@ export class PostgresMessageStore implements MessageStore {
        JOIN message m ON m.id = r.message_id
        WHERE r.message_id = $1 AND r.payer_account_id IS NOT NULL
          AND (
-           m.goal_funded_at IS NULL
-           OR r.recorded_at IS NULL
-           OR r.recorded_at <= m.goal_funded_at
+           (
+             $2::boolean
+             AND (
+               m.goal_funded_at IS NULL
+               OR r.recorded_at IS NULL
+               OR r.recorded_at <= m.goal_funded_at
+             )
+           )
+           OR (
+             NOT $2::boolean
+             AND (
+               $3::timestamptz IS NULL
+               OR r.recorded_at IS NULL
+               OR r.recorded_at <= $3::timestamptz
+             )
+           )
          )
        GROUP BY r.payer_account_id, m.goal_debt_frozen, m.goal_currency
        )
        SELECT p.*, s.currency AS snapshot_currency, s.units AS snapshot_units
        FROM payers p
        LEFT JOIN message_credit_payer_snapshot s
-         ON s.message_id = $1 AND s.account_id = p.account_id`,
-      [messageId],
+         ON s.message_id = $1 AND s.account_id = p.account_id
+       ORDER BY p.account_id`,
+      [messageId, useFundedBoundary, through ?? null],
     );
-    return rows.map((row) => {
-      const debtFrozen = row.debt_frozen === true || row.debt_frozen === 't';
-      const snapshotCurrency = row.snapshot_currency ?? (debtFrozen ? row.goal_currency : null);
-      const frozen =
-        row.snapshot_units === null || row.snapshot_units === undefined
-          ? debtFrozen
-            ? '0.00'
-            : null
-          : storedAmountFromCents(BigInt(row.snapshot_units));
-      return {
-        accountId: row.account_id,
-        sats: Number(row.sats),
-        usd: snapshotCurrency === 'USD' ? frozen : row.usd,
-        chf: snapshotCurrency === 'CHF' ? frozen : row.chf,
-        eur: snapshotCurrency === 'EUR' ? frozen : row.eur,
-        php: snapshotCurrency === 'PHP' ? frozen : row.php,
-      };
-    });
   }
 
   async previewCreditPayerSnapshot(
@@ -8374,44 +8408,22 @@ export class PostgresMessageStore implements MessageStore {
     currency: 'USD' | 'CHF' | 'EUR' | 'PHP',
     through?: Date,
   ): Promise<CreditPayerSnapshotPreview[]> {
-    const rows = await this.#sql.query<{
-      account_id: string;
-      sats: string | number;
-      units: string | number;
-    }>(
-      `SELECT r.payer_account_id AS account_id,
-              SUM(r.sats)::bigint AS sats,
-              COALESCE((SUM(
-                CASE $2::text
-                  WHEN 'USD' THEN i.fiat_usd
-                  WHEN 'CHF' THEN i.fiat_chf
-                  WHEN 'EUR' THEN i.fiat_eur
-                  WHEN 'PHP' THEN i.fiat_php
-                  ELSE NULL
-                END
-              ) * 100)::bigint, 0::bigint) AS units
-       FROM nostr_zap_receipt r
-       LEFT JOIN LATERAL (
-         SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
-         FROM nostr_zap_ingest
-         WHERE receipt_id = r.event_id
-           AND outcome = 'indexed'
-           AND message_id = r.message_id
-         ORDER BY created_at DESC, id DESC
-         LIMIT 1
-       ) i ON true
-       WHERE r.message_id = $1
-         AND r.payer_account_id IS NOT NULL
-         AND ($3::timestamptz IS NULL OR r.recorded_at IS NULL OR r.recorded_at <= $3)
-       GROUP BY r.payer_account_id
-       ORDER BY r.payer_account_id`,
-      [messageId, currency, through ?? null],
-    );
-    return rows.map((row) => ({
-      accountId: row.account_id,
-      sats: Number(row.sats),
-      units: BigInt(row.units),
-    }));
+    const rows = await this.#creditPayerRows(messageId, through ?? null);
+    return rows.map((row) => {
+      const amount =
+        currency === 'USD'
+          ? row.usd
+          : currency === 'CHF'
+            ? row.chf
+            : currency === 'EUR'
+              ? row.eur
+              : row.php;
+      return {
+        accountId: row.account_id,
+        sats: Number(row.sats),
+        units: amount === null ? 0n : (fiatAmountToCents(amount) ?? 0n),
+      };
+    });
   }
 
   async sumUnassignedCreditSats(messageId: string): Promise<number> {
@@ -8558,17 +8570,36 @@ export class PostgresMessageStore implements MessageStore {
     recipientAccountId: string;
     dueSats: number;
     paidAt: Date;
-  }): Promise<void> {
-    await this.#sql.execute(
-      `INSERT INTO message_repayment (message_id, day_index, recipient_account_id, due_sats, paid_at)
-       SELECT $1, $2, $3, $4, $5
-       WHERE NOT EXISTS (
-         SELECT 1 FROM message_repayment_part
-         WHERE message_id = $1 AND day_index = $2 AND recipient_account_id = $3
+  }): Promise<boolean> {
+    const stored = await this.#sql.query<{ due_sats: string | number }>(
+      `WITH exact AS (
+         SELECT due_sats
+         FROM message_repayment
+         WHERE message_id = $1::uuid
+           AND day_index = $2::integer
+           AND recipient_account_id = $3::uuid
+           AND due_sats = $4::bigint
+       ), inserted AS (
+         INSERT INTO message_repayment (
+           message_id, day_index, recipient_account_id, due_sats, paid_at
+         )
+         SELECT $1::uuid, $2::integer, $3::uuid, $4::bigint, $5::timestamptz
+         WHERE NOT EXISTS (
+           SELECT 1 FROM message_repayment_part
+           WHERE message_id = $1::uuid
+             AND day_index = $2::integer
+             AND recipient_account_id = $3::uuid
+         )
+         ON CONFLICT (message_id, day_index, recipient_account_id) DO NOTHING
+         RETURNING due_sats
        )
-       ON CONFLICT (message_id, day_index, recipient_account_id) DO NOTHING`,
+       SELECT due_sats FROM exact
+       UNION ALL
+       SELECT due_sats FROM inserted
+       LIMIT 1`,
       [row.messageId, row.dayIndex, row.recipientAccountId, row.dueSats, row.paidAt],
     );
+    return stored[0] !== undefined;
   }
 
   async listRepaymentParts(messageId: string): Promise<RepaymentPartRow[]> {
@@ -8707,7 +8738,19 @@ export class PostgresMessageStore implements MessageStore {
         return false;
       }
       if (settlement.kind === 'legacy') {
-        await store.#markRepaymentPaidUnlocked(settlement);
+        const stored = await store.#markRepaymentPaidUnlocked(settlement);
+        if (!stored) {
+          await store.#sql.execute(
+            `DELETE FROM nostr_zap_payment
+             WHERE payment_hash = $1 AND receipt_event_id = $2`,
+            [paymentHash.toLowerCase(), receiptEventId],
+          );
+          logEvent('repayment.settlement.conflict', {
+            messageId: settlement.messageId,
+            dayIndex: settlement.dayIndex,
+          });
+          return false;
+        }
       } else {
         const stored = await store.#markRepaymentPartPaidUnlocked(settlement);
         if (stored === undefined) {

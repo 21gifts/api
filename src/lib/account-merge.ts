@@ -1,4 +1,6 @@
+import type { SqlClient } from '@/lib/auth/sql';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
+import { PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** One reserved database transaction connection used by an account merge. */
@@ -61,15 +63,6 @@ interface LegacyRepaymentRow {
   goal_currency: string | null;
   goal_amount: string | null;
   goal_term_days: number | string | null;
-}
-
-interface MergePayerRow {
-  account_id: string;
-  sats: number | string;
-  usd: string | null;
-  chf: string | null;
-  eur: string | null;
-  php: string | null;
 }
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
@@ -237,75 +230,17 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     const canonicalLegacy: Array<LegacyRepaymentRow & { units: bigint }> = [];
+    const repaymentStore = new PostgresMessageStore(tx as SqlClient);
     for (const legacy of legacyRepayments) {
-      const payerRows = await tx.query<MergePayerRow>(
-        `WITH named AS (
-           SELECT receipt.payer_account_id AS account_id,
-                  SUM(receipt.sats)::bigint AS sats,
-                  SUM(ingest.fiat_usd)::text AS usd,
-                  SUM(ingest.fiat_chf)::text AS chf,
-                  SUM(ingest.fiat_eur)::text AS eur,
-                  SUM(ingest.fiat_php)::text AS php,
-                  message.goal_debt_frozen,
-                  message.goal_currency
-           FROM nostr_zap_receipt AS receipt
-           LEFT JOIN LATERAL (
-             SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
-             FROM nostr_zap_ingest
-             WHERE receipt_id = receipt.event_id
-               AND outcome = 'indexed'
-               AND message_id = receipt.message_id
-             ORDER BY created_at DESC, id DESC
-             LIMIT 1
-           ) AS ingest ON true
-           JOIN message ON message.id = receipt.message_id
-           WHERE receipt.message_id = $1 AND receipt.payer_account_id IS NOT NULL
-             AND (
-               message.goal_funded_at IS NULL
-               OR receipt.recorded_at IS NULL
-               OR receipt.recorded_at <= message.goal_funded_at
-             )
-           GROUP BY receipt.payer_account_id, message.goal_debt_frozen, message.goal_currency
-         ), unassigned AS (
-           SELECT COALESCE(SUM(receipt.sats), 0)::bigint AS sats
-           FROM nostr_zap_receipt AS receipt
-           JOIN message ON message.id = receipt.message_id
-           WHERE receipt.message_id = $1 AND receipt.payer_account_id IS NULL
-             AND (
-               message.goal_funded_at IS NULL
-               OR receipt.recorded_at IS NULL
-               OR receipt.recorded_at <= message.goal_funded_at
-             )
-         )
-         SELECT named.account_id, named.sats,
-                CASE WHEN named.goal_debt_frozen
-                          AND COALESCE(snapshot.currency, named.goal_currency) = 'USD'
-                     THEN (COALESCE(snapshot.units, 0)::numeric / 100)::text ELSE named.usd END AS usd,
-                CASE WHEN named.goal_debt_frozen
-                          AND COALESCE(snapshot.currency, named.goal_currency) = 'CHF'
-                     THEN (COALESCE(snapshot.units, 0)::numeric / 100)::text ELSE named.chf END AS chf,
-                CASE WHEN named.goal_debt_frozen
-                          AND COALESCE(snapshot.currency, named.goal_currency) = 'EUR'
-                     THEN (COALESCE(snapshot.units, 0)::numeric / 100)::text ELSE named.eur END AS eur,
-                CASE WHEN named.goal_debt_frozen
-                          AND COALESCE(snapshot.currency, named.goal_currency) = 'PHP'
-                     THEN (COALESCE(snapshot.units, 0)::numeric / 100)::text ELSE named.php END AS php
-         FROM named
-         LEFT JOIN message_credit_payer_snapshot AS snapshot
-           ON snapshot.message_id = $1 AND snapshot.account_id = named.account_id
-         UNION ALL
-         SELECT ''::text, unassigned.sats, NULL::text, NULL::text, NULL::text, NULL::text
-         FROM unassigned`,
-        [legacy.message_id],
-      );
-      const payers = payerRows.map((payer) => ({
-        accountId: payer.account_id,
-        sats: Number(payer.sats),
-        usd: payer.usd,
-        chf: payer.chf,
-        eur: payer.eur,
-        php: payer.php,
-      }));
+      const payers = await repaymentStore.listCreditPayers(legacy.message_id);
+      payers.push({
+        accountId: '',
+        sats: await repaymentStore.sumUnassignedCreditSats(legacy.message_id),
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
+      });
       const owed = payerDebtUnits(legacy.goal_currency, legacy.goal_amount, payers);
       if (owed === 'unavailable') {
         return { ok: false, error: 'repayment_unavailable' };

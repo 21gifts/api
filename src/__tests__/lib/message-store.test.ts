@@ -10863,6 +10863,45 @@ describe('PostgresMessageStore', () => {
     ]);
   });
 
+  it('releases a legacy settlement claim when canonical parts already exist', async () => {
+    const memory = new InMemoryMessageStore();
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const legacy = {
+      kind: 'legacy' as const,
+      messageId: 'legacy-share',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 100,
+      paidAt,
+    };
+    expect(await memory.settleRepaymentPayment('AA', 'exact-receipt', paidAt, legacy)).toBe(true);
+    expect(await memory.settleRepaymentPayment('AA', 'exact-receipt', paidAt, legacy)).toBe(true);
+
+    await memory.markRepaymentPartPaid({
+      messageId: 'part-share',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      partIndex: 0,
+      units: 4n,
+      sats: 40,
+      shareUnits: 10n,
+      paidAt,
+    });
+
+    expect(
+      await memory.settleRepaymentPayment('AB', 'legacy-receipt', paidAt, {
+        kind: 'legacy',
+        messageId: 'part-share',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        dueSats: 100,
+        paidAt,
+      }),
+    ).toBe(false);
+    expect(await memory.zapPaymentReceiptId('ab')).toBeUndefined();
+    expect(await memory.listRepayments('part-share')).toEqual([]);
+  });
+
   it('serializes concurrent repayment reservations and settlements per message', async () => {
     const memory = new InMemoryMessageStore();
     const entered: string[] = [];
@@ -11027,8 +11066,9 @@ describe('PostgresMessageStore', () => {
       dueSats: 10,
       paidAt: new Date('2026-09-27T00:00:00.000Z'),
     });
-    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_repayment/);
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT/);
+    expect(sql.queries[1]?.text).toMatch(/INSERT INTO message_repayment/);
+    expect(sql.queries[1]?.text).toMatch(/ON CONFLICT/);
+    expect(sql.queries[1]?.text).toMatch(/RETURNING due_sats/);
     const memory = new InMemoryMessageStore();
     const paidAt = new Date('2026-09-27T00:00:00.000Z');
     await memory.markRepaymentPaid({
@@ -11252,24 +11292,58 @@ describe('PostgresMessageStore', () => {
   it('previews Postgres close cents per payer from each gift snapshot', async () => {
     const sql = new MockSql();
     sql.nextRows = [
-      { account_id: 'giver-a', sats: '100', units: '100' },
-      { account_id: 'giver-b', sats: '100', units: '200' },
-      { account_id: 'giver-missing', sats: '100', units: '0' },
+      {
+        account_id: 'giver-a',
+        sats: '100',
+        usd: '1.00',
+        chf: '3.00',
+        eur: '5.00',
+        php: '7.00',
+      },
+      {
+        account_id: 'giver-b',
+        sats: '100',
+        usd: '2.00',
+        chf: '4.00',
+        eur: '6.00',
+        php: '8.00',
+      },
+      {
+        account_id: 'giver-missing',
+        sats: '100',
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
+      },
+      {
+        account_id: 'giver-invalid',
+        sats: '100',
+        usd: 'invalid',
+        chf: 'invalid',
+        eur: 'invalid',
+        php: 'invalid',
+      },
     ];
     const through = new Date('2026-11-11T12:00:00.000Z');
-    const preview = await new PostgresMessageStore(sql).previewCreditPayerSnapshot(
-      'credit',
-      'USD',
-      through,
-    );
-    expect(preview).toEqual([
-      { accountId: 'giver-a', sats: 100, units: 100n },
-      { accountId: 'giver-b', sats: 100, units: 200n },
-      { accountId: 'giver-missing', sats: 100, units: 0n },
-    ]);
-    expect(sql.queries[0]?.params).toEqual(['credit', 'USD', through]);
-    expect(sql.queries[0]?.text).toContain("WHEN 'USD' THEN i.fiat_usd");
+    const store = new PostgresMessageStore(sql);
+    for (const [currency, first, second] of [
+      ['USD', 100n, 200n],
+      ['CHF', 300n, 400n],
+      ['EUR', 500n, 600n],
+      ['PHP', 700n, 800n],
+    ] as const) {
+      expect(await store.previewCreditPayerSnapshot('credit', currency, through)).toEqual([
+        { accountId: 'giver-a', sats: 100, units: first },
+        { accountId: 'giver-b', sats: 100, units: second },
+        { accountId: 'giver-missing', sats: 100, units: 0n },
+        { accountId: 'giver-invalid', sats: 100, units: 0n },
+      ]);
+    }
+    expect(sql.queries[0]?.params).toEqual(['credit', false, through]);
     expect(sql.queries[0]?.text).toContain('GROUP BY r.payer_account_id');
+    expect(sql.queries[0]?.text).toContain('ORDER BY created_at ASC, id ASC');
+    expect(sql.queries[0]?.text).not.toContain('ORDER BY created_at DESC');
     expect(sql.queries[0]?.text).not.toContain('goal_amount');
   });
 
@@ -13435,7 +13509,7 @@ describe('shop identity on message rows', () => {
     expect(await store.deleteById('gone')).toBe(false);
   });
 
-  it('freezes every supported fiat currency and previews the newest ingest values', async () => {
+  it('freezes each fiat currency and previews the oldest indexed ingest values', async () => {
     for (const currency of ['USD', 'CHF', 'EUR', 'PHP'] as const) {
       const store = new InMemoryMessageStore();
       const id = `credit-${currency}`;
@@ -13477,9 +13551,9 @@ describe('shop identity on message rows', () => {
     });
     await preview.updateZapReceiptGift('preview-receipt', { payerAccountId: 'giver' });
     for (const [id, createdAt, amount] of [
-      ['ingest-old', new Date(1), '1.00'],
-      ['ingest-a', new Date(2), '2.00'],
-      ['ingest-z', new Date(2), '3.00'],
+      ['ingest-z', new Date(1), '3.00'],
+      ['ingest-a', new Date(1), '1.00'],
+      ['ingest-new', new Date(2), '2.00'],
     ] as const) {
       await preview.recordZapIngest({
         id,
@@ -13500,7 +13574,7 @@ describe('shop identity on message rows', () => {
     }
     for (const currency of ['USD', 'CHF', 'EUR', 'PHP'] as const) {
       expect(await preview.previewCreditPayerSnapshot('preview', currency)).toEqual([
-        { accountId: 'giver', sats: 10, units: 300n },
+        { accountId: 'giver', sats: 10, units: 100n },
       ]);
     }
   });
@@ -13651,7 +13725,16 @@ describe('shop identity on message rows', () => {
           snapshot_units: null,
         },
       ],
-      [{ account_id: 'giver', sats: '5', units: '6' }],
+      [
+        {
+          account_id: 'giver',
+          sats: '5',
+          usd: null,
+          chf: null,
+          eur: null,
+          php: '0.06',
+        },
+      ],
     ];
     const store = new PostgresMessageStore(sql);
     expect(await store.listCreditPayers('credit')).toEqual([
@@ -13678,7 +13761,7 @@ describe('shop identity on message rows', () => {
     expect(await store.previewCreditPayerSnapshot('credit', 'PHP')).toEqual([
       { accountId: 'giver', sats: 5, units: 6n },
     ]);
-    expect(sql.queries[1]?.params).toEqual(['credit', 'PHP', null]);
+    expect(sql.queries[1]?.params).toEqual(['credit', false, null]);
   });
 
   it('lists and writes Postgres repayment parts, including idempotent fallbacks', async () => {
@@ -13787,7 +13870,7 @@ describe('shop identity on message rows', () => {
   it('settles both Postgres repayment forms and leaves a foreign claim untouched', async () => {
     const paidAt = new Date('2026-11-11T12:00:00.000Z');
     const legacySql = new MockSql();
-    legacySql.queryQueue = [[{ receipt_event_id: 'legacy-receipt' }]];
+    legacySql.queryQueue = [[{ receipt_event_id: 'legacy-receipt' }], [{ due_sats: '10' }]];
     expect(
       await new PostgresMessageStore(legacySql).settleRepaymentPayment(
         'AA',
@@ -13803,7 +13886,34 @@ describe('shop identity on message rows', () => {
         },
       ),
     ).toBe(true);
-    expect(legacySql.executes[1]?.text).toMatch(/INSERT INTO message_repayment/);
+    expect(legacySql.queries[1]?.text).toMatch(/INSERT INTO message_repayment/);
+    expect(legacySql.queries[1]?.text).toContain('WITH exact AS');
+    expect(legacySql.queries[1]?.text).toContain('AND due_sats = $4::bigint');
+    expect(legacySql.queries[1]?.text).toContain('RETURNING due_sats');
+
+    const legacyConflictSql = new MockSql();
+    legacyConflictSql.queryQueue = [[{ receipt_event_id: 'legacy-conflict' }], []];
+    expect(
+      await new PostgresMessageStore(legacyConflictSql).settleRepaymentPayment(
+        'AC',
+        'legacy-conflict',
+        paidAt,
+        {
+          kind: 'legacy',
+          messageId: 'm1',
+          dayIndex: 0,
+          recipientAccountId: 'giver',
+          dueSats: 10,
+          paidAt,
+        },
+      ),
+    ).toBe(false);
+    expect(legacyConflictSql.queries[1]?.text).toContain('message_repayment_part');
+    expect(legacyConflictSql.executes.at(-1)).toEqual({
+      text: `DELETE FROM nostr_zap_payment
+             WHERE payment_hash = $1 AND receipt_event_id = $2`,
+      params: ['ac', 'legacy-conflict'],
+    });
 
     const partSql = new MockSql();
     partSql.queryQueue = [[{ receipt_event_id: 'part-receipt' }], [{ part_index: 0 }]];
@@ -13877,7 +13987,16 @@ describe('shop identity on message rows', () => {
     const fiat = new MockSql();
     fiat.queryQueue = [
       [{ goal_funded_at: null, goal_currency: 'CHF' }],
-      [{ account_id: 'giver', sats: '10', units: '123' }],
+      [
+        {
+          account_id: 'giver',
+          sats: '10',
+          usd: null,
+          chf: '1.23',
+          eur: null,
+          php: null,
+        },
+      ],
       [
         {
           goal_funded_at: '2026-11-11T12:00:00.000Z',
