@@ -491,23 +491,36 @@ describe('debugRoutes', () => {
     ).toBe(true);
   });
 
-  it('PATCH renames and refuses a session in the same call', async () => {
+  it('PATCH refuses username combined with another key and writes nothing', async () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    const renameUsername = vi.spyOn(store, 'renameUsername');
+    const updateAccount = vi.spyOn(store, 'updateAccount');
+    const setSessionRefused = vi.spyOn(store, 'setSessionRefused');
     const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
-    const res = await app.request('/debug/accounts/acc', {
-      method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'grace', sessionRefused: true }),
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()) as { username: string; sessionRefused: boolean }).toMatchObject({
-      username: 'grace',
-      sessionRefused: true,
-    });
+
+    for (const body of [
+      { username: 'grace', role: 'moderator' },
+      { username: 'grace', sessionRefused: true },
+      { username: 'grace', platform: true },
+    ]) {
+      const res = await app.request('/debug/accounts/acc', {
+        method: 'PATCH',
+        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error:
+          'Expected a JSON body with a "role" string, "username" string, platform boolean, and/or sessionRefused boolean',
+      });
+    }
+    expect(renameUsername).not.toHaveBeenCalled();
+    expect(updateAccount).not.toHaveBeenCalled();
+    expect(setSessionRefused).not.toHaveBeenCalled();
     expect(await store.getAccount('acc')).toMatchObject({
-      username: 'grace',
-      sessionRefused: true,
+      username: 'ada',
+      role: 'verified',
     });
   });
 
@@ -600,23 +613,6 @@ describe('debugRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('PATCH renames and changes the role in one call', async () => {
-    const store = new InMemoryAuthStore();
-    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
-    const res = await app.request('/debug/accounts/acc', {
-      method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'grace', role: 'moderator' }),
-    });
-    expect(res.status).toBe(200);
-    expect((await res.json()) as { username: string; role: string }).toMatchObject({
-      username: 'grace',
-      role: 'moderator',
-    });
-    expect(await store.getAccount('acc')).toMatchObject({ username: 'grace', role: 'moderator' });
-  });
-
   it('PATCH refuses to rename the platform account', async () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, 'plat', 'b'.repeat(64), {
@@ -632,21 +628,6 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'The platform account cannot be renamed' });
     expect((await store.getAccount('plat'))?.username).toBe('platform');
-  });
-
-  it('PATCH refuses a rename that also promotes the account to platform', async () => {
-    const store = new InMemoryAuthStore();
-    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
-    const res = await app.request('/debug/accounts/acc', {
-      method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
-      body: JSON.stringify({ username: 'platform', platform: true }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'The platform account cannot be renamed' });
-    expect((await store.getAccount('acc'))?.username).toBe('ada');
-    expect((await store.getAccount('acc'))?.isPlatform).not.toBe(true);
   });
 
   it('PATCH sets the role and returns the updated account', async () => {

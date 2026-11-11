@@ -4557,10 +4557,12 @@ official platform flag (`isPlatform`), and/or
 session refusal (`sessionRefused`). Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN` (same gate as
 `GET /debug/accounts`). Body is one or more of `role`, `username`, `platform`, and
-`sessionRefused`; any other key (including `lightningAddress`) is refused:
+`sessionRefused`; any other key (including `lightningAddress`) is refused.
+`username` must be alone; send `role`, `platform`, or `sessionRefused` in a
+second call:
 
 ```json
-{ "role": "basis", "username": "tondo-fond-lost", "sessionRefused": true }
+{ "username": "tondo-fond-lost" }
 ```
 
 `role` must be one of `basis`, `verified`, `moderator`, `initiator`, or `founder`.
@@ -4592,7 +4594,8 @@ Missing or non-matching bearer → **Response** `401`:
 ```
 
 Body is not JSON with a known `role`, `username`, `platform` boolean, and/or
-`sessionRefused` boolean, or has another key → **Response** `400`:
+`sessionRefused` boolean, has another key, or combines `username` with any
+other key → **Response** `400`:
 
 ```json
 {
@@ -4637,7 +4640,8 @@ Session-refusal changes log `debug.accounts.session_refused_set` with the
 account id and the new flag. A `username` is validated and normalised by
 `normalizeUsername` and written through `AuthStore.renameUsername`, including
 for a wallet-verified account; an invalid handle is 400 and another account's
-handle is 409. The platform account cannot be renamed (409). The 21.gifts
+handle is 409. The rename is the call's single atomic store write. The platform
+account cannot be renamed (409). The 21.gifts
 Lightning address (`<username>@<host>`) and Nostr NIP-05 names follow the new
 handle, and links using the old handle stop resolving; nothing else is
 migrated. Renames log `debug.accounts.username_renamed` with the account id and

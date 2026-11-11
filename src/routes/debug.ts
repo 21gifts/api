@@ -31,7 +31,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
  * Exposes `GET /` (list), `GET /:id` (detail with nested auth rows),
  * `POST /` (provision), `PATCH /:id`
- * (set role, username, the official platform flag, and/or sessionRefused),
+ * (set role, username alone, the official platform flag, or sessionRefused),
  * `POST /:id/session` (mint a member bearer), and `POST /merge` (fold accounts).
  */
 
@@ -105,7 +105,7 @@ function provisionUsername(name: string, id: string, taken: Set<string>): string
   return normalizeUsername(allocateNip05Local(name, id, taken));
 }
 
-/** Body schema for operator role, username, platform flag, and session refusal. */
+/** Body schema for operator role, username alone, platform flag, and session refusal. */
 const patchBody = z
   .object({
     role: z.enum(['basis', 'verified', 'moderator', 'initiator', 'founder', 'fond']).optional(),
@@ -120,6 +120,11 @@ const patchBody = z
       body.username !== undefined ||
       body.platform !== undefined ||
       body.sessionRefused !== undefined,
+  )
+  .refine(
+    (body) =>
+      body.username === undefined ||
+      (body.role === undefined && body.platform === undefined && body.sessionRefused === undefined),
   );
 
 /** One row in the operator provision body. Unknown keys are refused. */
@@ -373,8 +378,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (existing === undefined) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const platformAfter = parsed.data.platform ?? existing.isPlatform === true;
-      if (username !== undefined && (existing.isPlatform === true || platformAfter)) {
+      if (username !== undefined && existing.isPlatform === true) {
         return c.json({ error: 'The platform account cannot be renamed' }, 409);
       }
       if (username !== undefined) {
@@ -384,6 +388,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         }
       }
       const roleAfter = parsed.data.role ?? existing.role;
+      const platformAfter = parsed.data.platform ?? existing.isPlatform === true;
       if (roleAfter === 'fond' && platformAfter) {
         return c.json(
           {

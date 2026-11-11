@@ -954,7 +954,7 @@ test('PATCH /debug/accounts/:id without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('PATCH /debug/accounts/:id renames and refuses the session in one call', async ({
+test('PATCH /debug/accounts/:id renames and refuses the session in two calls', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -974,12 +974,18 @@ test('PATCH /debug/accounts/:id renames and refuses the session in one call', as
 
   const res = await request.patch(`/debug/accounts/${id}`, {
     headers: DEBUG,
-    data: { username: ` ${renamed.toUpperCase()} `, sessionRefused: true },
+    data: { username: ` ${renamed.toUpperCase()} ` },
   });
   expect(res.status()).toBe(200);
-  const body = (await res.json()) as { username: string; sessionRefused: boolean };
+  const body = (await res.json()) as { username: string };
   expect(body.username).toBe(renamed);
-  expect(body.sessionRefused).toBe(true);
+
+  const refused = await request.patch(`/debug/accounts/${id}`, {
+    headers: DEBUG,
+    data: { sessionRefused: true },
+  });
+  expect(refused.status()).toBe(200);
+  expect(((await refused.json()) as { sessionRefused: boolean }).sessionRefused).toBe(true);
 
   const renamedLookup = await request.get('/debug/accounts', { headers: DEBUG });
   expect(renamedLookup.status()).toBe(200);
