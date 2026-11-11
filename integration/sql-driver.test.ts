@@ -3530,6 +3530,81 @@ describe('PostgresFondPayoutStore', () => {
   });
 });
 
+describe('PostgresFondPayoutStore paid USD by payment hash', () => {
+  test('reads only paid rows of the requested hashes in one batch', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateFondPayoutSchema(client);
+      const store = new PostgresFondPayoutStore(client);
+      const stamp = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const hashA = `a${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const hashB = `b${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const hashOpen = `c${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const paid = async (
+        suffix: string,
+        amountUsd: string,
+        paymentHash: string,
+      ): Promise<void> => {
+        const row: FondPayoutEnqueue = {
+          id: crypto.randomUUID(),
+          utcDay: '2099-01-01',
+          kind: 'welcome',
+          address: `paid_usd_${suffix}_${stamp}@example.com`,
+          amountUsd,
+          comment: 'stored usd',
+          messageId: null,
+          groupMessageId: null,
+        };
+        await store.enqueue(row);
+        await store.claimForInvoice(row.id, row.utcDay);
+        await store.setInvoiced(row.id, {
+          invoiceId: `inv-${row.id}`,
+          paymentHash,
+          bolt11: 'lnbc1',
+          amountMsat: 1_000_000,
+        });
+        await store.claimSettlement(row.id);
+        await store.markPaid(row.id);
+      };
+      await paid('a', '1.25', hashA);
+      await paid('b', '2.50', hashB);
+      const open: FondPayoutEnqueue = {
+        id: crypto.randomUUID(),
+        utcDay: '2099-01-01',
+        kind: 'welcome',
+        address: `paid_usd_open_${stamp}@example.com`,
+        amountUsd: '9.99',
+        comment: 'still invoiced',
+        messageId: null,
+        groupMessageId: null,
+      };
+      await store.enqueue(open);
+      await store.claimForInvoice(open.id, open.utcDay);
+      await store.setInvoiced(open.id, {
+        invoiceId: `inv-${open.id}`,
+        paymentHash: hashOpen,
+        bolt11: 'lnbc2',
+        amountMsat: 1_000_000,
+      });
+
+      const found = await store.paidUsdByPaymentHash([
+        hashA,
+        hashB,
+        hashOpen,
+        `d${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0'),
+        hashA,
+      ]);
+      expect(found.size).toBe(2);
+      expect(found.get(hashA)).toBe('1.25');
+      expect(found.get(hashB)).toBe('2.50');
+      expect(found.has(hashOpen)).toBe(false);
+      expect(await store.paidUsdByPaymentHash([])).toEqual(new Map());
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresWalletStore pairing by payment id', () => {
   const setup = async (): Promise<{
     client: SqlClient;

@@ -121,6 +121,12 @@ interface FondPaymentCounterparty {
   name: string | null;
 }
 
+/** Fiat amount fixed when a matching paid Fond payout was created. */
+interface FondPaymentStoredFiat {
+  currency: 'USD';
+  amount: string;
+}
+
 /** One public `GET /fond/payments` row. */
 interface FondPaymentListRow {
   id: string;
@@ -129,6 +135,7 @@ interface FondPaymentListRow {
   feeSats: number;
   paidAt: string;
   counterparty: FondPaymentCounterparty | null;
+  storedFiat: FondPaymentStoredFiat | null;
 }
 
 /**
@@ -218,17 +225,21 @@ function cursorPayment(
  *
  * @param row - Completed stored payment.
  * @param counterparties - Known non-platform accounts by id.
- * @returns Only the public id, direction, amounts, time, and counterparty.
+ * @param paidUsd - Stored USD amount of each outgoing row's paid payout, by hash.
+ * @returns Only the public id, direction, amounts, time, counterparty, and stored fiat.
  */
 function publicPaymentRow(
   row: WalletPaymentRecord,
   counterparties: ReadonlyMap<string, FondPaymentCounterparty>,
+  paidUsd: ReadonlyMap<string, string>,
 ): FondPaymentListRow {
   // Only a member-to-member transfer or a direct member payout names the other account.
   // A gift category can come from a conversation invoice, whose payer stays private.
   const counterpartyAccountId = row.category === 'member' ? row.counterpartyAccountId : null;
   const counterparty =
     counterpartyAccountId === null ? null : (counterparties.get(counterpartyAccountId) ?? null);
+  const amountUsd =
+    row.direction === 'out' && row.paymentHash !== null ? paidUsd.get(row.paymentHash) : undefined;
   return {
     id: publicPaymentId(row.paymentId),
     direction: row.direction,
@@ -236,6 +247,7 @@ function publicPaymentRow(
     feeSats: row.feeSats,
     paidAt: row.paidAt.toISOString(),
     counterparty,
+    storedFiat: amountUsd === undefined ? null : { currency: 'USD', amount: amountUsd },
   };
 }
 
@@ -567,12 +579,24 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
             }
           }
         }
+        const outgoingHashes = [
+          ...new Set(
+            page
+              .filter((row) => row.direction === 'out')
+              .map((row) => row.paymentHash)
+              .filter((hash): hash is string => hash !== null),
+          ),
+        ];
+        const paidUsd =
+          outgoingHashes.length === 0
+            ? new Map<string, string>()
+            : await deps.fondPayoutStore.paidUsdByPaymentHash(outgoingHashes);
         const next = hasMore
           ? encodeFondPaymentsCursor(page[page.length - 1] as WalletPaymentRecord)
           : null;
         return c.json(
           {
-            payments: page.map((row) => publicPaymentRow(row, counterparties)),
+            payments: page.map((row) => publicPaymentRow(row, counterparties, paidUsd)),
             next,
           },
           200,

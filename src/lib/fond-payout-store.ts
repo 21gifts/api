@@ -10,6 +10,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 import { fiatAmountToCents, formatCents } from '@/lib/credit-repayment';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** How long an `issuing` or `settling` claim is trusted before restart recovery. */
 export const FOND_CLAIM_LEASE_MS = 120_000;
@@ -136,6 +137,15 @@ export interface FondPayoutStore {
    * @returns Count and exact two-decimal USD sum.
    */
   paidTotals(): Promise<FondPayoutTotals>;
+
+  /**
+   * Stored USD amounts of paid rows by invoice payment hash.
+   *
+   * @param hashes - Wallet payment hashes of one page.
+   * @returns `amount_usd` by the `payment_hash` of each matched paid row;
+   *   an empty map without a read for no hashes.
+   */
+  paidUsdByPaymentHash(hashes: string[]): Promise<Map<string, string>>;
 
   /**
    * Rows of `utcDay` with status `owed`, `issuing`, `invoiced`, or `settling`,
@@ -378,6 +388,26 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       cents += rowCents;
     }
     return { payoutsPaid, payoutsPaidUsd: formatCents(cents) };
+  }
+
+  /**
+   * Stored USD amounts of paid rows by invoice payment hash.
+   *
+   * @param hashes - Wallet payment hashes of one page.
+   * @returns `amountUsd` by the `paymentHash` of each matched paid row.
+   */
+  async paidUsdByPaymentHash(hashes: string[]): Promise<Map<string, string>> {
+    const paid = new Map<string, string>();
+    if (hashes.length === 0) {
+      return paid;
+    }
+    const wanted = new Set(hashes);
+    for (const row of this.#rows.values()) {
+      if (row.status === 'paid' && row.paymentHash !== null && wanted.has(row.paymentHash)) {
+        paid.set(row.paymentHash, row.amountUsd);
+      }
+    }
+    return paid;
   }
 
   /**
@@ -642,6 +672,11 @@ interface FondPayoutTotalsSqlRow {
   payouts_paid_usd: number | string | bigint | null;
 }
 
+interface FondPayoutPaidUsdSqlRow {
+  payment_hash: string | null;
+  amount_usd: string;
+}
+
 const FOND_PAYOUT_SELECT = `id, utc_day, kind, address, amount_usd, comment, message_id,
   group_message_id, status, failure, invoice_id, payment_hash, bolt11, spark_invoice, amount_msat,
   claimed_at, created_at, updated_at`;
@@ -765,6 +800,33 @@ WHERE status = 'paid'`,
       payoutsPaid: Number(row?.payouts_paid ?? 0),
       payoutsPaidUsd: formatCents(cents),
     };
+  }
+
+  /**
+   * Stored USD amounts of paid rows by invoice payment hash in one read.
+   *
+   * @param hashes - Wallet payment hashes of one page.
+   * @returns `amount_usd` by the `payment_hash` of each matched paid row;
+   *   an empty map without a query for no hashes.
+   * @throws Propagates SQL failures.
+   */
+  async paidUsdByPaymentHash(hashes: string[]): Promise<Map<string, string>> {
+    const paid = new Map<string, string>();
+    if (hashes.length === 0) {
+      return paid;
+    }
+    const rows = await this.#sql.query<FondPayoutPaidUsdSqlRow>(
+      `SELECT payment_hash, amount_usd
+FROM fond_payout
+WHERE status = 'paid' AND payment_hash = ANY($1::text[])`,
+      [postgresTextArrayLiteral(hashes)],
+    );
+    for (const row of rows) {
+      if (row.payment_hash !== null) {
+        paid.set(row.payment_hash, row.amount_usd);
+      }
+    }
+    return paid;
   }
 
   /**

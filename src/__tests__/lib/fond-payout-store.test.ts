@@ -121,6 +121,41 @@ describe('InMemoryFondPayoutStore', () => {
     expect(await store.paidTotals()).toEqual({ payoutsPaid: 2, payoutsPaidUsd: '3.50' });
   });
 
+  it('maps paid USD by payment hash and skips unpaid, null-hash, and unknown hashes', async () => {
+    const store = new InMemoryFondPayoutStore(() => NOW);
+    const paidHash = 'aa'.repeat(32);
+    const unpaidHash = 'bb'.repeat(32);
+    const otherPaidHash = 'dd'.repeat(32);
+    for (const [id, address, paymentHash] of [
+      ['paid', 'paid@example.com', paidHash],
+      ['unpaid', 'unpaid@example.com', unpaidHash],
+      ['null-hash', 'null@example.com', null],
+      ['other-paid', 'other@example.com', otherPaidHash],
+    ] as const) {
+      await store.enqueue(enqueue({ id, address }));
+      await store.claimForInvoice(id, '2026-11-09');
+      await store.setInvoiced(id, {
+        invoiceId: `inv-${id}`,
+        paymentHash: paymentHash as string,
+        bolt11: 'lnbc1',
+        sparkInvoice: null,
+        amountMsat: 1_000_000,
+      });
+    }
+    for (const id of ['paid', 'null-hash', 'other-paid']) {
+      await store.claimSettlement(id);
+      await store.markPaid(id);
+    }
+    await expect(store.paidUsdByPaymentHash([])).resolves.toEqual(new Map());
+    const paid = await store.paidUsdByPaymentHash([
+      paidHash,
+      unpaidHash,
+      'cc'.repeat(32),
+      paidHash,
+    ]);
+    expect([...paid]).toEqual([[paidHash, '1.00']]);
+  });
+
   it('refuses an invalid stored USD amount on a paid row', async () => {
     const store = new InMemoryFondPayoutStore(() => NOW);
     await store.enqueue(enqueue({ id: 'bad-amount', amountUsd: 'not-money' }));
@@ -389,6 +424,31 @@ describe('PostgresFondPayoutStore', () => {
     expect(sql.queries[0]?.text).toContain('COUNT(*)::bigint');
     expect(sql.queries[0]?.text).toContain('round(amount_usd::numeric * 100)');
     expect(sql.queries[0]?.params).toEqual([]);
+  });
+
+  it('reads paid USD by payment hash in one ANY text[] query', async () => {
+    const sql = new MockSql();
+    sql.queryResults = [
+      [
+        { payment_hash: 'aa', amount_usd: '1.25' },
+        { payment_hash: 'bb', amount_usd: '2.50' },
+        { payment_hash: null, amount_usd: '9.99' },
+      ],
+    ];
+    const store = new PostgresFondPayoutStore(sql);
+    await expect(store.paidUsdByPaymentHash(['aa', 'bb', 'cc'])).resolves.toEqual(
+      new Map([
+        ['aa', '1.25'],
+        ['bb', '2.50'],
+      ]),
+    );
+    expect(sql.queries[0]?.text).toContain(
+      "WHERE status = 'paid' AND payment_hash = ANY($1::text[])",
+    );
+    expect(sql.queries[0]?.text).toContain('SELECT payment_hash, amount_usd');
+    expect(sql.queries[0]?.params).toEqual(['{"aa","bb","cc"}']);
+    await expect(store.paidUsdByPaymentHash([])).resolves.toEqual(new Map());
+    expect(sql.queries).toHaveLength(1);
   });
 
   it('returns zero paid totals when the aggregate has no rows', async () => {
