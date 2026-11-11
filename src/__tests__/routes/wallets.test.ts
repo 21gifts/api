@@ -137,6 +137,7 @@ describe('GET /wallets/stats', () => {
       latestBalance: () => Promise.resolve(undefined),
       listPayments: () => Promise.resolve([]),
       dailyBalances: () => Promise.reject(new Error('down')),
+      paymentTotals: () => Promise.resolve({ receivedSats: 0n, paidOutSats: 0n, feesSats: 0n }),
     };
     const res = await createApp({ walletStore: store }).request('/wallets/stats');
     expect(res.status).toBe(503);
