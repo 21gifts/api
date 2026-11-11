@@ -307,6 +307,7 @@ Public base URLs used in examples:
 | GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`                                           | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/gifts`                                             | none                                                              | Outbound gifts for one UTC day (`?day=`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/gifts/stats`                                       | none                                                              | Aggregated outbound gift statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| GET    | `/wallets/stats`                                     | none                                                              | Public member-wallet totals by UTC day, with carry-forward balances and funded-wallet counts                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/fx/spot`                                           | none                                                              | Current BTC price in USD, CHF, EUR, PHP (stored quote, refreshed every 5 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/messages/stats`                                    | none                                                              | Living forum notes and replies counted together, by UTC day                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`                                          | Whether a wallet address has a passkey-backed account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -4395,6 +4396,8 @@ two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
 - `wallet_balance_snapshot`: one row per accepted report. `id`, `account_id`
   (reporting member), `balance_sats` (wallet balance at sync), `synced_at`
   (sync time the app reported), `received_at` (server time of the report).
+  `GET /wallets/stats` reads the last snapshot per account and UTC day; no
+  write path or schema changes for that public read.
 - `wallet_payment`: one row per member and wallet payment id, key
   `(account_id, payment_id)`. `direction` (`in` / `out`, seen from
   `account_id`), `status` (`pending` / `completed` / `failed`), `amount_sats`,
@@ -7846,6 +7849,67 @@ Days with no row are filled with `postCount` 0. The series sums to
 
 **Response** `503`: `{ "error": "Post stats are unavailable" }` when the count
 query throws.
+
+### `GET /wallets/stats`
+
+Public wallet totals across all 21.gifts member wallets. No auth. The source is
+`wallet_balance_snapshot`, filled by `POST /me/wallet/report`; the data are
+self-reported by the member apps and begin with the first report (2026-11-09 in
+production). A wallet is an `account_id` with at least one visible snapshot. The
+response never includes account ids, per-account balances, or any other
+per-account value.
+
+An account's balance at the end of UTC day D is the `balance_sats` of its
+snapshot with the greatest `(received_at, id)` among rows with
+`received_at < D + 1 day 00:00 UTC`, the same order as `latestBalance`. An
+account with no such row is not part of day D. A balance carries forward over
+days without a new snapshot. `totalSats` of day D sums every carried-forward
+wallet balance; `fundedWalletCount` counts those balances greater than 0.
+`walletCount` counts every wallet present at the end of that day, including a
+wallet whose balance is 0.
+
+`balanceOverTime` has no gaps: every UTC day from the earliest visible
+`received_at` through the current UTC day. A snapshot whose UTC day is after the
+current UTC day is not visible and is ignored by both the series and the current
+values. `totalBtc` uses the same eight-decimal sats-to-BTC formatter as
+`GET /gifts/stats`. `asOf` is the newest visible `received_at` as an ISO string,
+or `null` when no row is visible. No visible row is **200** with zeros,
+`asOf: null`, and `balanceOverTime: []`. The current `walletCount`,
+`fundedWalletCount`, `totalSats`, and `totalBtc` are the last series day's
+values and therefore always equal it.
+
+**Response** `200`:
+
+```json
+{
+  "walletCount": 61,
+  "fundedWalletCount": 39,
+  "totalSats": 95457,
+  "totalBtc": "0.00095457",
+  "asOf": "2026-11-10T06:21:04.985Z",
+  "balanceOverTime": [
+    {
+      "day": "2026-11-09",
+      "totalSats": 50496,
+      "totalBtc": "0.00050496",
+      "walletCount": 38,
+      "fundedWalletCount": 18
+    },
+    {
+      "day": "2026-11-10",
+      "totalSats": 95457,
+      "totalBtc": "0.00095457",
+      "walletCount": 61,
+      "fundedWalletCount": 39
+    }
+  ]
+}
+```
+
+**Response** `503`: `{ "error": "Wallet stats are unavailable" }` when the
+balance query throws or a current or daily sat total is not a safe integer. A
+total above `Number.MAX_SAFE_INTEGER` throws instead of returning a rounded
+JSON number. The failure logs `wallets.stats.failed`.
 
 ### `GET /links/:code`
 
