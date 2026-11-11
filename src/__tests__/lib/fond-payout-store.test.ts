@@ -98,6 +98,45 @@ describe('InMemoryFondPayoutStore', () => {
     expect(await store.listOpen('2026-11-09')).toHaveLength(3);
   });
 
+  it('aggregates only paid rows and sums their USD strings in cents', async () => {
+    const store = new InMemoryFondPayoutStore(() => NOW);
+    expect(await store.paidTotals()).toEqual({ payoutsPaid: 0, payoutsPaidUsd: '0.00' });
+    await store.enqueue(enqueue({ id: 'paid-a', amountUsd: '1.00' }));
+    await store.enqueue(enqueue({ id: 'paid-b', address: 'bob@example.com', amountUsd: '2.50' }));
+    await store.enqueue(
+      enqueue({ id: 'unpaid', address: 'unpaid@example.com', amountUsd: '9.99' }),
+    );
+    for (const id of ['paid-a', 'paid-b']) {
+      await store.claimForInvoice(id, '2026-11-09');
+      await store.setInvoiced(id, {
+        invoiceId: `inv-${id}`,
+        paymentHash: id === 'paid-a' ? 'aa'.repeat(32) : 'bb'.repeat(32),
+        bolt11: `lnbc-${id}`,
+        sparkInvoice: null,
+        amountMsat: 1_000_000,
+      });
+      await store.claimSettlement(id);
+      await store.markPaid(id);
+    }
+    expect(await store.paidTotals()).toEqual({ payoutsPaid: 2, payoutsPaidUsd: '3.50' });
+  });
+
+  it('refuses an invalid stored USD amount on a paid row', async () => {
+    const store = new InMemoryFondPayoutStore(() => NOW);
+    await store.enqueue(enqueue({ id: 'bad-amount', amountUsd: 'not-money' }));
+    await store.claimForInvoice('bad-amount', '2026-11-09');
+    await store.setInvoiced('bad-amount', {
+      invoiceId: 'inv-bad',
+      paymentHash: 'cc'.repeat(32),
+      bolt11: 'lnbc-bad',
+      sparkInvoice: null,
+      amountMsat: 1_000_000,
+    });
+    await store.claimSettlement('bad-amount');
+    await store.markPaid('bad-amount');
+    await expect(store.paidTotals()).rejects.toThrow('invalid stored payout amount');
+  });
+
   it('dedupes welcome once ever per address, regardless of day', async () => {
     const store = new InMemoryFondPayoutStore(() => NOW);
     await store.enqueue(enqueue({ kind: 'welcome' }));
@@ -336,6 +375,28 @@ describe('PostgresFondPayoutStore', () => {
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       null,
     ]);
+  });
+
+  it('aggregates paid rows with one count-plus-sum query', async () => {
+    const sql = new MockSql();
+    sql.queryResults = [[{ payouts_paid: '2', payouts_paid_usd: '350' }]];
+    const store = new PostgresFondPayoutStore(sql);
+    await expect(store.paidTotals()).resolves.toEqual({
+      payoutsPaid: 2,
+      payoutsPaidUsd: '3.50',
+    });
+    expect(sql.queries[0]?.text).toContain("WHERE status = 'paid'");
+    expect(sql.queries[0]?.text).toContain('COUNT(*)::bigint');
+    expect(sql.queries[0]?.text).toContain('round(amount_usd::numeric * 100)');
+    expect(sql.queries[0]?.params).toEqual([]);
+  });
+
+  it('returns zero paid totals when the aggregate has no rows', async () => {
+    const sql = new MockSql();
+    const store = new PostgresFondPayoutStore(sql);
+    await expect(store.paidTotals()).resolves.toEqual({ payoutsPaid: 0, payoutsPaidUsd: '0.00' });
+    sql.queryResults = [[{ payouts_paid: 0n, payouts_paid_usd: null }]];
+    await expect(store.paidTotals()).resolves.toEqual({ payoutsPaid: 0, payoutsPaidUsd: '0.00' });
   });
 
   it('reads the conflicting daily row and maps paid to skipped', async () => {

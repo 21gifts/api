@@ -9,6 +9,7 @@
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
+import { fiatAmountToCents, formatCents } from '@/lib/credit-repayment';
 
 /** How long an `issuing` or `settling` claim is trusted before restart recovery. */
 export const FOND_CLAIM_LEASE_MS = 120_000;
@@ -87,6 +88,14 @@ export interface FondPayoutEnqueue {
   groupMessageId: string | null;
 }
 
+/** Paid payout totals. */
+export interface FondPayoutTotals {
+  /** Number of rows with status `paid`. */
+  payoutsPaid: number;
+  /** Sum of `amount_usd` for paid rows, two-decimal USD text. */
+  payoutsPaidUsd: string;
+}
+
 /** Invoice fields stored when the issue logic returns an invoice. */
 export interface FondPayoutInvoice {
   /** Invoice id returned by the issue logic. */
@@ -120,6 +129,13 @@ export interface FondPayoutStore {
    *   but the existing row cannot be read back.
    */
   enqueue(row: FondPayoutEnqueue): Promise<'accepted' | 'paid' | 'failed'>;
+
+  /**
+   * Aggregate rows whose status is `paid`.
+   *
+   * @returns Count and exact two-decimal USD sum.
+   */
+  paidTotals(): Promise<FondPayoutTotals>;
 
   /**
    * Rows of `utcDay` with status `owed`, `issuing`, `invoiced`, or `settling`,
@@ -339,6 +355,29 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       updatedAt: at,
     });
     return 'accepted';
+  }
+
+  /**
+   * Count paid rows and sum their stored USD strings in cents.
+   *
+   * @returns Paid count and exact two-decimal USD total.
+   * @throws When a paid row stores an amount that is not a decimal USD string.
+   */
+  async paidTotals(): Promise<FondPayoutTotals> {
+    let payoutsPaid = 0;
+    let cents = 0n;
+    for (const row of this.#rows.values()) {
+      if (row.status !== 'paid') {
+        continue;
+      }
+      payoutsPaid += 1;
+      const rowCents = fiatAmountToCents(row.amountUsd);
+      if (rowCents === null) {
+        throw new Error('invalid stored payout amount');
+      }
+      cents += rowCents;
+    }
+    return { payoutsPaid, payoutsPaidUsd: formatCents(cents) };
   }
 
   /**
@@ -598,6 +637,11 @@ interface FondPayoutSqlRow {
   updated_at: Date | string;
 }
 
+interface FondPayoutTotalsSqlRow {
+  payouts_paid: number | string | bigint;
+  payouts_paid_usd: number | string | bigint | null;
+}
+
 const FOND_PAYOUT_SELECT = `id, utc_day, kind, address, amount_usd, comment, message_id,
   group_message_id, status, failure, invoice_id, payment_hash, bolt11, spark_invoice, amount_msat,
   claimed_at, created_at, updated_at`;
@@ -700,6 +744,27 @@ RETURNING id`,
       return 'failed';
     }
     return status === 'paid' ? 'paid' : 'accepted';
+  }
+
+  /**
+   * Count paid rows and sum their stored USD strings in cents.
+   *
+   * @returns Paid count and exact two-decimal USD total.
+   * @throws Propagates SQL failures.
+   */
+  async paidTotals(): Promise<FondPayoutTotals> {
+    const rows = await this.#sql.query<FondPayoutTotalsSqlRow>(
+      `SELECT COUNT(*)::bigint AS payouts_paid,
+       COALESCE(SUM(round(amount_usd::numeric * 100)), 0)::bigint AS payouts_paid_usd
+FROM fond_payout
+WHERE status = 'paid'`,
+    );
+    const row = rows[0];
+    const cents = BigInt(row?.payouts_paid_usd ?? 0);
+    return {
+      payoutsPaid: Number(row?.payouts_paid ?? 0),
+      payoutsPaidUsd: formatCents(cents),
+    };
   }
 
   /**
