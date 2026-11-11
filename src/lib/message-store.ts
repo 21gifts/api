@@ -4594,6 +4594,10 @@ export class InMemoryMessageStore implements MessageStore {
         owed,
         credit,
         kind: 'repayment',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
       });
     }
     return Promise.resolve(out);
@@ -8513,7 +8517,11 @@ export class PostgresMessageStore implements MessageStore {
               part.sats AS sats,
               (m.account_id = $1) AS owed,
               (part.recipient_account_id = $1) AS credit,
-              'repayment' AS kind
+              'repayment' AS kind,
+              NULL::text AS amount_usd,
+              NULL::text AS amount_chf,
+              NULL::text AS amount_eur,
+              NULL::text AS amount_php
        FROM message_repayment_part part
        JOIN message m ON m.id = part.message_id
        WHERE m.account_id = $1 OR part.recipient_account_id = $1`,
