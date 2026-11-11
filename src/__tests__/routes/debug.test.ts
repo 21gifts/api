@@ -703,6 +703,37 @@ describe('debugRoutes', () => {
     ).toBe(true);
   });
 
+  it('PATCH sets the role to software_developer and returns the updated account', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ role: 'software_developer' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string; role: string };
+    expect(body.id).toBe('acc');
+    expect(body.role).toBe('software_developer');
+    expect((await store.getAccount('acc'))?.role).toBe('software_developer');
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'debug.accounts.role_set' && e['role'] === 'software_developer',
+      ),
+    ).toBe(true);
+  });
+
   it('PATCH sets the role to fond', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

@@ -374,7 +374,7 @@ export type MessageFeedQuery = {
   mode: ForumFeedMode;
   /** Exclusive keyset cursor, or `null` for the first page. */
   cursor: { k: 't'; c: Date; i: string } | { k: 's'; s: number; c: Date; i: string } | null;
-  /** Founder + moderator account ids; used only when mode==='active'. */
+  /** Account ids at least moderator; used only when mode==='active'. */
   staffAccountIds: ReadonlySet<string>;
   /** Optional hashtag name without `#`. When set, only notes whose `text` contains that token. */
   hashtag?: string;
@@ -2804,7 +2804,12 @@ export class InMemoryMessageStore implements MessageStore {
         return row.sats === 0;
       }
       if (query.mode === 'active') {
-        return row.sats > 0 || (row.accountId !== null && query.staffAccountIds.has(row.accountId));
+        const unpaidStaff =
+          row.accountId !== null &&
+          query.staffAccountIds.has(row.accountId) &&
+          (row.goalSats ?? null) === null &&
+          (row.goalCurrency ?? null) === null;
+        return row.sats > 0 || unpaidStaff;
       }
       if (query.mode === 'popular') {
         return row.sats > 0;
@@ -5745,7 +5750,9 @@ export class PostgresMessageStore implements MessageStore {
       filters.push('sats = 0');
     } else if (query.mode === 'active') {
       params.push(postgresTextArrayLiteral([...query.staffAccountIds]));
-      filters.push(`(sats > 0 OR account_id::text = ANY($${params.length}::text[]))`);
+      filters.push(
+        `(sats > 0 OR (account_id::text = ANY($${params.length}::text[]) AND goal_sats IS NULL AND goal_currency IS NULL))`,
+      );
     } else if (query.mode === 'popular') {
       filters.push('sats > 0');
       orderBy = 'sats DESC, created_at DESC, id DESC';

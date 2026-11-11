@@ -87,7 +87,7 @@ update stuff
 - **No `console.log`** in committed code — `console.warn` / `console.error` only, for legitimate operator-facing output
 - **Named exports**, no default exports
 - **Path alias `@/`** points at `src/` (configured in `tsconfig.json` and `vitest.config.ts`)
-- **Permission checks** — caller/viewer role uses `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role (`role === '...'` / `role !== '...'`) is a defect. Every permission check, including the daily payout roster (`canEditDailyPayoutRoster`: minimum `initiator`), is a `roleAtLeast` minimum.
+- **Permission checks** — caller/viewer role uses `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role (`role === '...'` / `role !== '...'`) is a defect. The rank order is `basis` < `verified` < `moderator` < `fond` < `software_developer` < `initiator` < `founder`. `software_developer` is in the closed Moderators group with every moderator permission, but `earnsModeratorGroupPay` excludes it from the moderator-group payout. The daily payout roster is `roleAtLeast(role, 'initiator')`; the software developer ranks below it.
 
 ### TSDoc
 
@@ -162,6 +162,9 @@ without a session;
 `SPEND_API_TOKEN` (its test asserts the 503 of `GET /funding/daily-roster/document`);
 `replayPayoutWindow`, which runs only when `SPEND_URL` and `SPEND_API_TOKEN` resolve a spend
 ping (its test asserts the window body's 503 `Spend ping is not configured`);
+`earnsModeratorGroupPay`, which gates moderator-group payouts and therefore runs only on a
+moderator-group message or a moderator replay with a configured spend ping and LNURL server, both
+off on the default boot (its test asserts the window body's 503 `Spend ping is not configured`);
 `fetchFxSpot`, `runFxSpotTick`, and `startFxSpotWorker`, which store a quote only from a reachable
 provider, so their tests assert the empty `GET /fx/spot` result for the pinned refused
 `BTC_FIAT_SPOT_URL`;

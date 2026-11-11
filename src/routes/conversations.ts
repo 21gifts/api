@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
+import { earnsModeratorGroupPay, isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
@@ -1007,30 +1007,34 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
           try {
             const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
             if (address !== null && deps.spendPing !== undefined) {
-              const publicToday = await hasLivingRoomPostOnUtcDay(
-                deps.messageStore,
-                account,
-                deps.now(),
-              );
-              if (publicToday) {
-                const { eligible } = await loadPayoutEligibility(
-                  deps.fundingStore ?? new InMemoryFundingStore(),
-                  deps.authStore,
+              if (!earnsModeratorGroupPay(account)) {
+                logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+              } else {
+                const publicToday = await hasLivingRoomPostOnUtcDay(
+                  deps.messageStore,
                   account,
                   deps.now(),
-                  deps.recoveryShareRequiredFrom ?? null,
                 );
-                if (!eligible) {
-                  logEvent('spend.ping.skipped', { reason: 'not_eligible' });
-                } else {
-                  try {
-                    await deps.spendPing.ping(address, created.id, 'moderator');
-                  } catch {
-                    /* persist must not fail */
+                if (publicToday) {
+                  const { eligible } = await loadPayoutEligibility(
+                    deps.fundingStore ?? new InMemoryFundingStore(),
+                    deps.authStore,
+                    account,
+                    deps.now(),
+                    deps.recoveryShareRequiredFrom ?? null,
+                  );
+                  if (!eligible) {
+                    logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+                  } else {
+                    try {
+                      await deps.spendPing.ping(address, created.id, 'moderator');
+                    } catch {
+                      /* persist must not fail */
+                    }
                   }
+                } else {
+                  logEvent('spend.ping.skipped', { reason: 'no_public_post' });
                 }
-              } else {
-                logEvent('spend.ping.skipped', { reason: 'no_public_post' });
               }
             }
           } catch {

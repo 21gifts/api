@@ -23,9 +23,11 @@ import { encodeSparkAddress } from '@/lib/spark-address';
  * the propose edge only. `PATCH /debug/accounts/:id` may still set `role`
  * and does not write edges. New passkey accounts stay `basis`.
  * `verified` is a moderator confirming this person in real
- * life (forum badge), not a verified wallet.
+ * life (forum badge), not a verified wallet. `software_developer` is a
+ * staff feature role in the Moderators group.
  */
-export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'founder' | 'fond';
+export type AccountRole =
+  'basis' | 'verified' | 'moderator' | 'software_developer' | 'fond' | 'initiator' | 'founder';
 
 /**
  * Owner fan-out filter. Omitted / unknown → `all`.
@@ -104,24 +106,6 @@ export function parseStoredLocale(raw: unknown): AccountLocale | null {
  */
 export function parseStoredFiat(raw: unknown): AccountFiat | null {
   if (raw === 'CHF' || raw === 'EUR' || raw === 'USD' || raw === 'PHP') {
-    return raw;
-  }
-  return null;
-}
-
-/**
- * Staff display label. Not a permission role and does not change {@link Account.role}.
- */
-export type StaffTag = 'software_developer';
-
-/**
- * Parse a stored staff label into a {@link StaffTag} or null.
- *
- * @param raw - Unknown input (DB text, JSON, omitted).
- * @returns Exact `software_developer`; anything else → `null`.
- */
-export function staffTagOf(raw: unknown): StaffTag | null {
-  if (raw === 'software_developer') {
     return raw;
   }
   return null;
@@ -224,11 +208,6 @@ export interface Account {
    * public on member cards or view profiles.
    */
   fiat?: AccountFiat | null;
-  /**
-   * Optional staff display label. Not a permission role and does not change
-   * {@link Account.role}. Omitted or null when unset.
-   */
-  staffTag?: StaffTag | null;
   /**
    * True when a seed-bearing passkey exists. Does not set `setup` to
    * `wallet`. Omit / false = no seed yet. New passkey register and

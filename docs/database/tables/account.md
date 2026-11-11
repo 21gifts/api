@@ -37,12 +37,15 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `session_refused`              | Boolean            | `boolean`                  | No       | `false`     | –                            |
 | `wallet_required`              | Boolean            | `boolean`                  | No       | `false`     | –                            |
 | `wallet_backup_seen_at`        | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
-| `staff_tag`                    | ENUM               | `text`                     | Yes      | –           | –                            |
 | `spark_pubkey`                 | Free text          | `text`                     | Yes      | –           | –                            |
 | `spark_pubkey_verified_at`     | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
 | `notify_hearts`                | Boolean            | `boolean`                  | No       | `true`      | –                            |
 | `heart_sats`                   | Integer            | `integer`                  | No       | `1`         | –                            |
 | `spark_address`                | Free text          | `text`                     | Yes      | –           | –                            |
+
+## Role values
+
+`basis`, `verified`, `moderator`, `fond`, `software_developer`, `initiator`, `founder`
 
 ## Indexes
 

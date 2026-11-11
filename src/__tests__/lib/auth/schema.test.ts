@@ -41,7 +41,7 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL).toContain(
       'ALTER TABLE account ALTER COLUMN lightning_address_verified SET DEFAULT false',
     );
-    expect(AUTH_SCHEMA_SQL.join('\n')).not.toMatch(/DROP COLUMN/i);
+    expect(AUTH_SCHEMA_SQL.join('\n').match(/DROP COLUMN/gi)).toEqual(['DROP COLUMN']);
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /DROP INDEX IF EXISTS passkey_credential_account_uidx/i,
     );
@@ -170,23 +170,23 @@ describe('AUTH_SCHEMA_SQL', () => {
       'CREATE INDEX IF NOT EXISTS held_share_box_account_idx ON held_share_box (account_id)',
       'CREATE INDEX IF NOT EXISTS passkey_challenge_open_account_type_idx',
     ]);
-    const staffTagAt = AUTH_SCHEMA_SQL.indexOf(
-      'ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text',
-    );
-    expect(staffTagAt).toBeGreaterThan(
+    const migrationAt = AUTH_SCHEMA_SQL.findIndex((statement) => statement.includes('DO $'));
+    expect(migrationAt).toBeGreaterThan(
       AUTH_SCHEMA_SQL.indexOf(
         'ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text',
       ),
     );
-    expect(AUTH_SCHEMA_SQL[staffTagAt + 1]).toBe(
-      'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk',
+    const migration = AUTH_SCHEMA_SQL[migrationAt] ?? '';
+    expect(migration).toContain('information_schema.columns');
+    expect(migration).toContain('table_schema = current_schema()');
+    expect(migration).toContain("column_name = 'staff_tag'");
+    expect(migration).toContain(
+      "UPDATE account\n      SET role = 'software_developer'\n      WHERE staff_tag = 'software_developer'\n        AND role IN ('basis', 'verified', 'moderator');",
     );
-    expect(AUTH_SCHEMA_SQL[staffTagAt + 2]).toBe(
-      "ALTER TABLE account ADD CONSTRAINT account_staff_tag_chk CHECK (staff_tag IS NULL OR staff_tag IN ('software_developer'))",
+    expect(migration).toContain(
+      'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk;',
     );
-    expect(AUTH_SCHEMA_SQL[staffTagAt + 3]).toBe(
-      "UPDATE account SET staff_tag = 'software_developer' WHERE lower(trim(username)) = 'dansw' AND staff_tag IS DISTINCT FROM 'software_developer'",
-    );
+    expect(migration).toContain('ALTER TABLE account DROP COLUMN staff_tag;');
   });
 
   it('creates the social recovery tables with key, address, and size checks', () => {

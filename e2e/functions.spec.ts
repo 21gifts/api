@@ -32,7 +32,7 @@ async function memberSession(
 
 async function rosterRoleSession(
   request: APIRequestContext,
-  role: 'moderator' | 'initiator' | 'founder',
+  role: 'moderator' | 'software_developer' | 'initiator' | 'founder',
 ): Promise<{ authorization: string; id: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eRoster${stamp}`;
@@ -2834,9 +2834,6 @@ test('Function: parseStoredLocale — GET /me without bearer is 401', async ({ r
 test('Function: parseStoredFiat — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });
-test('Function: staffTagOf — GET /me without bearer is 401', async ({ request }) => {
-  expect((await request.get('/me')).status()).toBe(401);
-});
 test('Function: isStaffAccount — GET /me without bearer is 401', async ({ request }) => {
   expect((await request.get('/me')).status()).toBe(401);
 });
@@ -3010,6 +3007,17 @@ test('Function: isModeratorGroupMember — GET /conversations/moderator-group as
   );
 });
 
+test('Function: earnsModeratorGroupPay — the replay gate is unreachable without a spend ping', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/spend-ping', {
+    headers: DEBUG,
+    data: { from: '2026-10-29T23:00:00.000Z', to: '2026-10-30T00:00:00.000Z', dryRun: true },
+  });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend ping is not configured' });
+});
+
 test('Function: roleAtLeast — a basis member is below the staff log (GET /messages/hidden is 403)', async ({
   request,
 }) => {
@@ -3024,7 +3032,7 @@ test('Function: roleRank — a basis member ranks below staff on GET /trust/prop
   expect((await request.get('/trust/proposals', { headers: auth })).status()).toBe(403);
 });
 
-test('Function: sameRoleRank — confirm leaves an initiator unchanged when the caller already confirmed them', async ({
+test('Function: roleAtLeast — confirm leaves an initiator unchanged when the caller already confirmed them', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -3162,6 +3170,17 @@ test('Function: canEditDailyPayoutRoster — GET /funding/daily-roster as a mode
   request,
 }) => {
   const auth = await rosterRoleSession(request, 'moderator');
+  const res = await request.get('/funding/daily-roster', {
+    headers: { authorization: auth.authorization },
+  });
+  expect(res.status()).toBe(403);
+  expect(await res.json()).toEqual({ error: 'Forbidden' });
+});
+
+test('Function: canEditDailyPayoutRoster — GET /funding/daily-roster as a software developer is 403', async ({
+  request,
+}) => {
+  const auth = await rosterRoleSession(request, 'software_developer');
   const res = await request.get('/funding/daily-roster', {
     headers: { authorization: auth.authorization },
   });

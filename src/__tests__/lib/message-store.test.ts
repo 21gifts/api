@@ -2383,6 +2383,13 @@ describe('InMemoryMessageStore', () => {
       text: 'staff unpaid',
       createdAt: new Date('2026-08-04T00:00:00.000Z'),
     };
+    const unpaidDeveloper = {
+      ...LATE,
+      id: 'developer-unpaid',
+      accountId: 'developer',
+      text: 'developer unpaid',
+      createdAt: new Date('2026-08-04T00:30:00.000Z'),
+    };
     const paid = { ...LATE, id: 'paid', sats: 21, createdAt: new Date('2026-08-05T00:00:00.000Z') };
     const popularLow = {
       ...EARLY,
@@ -2407,6 +2414,7 @@ describe('InMemoryMessageStore', () => {
       EARLY,
       LATE,
       unpaidStaff,
+      unpaidDeveloper,
       paid,
       popularLow,
       popularHigh,
@@ -2429,6 +2437,7 @@ describe('InMemoryMessageStore', () => {
       'pop-high',
       'pop-low',
       'paid',
+      'developer-unpaid',
       'staff-unpaid',
       'b',
       'a',
@@ -2440,14 +2449,20 @@ describe('InMemoryMessageStore', () => {
       cursor: null,
       staffAccountIds: emptyStaff,
     });
-    expect(unpaid.map((row) => row.id)).toEqual(['staff-unpaid', 'b', 'a']);
+    expect(unpaid.map((row) => row.id)).toEqual(['developer-unpaid', 'staff-unpaid', 'b', 'a']);
     const active = await store.listFeed({
       limit: 10,
       mode: 'active',
       cursor: null,
-      staffAccountIds: new Set(['staff']),
+      staffAccountIds: new Set(['staff', 'developer']),
     });
-    expect(active.map((row) => row.id)).toEqual(['pop-high', 'pop-low', 'paid', 'staff-unpaid']);
+    expect(active.map((row) => row.id)).toEqual([
+      'pop-high',
+      'pop-low',
+      'paid',
+      'developer-unpaid',
+      'staff-unpaid',
+    ]);
     const ask = await store.create({
       ...EARLY,
       id: 'ask-open',
@@ -2461,14 +2476,30 @@ describe('InMemoryMessageStore', () => {
       limit: 10,
       mode: 'active',
       cursor: null,
-      staffAccountIds: new Set(['staff']),
+      staffAccountIds: new Set(['staff', 'developer']),
     });
     expect(activeWithAsk.map((row) => row.id)).not.toContain('ask-open');
+    const moderatorAsk = await store.create({
+      ...EARLY,
+      id: 'moderator-ask',
+      accountId: 'staff',
+      sats: 0,
+      goalSats: 1000,
+      text: 'Need a ticket from a moderator',
+    });
+    expect(moderatorAsk.goalSats).toBe(1000);
+    const activeWithModeratorAsk = await store.listFeed({
+      limit: 10,
+      mode: 'active',
+      cursor: null,
+      staffAccountIds: new Set(['staff', 'developer']),
+    });
+    expect(activeWithModeratorAsk.map((row) => row.id)).not.toContain('moderator-ask');
     const unpaidWithAsk = await store.listFeed({
       limit: 10,
       mode: 'unpaid',
       cursor: null,
-      staffAccountIds: new Set(['staff']),
+      staffAccountIds: new Set(['staff', 'developer']),
     });
     expect(unpaidWithAsk.map((row) => row.id)).toContain('ask-open');
     const popular = await store.listFeed({
@@ -2495,7 +2526,7 @@ describe('InMemoryMessageStore', () => {
       cursor: { k: 't', c: last.createdAt, i: last.id },
       staffAccountIds: emptyStaff,
     });
-    expect(secondPage.map((row) => row.id)).toEqual(['paid', 'staff-unpaid']);
+    expect(secondPage.map((row) => row.id)).toEqual(['paid', 'developer-unpaid']);
     const tieTime = new Date('2026-07-01T00:00:00.000Z');
     const tied = new InMemoryMessageStore([
       { ...EARLY, id: 'z-tie', createdAt: tieTime },
@@ -8719,7 +8750,9 @@ describe('PostgresMessageStore', () => {
     }
     const active = sql.queries.filter((query) => query.text.includes('ANY('));
     expect(active).toHaveLength(2);
-    expect(active[0]?.text).toMatch(/sats > 0 OR account_id::text = ANY\(\$/);
+    expect(active[0]?.text).toMatch(
+      /sats > 0 OR \(account_id::text = ANY\(\$.*\) AND goal_sats IS NULL AND goal_currency IS NULL\)/,
+    );
     expect(active[0]?.text).not.toMatch(/COALESCE\(goal_sats, 0\) > 0/);
     expect(active[0]?.params).toEqual([10, '{"staff-1"}']);
     expect(active[1]?.params.slice(0, 2)).toEqual([10, '{"staff-1"}']);

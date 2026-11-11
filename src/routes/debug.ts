@@ -8,10 +8,11 @@ import {
   serializeDebugAccountDetail,
 } from '@/lib/auth/account-json';
 import { randomHex } from '@/lib/auth/hex';
+import { ROLE_ORDER } from '@/lib/auth/roles';
 import { sqlState } from '@/lib/auth/sql';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { issueSession } from '@/lib/auth/service';
-import type { Account, AuthStore } from '@/lib/auth/store';
+import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import type { LnurlServerConfig } from '@/lib/config';
@@ -108,7 +109,7 @@ function provisionUsername(name: string, id: string, taken: Set<string>): string
 /** Body schema for operator role, username alone, platform flag, and session refusal. */
 const patchBody = z
   .object({
-    role: z.enum(['basis', 'verified', 'moderator', 'initiator', 'founder', 'fond']).optional(),
+    role: z.enum(ROLE_ORDER as [AccountRole, ...AccountRole[]]).optional(),
     username: z.string().optional(),
     platform: z.boolean().optional(),
     sessionRefused: z.boolean().optional(),

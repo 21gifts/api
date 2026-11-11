@@ -3,10 +3,10 @@ import {
   ROLE_ORDER,
   canEditDailyPayoutRoster,
   canSignFondPayouts,
+  earnsModeratorGroupPay,
   isModeratorGroupMember,
   roleAtLeast,
   roleRank,
-  sameRoleRank,
 } from '@/lib/auth/roles';
 import type { AccountRole } from '@/lib/auth/store';
 
@@ -15,63 +15,86 @@ const roles: readonly AccountRole[] = [
   'verified',
   'moderator',
   'fond',
+  'software_developer',
   'initiator',
   'founder',
 ];
 
 describe('ROLE_ORDER', () => {
   it('lists the roles in hierarchy order', () => {
-    expect(ROLE_ORDER).toEqual(['basis', 'verified', 'moderator', 'fond', 'initiator', 'founder']);
+    expect(ROLE_ORDER).toEqual([
+      'basis',
+      'verified',
+      'moderator',
+      'fond',
+      'software_developer',
+      'initiator',
+      'founder',
+    ]);
   });
 });
 
 describe('roleRank', () => {
-  it('is the six-rank hierarchy map', () => {
+  it('is the seven-role hierarchy map', () => {
     expect(roleRank('basis')).toBe(0);
     expect(roleRank('verified')).toBe(1);
     expect(roleRank('moderator')).toBe(2);
     expect(roleRank('fond')).toBe(3);
-    expect(roleRank('initiator')).toBe(4);
-    expect(roleRank('founder')).toBe(5);
+    expect(roleRank('software_developer')).toBe(4);
+    expect(roleRank('initiator')).toBe(5);
+    expect(roleRank('founder')).toBe(6);
   });
 });
 
 describe('roleAtLeast', () => {
-  it('is the 6×6 truth table of rank comparison', () => {
+  it('is the full truth table of rank comparison', () => {
     const table: ReadonlyArray<readonly [AccountRole, AccountRole, boolean]> = [
       ['basis', 'basis', true],
       ['basis', 'verified', false],
       ['basis', 'moderator', false],
+      ['basis', 'software_developer', false],
       ['basis', 'fond', false],
       ['basis', 'initiator', false],
       ['basis', 'founder', false],
       ['verified', 'basis', true],
       ['verified', 'verified', true],
       ['verified', 'moderator', false],
+      ['verified', 'software_developer', false],
       ['verified', 'fond', false],
       ['verified', 'initiator', false],
       ['verified', 'founder', false],
       ['moderator', 'basis', true],
       ['moderator', 'verified', true],
       ['moderator', 'moderator', true],
+      ['moderator', 'software_developer', false],
       ['moderator', 'fond', false],
       ['moderator', 'initiator', false],
       ['moderator', 'founder', false],
+      ['software_developer', 'basis', true],
+      ['software_developer', 'verified', true],
+      ['software_developer', 'moderator', true],
+      ['software_developer', 'software_developer', true],
+      ['software_developer', 'fond', true],
+      ['software_developer', 'initiator', false],
+      ['software_developer', 'founder', false],
       ['fond', 'basis', true],
       ['fond', 'verified', true],
       ['fond', 'moderator', true],
+      ['fond', 'software_developer', false],
       ['fond', 'fond', true],
       ['fond', 'initiator', false],
       ['fond', 'founder', false],
       ['initiator', 'basis', true],
       ['initiator', 'verified', true],
       ['initiator', 'moderator', true],
+      ['initiator', 'software_developer', true],
       ['initiator', 'fond', true],
       ['initiator', 'initiator', true],
       ['initiator', 'founder', false],
       ['founder', 'basis', true],
       ['founder', 'verified', true],
       ['founder', 'moderator', true],
+      ['founder', 'software_developer', true],
       ['founder', 'fond', true],
       ['founder', 'initiator', true],
       ['founder', 'founder', true],
@@ -87,24 +110,18 @@ describe('roleAtLeast', () => {
     expect(roleAtLeast('fond', 'moderator')).toBe(true);
     expect(roleAtLeast('fond', 'verified')).toBe(true);
   });
-});
 
-describe('sameRoleRank', () => {
-  it('is true only when the numeric ranks are equal', () => {
-    expect(sameRoleRank('moderator', 'moderator')).toBe(true);
-    expect(sameRoleRank('fond', 'fond')).toBe(true);
-    expect(sameRoleRank('initiator', 'initiator')).toBe(true);
-    expect(sameRoleRank('moderator', 'fond')).toBe(false);
-    expect(sameRoleRank('moderator', 'initiator')).toBe(false);
-    expect(sameRoleRank('initiator', 'moderator')).toBe(false);
-    expect(sameRoleRank('founder', 'moderator')).toBe(false);
-    expect(sameRoleRank('verified', 'moderator')).toBe(false);
+  it('ranks the software developer above fond and below initiator', () => {
+    expect(roleAtLeast('software_developer', 'fond')).toBe(true);
+    expect(roleAtLeast('fond', 'software_developer')).toBe(false);
+    expect(roleAtLeast('software_developer', 'initiator')).toBe(false);
   });
 });
 
 describe('isModeratorGroupMember', () => {
   it('admits every account that is at least a moderator', () => {
     expect(isModeratorGroupMember({ role: 'moderator' })).toBe(true);
+    expect(isModeratorGroupMember({ role: 'software_developer' })).toBe(true);
     expect(isModeratorGroupMember({ role: 'fond' })).toBe(true);
     expect(isModeratorGroupMember({ role: 'initiator' })).toBe(true);
     expect(isModeratorGroupMember({ role: 'founder' })).toBe(true);
@@ -119,8 +136,25 @@ describe('isModeratorGroupMember', () => {
   it('keeps the platform account out whatever role it carries', () => {
     expect(isModeratorGroupMember({ role: 'founder', isPlatform: true })).toBe(false);
     expect(isModeratorGroupMember({ role: 'moderator', isPlatform: true })).toBe(false);
+    expect(isModeratorGroupMember({ role: 'software_developer', isPlatform: true })).toBe(false);
     expect(isModeratorGroupMember({ role: 'fond', isPlatform: true })).toBe(false);
     expect(isModeratorGroupMember({ role: 'initiator', isPlatform: true })).toBe(false);
+  });
+});
+
+describe('earnsModeratorGroupPay', () => {
+  it('pays every moderator-group member except the software developer', () => {
+    expect(earnsModeratorGroupPay({ role: 'moderator' })).toBe(true);
+    expect(earnsModeratorGroupPay({ role: 'fond' })).toBe(true);
+    expect(earnsModeratorGroupPay({ role: 'initiator' })).toBe(true);
+    expect(earnsModeratorGroupPay({ role: 'founder' })).toBe(true);
+    expect(earnsModeratorGroupPay({ role: 'software_developer' })).toBe(false);
+  });
+
+  it('never pays the platform account or a non-group role', () => {
+    expect(earnsModeratorGroupPay({ role: 'founder', isPlatform: true })).toBe(false);
+    expect(earnsModeratorGroupPay({ role: 'verified' })).toBe(false);
+    expect(earnsModeratorGroupPay({ role: 'basis' })).toBe(false);
   });
 });
 
@@ -128,6 +162,7 @@ describe('canEditDailyPayoutRoster', () => {
   it('is true only for initiator and founder', () => {
     expect(canEditDailyPayoutRoster('initiator')).toBe(true);
     expect(canEditDailyPayoutRoster('founder')).toBe(true);
+    expect(canEditDailyPayoutRoster('software_developer')).toBe(false);
     expect(canEditDailyPayoutRoster('fond')).toBe(false);
     expect(canEditDailyPayoutRoster('moderator')).toBe(false);
     expect(canEditDailyPayoutRoster('verified')).toBe(false);

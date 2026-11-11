@@ -135,7 +135,7 @@ function mount(
 }
 
 async function seeded(
-  role: 'basis' | 'moderator' | 'founder' = 'basis',
+  role: 'basis' | 'moderator' | 'software_developer' | 'founder' = 'basis',
 ): Promise<InMemoryAuthStore> {
   const store = new InMemoryAuthStore();
   await store.createAccount({
@@ -3301,6 +3301,30 @@ describe('moderator_group', () => {
     const created = (await res.json()) as { id: string };
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith('ada@example.test', created.id, 'moderator');
+  });
+
+  it('does not ping a software developer for a moderator-group message', async () => {
+    const auth = await seeded('software_developer');
+    await withPlatform(auth);
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const res = await mount(auth, conversations, livingRoomStore(), {
+      spendPing,
+      fundingStore: admittedFunding(),
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
+      ),
+    ).toBe(true);
   });
 
   it('does not ping when the moderator is not funding-eligible', async () => {
