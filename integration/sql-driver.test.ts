@@ -57,6 +57,7 @@ import {
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
 import { parseWalletReport } from '@/lib/wallet-report';
+import { buildWalletStats } from '@/lib/wallet-stats';
 import {
   migrateWalletSchema,
   PostgresWalletStore,
@@ -3035,6 +3036,182 @@ describe('PostgresWalletStore', () => {
         feesSats: 0n,
       });
     } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('dailyBalances keeps the last snapshot per UTC day and buildWalletStats carries balances', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const auth = new PostgresAuthStore(client);
+    const accountPrefix = crypto.randomUUID().slice(0, 23);
+    const snapshotPrefix = crypto.randomUUID().slice(0, 23);
+    const orderedId = (prefix: string, suffix: number): string =>
+      `${prefix}-${String(suffix).padStart(12, '0')}`;
+    const accountA = orderedId(accountPrefix, 1);
+    const accountB = orderedId(accountPrefix, 2);
+    const snapshotId = (suffix: number): string => orderedId(snapshotPrefix, suffix);
+    const hex64 = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    let seeded = false;
+    try {
+      await migrateAuthSchema(client);
+      await migrateWalletSchema(client);
+      await migrateDbChangeSchema(client);
+      seeded = true;
+      for (const [index, accountId] of [accountA, accountB].entries()) {
+        await auth.createAccount({
+          id: accountId,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username: `wd${index}${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+
+      const store = new PostgresWalletStore(client);
+      const rows = [
+        {
+          id: snapshotId(1),
+          accountId: accountA,
+          balanceSats: 100,
+          receivedAt: '2026-11-09T00:00:00.000Z',
+        },
+        {
+          id: snapshotId(3),
+          accountId: accountA,
+          balanceSats: 300,
+          receivedAt: '2026-11-09T12:00:00.000Z',
+        },
+        {
+          id: snapshotId(2),
+          accountId: accountA,
+          balanceSats: 200,
+          receivedAt: '2026-11-09T12:00:00.000Z',
+        },
+        {
+          id: snapshotId(4),
+          accountId: accountA,
+          balanceSats: 400,
+          receivedAt: '2026-11-10T00:00:00.000Z',
+        },
+        {
+          id: snapshotId(5),
+          accountId: accountA,
+          balanceSats: 500,
+          receivedAt: '2026-11-10T12:00:00.000Z',
+        },
+        {
+          id: snapshotId(6),
+          accountId: accountB,
+          balanceSats: 40,
+          receivedAt: '2026-11-09T12:00:00.000Z',
+        },
+        {
+          id: snapshotId(7),
+          accountId: accountB,
+          balanceSats: 50,
+          receivedAt: '2026-11-09T23:59:59.999Z',
+        },
+        {
+          id: snapshotId(8),
+          accountId: accountB,
+          balanceSats: 60,
+          receivedAt: '2026-11-10T00:00:00.000Z',
+        },
+        {
+          id: snapshotId(9),
+          accountId: accountB,
+          balanceSats: 80,
+          receivedAt: '2026-11-10T12:00:00.000Z',
+        },
+      ] as const;
+      for (const row of rows) {
+        const receivedAt = new Date(row.receivedAt);
+        await store.recordBalance({
+          id: row.id,
+          accountId: row.accountId,
+          balanceSats: row.balanceSats,
+          syncedAt: receivedAt,
+          receivedAt,
+        });
+      }
+
+      const daily = await store.dailyBalances();
+      const accountIds = new Set([accountA, accountB]);
+      const dailyForAccounts = daily.filter((row) => accountIds.has(row.accountId));
+      expect(
+        dailyForAccounts.map((row) => ({
+          id: row.id,
+          accountId: row.accountId,
+          balanceSats: row.balanceSats,
+          receivedAt: row.receivedAt.toISOString(),
+        })),
+      ).toEqual([
+        {
+          id: rows[1].id,
+          accountId: accountA,
+          balanceSats: 300,
+          receivedAt: '2026-11-09T12:00:00.000Z',
+        },
+        {
+          id: rows[4].id,
+          accountId: accountA,
+          balanceSats: 500,
+          receivedAt: '2026-11-10T12:00:00.000Z',
+        },
+        {
+          id: rows[6].id,
+          accountId: accountB,
+          balanceSats: 50,
+          receivedAt: '2026-11-09T23:59:59.999Z',
+        },
+        {
+          id: rows[8].id,
+          accountId: accountB,
+          balanceSats: 80,
+          receivedAt: '2026-11-10T12:00:00.000Z',
+        },
+      ]);
+
+      expect(buildWalletStats(dailyForAccounts, Date.parse('2026-11-10T12:00:00.000Z'))).toEqual({
+        walletCount: 2,
+        fundedWalletCount: 2,
+        totalSats: 580,
+        totalBtc: '0.00000580',
+        asOf: '2026-11-10T12:00:00.000Z',
+        balanceOverTime: [
+          {
+            day: '2026-11-09',
+            totalSats: 350,
+            totalBtc: '0.00000350',
+            walletCount: 2,
+            fundedWalletCount: 2,
+          },
+          {
+            day: '2026-11-10',
+            totalSats: 580,
+            totalBtc: '0.00000580',
+            walletCount: 2,
+            fundedWalletCount: 2,
+          },
+        ],
+      });
+    } finally {
+      if (seeded) {
+        await client.execute(
+          'DELETE FROM wallet_balance_snapshot WHERE account_id = ANY($1::uuid[])',
+          [postgresTextArrayLiteral([accountA, accountB])],
+        );
+        await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+          postgresTextArrayLiteral([accountA, accountB]),
+        ]);
+      }
       await closeIfPossible(sql);
     }
   });

@@ -5,22 +5,23 @@ const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 async function memberSession(request: APIRequestContext): Promise<{ authorization: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eTrust${stamp.slice(0, 8)}`;
+  // The display name keeps eight digits of Date.now() and stays equal for ~100s.
+  // `e2e-trust-` plus the full stamp fits in 32 characters, so the handle stays whole.
+  const username = `e2e-trust-${stamp}`.slice(0, 32);
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
     data: {
-      accounts: [
-        {
-          name,
-          username: `e2e-trust-${stamp}`.slice(0, 32),
-        },
-      ],
+      accounts: [{ name, username }],
     },
   });
   expect(provision.status()).toBe(200);
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const row = accounts.find((item) => item.name === name);
+  const accounts = (
+    (await listed.json()) as {
+      accounts: Array<{ id: string; name: string; username: string | null }>;
+    }
+  ).accounts;
+  const row = accounts.find((item) => item.username === username);
   expect(row).toBeDefined();
   const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
   expect(session.status()).toBe(200);

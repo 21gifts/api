@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
+import { startFreshWalletStatsServer } from './helpers/fresh-wallet-stats-server';
 
 const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 
@@ -7,27 +8,92 @@ async function memberSession(
 ): Promise<{ authorization: string; id: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eFnTrust${stamp.slice(0, 8)}`;
+  // Eight digits of Date.now() stay equal for ~100s, so the display name is shared.
+  // The handle keeps the full millisecond time; at most the last random hex digit is cut at 32.
+  const username = `e2e-fn-trust-${stamp}`.slice(0, 32);
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
     data: {
-      accounts: [
-        {
-          name,
-          username: `e2e-fn-trust-${stamp}`.slice(0, 32),
-        },
-      ],
+      accounts: [{ name, username }],
     },
   });
   expect(provision.status()).toBe(200);
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const row = accounts.find((item) => item.name === name);
+  const accounts = (
+    (await listed.json()) as {
+      accounts: Array<{ id: string; name: string; username: string | null }>;
+    }
+  ).accounts;
+  const row = accounts.find((item) => item.username === username);
   expect(row).toBeDefined();
   const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   return { authorization: `Bearer ${token}`, id: row?.id ?? '' };
+}
+
+interface WalletStatsBody {
+  walletCount: number;
+  fundedWalletCount: number;
+  totalSats: number;
+  totalBtc: string;
+  asOf: string | null;
+  balanceOverTime: Array<{
+    day: string;
+    totalSats: number;
+    totalBtc: string;
+    walletCount: number;
+    fundedWalletCount: number;
+  }>;
+}
+
+/** Report two known balances through the member route, then read the public totals. */
+async function seedWalletStats(request: APIRequestContext): Promise<WalletStatsBody> {
+  const first = await memberSession(request);
+  const second = await memberSession(request);
+  for (const [auth, balanceSats] of [
+    [first, 60_000],
+    [second, 35_457],
+  ] as const) {
+    const reported = await request.post('/me/wallet/report', {
+      headers: auth,
+      data: walletReport([], { balanceSats }),
+    });
+    expect(reported.status()).toBe(200);
+  }
+  const res = await request.get('/wallets/stats');
+  expect(res.status()).toBe(200);
+  return (await res.json()) as WalletStatsBody;
+}
+
+/** Assert the exact public totals and final series row produced by {@link seedWalletStats}. */
+function expectSeededWalletStats(body: WalletStatsBody): void {
+  expect(body.walletCount).toBe(2);
+  expect(body.fundedWalletCount).toBe(2);
+  expect(body.totalSats).toBe(95_457);
+  expect(body.totalBtc).toBe('0.00095457');
+  expect(body.asOf).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  const last = body.balanceOverTime[body.balanceOverTime.length - 1];
+  expect(last).toBeDefined();
+  if (last === undefined) {
+    throw new Error('balanceOverTime has no last row');
+  }
+  expect(last.day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  const asOf = body.asOf;
+  expect(asOf).not.toBeNull();
+  expect(typeof asOf).toBe('string');
+  if (typeof asOf !== 'string') {
+    throw new Error('asOf is not a string');
+  }
+  // The API stamps the last series day from its clock at GET time. The runner clock can cross UTC midnight after that.
+  expect(last.day >= asOf.slice(0, 10)).toBe(true);
+  expect(last).toEqual({
+    day: last.day,
+    totalSats: 95_457,
+    totalBtc: '0.00095457',
+    walletCount: 2,
+    fundedWalletCount: 2,
+  });
 }
 
 async function rosterRoleSession(
@@ -871,6 +937,15 @@ test('Function: buildPostStats — GET /messages/stats returns a posts total', a
   const body = (await res.json()) as { postCount: number; postsOverTime: unknown[] };
   expect(body.postCount).toBeGreaterThanOrEqual(0);
   expect(Array.isArray(body.postsOverTime)).toBe(true);
+});
+
+test('Function: buildWalletStats — seeded reports produce exact totals and last day', async () => {
+  const server = await startFreshWalletStatsServer();
+  try {
+    expectSeededWalletStats(await seedWalletStats(server.request));
+  } finally {
+    await server.close();
+  }
 });
 
 test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot', async ({
@@ -4282,6 +4357,15 @@ test('Function: InMemoryWalletStore — pending then completed same id both 200'
   });
   expect(completed.status()).toBe(200);
   expect(await completed.json()).toEqual({ acknowledgedIds: ['same'] });
+});
+
+test('Function: walletStatsRoutes — GET /wallets/stats is public and seeded exactly', async () => {
+  const server = await startFreshWalletStatsServer();
+  try {
+    expectSeededWalletStats(await seedWalletStats(server.request));
+  } finally {
+    await server.close();
+  }
 });
 
 test('Function: PostgresWalletStore — needs DATABASE_URL; default boot stores in memory (200)', async ({
