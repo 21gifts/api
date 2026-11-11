@@ -73,8 +73,22 @@ function expectSeededWalletStats(body: WalletStatsBody): void {
   expect(body.totalSats).toBe(95_457);
   expect(body.totalBtc).toBe('0.00095457');
   expect(body.asOf).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
-  expect(body.balanceOverTime[body.balanceOverTime.length - 1]).toEqual({
-    day: new Date().toISOString().slice(0, 10),
+  const last = body.balanceOverTime[body.balanceOverTime.length - 1];
+  expect(last).toBeDefined();
+  if (last === undefined) {
+    throw new Error('balanceOverTime has no last row');
+  }
+  expect(last.day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  const asOf = body.asOf;
+  expect(asOf).not.toBeNull();
+  expect(typeof asOf).toBe('string');
+  if (typeof asOf !== 'string') {
+    throw new Error('asOf is not a string');
+  }
+  // The API stamps the last series day from its clock at GET time. The runner clock can cross UTC midnight after that.
+  expect(last.day >= asOf.slice(0, 10)).toBe(true);
+  expect(last).toEqual({
+    day: last.day,
     totalSats: 95_457,
     totalBtc: '0.00095457',
     walletCount: 2,
