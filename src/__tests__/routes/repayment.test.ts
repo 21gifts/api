@@ -1809,6 +1809,27 @@ describe('repayment from the in-app wallet', () => {
     expect(noAuth.status).toBe(401);
   });
 
+  it('takes the message lock before collecting the close response snapshot', async () => {
+    const { app, messages } = await readyCredit({ fundedAt: null });
+    const withMessageLock = messages.withMessageLock.bind(messages);
+    let injected = false;
+    vi.spyOn(messages, 'withMessageLock').mockImplementation(async (messageId, run) => {
+      if (!injected) {
+        injected = true;
+        await messages.recordZapReceipt('r-between-snapshot-and-close', CREDIT, 5, null);
+      }
+      return withMessageLock(messageId, run);
+    });
+
+    const response = await app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ collectedSats: 26 });
+  });
+
   it('refuses a gift on a closed credit and mints nothing', async () => {
     const { app, messages } = await readyCredit({ fundedAt: null });
     const closed = await app.request(`/messages/${CREDIT}/repayment/close`, {
@@ -2236,6 +2257,17 @@ describe('repayment from the in-app wallet', () => {
     expect(forbidden.status).toBe(409);
     expect(await forbidden.json()).toMatchObject({ error: 'missing_requirements' });
 
+    const vanishedBeforeLock = await readyCredit({ fundedAt: null });
+    const liveRow = await vanishedBeforeLock.messages.getById(CREDIT);
+    vi.spyOn(vanishedBeforeLock.messages, 'getById')
+      .mockResolvedValueOnce(liveRow)
+      .mockResolvedValueOnce(undefined);
+    const vanished = await vanishedBeforeLock.app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(vanished.status).toBe(404);
+
     const missing = await readyCredit({ fundedAt: null });
     vi.spyOn(missing.messages, 'closeCredit').mockResolvedValueOnce(undefined);
     const notFound = await missing.app.request(`/messages/${CREDIT}/repayment/close`, {
@@ -2619,6 +2651,28 @@ describe('repayment from the in-app wallet', () => {
       },
     );
     expect(overReservedResponse.status).toBe(409);
+  });
+
+  it('rejects an underpriced BTC part instead of settling its larger stored units', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    await messages.recordInvoiceAttempt(openPartAttempt(5, 10n, 100n, new Date(clock.now)));
+
+    const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '10' }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'A payment for this share is still open' });
+    expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(1);
+
+    const due = await post(app, `/messages/${CREDIT}/repayment`);
+    expect(due.status).toBe(409);
+    expect(await due.json()).toEqual({ error: 'A payment for this share is still open' });
   });
 
   it('ignores paid, duplicate, oversized, and fully reserved open attempts', async () => {

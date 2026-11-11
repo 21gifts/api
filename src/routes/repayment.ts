@@ -670,7 +670,12 @@ async function repaymentBillLocked(
     for (const open of openAttempts) {
       const part = open.part;
       const immutable = part === null ? undefined : immutableParts.get(part.partIndex);
-      if (part === null || part.shareUnits !== share.shareUnits || immutable !== undefined) {
+      if (
+        part === null ||
+        part.shareUnits !== share.shareUnits ||
+        immutable !== undefined ||
+        (!isFiatCredit(opened.row) && open.attempt.amountSats !== Number(part.units))
+      ) {
         return {
           ok: false,
           status: 409,
@@ -1131,34 +1136,41 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
   if (!payGate.ok) {
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
   }
-  const beforeClose = await creditOwed(deps, opened.row);
-  if (beforeClose.owed === 'unavailable' && opened.row.goalFundedAt instanceof Date) {
-    return c.json({ error: 'Ask amount is unavailable' }, 503);
-  }
-  const closed = await deps.store.closeCredit(opened.row.id, new Date(opened.nowMs));
-  if (closed === undefined) {
-    return c.json({ error: 'Not found' }, 404);
-  }
-  // An early fiat close freezes collected gift-time cents (including missing
-  // snapshots as zero), so its final debt always comes from a post-close read.
-  const { payers, unassignedSats, owed } =
-    opened.row.goalFundedAt === null && isFiatCredit(opened.row)
-      ? await creditOwed(deps, opened.row)
-      : beforeClose;
-  if (owed === 'unavailable') {
-    return c.json({ error: 'Ask amount is unavailable' }, 503);
-  }
-  const fiat = isFiatCredit(opened.row);
-  const collectedUnits = owed.reduce((sum, payer) => sum + payer.units, 0n);
-  return c.json(
-    {
-      fundedAt: closed.fundedAt.toISOString(),
-      closedAt: closed.closedAt.toISOString(),
-      collectedSats: payers.reduce((sum, payer) => sum + payer.sats, 0) + unassignedSats,
-      collectedAmount: fiat ? formatCents(collectedUnits) : null,
-    },
-    200,
-  );
+  return deps.store.withMessageLock(opened.row.id, async (locked) => {
+    const row = await locked.getById(opened.row.id);
+    if (row === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    const lockedDeps = { ...deps, store: locked };
+    const beforeClose = await creditOwed(lockedDeps, row);
+    if (beforeClose.owed === 'unavailable' && row.goalFundedAt instanceof Date) {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
+    }
+    const closed = await locked.closeCredit(row.id, new Date(deps.now()), true);
+    if (closed === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    // An early fiat close freezes collected gift-time cents (including missing
+    // snapshots as zero), so its final debt comes from the same locked state.
+    const { payers, unassignedSats, owed } =
+      row.goalFundedAt === null && isFiatCredit(row)
+        ? await creditOwed(lockedDeps, row)
+        : beforeClose;
+    if (owed === 'unavailable') {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
+    }
+    const fiat = isFiatCredit(row);
+    const collectedUnits = owed.reduce((sum, payer) => sum + payer.units, 0n);
+    return c.json(
+      {
+        fundedAt: closed.fundedAt.toISOString(),
+        closedAt: closed.closedAt.toISOString(),
+        collectedSats: payers.reduce((sum, payer) => sum + payer.sats, 0) + unassignedSats,
+        collectedAmount: fiat ? formatCents(collectedUnits) : null,
+      },
+      200,
+    );
+  });
 }
 
 /**
@@ -1218,11 +1230,14 @@ export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<
     return c.json({ error: INVALID_AMOUNT_BODY, code: 'invalid_amount' }, 400);
   }
   if (opened.row.goalClosedAt === null) {
-    const closed = await deps.store.closeCredit(opened.row.id, new Date(opened.nowMs));
-    if (closed === undefined) {
+    const closedRow = await deps.store.withMessageLock(opened.row.id, async (locked) => {
+      const closed = await locked.closeCredit(opened.row.id, new Date(deps.now()), true);
+      return closed === undefined ? undefined : locked.getById(opened.row.id);
+    });
+    if (closedRow === undefined) {
       return c.json({ error: 'Not found' }, 404);
     }
-    opened.row = (await deps.store.getById(opened.row.id)) as MessageRow;
+    opened.row = closedRow as MessageRow;
   }
   const plan = await prepayPlan(
     deps,
@@ -1277,23 +1292,18 @@ export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<
       400,
     );
   }
-  const requestedSats = plan.price(parsed.units) as number;
-  let plannedSats = 0n;
-  let hasOpenBill = false;
   for (const part of plan.allocation.parts) {
-    const sats = plan.price(part.units) as number;
-    let billedSats = sats;
     if (part.open && part.description !== undefined) {
       const attempt = await deps.store.findOkInvoiceByDescription(opened.row.id, part.description);
-      if (attempt !== undefined && attempt.pr !== null) {
-        billedSats = attempt.amountSats;
-        hasOpenBill = true;
+      if (
+        !plan.fiat &&
+        attempt !== undefined &&
+        attempt.pr !== null &&
+        attempt.amountSats !== Number(part.units)
+      ) {
+        return c.json({ error: OPEN_PAYMENT_BODY }, 409);
       }
     }
-    plannedSats += BigInt(billedSats);
-  }
-  if (!plan.fiat && hasOpenBill && plannedSats > BigInt(requestedSats)) {
-    return c.json({ error: OPEN_PAYMENT_BODY }, 409);
   }
   let mintAllowed: boolean | undefined;
   const mayMint = (): boolean => {

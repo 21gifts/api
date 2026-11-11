@@ -10967,6 +10967,90 @@ describe('DELETE /messages/:id', () => {
     expect(response.status).toBe(204);
   });
 
+  it('deletes an early-closed fiat credit whose frozen schedule has no positive units', async () => {
+    const { auth, messages } = await staffStore('founder');
+    for (const [creditId, goalAmount] of [
+      ['24242424-2424-4242-8242-242424242424', '1.00'],
+      ['25252525-2525-4252-8252-252525252525', null],
+    ] as const) {
+      await messages.create({
+        id: creditId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'debt-free fiat credit',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 100,
+        goalCurrency: 'USD',
+        goalAmount,
+        goalRepayable: true,
+        goalTermDays: 1,
+        goalFundedAt: null,
+      });
+      await messages.recordZapReceipt(`unassigned-fiat-gift-${creditId}`, creditId, 10, null);
+      await messages.closeCredit(creditId, new Date('2099-01-01T00:00:00.000Z'));
+
+      expect((await messages.getById(creditId))?.goalDebtFrozen).toBe(true);
+      const response = await mount(auth, messages).request(`/messages/${creditId}`, {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+
+      expect(response.status).toBe(204);
+    }
+  });
+
+  it('keeps an early-closed fiat credit open only for its positive frozen remainder', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const creditId = '26262626-2626-4262-8262-262626262626';
+    await messages.create({
+      id: creditId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'frozen fiat remainder',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 100,
+      goalCurrency: 'USD',
+      goalAmount: '1.00',
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: null,
+    });
+    await messages.recordZapReceipt('priced-fiat-gift', creditId, 10, {
+      usd: '1.00',
+      chf: null,
+      eur: null,
+      php: null,
+    });
+    await messages.updateZapReceiptGift('priced-fiat-gift', { payerAccountId: 'giver' });
+    await messages.closeCredit(creditId, new Date('2099-01-01T00:00:00.000Z'));
+
+    const open = await mount(auth, messages).request(`/messages/${creditId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(open.status).toBe(409);
+
+    await messages.markRepaymentPartPaid({
+      messageId: creditId,
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      partIndex: 0,
+      units: 100n,
+      sats: 10,
+      shareUnits: 100n,
+      paidAt: new Date(now()),
+    });
+    const settled = await mount(auth, messages).request(`/messages/${creditId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(settled.status).toBe(204);
+  });
+
   it('uses the payer as the recorded author of a closed external credit invoice', async () => {
     const { auth, messages } = await staffStore('founder');
     const creditId = '23232323-2323-4232-8232-232323232323';
@@ -11150,7 +11234,9 @@ describe('DELETE /messages/:id', () => {
     });
     expect(closedHiddenInvoice.status).toBe(404);
     expect(await closedHiddenInvoice.json()).toEqual({ error: 'Not found' });
-    expect((await messages.listInvoiceAttempts(1))[0]).toMatchObject({
+    expect(
+      (await messages.listInvoiceAttempts(2)).find((row) => row.messageId === closedHiddenId),
+    ).toMatchObject({
       messageId: closedHiddenId,
       result: 'not_found',
     });

@@ -10861,6 +10861,28 @@ describe('PostgresMessageStore', () => {
     expect(await memory.listRepaymentParts('immutable')).toEqual([
       expect.objectContaining({ partIndex: 0, units: 4n, sats: 40 }),
     ]);
+
+    expect(
+      await memory.settleRepaymentPayment(
+        'AB',
+        'underpriced-receipt',
+        paidAt,
+        {
+          kind: 'part',
+          messageId: 'underpriced',
+          dayIndex: 0,
+          recipientAccountId: 'giver',
+          partIndex: 0,
+          units: 10n,
+          sats: 5,
+          shareUnits: 10n,
+          paidAt,
+        },
+        true,
+      ),
+    ).toBe(false);
+    expect(await memory.zapPaymentReceiptId('ab')).toBeUndefined();
+    expect(await memory.listRepaymentParts('underpriced')).toEqual([]);
   });
 
   it('releases a legacy settlement claim when canonical parts already exist', async () => {
@@ -11021,6 +11043,38 @@ describe('PostgresMessageStore', () => {
     });
   });
 
+  it('queues gift receipt settlement behind the message lock', async () => {
+    const memory = new InMemoryMessageStore();
+    await memory.create({ ...EARLY, id: 'm-gift-lock' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = memory.withMessageLock('m-gift-lock', async () => gate);
+    await Promise.resolve();
+
+    const recorded = memory.recordZapReceipt('r-gift-lock', 'm-gift-lock', 7, null);
+    await Promise.resolve();
+    expect((await memory.getById('m-gift-lock'))?.sats).toBe(0);
+
+    release();
+    await held;
+    expect(await recorded).toBe(true);
+    expect((await memory.getById('m-gift-lock'))?.sats).toBe(7);
+  });
+
+  it('stamps a gift receipt directly when the message lock is already held', async () => {
+    const memory = new InMemoryMessageStore();
+    await memory.create({ ...EARLY, id: 'm-gift-held' });
+
+    const recorded = await memory.withMessageLock('m-gift-held', (locked) =>
+      locked.recordZapReceipt('r-gift-held', 'm-gift-held', 9, null, true),
+    );
+
+    expect(recorded).toBe(true);
+    expect((await memory.getById('m-gift-held'))?.sats).toBe(9);
+  });
+
   it('uses one transaction-scoped Postgres advisory lock per message', async () => {
     const sql = new MockSql();
     sql.transaction = async (run) => run(sql);
@@ -11031,6 +11085,30 @@ describe('PostgresMessageStore', () => {
     expect(result).toBe('transaction');
     expect(sql.queries[0]?.text).toMatch(/pg_advisory_xact_lock/);
     expect(sql.queries[0]?.params).toEqual(['message:m1']);
+  });
+
+  it('takes the Postgres message lock before stamping a gift receipt', async () => {
+    const sql = new MockSql();
+    sql.transaction = async (run) => run(sql);
+    sql.queryQueue = [[], [{ event_id: 'r-locked' }]];
+
+    expect(await new PostgresMessageStore(sql).recordZapReceipt('r-locked', 'm1', 7, null)).toBe(
+      true,
+    );
+    expect(sql.queries[0]?.text).toMatch(/pg_advisory_xact_lock/);
+    expect(sql.queries[1]?.text).toContain('SELECT clock_timestamp() AS at');
+  });
+
+  it('does not reacquire the Postgres message lock when it is already held', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [[{ event_id: 'r-already-locked' }]];
+
+    expect(
+      await new PostgresMessageStore(sql).recordZapReceipt('r-already-locked', 'm1', 7, null, true),
+    ).toBe(true);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toContain('SELECT clock_timestamp() AS at');
+    expect(sql.queries[0]?.text).not.toContain('pg_advisory_xact_lock');
   });
 
   it('lists stored repayments and records a share once', async () => {
@@ -13943,19 +14021,50 @@ describe('shop identity on message rows', () => {
     const partSql = new MockSql();
     partSql.queryQueue = [[{ receipt_event_id: 'part-receipt' }], [{ part_index: 0 }]];
     expect(
-      await new PostgresMessageStore(partSql).settleRepaymentPayment('BB', 'part-receipt', paidAt, {
-        kind: 'part',
-        messageId: 'm2',
-        dayIndex: 0,
-        recipientAccountId: 'giver',
-        partIndex: 0,
-        units: 4n,
-        sats: 4,
-        shareUnits: 10n,
+      await new PostgresMessageStore(partSql).settleRepaymentPayment(
+        'BB',
+        'part-receipt',
         paidAt,
-      }),
+        {
+          kind: 'part',
+          messageId: 'm2',
+          dayIndex: 0,
+          recipientAccountId: 'giver',
+          partIndex: 0,
+          units: 4n,
+          sats: 4,
+          shareUnits: 10n,
+          paidAt,
+        },
+        true,
+      ),
     ).toBe(true);
     expect(partSql.queries[1]?.text).toMatch(/message_repayment_part/);
+
+    const underpricedSql = new MockSql();
+    underpricedSql.transaction = async (run) => run(underpricedSql);
+    underpricedSql.queryQueue = [[]];
+    expect(
+      await new PostgresMessageStore(underpricedSql).settleRepaymentPayment(
+        'BC',
+        'underpriced-receipt',
+        paidAt,
+        {
+          kind: 'part',
+          messageId: 'm-underpriced',
+          dayIndex: 0,
+          recipientAccountId: 'giver',
+          partIndex: 0,
+          units: 10n,
+          sats: 5,
+          shareUnits: 10n,
+          paidAt,
+        },
+        true,
+      ),
+    ).toBe(false);
+    expect(underpricedSql.queries).toHaveLength(1);
+    expect(underpricedSql.queries[0]?.text).toMatch(/pg_advisory_xact_lock/);
 
     const conflictSql = new MockSql();
     conflictSql.queryQueue = [
@@ -14029,7 +14138,7 @@ describe('shop identity on message rows', () => {
         },
       ],
     ];
-    const closed = await new PostgresMessageStore(fiat).closeCredit('credit', new Date(2));
+    const closed = await new PostgresMessageStore(fiat).closeCredit('credit', new Date(2), true);
     expect(closed).toEqual({
       fundedAt: new Date('2026-11-11T12:00:00.000Z'),
       closedAt: new Date('2026-11-11T12:00:00.000Z'),
@@ -14071,11 +14180,13 @@ describe('shop identity on message rows', () => {
         created_at: new Date(0),
         has_photo: false,
         goal_closed_at: '2026-11-11T12:00:00.000Z',
+        goal_debt_frozen: true,
       },
     ];
-    expect((await new PostgresMessageStore(mappedSql).getById('m1'))?.goalClosedAt).toEqual(
-      new Date('2026-11-11T12:00:00.000Z'),
-    );
+    expect(await new PostgresMessageStore(mappedSql).getById('m1')).toMatchObject({
+      goalClosedAt: new Date('2026-11-11T12:00:00.000Z'),
+      goalDebtFrozen: true,
+    });
 
     const closedAt = new Date('2026-11-12T12:00:00.000Z');
     const datedSql = new MockSql();

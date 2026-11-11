@@ -130,6 +130,37 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
 
   return db.begin(async (tx) => {
     const accountParams = [input.from, input.into] as const;
+
+    // Repayment writes take the message advisory lock before any row lock.
+    // Follow that order here too: take every affected message lock in stable
+    // id order before locking either account or any repayment/message row.
+    await tx.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended('message:' || affected.message_id::text, 0))
+       FROM (
+         SELECT message_id FROM message_repayment
+         WHERE recipient_account_id = $1 OR recipient_account_id = $2
+         UNION
+         SELECT message_id FROM message_repayment_part
+         WHERE recipient_account_id = $1 OR recipient_account_id = $2
+         UNION
+         SELECT message_id FROM message_invoice
+         WHERE result = 'ok'
+           AND (
+             description LIKE 'repay:%:' || $1::text
+             OR description LIKE 'repay:%:' || $2::text
+             OR description LIKE 'repayp:%:' || $1::text || ':%'
+             OR description LIKE 'repayp:%:' || $2::text || ':%'
+           )
+         UNION
+         SELECT receipt.message_id
+         FROM nostr_zap_receipt AS receipt
+         JOIN message ON message.id = receipt.message_id
+         WHERE message.goal_repayable IS TRUE
+           AND (receipt.payer_account_id = $1 OR receipt.payer_account_id = $2)
+       ) AS affected
+       ORDER BY affected.message_id`,
+      accountParams,
+    );
     const locked = await tx.query<LockedAccountRow>(
       `SELECT id, is_platform, role, profile_message_id
        FROM account
@@ -196,36 +227,6 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     const messages = counts[0]?.n ?? 0;
     const savedProfileMessageId = fromAccount.profile_message_id;
 
-    // Repayment writes use the same message advisory lock. Take every affected
-    // lock before reading legacy rows so conversion and later reindexing see a
-    // stable paid state.
-    await tx.query(
-      `SELECT pg_advisory_xact_lock(hashtextextended('message:' || affected.message_id::text, 0))
-       FROM (
-         SELECT message_id FROM message_repayment
-         WHERE recipient_account_id = $1 OR recipient_account_id = $2
-         UNION
-         SELECT message_id FROM message_repayment_part
-         WHERE recipient_account_id = $1 OR recipient_account_id = $2
-         UNION
-         SELECT message_id FROM message_invoice
-         WHERE result = 'ok'
-           AND (
-             description LIKE 'repay:%:' || $1::text
-             OR description LIKE 'repay:%:' || $2::text
-             OR description LIKE 'repayp:%:' || $1::text || ':%'
-             OR description LIKE 'repayp:%:' || $2::text || ':%'
-           )
-         UNION
-         SELECT receipt.message_id
-         FROM nostr_zap_receipt AS receipt
-         JOIN message ON message.id = receipt.message_id
-         WHERE message.goal_repayable IS TRUE
-           AND (receipt.payer_account_id = $1 OR receipt.payer_account_id = $2)
-       ) AS affected
-       ORDER BY affected.message_id`,
-      accountParams,
-    );
     // Combining two givers after any repayment settled can change the rounded
     // day slices of their combined debt. Keep the settled schedule immutable:
     // the operator can merge only before that credit has any paid unit.
@@ -270,16 +271,41 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       return { ok: false, error: 'repayment_unavailable' };
     }
     // A repayment description is settlement metadata and embeds its recipient
-    // account id. Moving only the invoice foreign keys would orphan this open
-    // reservation, so wait until it is paid or expires.
+    // account id. Combining two givers changes their shared schedule, so keep
+    // every open reservation of either identity immutable until it settles or
+    // expires.
     const openRepaymentInvoices = await tx.query<OpenRepaymentInvoiceRow>(
       `SELECT invoice.created_at, invoice.pr
        FROM message_invoice AS invoice
+       JOIN message AS credit ON credit.id = invoice.message_id
        WHERE invoice.result = 'ok'
          AND invoice.pr IS NOT NULL
+         AND credit.goal_repayable IS TRUE
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS source_gift
+           WHERE source_gift.message_id = credit.id
+             AND source_gift.payer_account_id = $1
+             AND (
+               credit.goal_funded_at IS NULL
+               OR source_gift.recorded_at IS NULL
+               OR source_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS survivor_gift
+           WHERE survivor_gift.message_id = credit.id
+             AND survivor_gift.payer_account_id = $2
+             AND (
+               credit.goal_funded_at IS NULL
+               OR survivor_gift.recorded_at IS NULL
+               OR survivor_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
          AND (
            invoice.description LIKE 'repay:%:' || $1::text
            OR invoice.description LIKE 'repayp:%:' || $1::text || ':%'
+           OR invoice.description LIKE 'repay:%:' || $2::text
+           OR invoice.description LIKE 'repayp:%:' || $2::text || ':%'
          )
          AND (
            invoice.payment_hash IS NULL
@@ -289,7 +315,7 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
            )
          )
        ORDER BY invoice.created_at, invoice.id`,
-      [input.from],
+      accountParams,
     );
     if (
       openRepaymentInvoices.some((invoice) =>

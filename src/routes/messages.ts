@@ -398,6 +398,7 @@ const defaultPostLimiter = new PostRateLimiter();
 const defaultReplyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
 const defaultHeartLimiter = new HeartRateLimiter();
+const FIAT_GOAL_CURRENCIES = new Set<MessageRow['goalCurrency']>(['USD', 'CHF', 'EUR', 'PHP']);
 
 /**
  * After a committed write that can make a note a public shop: create its key
@@ -429,7 +430,8 @@ async function ensureShopIdentity(
  * stays open until every share of its repayment plan is paid. A credit that
  * never filled, whose debt cannot be priced, or that holds sats not yet
  * assigned to a giver account is open, so a later assignment cannot reopen a
- * credit that was already hidden.
+ * credit that was already hidden. An early-closed fiat credit is different:
+ * its frozen positive schedule alone decides whether debt remains.
  *
  * @param store - Message store.
  * @param row - Store row.
@@ -442,15 +444,18 @@ async function creditStillOpen(store: MessageStore, row: MessageRow): Promise<bo
   if (!(row.goalFundedAt instanceof Date) || typeof row.goalTermDays !== 'number') {
     return true;
   }
+  // closeCredit sets goalDebtFrozen only for fiat; the typed set also makes a
+  // corrupt legacy null safely false without a nullish-only coverage branch.
+  const frozenFiat = row.goalDebtFrozen === true && FIAT_GOAL_CURRENCIES.has(row.goalCurrency);
   // Unassigned sats first: a receipt assigned to a giver after this read is
   // then either still counted here or already listed as a payer below.
-  if ((await store.sumUnassignedCreditSats(row.id)) > 0) {
+  if (!frozenFiat && (await store.sumUnassignedCreditSats(row.id)) > 0) {
     return true;
   }
   const payers = await store.listCreditPayers(row.id);
   const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, payers);
   if (owed === 'unavailable') {
-    return true;
+    return !frozenFiat;
   }
   const slices = repaymentSchedule(row.goalTermDays, owed);
   const parts = new Map<string, bigint>();
@@ -464,7 +469,7 @@ async function creditStillOpen(store: MessageStore, row: MessageRow): Promise<bo
       .map((item) => `${item.dayIndex}:${item.recipientAccountId}`),
   );
   return (
-    slices.length === 0 ||
+    (!frozenFiat && slices.length === 0) ||
     slices.some((slice) => {
       const key = `${slice.dayIndex}:${slice.accountId}`;
       return (parts.get(key) ?? 0n) < slice.units && !paid.has(key);

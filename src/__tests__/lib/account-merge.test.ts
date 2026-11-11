@@ -73,7 +73,7 @@ interface FakeDatabaseOptions {
   }[];
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
-  /** Successful, unpaid source-recipient repayment invoices. */
+  /** Successful, unpaid repayment invoices on a credit both identities funded. */
   openRepaymentInvoices?: readonly { created_at: Date; pr: string }[];
 }
 
@@ -234,7 +234,20 @@ describe('mergeAccounts', () => {
     const accountDelete = queries.findIndex((query) =>
       query.text.includes('DELETE FROM account WHERE id = $1'),
     );
+    const messageLocks = queries.findIndex((query) => query.text.includes('pg_advisory_xact_lock'));
+    const accountLocks = queries.findIndex(
+      (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
+    );
+    const repaymentRowLocks = queries.findIndex(
+      (query) =>
+        query.text.includes('FROM message_repayment AS legacy') &&
+        query.text.includes('FOR UPDATE OF legacy, message'),
+    );
 
+    expect(messageLocks).toBe(0);
+    expect(queries[messageLocks]?.text).toContain('ORDER BY affected.message_id');
+    expect(accountLocks).toBeGreaterThan(messageLocks);
+    expect(repaymentRowLocks).toBeGreaterThan(accountLocks);
     expect(snapshot).toBeGreaterThanOrEqual(0);
     expect(queries[snapshot]?.text).toContain('SUM(units)::bigint');
     expect(queries[snapshot]?.text).toContain('ON CONFLICT (message_id, account_id) DO UPDATE');
@@ -373,7 +386,7 @@ describe('mergeAccounts', () => {
     ).toBe(false);
   });
 
-  it('refuses without writes while a source-recipient repayment invoice is still payable', async () => {
+  it('refuses without writes while the survivor has a payable invoice on their shared credit', async () => {
     const { db, queries } = fakeDatabase({
       openRepaymentInvoices: [{ created_at: new Date(), pr: 'lnbc-open-repayment' }],
     });
@@ -383,9 +396,13 @@ describe('mergeAccounts', () => {
       error: 'repayment_unavailable',
     });
     const open = queries.find((query) => query.text.includes('FROM message_invoice AS invoice'));
-    expect(open?.params).toEqual([FROM]);
+    expect(open?.params).toEqual([FROM, INTO]);
+    expect(open?.text).toContain('source_gift.payer_account_id = $1');
+    expect(open?.text).toContain('survivor_gift.payer_account_id = $2');
     expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $1::text");
     expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $1::text || ':%'");
+    expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $2::text");
+    expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $2::text || ':%'");
     expect(open?.text).toContain('FROM nostr_zap_payment AS payment');
     expect(
       queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
@@ -711,8 +728,14 @@ describe('mergeAccounts', () => {
     expect(flat).toBe(
       "SELECT p.id FROM shop_payment AS p WHERE p.account_id = $2 AND p.status = 'open' AND EXISTS ( SELECT 1 FROM pos_charge AS c WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now() ) AND NOT EXISTS ( SELECT 1 FROM pos_charge AS s WHERE s.account_id = $2 AND s.status = 'pending' AND s.expires_at > now() ) LIMIT 1",
     );
-    // Checked under both account locks, after the merged account's own check, before any write.
-    expect(queries[0]?.text).toContain('FROM account');
+    // Checked under both account locks, which follow the affected message locks,
+    // after the merged account's own check and before any write.
+    expect(queries[0]?.text).toContain('pg_advisory_xact_lock');
+    expect(
+      queries.findIndex(
+        (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
+      ),
+    ).toBeGreaterThan(0);
     expect(queries.filter((query) => query.text.includes('FROM shop_payment'))).toHaveLength(2);
     expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
   });

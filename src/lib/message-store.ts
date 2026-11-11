@@ -164,6 +164,7 @@ function applyStoredGoal(stored: MessageRow): void {
     stored.goalRepayable = null;
     stored.goalTermDays = null;
     stored.goalClosedAt = null;
+    stored.goalDebtFrozen = false;
     stored.goalCurrency = null;
     stored.goalAmount = null;
     stored.goalAmountUsd = null;
@@ -176,6 +177,7 @@ function applyStoredGoal(stored: MessageRow): void {
   stored.goalRepayable = stored.goalRepayable === true ? true : null;
   stored.goalTermDays = stored.goalTermDays ?? null;
   stored.goalClosedAt = stored.goalClosedAt ?? null;
+  stored.goalDebtFrozen = stored.goalDebtFrozen === true;
   stored.goalCurrency = stored.goalCurrency ?? null;
   stored.goalAmount = stored.goalAmount ?? null;
   stored.goalAmountUsd = stored.goalAmountUsd ?? null;
@@ -1426,14 +1428,17 @@ export interface MessageStore {
    * @param receiptEventId - Receipt that owns the claim.
    * @param claimedAt - Claim timestamp.
    * @param settlement - Legacy or part repayment to store.
+   * @param requireExactPartSats - True for a BTC part settlement.
    * @returns `false` when another receipt owns the hash or the repayment row
-   *   conflicts; a failed row write leaves no claim for this receipt.
+   *   conflicts, including a BTC part whose sats differ from its units; a
+   *   failed row write leaves no claim for this receipt.
    */
   settleRepaymentPayment(
     paymentHash: string,
     receiptEventId: string,
     claimedAt: Date,
     settlement: RepaymentSettlement,
+    requireExactPartSats?: boolean,
   ): Promise<boolean>;
 
   /**
@@ -1444,9 +1449,14 @@ export interface MessageStore {
    *
    * @param messageId - Credit note.
    * @param at - Close instant.
+   * @param alreadyLocked - True only from a `withMessageLock` callback.
    * @returns The stored timestamps, or `undefined` when no repayable row has that id.
    */
-  closeCredit(messageId: string, at: Date): Promise<{ fundedAt: Date; closedAt: Date } | undefined>;
+  closeCredit(
+    messageId: string,
+    at: Date,
+    alreadyLocked?: boolean,
+  ): Promise<{ fundedAt: Date; closedAt: Date } | undefined>;
 
   /**
    * Claim a lowercase payment hash for one receipt, preserving the claim
@@ -1480,6 +1490,7 @@ export interface MessageStore {
    * @param receiptEventId - Kind:9735 event id (unique while held).
    * @param messageId - Forum row to credit.
    * @param sats - Whole sats to add.
+   * @param alreadyLocked - True only from a `withMessageLock` callback.
    * @returns `true` when the receipt was new and sats were added; `false` on
    *   duplicate receipt id (no second add).
    */
@@ -1488,6 +1499,7 @@ export interface MessageStore {
     messageId: string,
     sats: number,
     delta: FiatAmounts | null,
+    alreadyLocked?: boolean,
   ): Promise<boolean>;
 
   /** Append one POST /messages/:id/invoice attempt (success or failure). */
@@ -2582,6 +2594,7 @@ function copyRow(row: MessageRow): MessageRow {
       row.goalClosedAt === undefined || row.goalClosedAt === null
         ? null
         : new Date(row.goalClosedAt.getTime()),
+    goalDebtFrozen: row.goalDebtFrozen === true,
     goalCurrency: row.goalCurrency ?? null,
     goalAmount: row.goalAmount ?? null,
     goalAmountUsd: row.goalAmountUsd ?? null,
@@ -4758,8 +4771,16 @@ export class InMemoryMessageStore implements MessageStore {
     receiptEventId: string,
     claimedAt: Date,
     settlement: RepaymentSettlement,
+    requireExactPartSats = false,
   ): Promise<boolean> {
     return this.withMessageLock(settlement.messageId, async () => {
+      if (
+        settlement.kind === 'part' &&
+        requireExactPartSats &&
+        settlement.sats !== Number(settlement.units)
+      ) {
+        return false;
+      }
       if (!(await this.claimZapPayment(paymentHash, receiptEventId, claimedAt))) {
         return false;
       }
@@ -4792,7 +4813,11 @@ export class InMemoryMessageStore implements MessageStore {
   async closeCredit(
     messageId: string,
     at: Date,
+    alreadyLocked = false,
   ): Promise<{ fundedAt: Date; closedAt: Date } | undefined> {
+    if (alreadyLocked) {
+      return this.#closeCreditUnlocked(messageId, at);
+    }
     return this.withMessageLock(messageId, () => this.#closeCreditUnlocked(messageId, at));
   }
 
@@ -4805,11 +4830,10 @@ export class InMemoryMessageStore implements MessageStore {
       return undefined;
     }
     const currency = row.goalCurrency;
-    if (
+    const freezesDebt =
       row.goalFundedAt === null &&
-      (currency === 'USD' || currency === 'CHF' || currency === 'EUR' || currency === 'PHP') &&
-      !this.#creditPayerSnapshots.has(messageId)
-    ) {
+      (currency === 'USD' || currency === 'CHF' || currency === 'EUR' || currency === 'PHP');
+    if (freezesDebt && !this.#creditPayerSnapshots.has(messageId)) {
       const preview = await this.previewCreditPayerSnapshot(messageId, currency, at);
       const unitsByAccount = new Map(preview.map((payer) => [payer.accountId, payer.units]));
       this.#creditPayerSnapshots.set(messageId, {
@@ -4819,6 +4843,7 @@ export class InMemoryMessageStore implements MessageStore {
     }
     row.goalClosedAt ??= new Date(at.getTime());
     row.goalFundedAt ??= new Date(at.getTime());
+    row.goalDebtFrozen ||= freezesDebt;
     if (!this.#creditFreezeAt.has(messageId)) {
       this.#creditFreezeAt.set(messageId, row.goalFundedAt.getTime());
     }
@@ -4861,6 +4886,21 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   async recordZapReceipt(
+    receiptEventId: string,
+    messageId: string,
+    sats: number,
+    delta: FiatAmounts | null,
+    alreadyLocked = false,
+  ): Promise<boolean> {
+    if (alreadyLocked) {
+      return this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta);
+    }
+    return this.withMessageLock(messageId, () =>
+      this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta),
+    );
+  }
+
+  async #recordZapReceiptUnlocked(
     receiptEventId: string,
     messageId: string,
     sats: number,
@@ -5717,6 +5757,7 @@ interface MessageSqlRow {
   goal_term_days?: string | number | null;
   goal_funded_at?: Date | string | null;
   goal_closed_at?: Date | string | null;
+  goal_debt_frozen?: boolean | null;
   goal_currency?: string | null;
   goal_amount?: string | number | null;
   goal_amount_text?: string | null;
@@ -6020,6 +6061,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
         : row.goal_closed_at instanceof Date
           ? row.goal_closed_at
           : new Date(row.goal_closed_at),
+    goalDebtFrozen: row.goal_debt_frozen === true,
     goalCurrency: mapGoalCurrency(row.goal_currency),
     goalAmount:
       typeof row.goal_amount_text === 'string' && row.goal_amount_text !== ''
@@ -6082,7 +6124,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               video_content_type,
               parent_id, author_pubkey,
               event_id, nostr_publish_state, sats, goal_sats, goal_repayable, goal_term_days,
-              goal_funded_at, goal_closed_at,
+              goal_funded_at, goal_closed_at, goal_debt_frozen,
               fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php,
               received_sats,
@@ -8730,9 +8772,17 @@ export class PostgresMessageStore implements MessageStore {
     receiptEventId: string,
     claimedAt: Date,
     settlement: RepaymentSettlement,
+    requireExactPartSats = false,
   ): Promise<boolean> {
     return this.withMessageLock(settlement.messageId, async (locked) => {
       const store = locked as PostgresMessageStore;
+      if (
+        settlement.kind === 'part' &&
+        requireExactPartSats &&
+        settlement.sats !== Number(settlement.units)
+      ) {
+        return false;
+      }
       if (!(await store.claimZapPayment(paymentHash, receiptEventId, claimedAt))) {
         return false;
       }
@@ -8773,7 +8823,11 @@ export class PostgresMessageStore implements MessageStore {
   async closeCredit(
     messageId: string,
     at: Date,
+    alreadyLocked = false,
   ): Promise<{ fundedAt: Date; closedAt: Date } | undefined> {
+    if (alreadyLocked) {
+      return this.#closeCreditUnlocked(messageId, at);
+    }
     return this.withMessageLock(messageId, (locked) =>
       (locked as PostgresMessageStore).#closeCreditUnlocked(messageId, at),
     );
@@ -8891,11 +8945,33 @@ export class PostgresMessageStore implements MessageStore {
     messageId: string,
     sats: number,
     delta: FiatAmounts | null,
+    alreadyLocked = false,
+  ): Promise<boolean> {
+    if (alreadyLocked) {
+      return this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta);
+    }
+    return this.withMessageLock(messageId, (locked) =>
+      (locked as PostgresMessageStore).#recordZapReceiptUnlocked(
+        receiptEventId,
+        messageId,
+        sats,
+        delta,
+      ),
+    );
+  }
+
+  async #recordZapReceiptUnlocked(
+    receiptEventId: string,
+    messageId: string,
+    sats: number,
+    delta: FiatAmounts | null,
   ): Promise<boolean> {
     const inserted = await this.#sql.query<{ event_id: string }>(
-      `WITH inserted AS (
+      `WITH settled_at AS (
+         SELECT clock_timestamp() AS at
+       ), inserted AS (
          INSERT INTO nostr_zap_receipt (event_id, message_id, sats, recorded_at)
-         VALUES ($1, $2, $3, now())
+         SELECT $1, $2, $3, settled_at.at FROM settled_at
          ON CONFLICT (event_id) DO NOTHING
          RETURNING event_id, message_id, sats
        )
@@ -8970,7 +9046,7 @@ export class PostgresMessageStore implements MessageStore {
               AND message.goal_funded_at IS NULL
               AND message.goal_sats IS NOT NULL
               AND message.sats + inserted.sats >= message.goal_sats
-             THEN now()
+             THEN (SELECT at FROM settled_at)
              ELSE message.goal_funded_at
            END
        FROM inserted

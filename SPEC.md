@@ -4774,9 +4774,9 @@ Under those locks and before any write, the merge is refused when both
 identities gave to the same repayable credit and that credit has any settled
 legacy repayment or repayment part. Combining the giver shares could otherwise
 change their rounded day slices and make paid debt due again. It is also refused
-while a successful, unpaid, unexpired `repay:` or `repayp:` invoice names the
-source account as its recipient, because the recipient id embedded in that
-settlement description cannot be moved by the account foreign-key updates.
+while a successful, unpaid, unexpired `repay:` or `repayp:` invoice on that
+shared credit names either identity as its recipient, because combining their
+shares can make either open reservation disagree with the merged schedule.
 
 An invalid body is **400**
 `{ "error": "Expected a JSON body with \"from\" and \"into\"" }`
@@ -4803,7 +4803,7 @@ If an affected legacy repayment's exact original schedule units cannot be
 reconstructed, the merge is **409**
 `{ "error": "Repayment history is unavailable" }` and changes nothing.
 The same **409** and no changes apply to the settled dual-giver collision and
-the still-payable source-recipient repayment invoice described above. The
+the still-payable dual-giver-credit repayment invoice described above. The
 merge can be retried after the invoice is paid or expires; accounts with a
 settled dual-giver credit remain separate.
 The source's paid and closed shop payments move like every other row. Every
@@ -7682,7 +7682,7 @@ Success → **Response** `200`:
 
 At most **60** bills per call. The remaining payable shares come on the next call. The repayment invoice limiter is asked once per call, by the first bill that has to be minted; a call that only returns open bills does not ask it.
 
-Close, note-gift mint and durable invoice storage, repayment reservation, and settlement are serialized by one lock per message. Under that lock reservation rereads every settled and still-payable part, reuses an exact description first, validates all reserved units against the share, and refuses a stale part index or size with 409. A repayment payment-hash claim and its matching repayment row become visible together; an immutable part-key conflict leaves no claim. The zap receipt, or the Spark invoice worker for a paid `sparkInvoice`, stores a legacy full share on `message_repayment` or an exact part on `message_repayment_part`, never both.
+Close, gift-receipt settlement, note-gift mint and durable invoice storage, repayment reservation, and repayment settlement are serialized by one lock per message. Close takes that lock before choosing its server timestamp, freezing `goal_funded_at`, or reading the collected response snapshot. Under the same lock reservation rereads every settled and still-payable part, reuses an exact description first, validates all reserved units against the share, and refuses a stale part index or size with 409. A BTC part is reusable only when its stored invoice sats equal its encoded units; an underpriced or overpriced open part is the same 409 conflict. A repayment payment-hash claim and its matching repayment row become visible together; an immutable part-key conflict leaves no claim. The zap receipt, or the Spark invoice worker for a paid `sparkInvoice`, stores a legacy full share on `message_repayment` or an exact part on `message_repayment_part`, never both.
 
 Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID.
 Unknown id, a non-UUID after a valid session, a note that is not a live repayable ask, a credit that is not funded yet, or a caller who is not the author → **404** `{ "error": "Not found" }`.
@@ -7696,7 +7696,7 @@ Any other error of `POST /messages/:id/repayment` while making a bill (`This mes
 
 End collecting on a live, top-level repayable ask. Bearer session required. No body. The caller must be the author. Sunday rest does not refuse close.
 
-The first close sets `message.goal_closed_at` to the server clock and, when the ask had not filled, also `message.goal_funded_at` to that same instant. For such an early fiat close, `message.goal_debt_frozen` is true and each giver's exact stored gift-time loan-currency cents are frozen in `message_credit_payer_snapshot`; a gift without that snapshot contributes zero cents to its giver and never receives another giver's cents. Their sum, not the original goal, is the debt and `collectedAmount`. The same exact-cents preview supplies `maxAmount` while the loan is still collecting. The debt and daily plan then follow the ordinary funded-loan rules. A BTC close never sets `goal_debt_frozen`. A loan that already filled keeps its `goal_funded_at`, leaves `goal_debt_frozen` false, and keeps its existing payment-snapshot computation. Closing again is idempotent. A loan closed with 0 collected owes nothing.
+Under the per-message lock, the first close chooses the server clock and sets `message.goal_closed_at`; when the ask had not filled, it also sets `message.goal_funded_at` to that same instant. Gift-receipt settlement takes the same lock, so the frozen debt and the response's collected snapshot have one atomic boundary. For such an early fiat close, `message.goal_debt_frozen` is true and each giver's exact stored gift-time loan-currency cents are frozen in `message_credit_payer_snapshot`; a gift without that snapshot contributes zero cents to its giver and never receives another giver's cents. Their sum, not the original goal, is the debt and `collectedAmount`. The same exact-cents preview supplies `maxAmount` while the loan is still collecting. The debt and daily plan then follow the ordinary funded-loan rules. A BTC close never sets `goal_debt_frozen`. A loan that already filled keeps its `goal_funded_at`, leaves `goal_debt_frozen` false, and keeps its existing payment-snapshot computation. Closing again is idempotent. A loan closed with 0 collected owes nothing. For staff deletion, a frozen fiat loan is open only while a positive frozen scheduled unit remains unsettled; unassigned sats and an empty frozen schedule do not keep it open.
 
 Success → **Response** `200`:
 
@@ -7711,10 +7711,10 @@ Success → **Response** `200`:
 
 `collectedAmount` is the loan-currency two-decimal string for a fiat loan, else null. `collectedSats` is the collected sat total.
 
-Debt availability is checked before the close write when the existing funded
-debt is sufficient to decide it. An early fiat close may first need to commit
-its missing-snapshot zero-cent rows. If debt is still unavailable after that
-second check, the response is **503**
+After taking the message lock, debt availability is checked before the close
+write when the existing funded debt is sufficient to decide it. An early fiat
+close may first need to commit its missing-snapshot zero-cent rows. If debt is
+still unavailable after that second check, the response is **503**
 `{ "error": "Ask amount is unavailable" }` and the loan is already closed.
 
 Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. Unknown id, a non-UUID after a valid session, a note that is not a live repayable top-level ask with a term, or a caller who is not the author → **404** `{ "error": "Not found" }`. Author missing `forum.pay` → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.

@@ -1404,6 +1404,98 @@ describe('manual invoice settlement', () => {
     expect(await store.listRepaymentParts(messageId)).toEqual([]);
   });
 
+  it('rejects a repayment when its deterministic manual receipt was already indexed', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const giver = '11111111-1111-4111-8111-111111111111';
+    const paymentHash = 'b3'.repeat(32);
+    const receiptId = manualReceiptIdForPaymentHash(paymentHash);
+    await seedManualInvoice(store, paymentHash, {
+      amountSats: 21,
+      description: repaymentDescription(0, giver),
+    });
+    await store.recordZapIngest({
+      id: 'existing-manual-repayment-ingest',
+      createdAt: new Date(1),
+      receiptId,
+      noteEventId: null,
+      messageId,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: PROVIDER_PUBKEY,
+      receipt: { tags: [] },
+    });
+
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1_750,
+        paymentHash,
+        note: 'repayment receipt recovery race',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'duplicate' });
+    expect(await store.listZapIngests(10)).toHaveLength(1);
+  });
+
+  it('rejects a repayment when its payment hash is claimed without crediting it', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const giver = '11111111-1111-4111-8111-111111111111';
+    const paymentHash = 'b4'.repeat(32);
+    const receiptId = manualReceiptIdForPaymentHash(paymentHash);
+    await seedManualInvoice(store, paymentHash, {
+      amountSats: 21,
+      description: repaymentDescription(0, giver),
+    });
+    await store.claimZapPayment(paymentHash, 'foreign-receipt', new Date(1));
+    const settleRepayment = vi.spyOn(store, 'settleRepaymentPayment');
+
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1_775,
+        paymentHash,
+        note: 'repayment payment-hash conflict',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'duplicate' });
+    expect(settleRepayment).toHaveBeenCalledWith(
+      paymentHash,
+      receiptId,
+      new Date(1_775),
+      {
+        kind: 'legacy',
+        messageId,
+        dayIndex: 0,
+        recipientAccountId: giver,
+        dueSats: 21,
+        paidAt: new Date(1_775),
+      },
+      false,
+    );
+    expect(await settleRepayment.mock.results[0]!.value).toBe(false);
+    expect((await store.getById(messageId))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect(await store.listRepaymentParts(messageId)).toEqual([]);
+    expect(await store.getZapReceiptGift(receiptId)).toBeUndefined();
+    expect(await store.listZapIngests(10)).toEqual([]);
+    expect(await store.zapPaymentReceiptId(paymentHash)).toBe('foreign-receipt');
+  });
+
   it('records a repayment-part invoice as a paid part and does not raise the ask', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -2952,6 +3044,109 @@ describe('manual invoice settlement', () => {
 });
 
 describe('indexZapReceipt', () => {
+  it('claims the payment hash after taking the message lock and credits under that lock', async () => {
+    const store = new InMemoryMessageStore();
+    const row = await store.create({
+      id: 'm-locked-settlement',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const order: string[] = [];
+    const withMessageLock = store.withMessageLock.bind(store);
+    const claimZapPayment = store.claimZapPayment.bind(store);
+    const recordZapReceipt = store.recordZapReceipt.bind(store);
+    vi.spyOn(store, 'withMessageLock').mockImplementation((messageId, run) => {
+      order.push('lock');
+      return withMessageLock(messageId, async (locked) => {
+        order.push('locked');
+        return run(locked);
+      });
+    });
+    vi.spyOn(store, 'claimZapPayment').mockImplementation((...args) => {
+      order.push('claim');
+      return claimZapPayment(...args);
+    });
+    const record = vi.spyOn(store, 'recordZapReceipt').mockImplementation((...args) => {
+      order.push('record');
+      return recordZapReceipt(...args);
+    });
+
+    const ok = await indexZapReceipt({
+      store,
+      messageId: row.id,
+      receipt: { id: 'r-locked-settlement', pubkey: PROVIDER_PUBKEY, tags: [] },
+      providerPubkey: PROVIDER_PUBKEY,
+      amountSats: 21,
+      paymentHash: '20'.repeat(32),
+    });
+
+    expect(ok).toBe(true);
+    expect(order).toEqual(['lock', 'locked', 'claim', 'record']);
+    expect(record).toHaveBeenCalledWith('r-locked-settlement', row.id, 21, null, true);
+    expect((await store.getById(row.id))?.sats).toBe(21);
+
+    expect(
+      await indexZapReceipt({
+        store,
+        messageId: row.id,
+        receipt: { id: 'r-locked-settlement', pubkey: PROVIDER_PUBKEY, tags: [] },
+        providerPubkey: PROVIDER_PUBKEY,
+        amountSats: 21,
+        paymentHash: '20'.repeat(32),
+      }),
+    ).toBe(false);
+    expect(record).toHaveBeenCalledTimes(2);
+    expect((await store.getById(row.id))?.sats).toBe(21);
+    expect(await store.listZapIngests(2)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          receiptId: 'r-locked-settlement',
+          outcome: 'indexed',
+          reason: null,
+        }),
+        expect.objectContaining({
+          receiptId: 'r-locked-settlement',
+          outcome: 'rejected',
+          reason: 'duplicate',
+        }),
+      ]),
+    );
+  });
+
+  it('does not credit a payment hash claimed by another receipt', async () => {
+    const store = new InMemoryMessageStore();
+    const row = await store.create({
+      id: 'm-foreign-settlement',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const paymentHash = '21'.repeat(32);
+    await store.claimZapPayment(paymentHash, 'another-receipt', new Date(0));
+    const record = vi.spyOn(store, 'recordZapReceipt');
+
+    const ok = await indexZapReceipt({
+      store,
+      messageId: row.id,
+      receipt: { id: 'r-foreign-settlement', pubkey: PROVIDER_PUBKEY, tags: [] },
+      providerPubkey: PROVIDER_PUBKEY,
+      amountSats: 21,
+      paymentHash,
+    });
+
+    expect(ok).toBe(false);
+    expect(record).not.toHaveBeenCalled();
+    expect((await store.getById(row.id))?.sats).toBe(0);
+    expect((await store.listZapIngests(1))[0]?.reason).toBe('settled');
+  });
+
   it('adds sats when the provider pubkey matches', async () => {
     const store = new InMemoryMessageStore();
     const row = await store.create({

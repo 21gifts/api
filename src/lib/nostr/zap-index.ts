@@ -61,6 +61,7 @@ interface ProviderCacheRow {
 }
 
 const providerPubkeyCache = new Map<string, ProviderCacheRow>();
+const FIAT_GOAL_CURRENCIES = new Set(['USD', 'CHF', 'EUR', 'PHP']);
 const EXTERNAL_ZAPPER_BACKFILL_CEILING = 10_000;
 const NO_EXTERNAL_GIFT_REPLY_LIMIT = 10_000;
 
@@ -524,9 +525,9 @@ function zapIngestRow(args: {
  * A retry after a failed ingest write resumes even when the note was hidden in
  * the meantime; it then only completes the ingest row (no notification, no
  * gift-reply). A fresh settle on a hidden or missing note is refused.
- * For a repayment, the payment-hash claim and repayment row are stored under
- * the same per-message lock, so invoice reservation cannot observe one without
- * the other. Other receipts remain serialized by the claim table's hash key.
+ * The payment-hash claim and forum receipt/repayment row are stored under the
+ * same per-message lock, so invoice reservation cannot observe one without
+ * the other.
  * On a member note, fans out `notifyZap` and attempts the payer gift-reply
  * unless the settled invoice is a heart (`heart === true`): then credits
  * sats, calls `notifyHeart`, and skips `notifyZap` and the gift-reply.
@@ -618,38 +619,36 @@ export async function settleInvoiceManually(args: {
   const repayment = parseRepaymentDescription(invoice.description);
   const part = parseRepaymentPartDescription(invoice.description);
   const claimedAt = new Date(args.now());
-  const claimed =
-    repayment !== null && invoice.messageId === message.id
-      ? await args.store.settleRepaymentPayment(
-          paymentHash,
-          receiptId,
-          claimedAt,
-          part === null
-            ? {
-                kind: 'legacy',
-                messageId: message.id,
-                dayIndex: repayment.dayIndex,
-                recipientAccountId: repayment.recipientAccountId,
-                dueSats: invoice.amountSats,
-                paidAt: claimedAt,
-              }
-            : {
-                kind: 'part',
-                messageId: message.id,
-                dayIndex: part.dayIndex,
-                recipientAccountId: part.recipientAccountId,
-                partIndex: part.partIndex,
-                units: part.units,
-                sats: invoice.amountSats,
-                shareUnits: part.shareUnits,
-                paidAt: claimedAt,
-              },
-        )
-      : await args.store.claimZapPayment(paymentHash, receiptId, claimedAt);
-  if (!claimed) {
-    return { ok: false, reason: 'duplicate' };
-  }
   if (repayment !== null && invoice.messageId === message.id) {
+    const claimed = await args.store.settleRepaymentPayment(
+      paymentHash,
+      receiptId,
+      claimedAt,
+      part === null
+        ? {
+            kind: 'legacy',
+            messageId: message.id,
+            dayIndex: repayment.dayIndex,
+            recipientAccountId: repayment.recipientAccountId,
+            dueSats: invoice.amountSats,
+            paidAt: claimedAt,
+          }
+        : {
+            kind: 'part',
+            messageId: message.id,
+            dayIndex: part.dayIndex,
+            recipientAccountId: part.recipientAccountId,
+            partIndex: part.partIndex,
+            units: part.units,
+            sats: invoice.amountSats,
+            shareUnits: part.shareUnits,
+            paidAt: claimedAt,
+          },
+      part !== null && !FIAT_GOAL_CURRENCIES.has(message.goalCurrency ?? ''),
+    );
+    if (!claimed) {
+      return { ok: false, reason: 'duplicate' };
+    }
     if (indexed.some((row) => row.receiptId === receiptId)) {
       return { ok: false, reason: 'duplicate' };
     }
@@ -703,10 +702,16 @@ export async function settleInvoiceManually(args: {
           now: args.now,
           ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
         });
-  if (
-    !resumed &&
-    !(await args.store.recordZapReceipt(receiptId, message.id, invoice.amountSats, delta))
-  ) {
+  const stored = await args.store.withMessageLock(message.id, async (lockedStore) => {
+    if (!(await lockedStore.claimZapPayment(paymentHash, receiptId, claimedAt))) {
+      return false;
+    }
+    if (resumed) {
+      return true;
+    }
+    return lockedStore.recordZapReceipt(receiptId, message.id, invoice.amountSats, delta, true);
+  });
+  if (!stored) {
     return { ok: false, reason: 'duplicate' };
   }
 
@@ -846,6 +851,9 @@ export async function settleInvoiceManually(args: {
  * @param receipt - Kind 9735.
  * @param providerPubkey - LNURL `nostrPubkey` hex.
  * @param amountSats - Whole sats from the paid invoice.
+ * When `paymentHash` is supplied, its claim and the message credit are written
+ * under one per-message lock, with that advisory lock acquired first.
+ *
  * @returns Whether sats were added.
  */
 export async function indexZapReceipt(args: {
@@ -863,11 +871,13 @@ export async function indexZapReceipt(args: {
   fiatRates?: FiatRateBook;
   /** Clock passed into the snapshot helper. Default `Date.now`. */
   now?: () => number;
+  /** Payment hash claimed under the same message lock as the receipt credit. */
+  paymentHash?: string;
   /**
    * Amounts already stored for this payment. When set, including all nulls,
    * that snapshot is stored. When omitted, no snapshot is stored.
    */
-  fiat?: FiatAmounts;
+  fiat?: FiatAmounts | null;
 }): Promise<boolean> {
   const receipt =
     args.receiptEvent ??
@@ -927,13 +937,37 @@ export async function indexZapReceipt(args: {
           now,
           ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
         });
-  const added = await args.store.recordZapReceipt(
-    args.receipt.id,
-    args.messageId,
-    args.amountSats,
-    delta,
-  );
-  if (!added) {
+  const paymentHash = args.paymentHash;
+  let settlement: 'added' | 'duplicate' | 'settled';
+  if (paymentHash === undefined) {
+    settlement = (await args.store.recordZapReceipt(
+      args.receipt.id,
+      args.messageId,
+      args.amountSats,
+      delta,
+    ))
+      ? 'added'
+      : 'duplicate';
+  } else {
+    settlement = await args.store.withMessageLock(args.messageId, async (lockedStore) => {
+      if (!(await lockedStore.claimZapPayment(paymentHash, args.receipt.id, new Date(now())))) {
+        return 'settled';
+      }
+      return (await lockedStore.recordZapReceipt(
+        args.receipt.id,
+        args.messageId,
+        args.amountSats,
+        delta,
+        true,
+      ))
+        ? 'added'
+        : 'duplicate';
+    });
+  }
+  if (settlement !== 'added') {
+    if (settlement === 'settled') {
+      logEvent('nostr.zap.rejected', { reason: 'settled' });
+    }
     await persistZapIngest(
       args.store,
       zapIngestRow({
@@ -941,7 +975,7 @@ export async function indexZapReceipt(args: {
         noteEventId,
         messageId: args.messageId,
         outcome: 'rejected',
-        reason: 'duplicate',
+        reason: settlement,
         amountSats: args.amountSats,
         receiptPubkey: args.receipt.pubkey,
         receipt,
@@ -1708,24 +1742,6 @@ async function ingestOneReceipt(
     );
     return;
   }
-  if (!(await args.store.claimZapPayment(decoded.paymentHash, event.id, new Date(args.now())))) {
-    logEvent('nostr.zap.rejected', { reason: 'settled' });
-    await persistZapIngest(
-      args.store,
-      zapIngestRow({
-        receiptId: event.id,
-        noteEventId,
-        messageId: row.id,
-        outcome: 'rejected',
-        reason: 'settled',
-        amountSats,
-        receiptPubkey: event.pubkey,
-        receipt,
-      }),
-    );
-    return;
-  }
-
   // A thrown lookup must not reject a receipt that already passed validation.
   // Retry the lookup once; a second throw is not a heart, so the receipt keeps the normal
   // gift notice, the same as `tryEnsureGiftReply`. Gift-reply looks the invoice up again.
@@ -1741,6 +1757,16 @@ async function ingestOneReceipt(
   }
   const pinnedForum = pinnedInvoiceFiat(invoice);
   const heart = invoice?.heart === true;
+  const forumDelta =
+    pinnedForum !== undefined
+      ? pinnedForum
+      : await snapshotSatsFiat({
+          sats: amountSats,
+          at: new Date(args.now()),
+          fetchImpl: args.fetchImpl,
+          now: args.now,
+          ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
+        });
   const indexed = await indexZapReceipt({
     store: args.store,
     messageId: row.id,
@@ -1751,9 +1777,13 @@ async function ingestOneReceipt(
     noteEventId,
     fetchImpl: args.fetchImpl,
     now: args.now,
+    paymentHash: decoded.paymentHash,
     ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
-    ...(pinnedForum === undefined ? {} : { fiat: pinnedForum }),
+    fiat: forumDelta,
   });
+  if (!indexed && (await args.store.zapPaymentReceiptId(decoded.paymentHash)) !== event.id) {
+    return;
+  }
   if (indexed && row.accountId !== null) {
     let payer: Account | undefined;
     try {
@@ -1844,7 +1874,7 @@ async function ingestOneReceipt(
  */
 async function settleRepaymentReceipt(
   args: Parameters<typeof indexOpenZapReceipts>[0],
-  row: { id: string },
+  row: Pick<MessageRow, 'id' | 'goalCurrency'>,
   event: { id: string; pubkey: string },
   receipt: Record<string, unknown>,
   noteEventId: string | null,
@@ -1938,6 +1968,7 @@ async function settleRepaymentReceipt(
             shareUnits: part.shareUnits,
             paidAt,
           },
+      part !== null && !FIAT_GOAL_CURRENCIES.has(row.goalCurrency ?? ''),
     ))
   ) {
     logEvent('nostr.zap.rejected', { reason: 'settled' });

@@ -200,6 +200,8 @@ export interface MessageRow {
    * Null until then; a close is final.
    */
   goalClosedAt?: Date | null;
+  /** True when an early fiat close froze the per-giver debt units. */
+  goalDebtFrozen?: boolean;
   /** Canonical typed ask amount (dot decimal). Null when there is no currency ask. */
   goalAmount?: string | null;
   /** Gift-day USD snapshot of the frozen ask, or null. */
