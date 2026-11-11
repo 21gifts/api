@@ -225,7 +225,7 @@ function cursorPayment(
  *
  * @param row - Completed stored payment.
  * @param counterparties - Known non-platform accounts by id.
- * @param paidUsd - Stored USD amount of each outgoing row's paid payout, by hash.
+ * @param paidUsd - Stored USD amount of each outgoing row's paid payout, by hash or invoice.
  * @returns Only the public id, direction, amounts, time, counterparty, and stored fiat.
  */
 function publicPaymentRow(
@@ -239,7 +239,10 @@ function publicPaymentRow(
   const counterparty =
     counterpartyAccountId === null ? null : (counterparties.get(counterpartyAccountId) ?? null);
   const amountUsd =
-    row.direction === 'out' && row.paymentHash !== null ? paidUsd.get(row.paymentHash) : undefined;
+    row.direction === 'out'
+      ? ((row.paymentHash === null ? undefined : paidUsd.get(row.paymentHash)) ??
+        (row.invoice === null ? undefined : paidUsd.get(row.invoice)))
+      : undefined;
   return {
     id: publicPaymentId(row.paymentId),
     direction: row.direction,
@@ -587,10 +590,21 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
               .filter((hash): hash is string => hash !== null),
           ),
         ];
+        const outgoingInvoices = [
+          ...new Set(
+            page
+              .filter((row) => row.direction === 'out')
+              .map((row) => row.invoice)
+              .filter((invoice): invoice is string => invoice !== null),
+          ),
+        ];
         const paidUsd =
-          outgoingHashes.length === 0
+          outgoingHashes.length === 0 && outgoingInvoices.length === 0
             ? new Map<string, string>()
-            : await deps.fondPayoutStore.paidUsdByPaymentHash(outgoingHashes);
+            : await deps.fondPayoutStore.paidUsdByPaymentHashOrInvoice(
+                outgoingHashes,
+                outgoingInvoices,
+              );
         const next = hasMore
           ? encodeFondPaymentsCursor(page[page.length - 1] as WalletPaymentRecord)
           : null;

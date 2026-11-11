@@ -1214,14 +1214,15 @@ describe('GET /fond/payments', () => {
     id: string,
     paymentHash: string,
     amountUsd: string,
+    invoice: { bolt11?: string; sparkInvoice?: string | null } = {},
   ): Promise<void> {
     await payouts.enqueue(rowInput({ id, address: `${id}@example.com`, amountUsd }));
     await payouts.claimForInvoice(id, TODAY);
     await payouts.setInvoiced(id, {
       invoiceId: `inv-${id}`,
       paymentHash,
-      bolt11: 'lnbc1',
-      sparkInvoice: null,
+      bolt11: invoice.bolt11 ?? 'lnbc1',
+      sparkInvoice: invoice.sparkInvoice ?? null,
       amountMsat: 1_000_000,
     });
     await payouts.claimSettlement(id);
@@ -1244,11 +1245,11 @@ describe('GET /fond/payments', () => {
         paymentHash: hash,
       }),
     ]);
-    const lookup = vi.spyOn(payouts, 'paidUsdByPaymentHash');
+    const lookup = vi.spyOn(payouts, 'paidUsdByPaymentHashOrInvoice');
     const res = await app.request('/fond/payments');
     expect(res.status).toBe(200);
     expect(lookup).toHaveBeenCalledTimes(1);
-    expect(lookup).toHaveBeenCalledWith([hash]);
+    expect(lookup).toHaveBeenCalledWith([hash], []);
     const body = (await res.json()) as { payments: Array<Record<string, unknown>> };
     expect(body.payments[0]).toEqual({
       id: expect.stringMatching(/^[0-9a-f]{16}$/),
@@ -1260,6 +1261,48 @@ describe('GET /fond/payments', () => {
       storedFiat: { currency: 'USD', amount: '1.25' },
     });
     expect(body.payments[0]).not.toHaveProperty('paymentHash');
+  });
+
+  it('adds stored USD for Spark-invoice and BOLT11 matches without a wallet hash', async () => {
+    const { app, payouts, walletStore } = await makeApp();
+    const sparkInvoice = 'spark1fond-paid';
+    const bolt11 = 'lnbc1fond-bolt11';
+    const unmatchedHash = 'cc'.repeat(32);
+    await paidPayout(payouts, 'spark-paid', 'aa'.repeat(32), '1', { sparkInvoice });
+    await paidPayout(payouts, 'bolt11-paid', 'bb'.repeat(32), '2.5', { bolt11 });
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'spark-outgoing',
+        direction: 'out',
+        status: 'completed',
+        paidAt: PAID_A,
+        paymentHash: null,
+        invoice: sparkInvoice,
+      }),
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'bolt11-outgoing',
+        direction: 'out',
+        status: 'completed',
+        paidAt: PAID_B,
+        paymentHash: unmatchedHash,
+        invoice: bolt11,
+      }),
+    ]);
+    const lookup = vi.spyOn(payouts, 'paidUsdByPaymentHashOrInvoice');
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(200);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledWith([unmatchedHash], [sparkInvoice, bolt11]);
+    const body = (await res.json()) as {
+      payments: Array<{ id: string; storedFiat: unknown }>;
+    };
+    expect(body.payments.map((row) => row.storedFiat)).toEqual([
+      { currency: 'USD', amount: '1.00' },
+      { currency: 'USD', amount: '2.50' },
+    ]);
+    expect(body.payments[0]).not.toHaveProperty('invoice');
   });
 
   it('leaves storedFiat null for unmatched, incoming, hashless, and unpaid rows', async () => {
@@ -1311,11 +1354,11 @@ describe('GET /fond/payments', () => {
         paymentHash: null,
       }),
     ]);
-    const lookup = vi.spyOn(payouts, 'paidUsdByPaymentHash');
+    const lookup = vi.spyOn(payouts, 'paidUsdByPaymentHashOrInvoice');
     const res = await app.request('/fond/payments');
     expect(res.status).toBe(200);
     expect(lookup).toHaveBeenCalledTimes(1);
-    expect(lookup).toHaveBeenCalledWith([unmatchedHash, invoicedHash]);
+    expect(lookup).toHaveBeenCalledWith([unmatchedHash, invoicedHash], []);
     const body = (await res.json()) as {
       payments: Array<{ direction: string; storedFiat: unknown }>;
     };
@@ -1325,7 +1368,7 @@ describe('GET /fond/payments', () => {
     }
   });
 
-  it('skips the paid payout read when the page has no outgoing hash', async () => {
+  it('skips the paid payout read when the page has no outgoing hash or invoice', async () => {
     const { app, payouts, walletStore } = await makeApp();
     await walletStore.upsertPayments([
       walletPayment({
@@ -1345,7 +1388,7 @@ describe('GET /fond/payments', () => {
         paymentHash: null,
       }),
     ]);
-    const lookup = vi.spyOn(payouts, 'paidUsdByPaymentHash');
+    const lookup = vi.spyOn(payouts, 'paidUsdByPaymentHashOrInvoice');
     const res = await app.request('/fond/payments');
     expect(res.status).toBe(200);
     expect(lookup).not.toHaveBeenCalled();
@@ -1368,7 +1411,7 @@ describe('GET /fond/payments', () => {
         paymentHash: 'ff'.repeat(32),
       }),
     ]);
-    vi.spyOn(payouts, 'paidUsdByPaymentHash').mockRejectedValue(new Error('down'));
+    vi.spyOn(payouts, 'paidUsdByPaymentHashOrInvoice').mockRejectedValue(new Error('down'));
     const res = await app.request('/fond/payments');
     expect(res.status).toBe(503);
     expect(res.headers.get('Cache-Control')).toBe('no-store');

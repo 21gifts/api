@@ -3530,8 +3530,8 @@ describe('PostgresFondPayoutStore', () => {
   });
 });
 
-describe('PostgresFondPayoutStore paid USD by payment hash', () => {
-  test('reads only paid rows of the requested hashes in one batch', async () => {
+describe('PostgresFondPayoutStore paid USD by payment hash or invoice', () => {
+  test('reads only paid rows matching a requested hash, Spark invoice, or BOLT11', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {
       await migrateFondPayoutSchema(client);
@@ -3540,10 +3540,18 @@ describe('PostgresFondPayoutStore paid USD by payment hash', () => {
       const hashA = `a${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
       const hashB = `b${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
       const hashOpen = `c${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const sparkA = `spark1a_${stamp}`;
+      const sparkB = `spark1b_${stamp}`;
+      const boltA = `lnbc1a_${stamp}`;
+      const boltB = `lnbc1b_${stamp}`;
+      const sparkOpen = `spark1open_${stamp}`;
+      const boltOpen = `lnbc1open_${stamp}`;
       const paid = async (
         suffix: string,
         amountUsd: string,
         paymentHash: string,
+        bolt11: string,
+        sparkInvoice: string | null,
       ): Promise<void> => {
         const row: FondPayoutEnqueue = {
           id: crypto.randomUUID(),
@@ -3560,14 +3568,15 @@ describe('PostgresFondPayoutStore paid USD by payment hash', () => {
         await store.setInvoiced(row.id, {
           invoiceId: `inv-${row.id}`,
           paymentHash,
-          bolt11: 'lnbc1',
+          bolt11,
+          sparkInvoice,
           amountMsat: 1_000_000,
         });
         await store.claimSettlement(row.id);
         await store.markPaid(row.id);
       };
-      await paid('a', '1.25', hashA);
-      await paid('b', '2.50', hashB);
+      await paid('a', '1', hashA, boltA, sparkA);
+      await paid('b', '2.5', hashB, boltB, sparkB);
       const open: FondPayoutEnqueue = {
         id: crypto.randomUUID(),
         utcDay: '2099-01-01',
@@ -3583,22 +3592,30 @@ describe('PostgresFondPayoutStore paid USD by payment hash', () => {
       await store.setInvoiced(open.id, {
         invoiceId: `inv-${open.id}`,
         paymentHash: hashOpen,
-        bolt11: 'lnbc2',
+        bolt11: boltOpen,
+        sparkInvoice: sparkOpen,
         amountMsat: 1_000_000,
       });
 
-      const found = await store.paidUsdByPaymentHash([
-        hashA,
-        hashB,
-        hashOpen,
-        `d${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0'),
-        hashA,
-      ]);
-      expect(found.size).toBe(2);
-      expect(found.get(hashA)).toBe('1.25');
+      const found = await store.paidUsdByPaymentHashOrInvoice(
+        [
+          hashA,
+          hashB,
+          hashOpen,
+          `d${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0'),
+          hashA,
+        ],
+        [sparkA, boltB, sparkOpen, boltOpen, 'unknown-invoice'],
+      );
+      expect(found.size).toBe(4);
+      expect(found.get(hashA)).toBe('1.00');
       expect(found.get(hashB)).toBe('2.50');
+      expect(found.get(sparkA)).toBe('1.00');
+      expect(found.get(boltB)).toBe('2.50');
       expect(found.has(hashOpen)).toBe(false);
-      expect(await store.paidUsdByPaymentHash([])).toEqual(new Map());
+      expect(found.has(sparkOpen)).toBe(false);
+      expect(found.has(boltOpen)).toBe(false);
+      expect(await store.paidUsdByPaymentHashOrInvoice([], [])).toEqual(new Map());
     } finally {
       await closeIfPossible(sql);
     }

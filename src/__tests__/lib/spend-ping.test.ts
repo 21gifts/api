@@ -1941,7 +1941,7 @@ describe('FondQueueSink', () => {
         markPaid: async () => undefined,
         releaseSettlement: () => Promise.resolve(undefined),
         paidTotals: async () => ({ payoutsPaid: 0, payoutsPaidUsd: '0.00' }),
-        paidUsdByPaymentHash: async () => new Map(),
+        paidUsdByPaymentHashOrInvoice: async () => new Map(),
       },
     });
     expect(await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'x' })).toEqual({
@@ -2014,7 +2014,7 @@ describe('FondQueueSink', () => {
         markPaid: async () => undefined,
         releaseSettlement: () => Promise.resolve(undefined),
         paidTotals: async () => ({ payoutsPaid: 0, payoutsPaidUsd: '0.00' }),
-        paidUsdByPaymentHash: async () => new Map(),
+        paidUsdByPaymentHashOrInvoice: async () => new Map(),
       },
     });
     expect(
