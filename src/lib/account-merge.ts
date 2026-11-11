@@ -80,6 +80,10 @@ function quoteIdentifier(identifier: string): string {
  * to the merged account's wallets, which go with its row. It also deletes the
  * merged account's `held_share_box` rows: each box is sealed to the merged
  * account's id and words, so the surviving account could never open it.
+ * Frozen credit snapshots are combined by message. Repayment parts from both
+ * identities are moved and reindexed without losing units or sats; whenever
+ * parts exist, a colliding legacy full-share row is removed so parts remain
+ * the canonical payment source.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -318,6 +322,72 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       `UPDATE conversation SET account_b = $2
        WHERE kind = 'moderator_group' AND account_b = $1`,
       accountParams,
+    );
+
+    // Frozen fiat debt follows the person. When both ids gave to the same
+    // credit, keep one snapshot whose units are the exact sum of both rows.
+    await tx.query(
+      `INSERT INTO message_credit_payer_snapshot (message_id, account_id, currency, units)
+       SELECT message_id, $2::uuid, MIN(currency), SUM(units)::bigint
+       FROM message_credit_payer_snapshot
+       WHERE account_id = $1 OR account_id = $2
+       GROUP BY message_id
+       HAVING BOOL_OR(account_id = $1)
+       ON CONFLICT (message_id, account_id) DO UPDATE
+       SET currency = EXCLUDED.currency,
+           units = EXCLUDED.units`,
+      accountParams,
+    );
+    await tx.query('DELETE FROM message_credit_payer_snapshot WHERE account_id = $1', [input.from]);
+
+    // Parts are the canonical source whenever either merged identity has a
+    // part for the same giver-day. Move both identities through unique
+    // negative indexes first, then normalize to consecutive non-negative
+    // indexes without dropping any settled units or sats.
+    await tx.query(
+      `WITH ranked AS (
+         SELECT candidate.ctid,
+                row_number() OVER (
+                  PARTITION BY message_id, day_index
+                  ORDER BY paid_at, recipient_account_id, part_index
+                )::integer AS new_index
+         FROM message_repayment_part AS candidate
+         WHERE candidate.recipient_account_id = $1
+            OR (
+              candidate.recipient_account_id = $2
+              AND EXISTS (
+                SELECT 1
+                FROM message_repayment_part AS source
+                WHERE source.message_id = candidate.message_id
+                  AND source.day_index = candidate.day_index
+                  AND source.recipient_account_id = $1
+              )
+            )
+       )
+       UPDATE message_repayment_part AS part
+       SET recipient_account_id = $2,
+           part_index = -ranked.new_index
+       FROM ranked
+       WHERE part.ctid = ranked.ctid`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM message_repayment AS legacy
+       WHERE (legacy.recipient_account_id = $1 OR legacy.recipient_account_id = $2)
+         AND EXISTS (
+           SELECT 1
+           FROM message_repayment_part AS part
+           WHERE part.message_id = legacy.message_id
+             AND part.day_index = legacy.day_index
+             AND part.recipient_account_id = $2
+         )`,
+      accountParams,
+    );
+    await tx.query(
+      `UPDATE message_repayment_part
+       SET part_index = -part_index - 1
+       WHERE recipient_account_id = $2 AND part_index < 0`,
+      [input.from, input.into],
     );
 
     await tx.query(

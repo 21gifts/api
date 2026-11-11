@@ -302,6 +302,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     heartStats: boom,
     heartSenders: boom,
     listInvoiceAttempts: boom,
+    listInvoiceAttemptsForMessage: boom,
     listRecentOkInvoiceAttempts: boom,
     recordZapIngest: boom,
     listZapIngests: boom,
@@ -327,10 +328,17 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listBlockedPubkeyRows: boom,
     listUnattributedIndexedReceipts: (_limit, _before) => boom(),
     listCreditPayers: boom,
+    previewCreditPayerSnapshot: boom,
     sumUnassignedCreditSats: boom,
     listRepayments: boom,
     listLoanLedger: boom,
     markRepaymentPaid: boom,
+    listRepaymentParts: boom,
+    withMessageLock: async () => boom(),
+    withRepaymentLock: async () => boom(),
+    markRepaymentPartPaid: boom,
+    settleRepaymentPayment: boom,
+    closeCredit: boom,
     ...overrides,
   };
 }
@@ -4509,6 +4517,7 @@ describe('POST /messages', () => {
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      listInvoiceAttemptsForMessage: (messageId) => base.listInvoiceAttemptsForMessage(messageId),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
@@ -4516,10 +4525,20 @@ describe('POST /messages', () => {
       findOkInvoiceByDescription: (messageId, description) =>
         base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      previewCreditPayerSnapshot: (messageId, currency, through) =>
+        base.previewCreditPayerSnapshot(messageId, currency, through),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
+      listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+      withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+        base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+      markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -4660,6 +4679,7 @@ describe('POST /messages', () => {
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      listInvoiceAttemptsForMessage: (messageId) => base.listInvoiceAttemptsForMessage(messageId),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
@@ -4667,10 +4687,20 @@ describe('POST /messages', () => {
       findOkInvoiceByDescription: (messageId, description) =>
         base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      previewCreditPayerSnapshot: (messageId, currency, through) =>
+        base.previewCreditPayerSnapshot(messageId, currency, through),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
+      listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+      withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+        base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+      markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -5000,6 +5030,85 @@ describe('POST /messages/:id/invoice', () => {
       expect(await hit()).toBe(200);
     });
     expect(await hit()).toBe(429);
+  });
+
+  it('stores a direct note-gift invoice before a concurrent close completes', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    const messageId = '56565656-5656-4656-8656-565656565656';
+    await messageStore.create({
+      id: messageId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'collecting credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+      goalSats: 1_000,
+      goalRepayable: true,
+      goalTermDays: 2,
+      goalFundedAt: null,
+    });
+    let entered = (): void => undefined;
+    const mintStarted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release = (): void => undefined;
+    const mintGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return Response.json({
+          callback: 'https://example.test/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 10_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      entered();
+      await mintGate;
+      return Response.json({ pr: 'lnbc21n1test' });
+    };
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    await withNip57True(async () => {
+      const issue = app.request(`/messages/${messageId}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      await mintStarted;
+      let closeFinished = false;
+      const close = messageStore.closeCredit(messageId, new Date(now())).then((result) => {
+        closeFinished = true;
+        return result;
+      });
+      await Promise.resolve();
+      expect(closeFinished).toBe(false);
+      release();
+      expect((await issue).status).toBe(200);
+      expect(await messageStore.listInvoiceAttemptsForMessage(messageId)).toHaveLength(1);
+      expect((await close)?.closedAt).toEqual(new Date(now()));
+    });
   });
 
   it('does not consume the invoice limiter on a missing id', async () => {
@@ -6789,6 +6898,7 @@ describe('POST /messages/:id/invoice', () => {
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      listInvoiceAttemptsForMessage: (messageId) => base.listInvoiceAttemptsForMessage(messageId),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
@@ -6796,10 +6906,20 @@ describe('POST /messages/:id/invoice', () => {
       findOkInvoiceByDescription: (messageId, description) =>
         base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      previewCreditPayerSnapshot: (messageId, currency, through) =>
+        base.previewCreditPayerSnapshot(messageId, currency, through),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
+      listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withMessageLock: (messageId, run) => base.withMessageLock(messageId, () => run(store)),
+      withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+        base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+      markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -10809,6 +10929,71 @@ describe('DELETE /messages/:id', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(204);
+  });
+
+  it('deletes a credit whose only share is fully settled by parts', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const creditId = '22222222-2222-4222-8222-222222222222';
+    await messages.create({
+      id: creditId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'settled credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: new Date('2099-01-01T00:00:00.000Z'),
+    });
+    await messages.recordZapReceipt('credit-gift', creditId, 10, null);
+    await messages.updateZapReceiptGift('credit-gift', { payerAccountId: 'giver' });
+    await messages.markRepaymentPartPaid({
+      messageId: creditId,
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      partIndex: 0,
+      units: 10n,
+      sats: 10,
+      shareUnits: 10n,
+      paidAt: new Date(now()),
+    });
+
+    const response = await mount(auth, messages).request(`/messages/${creditId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(response.status).toBe(204);
+  });
+
+  it('uses the payer as the recorded author of a closed external credit invoice', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const creditId = '23232323-2323-4232-8232-232323232323';
+    await messages.create({
+      id: creditId,
+      accountId: null,
+      name: 'External',
+      text: 'closed external credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalClosedAt: new Date(now()),
+      authorPubkey: '23'.repeat(32),
+    });
+    const response = await mount(auth, messages).request(`/messages/${creditId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 1 }),
+    });
+    expect(response.status).toBe(409);
+    expect((await messages.listInvoiceAttempts(1))[0]).toMatchObject({
+      result: 'credit_closed',
+      authorAccountId: 'acc',
+    });
   });
 
   it('returns 204 when already tagged', async () => {

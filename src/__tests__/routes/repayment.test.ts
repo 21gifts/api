@@ -12,6 +12,7 @@ import type { GoalRateDay } from '@/lib/goal-rate';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { MessageInvoiceAttempt } from '@/lib/message-store';
 import { resolveZapRelays } from '@/lib/nostr/relays';
+import { formatCents, repaymentPartDescription } from '@/lib/credit-repayment';
 import {
   BOLT11,
   LNURL_SERVER,
@@ -124,7 +125,12 @@ async function readyCredit(options?: {
           goalAmount: options.goalAmount === undefined ? '0.21' : options.goalAmount,
         }),
   });
-  await messages.recordZapReceipt('r1', creditId, 21, null);
+  await messages.recordZapReceipt(
+    'r1',
+    creditId,
+    21,
+    options?.goalCurrency === 'USD' ? { usd: '0.21', chf: null, eur: null, php: null } : null,
+  );
   await messages.updateZapReceiptGift('r1', { payerAccountId: GIVER });
   const lnurlFetch = async (input: string | URL | Request): Promise<Response> => {
     const url = String(input);
@@ -169,9 +175,7 @@ async function readyCredit(options?: {
       ...(options?.walletGiver === true ? { sparkInvoices: new InMemorySparkInvoiceStore() } : {}),
       postLimiter: new PostRateLimiter(),
       invoiceLimiter: new InvoiceRateLimiter(),
-      ...(options?.repaymentLimiter === undefined
-        ? {}
-        : { repaymentLimiter: options.repaymentLimiter }),
+      repaymentLimiter: options?.repaymentLimiter ?? new InvoiceRateLimiter(),
     }),
   );
   return { app, messages, auth, seen: wallet.seen };
@@ -744,7 +748,7 @@ describe('credit repayment', () => {
       fundedAt: null,
       startsOn: null,
       next: null,
-      repayments: [{ dueOn: null, status: 'scheduled', sats: 21 }],
+      repayments: [{ dueOn: null, status: 'scheduled', sats: 21, paidSats: 0, paidAmount: null }],
     });
     const pay = await unfunded.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
@@ -842,7 +846,7 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc-cent' },
     });
     expect((await again.json()) as { repayments: { sats: number }[] }).toMatchObject({
-      repayments: [{ amount: '0.01', sats: 10, status: 'paid' }],
+      repayments: [{ amount: '0.01', sats: 10, paidSats: 10, status: 'paid' }],
       next: null,
     });
   });
@@ -1011,26 +1015,36 @@ describe('repayment from the in-app wallet', () => {
     wallet: boolean;
     /** Stored identity key; defaults to a per-giver key. */
     sparkPubkey?: string;
+    /** USD gift-time snapshot; `null` means this gift has no snapshot. */
+    fiatAmount?: string | null;
   }
 
   /** Answers any wallet-backed username on the LNURL server with a zap-capable pay request. */
   function anyWalletFetch(options?: {
     pr?: string;
     allowsNostr?: boolean;
+    refuseUsername?: string;
+    refuseUsernameAfter?: number;
     seen?: string[];
   }): (input: string | URL | Request) => Promise<Response> {
+    const lookups = new Map<string, number>();
     return async (input) => {
       const url = String(input);
       options?.seen?.push(url);
       const lud16 = /\/\.well-known\/lnurlp\/([^/?]+)$/.exec(url);
       if (lud16 !== null) {
+        const username = lud16[1] ?? '';
+        const lookup = (lookups.get(username) ?? 0) + 1;
+        lookups.set(username, lookup);
+        const refuses =
+          options?.refuseUsername === username && lookup > (options.refuseUsernameAfter ?? 0);
         return Response.json({
           tag: 'payRequest',
-          callback: `${LNURL_SERVER.publicBaseUrl}/lnurlp/${lud16[1] ?? ''}/invoice`,
+          callback: `${LNURL_SERVER.publicBaseUrl}/lnurlp/${username}/invoice`,
           metadata: '[["text/plain","x"]]',
           minSendable: 1000,
           maxSendable: 1_000_000_000,
-          allowsNostr: options?.allowsNostr ?? true,
+          allowsNostr: refuses ? false : (options?.allowsNostr ?? true),
           nostrPubkey: 'bb'.repeat(32),
         });
       }
@@ -1054,6 +1068,9 @@ describe('repayment from the in-app wallet', () => {
     rules?: boolean;
     limiter?: InvoiceRateLimiter;
     allowsNostr?: boolean;
+    refuseUsername?: string;
+    /** Let this many LNURL lookups for `refuseUsername` succeed first. */
+    refuseUsernameAfter?: number;
     sparkInvoices?: boolean;
   }): Promise<{
     app: Hono;
@@ -1133,7 +1150,19 @@ describe('repayment from the in-app wallet', () => {
           }),
     });
     for (const giver of givers) {
-      await messages.recordZapReceipt(`r-${giver.id}`, creditId, giver.sats, null);
+      await messages.recordZapReceipt(
+        `r-${giver.id}`,
+        creditId,
+        giver.sats,
+        options?.goalCurrency === 'USD' && giver.fiatAmount !== null
+          ? {
+              usd: giver.fiatAmount ?? formatCents(BigInt(giver.sats)),
+              chf: null,
+              eur: null,
+              php: null,
+            }
+          : null,
+      );
       await messages.updateZapReceiptGift(`r-${giver.id}`, { payerAccountId: giver.id });
     }
     const goalRateDay =
@@ -1159,6 +1188,12 @@ describe('repayment from the in-app wallet', () => {
           fetchImpl: anyWalletFetch({
             seen: fetched,
             ...(options?.allowsNostr === undefined ? {} : { allowsNostr: options.allowsNostr }),
+            ...(options?.refuseUsername === undefined
+              ? {}
+              : {
+                  refuseUsername: options.refuseUsername,
+                  refuseUsernameAfter: options.refuseUsernameAfter ?? 0,
+                }),
           }),
           lnurlServer: LNURL_SERVER,
           ...(options?.sparkInvoices === true
@@ -1187,6 +1222,32 @@ describe('repayment from the in-app wallet', () => {
     return Promise.resolve(
       app.request(path, { method: 'POST', headers: { authorization: `Bearer ${token}` } }),
     );
+  }
+
+  function openPartAttempt(
+    amountSats: number,
+    units: bigint,
+    shareUnits: bigint,
+    createdAt: Date,
+  ): MessageInvoiceAttempt {
+    return {
+      id: crypto.randomUUID(),
+      createdAt,
+      messageId: CREDIT,
+      payerAccountId: AUTHOR,
+      authorAccountId: WALLET_GIVER,
+      amountSats,
+      lightningAddress: 'giver0@example.test',
+      zapRequest: { kind: 9734 },
+      result: 'ok',
+      httpStatus: 200,
+      pr: BOLT11,
+      paymentHash: null,
+      description: repaymentPartDescription(0, WALLET_GIVER, 0, units, shareUnits),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
   }
 
   function loans(app: Hono, headers: Record<string, string> = {}): Promise<Response> {
@@ -1713,6 +1774,787 @@ describe('repayment from the in-app wallet', () => {
     expect(await messages.listInvoiceAttempts(5)).toEqual([]);
   });
 
+  it('closes a collecting loan idempotently and reports the collected amount', async () => {
+    const { app, messages } = await readyCredit({
+      fundedAt: null,
+      goalCurrency: 'USD',
+      goalAmount: '2.10',
+      rate: true,
+    });
+    const first = await app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(first.status).toBe(200);
+    const body = (await first.json()) as {
+      fundedAt: string;
+      closedAt: string;
+      collectedSats: number;
+      collectedAmount: string | null;
+    };
+    expect(body.collectedSats).toBe(21);
+    expect(body.collectedAmount).toBe('0.21');
+    expect(body.fundedAt).toBe(body.closedAt);
+    expect(await (await app.request(`/messages/${CREDIT}/repayment`)).json()).toMatchObject({
+      closedAt: body.closedAt,
+    });
+    const again = await app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual(body);
+    expect((await messages.getById(CREDIT))?.goalClosedAt).toBeInstanceOf(Date);
+    const noAuth = await app.request(`/messages/${CREDIT}/repayment/close`, { method: 'POST' });
+    expect(noAuth.status).toBe(401);
+  });
+
+  it('refuses a gift on a closed credit and mints nothing', async () => {
+    const { app, messages } = await readyCredit({ fundedAt: null });
+    const closed = await app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(closed.status).toBe(200);
+    const before = (await messages.listInvoiceAttempts(10)).length;
+    const gift = await app.request(`/messages/${CREDIT}/invoice`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 1 }),
+    });
+    expect(gift.status).toBe(409);
+    expect(await gift.json()).toEqual({
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    });
+    const attempts = await messages.listInvoiceAttempts(10);
+    expect(attempts).toHaveLength(before + 1);
+    expect(attempts[0]).toMatchObject({ result: 'credit_closed', pr: null });
+  });
+
+  it('prepays in plan order and refuses more than the remaining max', async () => {
+    await withNip57(async () => {
+      const { app, messages } = await readyCredit({ termDays: 3 });
+      const tooHigh = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '22' }),
+      });
+      expect(tooHigh.status).toBe(400);
+      expect(await tooHigh.json()).toMatchObject({
+        error: 'Amount is above what is left',
+        code: 'amount_too_high',
+        maxSats: 21,
+        maxAmount: null,
+      });
+      expect(await messages.listInvoiceAttempts(10)).toHaveLength(0);
+      const invalid = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '1.5' }),
+      });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ error: 'Invalid amount', code: 'invalid_amount' });
+      const paid = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '21' }),
+      });
+      expect(paid.status).toBe(200);
+      const body = (await paid.json()) as {
+        amountSats: number;
+        amount: string | null;
+        bills: { dayIndex: number; amountSats: number }[];
+        waiting: unknown[];
+      };
+      expect(body.amountSats).toBe(21);
+      expect(body.amount).toBeNull();
+      expect(body.bills.map((bill) => [bill.dayIndex, bill.amountSats])).toEqual([
+        [0, 7],
+        [1, 7],
+        [2, 7],
+      ]);
+      expect(body.waiting).toEqual([]);
+    });
+  });
+
+  it('reuses an open prepay bill when it fits within the requested amount', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await messages.recordInvoiceAttempt(openPartAttempt(10, 10n, 21n, new Date(clock.now)));
+
+    const res = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '10' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      amountSats: number;
+      bills: Array<{ amountSats: number; pr: string }>;
+    };
+    expect(body.amountSats).toBe(10);
+    expect(body.bills).toEqual([expect.objectContaining({ amountSats: 10, pr: BOLT11 })]);
+    expect(await messages.listInvoiceAttempts(10)).toHaveLength(1);
+  });
+
+  it('reuses a prepay Spark invoice and refuses an open bill for an old address', async () => {
+    await withNip57(async () => {
+      const reused = await loanSetup({
+        termDays: 1,
+        sparkInvoices: true,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true, sparkPubkey: WALLET_PUBKEY }],
+      });
+      const request: RequestInit = {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '21' }),
+      };
+      const first = await reused.app.request(`/messages/${CREDIT}/repayment/prepay`, request);
+      const firstBody = (await first.json()) as { bills: Array<{ sparkInvoice: string }> };
+      expect(firstBody.bills[0]?.sparkInvoice.startsWith('spark1')).toBe(true);
+      const again = await reused.app.request(`/messages/${CREDIT}/repayment/prepay`, request);
+      expect(await again.json()).toEqual(firstBody);
+      expect(await reused.messages.listInvoiceAttempts(10)).toHaveLength(1);
+
+      const conflict = await loanSetup({
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+      });
+      await conflict.messages.recordInvoiceAttempt({
+        ...openPartAttempt(10, 10n, 21n, new Date(conflict.clock.now)),
+        lightningAddress: 'giver0@old.example',
+      });
+      const refused = await conflict.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        ...request,
+        body: JSON.stringify({ amount: '10' }),
+      });
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toEqual({ error: 'A payment for this share is still open' });
+      expect(await conflict.messages.listInvoiceAttempts(10)).toHaveLength(1);
+    });
+  });
+
+  it('returns 409 without minting when an open prepay bill exceeds the request', async () => {
+    const { app, messages, clock, fetched } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await messages.recordInvoiceAttempt(openPartAttempt(10, 10n, 21n, new Date(clock.now)));
+
+    const res = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '9' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'A payment for this share is still open' });
+    expect(await messages.listInvoiceAttempts(10)).toHaveLength(1);
+    expect(fetched).toEqual([]);
+  });
+
+  it('settles a part and bills only the remainder on the due route', async () => {
+    await withNip57(async () => {
+      const { app, messages } = await readyCredit({ termDays: 2 });
+      await messages.markRepaymentPartPaid({
+        messageId: CREDIT,
+        dayIndex: 0,
+        recipientAccountId: GIVER,
+        partIndex: 0,
+        units: 5n,
+        sats: 5,
+        shareUnits: 10n,
+        paidAt: new Date(now()),
+      });
+      const status = await app.request(`/messages/${CREDIT}/repayment`);
+      expect(status.status).toBe(200);
+      const body = (await status.json()) as {
+        repayments: { dayIndex: number; paidSats: number; dueSats: number; status: string }[];
+      };
+      expect(body.repayments[0]).toMatchObject({ paidSats: 5, dueSats: 5, status: 'due' });
+      const due = await app.request(`/messages/${CREDIT}/repayment/due`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc' },
+      });
+      expect(due.status).toBe(200);
+      const dueBody = (await due.json()) as { bills: { amountSats: number }[] };
+      expect(dueBody.bills[0]?.amountSats).toBe(5);
+      expect(
+        (await messages.listInvoiceAttempts(10)).find((attempt) =>
+          attempt.description?.startsWith('repayp:0:'),
+        )?.description,
+      ).toBe(repaymentPartDescription(0, GIVER, 1, 5n, 10n));
+    });
+  });
+
+  it('blocks a new part while a legacy full-share bill is still payable', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      partIndex: 0,
+      units: 5n,
+      sats: 5,
+      shareUnits: 21n,
+      paidAt: new Date(clock.now),
+    });
+    await messages.recordInvoiceAttempt({
+      ...openPartAttempt(21, 21n, 21n, new Date(clock.now)),
+      description: `repay:0:${WALLET_GIVER}`,
+    });
+    const due = await post(app, `/messages/${CREDIT}/repayment/due`);
+    expect(due.status).toBe(409);
+    expect(await due.json()).toEqual({ error: 'A payment for this share is still open' });
+    expect(await messages.listInvoiceAttempts(10)).toHaveLength(1);
+  });
+
+  it('keeps fiat sats null while partial, and marks a legacy fiat row fully paid', async () => {
+    const partial = await readyCredit({ goalCurrency: 'USD', goalAmount: '0.21', rate: true });
+    await partial.messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      partIndex: 0,
+      units: 10n,
+      sats: 9,
+      shareUnits: 21n,
+      paidAt: new Date(now()),
+    });
+    expect(await (await partial.app.request(`/messages/${CREDIT}/repayment`)).json()).toMatchObject(
+      {
+        repayments: [{ status: 'due', sats: null, paidSats: 9, paidAmount: '0.10' }],
+      },
+    );
+
+    const legacy = await readyCredit({ goalCurrency: 'USD', goalAmount: '1.00', rate: true });
+    await legacy.messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 50,
+      paidAt: new Date(now()),
+    });
+    expect(await (await legacy.app.request(`/messages/${CREDIT}/repayment`)).json()).toMatchObject({
+      repayments: [{ status: 'paid', amount: '1.00', paidAmount: '1.00', sats: 50 }],
+    });
+  });
+
+  it('echoes the exact typed fiat prepay string and rejects surrounding whitespace', async () => {
+    await withNip57(async () => {
+      const { app } = await loanSetup({
+        goalCurrency: 'USD',
+        rate: true,
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+      });
+      const send = (amount: string): Promise<Response> =>
+        Promise.resolve(
+          app.request(`/messages/${CREDIT}/repayment/prepay`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ amount }),
+          }),
+        );
+      const typed = await send('0,10');
+      expect(typed.status).toBe(200);
+      expect(await typed.json()).toMatchObject({ amount: '0,10' });
+      const spaced = await send(' 0.10 ');
+      expect(spaced.status).toBe(400);
+      expect(await spaced.json()).toEqual({ error: 'Invalid amount', code: 'invalid_amount' });
+    });
+  });
+
+  it('reallocates a refused prepay share to the next receiver', async () => {
+    await withNip57(async () => {
+      const { app } = await loanSetup({
+        termDays: 1,
+        refuseUsername: 'giver0',
+        givers: [
+          { id: WALLET_GIVER, sats: 10, wallet: true },
+          { id: NO_WALLET, sats: 10, wallet: true },
+        ],
+      });
+      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '10' }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        amountSats: 10,
+        bills: [{ recipientAccountId: NO_WALLET, amountSats: 10 }],
+        waiting: [{ recipientAccountId: WALLET_GIVER, amountSats: 10 }],
+      });
+    });
+  });
+
+  it('formats fiat amounts for a prepay share moved to waiting', async () => {
+    await withNip57(async () => {
+      const { app } = await loanSetup({
+        goalCurrency: 'USD',
+        goalAmount: '0.20',
+        rate: true,
+        termDays: 1,
+        refuseUsername: 'giver0',
+        givers: [
+          { id: WALLET_GIVER, sats: 10, wallet: true, fiatAmount: '0.10' },
+          { id: NO_WALLET, sats: 10, wallet: true, fiatAmount: '0.10' },
+        ],
+      });
+      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '0.10' }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        amountSats: 100,
+        amount: '0.10',
+        bills: [{ recipientAccountId: NO_WALLET, amountSats: 100, amount: '0.10' }],
+        waiting: [{ recipientAccountId: WALLET_GIVER, amountSats: 100, amount: '0.10' }],
+      });
+    });
+  });
+
+  it('keeps earlier bills fixed when a later share of the same giver refuses', async () => {
+    await withNip57(async () => {
+      const { app, messages } = await loanSetup({
+        termDays: 2,
+        refuseUsername: 'giver0',
+        refuseUsernameAfter: 1,
+        givers: [
+          { id: WALLET_GIVER, sats: 20, wallet: true },
+          { id: NO_WALLET, sats: 20, wallet: true },
+        ],
+      });
+      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '40' }),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        amountSats: number;
+        bills: Array<{ dayIndex: number; recipientAccountId: string; amountSats: number }>;
+        waiting: Array<{ dayIndex: number; recipientAccountId: string; amountSats: number }>;
+      };
+      expect(body.amountSats).toBe(30);
+      expect(body.bills).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            dayIndex: 0,
+            recipientAccountId: WALLET_GIVER,
+            amountSats: 10,
+          }),
+          expect.objectContaining({ dayIndex: 0, recipientAccountId: NO_WALLET, amountSats: 10 }),
+          expect.objectContaining({ dayIndex: 1, recipientAccountId: NO_WALLET, amountSats: 10 }),
+        ]),
+      );
+      expect(body.waiting).toEqual([
+        expect.objectContaining({ dayIndex: 1, recipientAccountId: WALLET_GIVER, amountSats: 10 }),
+      ]);
+      expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(3);
+    });
+  });
+
+  it('returns the close-route authorization, storage, and debt errors', async () => {
+    const rules = await readyCredit({ fundedAt: null, rules: false });
+    const forbidden = await rules.app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(forbidden.status).toBe(409);
+    expect(await forbidden.json()).toMatchObject({ error: 'missing_requirements' });
+
+    const missing = await readyCredit({ fundedAt: null });
+    vi.spyOn(missing.messages, 'closeCredit').mockResolvedValueOnce(undefined);
+    const notFound = await missing.app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(notFound.status).toBe(404);
+
+    const unavailable = await readyCredit({
+      fundedAt: null,
+      goalCurrency: 'USD',
+      goalAmount: null,
+      rate: true,
+    });
+    vi.spyOn(unavailable.messages, 'listCreditPayers').mockResolvedValueOnce([]);
+    const noDebt = await unavailable.app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(noDebt.status).toBe(503);
+    expect(await noDebt.json()).toEqual({ error: 'Ask amount is unavailable' });
+  });
+
+  it('returns the prepay request, close, pricing, and empty-plan errors', async () => {
+    const base = await loanSetup({ termDays: 1 });
+    expect(
+      (
+        await base.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ amount: '1' }),
+        })
+      ).status,
+    ).toBe(401);
+    for (const body of ['{', '[]', 'null', JSON.stringify('amount')]) {
+      const invalid = await base.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body,
+      });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ error: 'Invalid amount', code: 'invalid_amount' });
+    }
+    const zero = await base.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0' }),
+    });
+    expect(zero.status).toBe(400);
+    expect(
+      (
+        await base.app.request('/messages/66666666-6666-4666-8666-666666666666/repayment/prepay', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ amount: '1' }),
+        })
+      ).status,
+    ).toBe(404);
+
+    const rules = await loanSetup({ rules: false });
+    expect((await post(rules.app, `/messages/${CREDIT}/repayment/prepay`)).status).toBe(409);
+
+    const collecting = await loanSetup({ fundedAt: null });
+    vi.spyOn(collecting.messages, 'closeCredit').mockResolvedValueOnce(undefined);
+    const vanished = await collecting.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '1' }),
+    });
+    expect(vanished.status).toBe(404);
+
+    const malformedDebt = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: null,
+      rate: true,
+    });
+    const unavailable = await malformedDebt.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0.01' }),
+    });
+    expect(unavailable.status).toBe(503);
+
+    const unpriced = await loanSetup({ goalCurrency: 'USD' });
+    const noRate = await unpriced.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0.01' }),
+    });
+    expect(noRate.status).toBe(503);
+
+    const brokenRate = await loanSetup({
+      goalCurrency: 'USD',
+      rates: async () => {
+        throw new Error('rate unavailable');
+      },
+    });
+    const failedRate = await brokenRate.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0.01' }),
+    });
+    expect(failedRate.status).toBe(503);
+
+    for (const amount of [1, '0']) {
+      const invalidFiat = await unpriced.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount }),
+      });
+      expect(invalidFiat.status).toBe(400);
+    }
+
+    const waiting = await loanSetup({
+      termDays: 1,
+      givers: [{ id: NO_WALLET, sats: 21, wallet: false }],
+    });
+    const nothing = await waiting.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '1' }),
+    });
+    expect(nothing.status).toBe(400);
+    expect(await nothing.json()).toEqual({ error: 'Nothing is due' });
+  });
+
+  it('caps a prepayment that would need more than sixty bills', async () => {
+    const { app, messages } = await loanSetup({
+      termDays: REPAYMENT_BILLS_MAX + 1,
+      givers: [{ id: WALLET_GIVER, sats: REPAYMENT_BILLS_MAX + 1, wallet: true }],
+    });
+    const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: String(REPAYMENT_BILLS_MAX + 1) }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'Too many shares for one payment',
+      code: 'too_many_shares',
+      maxSats: REPAYMENT_BILLS_MAX,
+      maxAmount: null,
+    });
+    expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toEqual([]);
+
+    const fiat = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '0.61',
+      rate: true,
+      termDays: REPAYMENT_BILLS_MAX + 1,
+      givers: [
+        {
+          id: WALLET_GIVER,
+          sats: REPAYMENT_BILLS_MAX + 1,
+          wallet: true,
+          fiatAmount: '0.61',
+        },
+      ],
+    });
+    const fiatResponse = await fiat.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0.61' }),
+    });
+    expect(fiatResponse.status).toBe(400);
+    expect(await fiatResponse.json()).toEqual({
+      error: 'Too many shares for one payment',
+      code: 'too_many_shares',
+      maxSats: REPAYMENT_BILLS_MAX * 10,
+      maxAmount: '0.60',
+    });
+    expect(await fiat.messages.listInvoiceAttemptsForMessage(CREDIT)).toEqual([]);
+  });
+
+  it('rejects legacy and repriced open bills during prepayment', async () => {
+    const legacy = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await legacy.messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      partIndex: 0,
+      units: 5n,
+      sats: 5,
+      shareUnits: 21n,
+      paidAt: new Date(legacy.clock.now),
+    });
+    await legacy.messages.recordInvoiceAttempt({
+      ...openPartAttempt(21, 21n, 21n, new Date(legacy.clock.now)),
+      description: `repay:0:${WALLET_GIVER}`,
+    });
+    const blocked = await legacy.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '10' }),
+    });
+    expect(blocked.status).toBe(409);
+
+    const repriced = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await repriced.messages.recordInvoiceAttempt(
+      openPartAttempt(20, 10n, 21n, new Date(repriced.clock.now)),
+    );
+    const tooLarge = await repriced.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '10' }),
+    });
+    expect(tooLarge.status).toBe(409);
+    expect(await tooLarge.json()).toEqual({ error: 'A payment for this share is still open' });
+  });
+
+  it('ignores paid, duplicate, oversized, and fully reserved open attempts', async () => {
+    const paidHash = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await paidHash.messages.recordInvoiceAttempt({
+      ...openPartAttempt(10, 10n, 21n, new Date(paidHash.clock.now)),
+      paymentHash: 'aa'.repeat(32),
+    });
+    expect(
+      await paidHash.messages.claimZapPayment(
+        'aa'.repeat(32),
+        'receipt',
+        new Date(paidHash.clock.now),
+      ),
+    ).toBe(true);
+    expect((await paidHash.app.request(`/messages/${CREDIT}/repayment`)).status).toBe(200);
+
+    const partial = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await partial.messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      partIndex: 0,
+      units: 5n,
+      sats: 5,
+      shareUnits: 21n,
+      paidAt: new Date(partial.clock.now),
+    });
+    await partial.messages.recordInvoiceAttempt(
+      openPartAttempt(5, 5n, 21n, new Date(partial.clock.now)),
+    );
+    await partial.messages.recordInvoiceAttempt({
+      ...openPartAttempt(30, 30n, 21n, new Date(partial.clock.now + 1)),
+      id: crypto.randomUUID(),
+      description: repaymentPartDescription(0, WALLET_GIVER, 1, 30n, 21n),
+    });
+    expect((await partial.app.request(`/messages/${CREDIT}/repayment`)).status).toBe(200);
+
+    const full = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await full.messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      partIndex: 0,
+      units: 21n,
+      sats: 21,
+      shareUnits: 21n,
+      paidAt: new Date(full.clock.now),
+    });
+    await full.messages.recordInvoiceAttempt({
+      ...openPartAttempt(1, 1n, 21n, new Date(full.clock.now)),
+      description: repaymentPartDescription(0, WALLET_GIVER, 1, 1n, 21n),
+    });
+    expect((await full.app.request(`/messages/${CREDIT}/repayment`)).status).toBe(200);
+  });
+
+  it('drops an attempt settled between planning and billing', async () => {
+    await withNip57(async () => {
+      const { app, messages, clock } = await loanSetup({
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+      });
+      await messages.recordInvoiceAttempt({
+        ...openPartAttempt(10, 10n, 21n, new Date(clock.now)),
+        paymentHash: 'bb'.repeat(32),
+      });
+      vi.spyOn(messages, 'zapPaymentReceiptId')
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce('receipt');
+      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '10' }),
+      });
+      expect(response.status).toBe(200);
+      expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(2);
+    });
+  });
+
+  it('orders a reused and a new part of the same share', async () => {
+    await withNip57(async () => {
+      const { app, messages, clock } = await loanSetup({
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+      });
+      await messages.recordInvoiceAttempt(openPartAttempt(10, 10n, 21n, new Date(clock.now)));
+      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '21' }),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { bills: Array<{ amountSats: number }> };
+      expect(body.bills.map((bill) => bill.amountSats)).toEqual([10, 11]);
+    });
+  });
+
+  it('rechecks legacy, duplicate, and excessive settlements while billing', async () => {
+    await withNip57(async () => {
+      const legacy = await loanSetup({
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+      });
+      vi.spyOn(legacy.messages, 'listRepayments')
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          {
+            dayIndex: 1,
+            recipientAccountId: WALLET_GIVER,
+            dueSats: 21,
+            paidAt: new Date(legacy.clock.now),
+          },
+          {
+            dayIndex: 0,
+            recipientAccountId: NO_WALLET,
+            dueSats: 21,
+            paidAt: new Date(legacy.clock.now),
+          },
+          {
+            dayIndex: 0,
+            recipientAccountId: WALLET_GIVER,
+            dueSats: 21,
+            paidAt: new Date(legacy.clock.now),
+          },
+        ]);
+      expect((await post(legacy.app, `/messages/${CREDIT}/repayment/due`)).status).toBe(409);
+
+      const paidAt = new Date(MONDAY);
+      const paid = {
+        messageId: CREDIT,
+        dayIndex: 0,
+        recipientAccountId: WALLET_GIVER,
+        partIndex: 0,
+        units: 5n,
+        sats: 5,
+        paidAt,
+      };
+      for (const second of [
+        { ...paid, partIndex: 1, units: 16n, sats: 16 },
+        { ...paid, partIndex: 2, units: 10n, sats: 10 },
+      ]) {
+        const setup = await loanSetup({
+          termDays: 1,
+          givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+        });
+        vi.spyOn(setup.messages, 'listRepaymentParts')
+          .mockResolvedValueOnce([paid])
+          .mockResolvedValueOnce([paid, second]);
+        const response = await post(setup.app, `/messages/${CREDIT}/repayment/due`);
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({
+          error: 'A payment for this share is still open',
+        });
+      }
+    });
+  });
+
   it('lists the member loans with what is due now', async () => {
     const { app, messages } = await loanSetup();
     await messages.create({
@@ -1785,10 +2627,13 @@ describe('repayment from the in-app wallet', () => {
       goalAmount: '1000',
       termDays: 10,
       fundedAt: null,
+      closedAt: null,
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
       totalSats: 0,
+      maxSats: 0,
+      maxAmount: null,
       due: {
         payableSats: 0,
         payableAmount: null,
@@ -1821,10 +2666,13 @@ describe('repayment from the in-app wallet', () => {
       amountPhp: stored?.amountPhp ?? null,
       termDays: 2,
       fundedAt: '2027-02-27T12:00:00.000Z',
+      closedAt: null,
       daysDue: 2,
       daysPaid: 1,
       repaidSats: 150,
       totalSats: 800,
+      maxSats: 150,
+      maxAmount: null,
       due: {
         payableSats: 150,
         payableAmount: null,
@@ -1839,6 +2687,16 @@ describe('repayment from the in-app wallet', () => {
       },
       next: null,
     });
+  });
+
+  it('lists a stored credit close timestamp', async () => {
+    const { app, messages } = await loanSetup();
+    const at = new Date(MONDAY);
+    expect(await messages.closeCredit(CREDIT, at)).toBeDefined();
+    const body = (await (await loans(app)).json()) as {
+      loans: Array<{ closedAt: string | null }>;
+    };
+    expect(body.loans[0]?.closedAt).toBe(at.toISOString());
   });
 
   it('shows the next day, the last payment, and drops a repaid loan', async () => {
@@ -1928,8 +2786,57 @@ describe('repayment from the in-app wallet', () => {
       .loans[0];
     expect(open).toMatchObject({
       totalSats: 8000,
+      maxSats: 3000,
+      maxAmount: '3.00',
       due: { payableSats: 0, payableAmount: '0.00', waitingAmount: '0.00' },
     });
+  });
+
+  it('uses exact collected payer cents for a collecting fiat loan maximum', async () => {
+    const collecting = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '8.00',
+      rate: true,
+      fundedAt: null,
+      givers: [
+        { id: WALLET_GIVER, sats: 300, wallet: true, fiatAmount: '1.00' },
+        { id: NO_WALLET, sats: 500, wallet: true, fiatAmount: null },
+      ],
+    });
+    const loan = (
+      (await (await loans(collecting.app)).json()) as {
+        loans: Record<string, unknown>[];
+      }
+    ).loans[0];
+    expect(loan).toMatchObject({
+      totalSats: 1000,
+      maxSats: 1000,
+      maxAmount: '1.00',
+    });
+  });
+
+  it('adds exact part sats to repaidSats and refuses a later legacy row', async () => {
+    const { app, messages } = await loanSetup();
+    await messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      partIndex: 0,
+      units: 50n,
+      sats: 50,
+      shareUnits: 150n,
+      paidAt: new Date(MONDAY),
+    });
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      dueSats: 150,
+      paidAt: new Date(MONDAY),
+    });
+    const loan = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(loan).toMatchObject({ repaidSats: 50, totalSats: 800 });
   });
 
   it('mirrors Sunday rest and answers 503 when a loan cannot be computed', async () => {

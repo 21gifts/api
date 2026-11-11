@@ -3891,6 +3891,61 @@ test('Function: repaymentInvoice — POST /messages/:id/repayment without bearer
   ).toBe(401);
 });
 
+test('Function: repaymentClose — POST /messages/:id/repayment/close without bearer is 401', async ({
+  request,
+}) => {
+  expect(
+    (await request.post('/messages/00000000-0000-4000-8000-000000000000/repayment/close')).status(),
+  ).toBe(401);
+});
+
+test('POST /messages/:id/repayment/close without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages/:id/repayment/close')).status()).toBe(401);
+});
+
+test('POST /messages/:id/repayment/close without bearer is 401 then 404 for a missing loan', async ({
+  request,
+}) => {
+  const path = '/messages/00000000-0000-4000-8000-000000000000/repayment/close';
+  expect((await request.post(path)).status()).toBe(401);
+  const session = await memberSession(request);
+  expect(
+    (await request.post(path, { headers: { authorization: session.authorization } })).status(),
+  ).toBe(404);
+});
+
+test('Function: repaymentPrepay — POST /messages/:id/repayment/prepay without bearer is 401', async ({
+  request,
+}) => {
+  expect(
+    (
+      await request.post('/messages/00000000-0000-4000-8000-000000000000/repayment/prepay', {
+        data: { amount: '1000' },
+      })
+    ).status(),
+  ).toBe(401);
+});
+
+test('POST /messages/:id/repayment/prepay without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages/:id/repayment/prepay')).status()).toBe(401);
+});
+
+test('POST /messages/:id/repayment/prepay without bearer is 401 then 404 for a missing loan', async ({
+  request,
+}) => {
+  const path = '/messages/00000000-0000-4000-8000-000000000000/repayment/prepay';
+  expect((await request.post(path, { data: { amount: '1000' } })).status()).toBe(401);
+  const session = await memberSession(request);
+  expect(
+    (
+      await request.post(path, {
+        headers: { authorization: session.authorization },
+        data: { amount: '1000' },
+      })
+    ).status(),
+  ).toBe(404);
+});
+
 test('POST /messages/:id/repayment/due without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages/:id/repayment/due')).status()).toBe(401);
 });
@@ -3966,6 +4021,18 @@ test('Function: shareSats — GET /healthz is ok', async ({ request }) => {
 });
 
 test('Function: repaymentDescription — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: repaymentPartDescription — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: parseRepaymentPartDescription — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: allocateRepayment — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 

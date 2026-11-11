@@ -90,6 +90,7 @@ export interface InvoiceRouteDeps {
     | 'create'
     | 'listPostsByAccount'
     | 'markDeleted'
+    | 'withMessageLock'
   >;
   /** Clock, epoch milliseconds. */
   now: () => number;
@@ -400,7 +401,7 @@ export interface IssueGiftInvoiceInput {
 /** Issue action result: an invoice, or the HTTP error the spend route returned. */
 export type IssueGiftInvoiceResult =
   | { ok: true; invoice: GiftInvoice }
-  | { ok: false; status: 400 | 403 | 409 | 502 | 503; error: string };
+  | { ok: false; status: 400 | 403 | 409 | 502 | 503; error: string; code?: 'credit_closed' };
 
 /** Proof action result: a paid body, or the HTTP error the spend route returned. */
 export type ProveGiftInvoiceResult =
@@ -707,6 +708,20 @@ export async function issueGiftInvoice(
   deps: GiftActionDeps,
   input: IssueGiftInvoiceInput,
 ): Promise<IssueGiftInvoiceResult> {
+  const messageId = input.messageId;
+  if (messageId !== undefined && MESSAGE_ID_RE.test(messageId)) {
+    return deps.messageStore.withMessageLock(messageId, (lockedStore) =>
+      issueGiftInvoiceLocked({ ...deps, messageStore: lockedStore }, input),
+    );
+  }
+  return issueGiftInvoiceLocked(deps, input);
+}
+
+/** Issue an invoice after the optional forum message lock has been acquired. */
+async function issueGiftInvoiceLocked(
+  deps: GiftActionDeps,
+  input: IssueGiftInvoiceInput,
+): Promise<IssueGiftInvoiceResult> {
   const fundingStore = deps.fundingStore;
   let amountUsd: string | undefined;
   if (input.amountUsd !== undefined) {
@@ -735,6 +750,18 @@ export async function issueGiftInvoice(
   const amountMsat = input.amountMsat;
   if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {
     return { ok: false, status: 400, error: 'Expected a JSON body with address and amountMsat' };
+  }
+
+  const forumMessage =
+    input.messageId === undefined ? undefined : await deps.messageStore.getById(input.messageId);
+  if (forumMessage !== undefined && forumMessage.goalClosedAt instanceof Date) {
+    logEvent('invoice.credit_closed', { messageId: forumMessage.id });
+    return {
+      ok: false,
+      status: 409,
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    };
   }
 
   const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
@@ -777,7 +804,7 @@ export async function issueGiftInvoice(
 
   let resolvedGroupMessageId: string | undefined;
   if (input.messageId !== undefined) {
-    const message = await deps.messageStore.getById(input.messageId);
+    const message = forumMessage;
     if (
       message === undefined ||
       message.deletedAt !== null ||
@@ -1121,7 +1148,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         },
       );
       if (!result.ok) {
-        return c.json({ error: result.error }, result.status);
+        return c.json(
+          result.code === undefined
+            ? { error: result.error }
+            : { error: result.error, code: result.code },
+          result.status,
+        );
       }
       return c.json(
         {

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi, type MockInstance } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
-import { repaymentDescription } from '@/lib/credit-repayment';
+import { repaymentDescription, repaymentPartDescription } from '@/lib/credit-repayment';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedConversationDefaults } from '@/lib/conversation';
@@ -19,6 +19,7 @@ import {
   type MessageFeedQuery,
   type MessageInvoiceAttempt,
   type MessageListRow,
+  type MessageStore,
   type UnattributedIndexedReceipt,
   type ZapIngestRow,
   type ZapReceiptGiftRow,
@@ -1360,7 +1361,50 @@ describe('manual invoice settlement', () => {
     expect(note?.amountPhp).toBeNull();
   });
 
-  it('records a repayment invoice as a paid share and does not raise the ask', async () => {
+  it('records a legacy repayment invoice as paid without raising the ask', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const giver = '11111111-1111-4111-8111-111111111111';
+    const paymentHash = 'b1'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      amountSats: 21,
+      description: repaymentDescription(0, giver),
+    });
+
+    const result = await settleInvoiceManually({
+      store,
+      auth,
+      now: () => 1_700,
+      paymentHash,
+      note: 'legacy repayment settled by hand',
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      receiptId: manualReceiptIdForPaymentHash(paymentHash),
+      messageId,
+      amountSats: 21,
+      resumed: false,
+    });
+    expect((await store.getById(messageId))?.sats).toBe(0);
+    expect(await store.listRepayments(messageId)).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: giver,
+        dueSats: 21,
+        paidAt: new Date(1_700),
+      },
+    ]);
+    expect(await store.listRepaymentParts(messageId)).toEqual([]);
+  });
+
+  it('records a repayment-part invoice as a paid part and does not raise the ask', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const messageId = await seedStore({
@@ -1373,7 +1417,7 @@ describe('manual invoice settlement', () => {
     const paymentHash = 'b2'.repeat(32);
     await seedManualInvoice(store, paymentHash, {
       amountSats: 21,
-      description: repaymentDescription(0, giver),
+      description: repaymentPartDescription(0, giver, 2, 21n, 30n),
     });
     const result = await settleInvoiceManually({
       store,
@@ -1390,11 +1434,17 @@ describe('manual invoice settlement', () => {
       resumed: false,
     });
     expect((await store.getById(messageId))?.sats).toBe(0);
-    expect(await store.listRepayments(messageId)).toEqual([
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect(await store.listRepaymentParts(messageId)).toEqual([
       {
+        kind: 'part',
+        messageId,
         dayIndex: 0,
         recipientAccountId: giver,
-        dueSats: 21,
+        partIndex: 2,
+        units: 21n,
+        sats: 21,
+        shareUnits: 30n,
         paidAt: new Date(1_800),
       },
     ]);
@@ -1407,7 +1457,7 @@ describe('manual invoice settlement', () => {
         note: 'repayment settled by hand',
       }),
     ).resolves.toEqual({ ok: false, reason: 'duplicate' });
-    expect(await store.listRepayments(messageId)).toHaveLength(1);
+    expect(await store.listRepaymentParts(messageId)).toHaveLength(1);
   });
 
   it('settles with verified preimage, receipt evidence, notification, and gift reply', async () => {
@@ -5030,7 +5080,7 @@ describe('indexOpenZapReceipts', () => {
     });
     await base.recordZapReceipt('r-known-dup', messageId, 21, null);
     let getByEventIdCalls = 0;
-    const store = {
+    const store: MessageStore = {
       listLatest: (limit: number) => base.listLatest(limit),
       listFeed: (query: MessageFeedQuery) => base.listFeed(query),
       listDebug: (limit: number) => base.listDebug(limit),
@@ -5143,11 +5193,24 @@ describe('indexOpenZapReceipts', () => {
       addReceivedSats: (...args: Parameters<InMemoryMessageStore['addReceivedSats']>) =>
         base.addReceivedSats(...args),
       listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+      previewCreditPayerSnapshot: (
+        ...args: Parameters<InMemoryMessageStore['previewCreditPayerSnapshot']>
+      ) => base.previewCreditPayerSnapshot(...args),
       sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId: string) => base.listRepayments(messageId),
       listLoanLedger: (accountId: string) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
         base.markRepaymentPaid(row),
+      listRepaymentParts: (messageId: string) => base.listRepaymentParts(messageId),
+      withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+      withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+        base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+      markRepaymentPartPaid: (...args: Parameters<InMemoryMessageStore['markRepaymentPartPaid']>) =>
+        base.markRepaymentPartPaid(...args),
+      settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>
+        base.closeCredit(...args),
       claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
         base.claimZapPayment(...args),
       zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
@@ -5158,6 +5221,8 @@ describe('indexOpenZapReceipts', () => {
       heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
       heartSenders: (id: string) => base.heartSenders(id),
       listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+      listInvoiceAttemptsForMessage: (messageId: string) =>
+        base.listInvoiceAttemptsForMessage(messageId),
       listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
         base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (...args: Parameters<InMemoryMessageStore['recordZapIngest']>) =>
@@ -5320,7 +5385,7 @@ describe('indexOpenZapReceipts', () => {
         lightningAddress: 'zap-remember-fail@example.com',
       });
       let ingestCalls = 0;
-      const store = {
+      const store: MessageStore = {
         listLatest: (limit: number) => base.listLatest(limit),
         listFeed: (query: MessageFeedQuery) => base.listFeed(query),
         listDebug: (limit: number) => base.listDebug(limit),
@@ -5432,11 +5497,25 @@ describe('indexOpenZapReceipts', () => {
         addReceivedSats: (...args: Parameters<InMemoryMessageStore['addReceivedSats']>) =>
           base.addReceivedSats(...args),
         listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+        previewCreditPayerSnapshot: (
+          ...args: Parameters<InMemoryMessageStore['previewCreditPayerSnapshot']>
+        ) => base.previewCreditPayerSnapshot(...args),
         sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
         listRepayments: (messageId: string) => base.listRepayments(messageId),
         listLoanLedger: (accountId: string) => base.listLoanLedger(accountId),
         markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
           base.markRepaymentPaid(row),
+        listRepaymentParts: (messageId: string) => base.listRepaymentParts(messageId),
+        withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+        withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+          base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+        markRepaymentPartPaid: (
+          ...args: Parameters<InMemoryMessageStore['markRepaymentPartPaid']>
+        ) => base.markRepaymentPartPaid(...args),
+        settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+          base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+        closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>
+          base.closeCredit(...args),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
         zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
@@ -5447,6 +5526,8 @@ describe('indexOpenZapReceipts', () => {
         heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
         heartSenders: (id: string) => base.heartSenders(id),
         listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+        listInvoiceAttemptsForMessage: (messageId: string) =>
+          base.listInvoiceAttemptsForMessage(messageId),
         listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
           base.listRecentOkInvoiceAttempts(since, limit),
         recordZapIngest: async (...args: Parameters<InMemoryMessageStore['recordZapIngest']>) => {
@@ -5745,7 +5826,7 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.claimZapPayment(paymentHash, 'r-real', new Date(2))).toBe(true);
   });
 
-  it('records a repayment to the giver without increasing the ask', async () => {
+  it('records a repayment part to the giver without increasing the ask', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const messageId = await seedStore({ store, auth, accountId: 'acc-repay' });
@@ -5778,7 +5859,7 @@ describe('indexOpenZapReceipts', () => {
       httpStatus: 200,
       pr: 'lnbc-repay',
       paymentHash,
-      description: repaymentDescription(0, giver),
+      description: repaymentPartDescription(0, giver, 3, 21n, 30n),
       descriptionHash: null,
       isNip57Invoice: true,
       lnurlResponse: null,
@@ -5810,11 +5891,17 @@ describe('indexOpenZapReceipts', () => {
         ),
     });
     expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
-    expect(await store.listRepayments(messageId)).toEqual([
+    expect(await store.listRepayments(messageId)).toEqual([]);
+    expect(await store.listRepaymentParts(messageId)).toEqual([
       {
+        kind: 'part',
+        messageId,
         dayIndex: 0,
         recipientAccountId: giver,
-        dueSats: 21,
+        partIndex: 3,
+        units: 21n,
+        sats: 21,
+        shareUnits: 30n,
         paidAt: new Date(5),
       },
     ]);
@@ -6160,7 +6247,7 @@ describe('indexOpenZapReceipts', () => {
         accountId: 'acc-record-fail',
         lightningAddress: 'zap-record-fail@example.com',
       });
-      const store = {
+      const store: MessageStore = {
         listLatest: (limit: number) => base.listLatest(limit),
         listFeed: (query: MessageFeedQuery) => base.listFeed(query),
         listDebug: (limit: number) => base.listDebug(limit),
@@ -6272,11 +6359,25 @@ describe('indexOpenZapReceipts', () => {
         addReceivedSats: (...args: Parameters<InMemoryMessageStore['addReceivedSats']>) =>
           base.addReceivedSats(...args),
         listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
+        previewCreditPayerSnapshot: (
+          ...args: Parameters<InMemoryMessageStore['previewCreditPayerSnapshot']>
+        ) => base.previewCreditPayerSnapshot(...args),
         sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
         listRepayments: (messageId: string) => base.listRepayments(messageId),
         listLoanLedger: (accountId: string) => base.listLoanLedger(accountId),
         markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
           base.markRepaymentPaid(row),
+        listRepaymentParts: (messageId: string) => base.listRepaymentParts(messageId),
+        withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+        withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+          base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+        markRepaymentPartPaid: (
+          ...args: Parameters<InMemoryMessageStore['markRepaymentPartPaid']>
+        ) => base.markRepaymentPartPaid(...args),
+        settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+          base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+        closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>
+          base.closeCredit(...args),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
           base.claimZapPayment(...args),
         zapPaymentReceiptId: (hash: string) => base.zapPaymentReceiptId(hash),
@@ -6287,6 +6388,8 @@ describe('indexOpenZapReceipts', () => {
         heartStats: (ids: readonly string[], viewer: string | null) => base.heartStats(ids, viewer),
         heartSenders: (id: string) => base.heartSenders(id),
         listInvoiceAttempts: (limit: number) => base.listInvoiceAttempts(limit),
+        listInvoiceAttemptsForMessage: (messageId: string) =>
+          base.listInvoiceAttemptsForMessage(messageId),
         listRecentOkInvoiceAttempts: (since: Date, limit: number) =>
           base.listRecentOkInvoiceAttempts(since, limit),
         recordZapIngest: async () => {

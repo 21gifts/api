@@ -116,7 +116,13 @@ import {
 } from '@/lib/place';
 import { SHOP_NAME_REQUIRED, shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
 import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
-import { repaymentDueBills, repaymentInvoice, repaymentStatus } from '@/routes/repayment';
+import {
+  repaymentClose,
+  repaymentDueBills,
+  repaymentInvoice,
+  repaymentPrepay,
+  repaymentStatus,
+} from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -447,13 +453,22 @@ async function creditStillOpen(store: MessageStore, row: MessageRow): Promise<bo
     return true;
   }
   const slices = repaymentSchedule(row.goalTermDays, owed);
+  const parts = new Map<string, bigint>();
+  for (const part of await store.listRepaymentParts(row.id)) {
+    const key = `${part.dayIndex}:${part.recipientAccountId}`;
+    parts.set(key, (parts.get(key) ?? 0n) + part.units);
+  }
   const paid = new Set(
-    (await store.listRepayments(row.id)).map(
-      (item) => `${item.dayIndex}:${item.recipientAccountId}`,
-    ),
+    (await store.listRepayments(row.id))
+      .filter((item) => !parts.has(`${item.dayIndex}:${item.recipientAccountId}`))
+      .map((item) => `${item.dayIndex}:${item.recipientAccountId}`),
   );
   return (
-    slices.length === 0 || slices.some((slice) => !paid.has(`${slice.dayIndex}:${slice.accountId}`))
+    slices.length === 0 ||
+    slices.some((slice) => {
+      const key = `${slice.dayIndex}:${slice.accountId}`;
+      return (parts.get(key) ?? 0n) < slice.units && !paid.has(key);
+    })
   );
 }
 
@@ -3433,6 +3448,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     .get('/:id/repayment', (c) => repaymentStatus(deps, c))
     .post('/:id/repayment', (c) => repaymentInvoice(deps, c))
     .post('/:id/repayment/due', (c) => repaymentDueBills(deps, c))
+    .post('/:id/repayment/close', (c) => repaymentClose(deps, c))
+    .post('/:id/repayment/prepay', (c) => repaymentPrepay(deps, c))
     .post('/:id/invoice', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
@@ -3518,315 +3535,394 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
-      const row = await deps.store.getById(messageIdParam);
-      if (row === undefined || row.deletedAt !== null) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: messageIdParam,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: UNKNOWN_ACCOUNT_ID,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: null,
-            zapRequest: null,
-            result: 'not_found',
-            httpStatus: 404,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: 'Not found' }, 404);
-      }
-      if (row.accountId === null) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: account.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: null,
-            zapRequest: null,
-            result: 'no_author',
-            httpStatus: 400,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
-      }
-      if (row.eventId === null || row.eventId === '') {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: row.accountId,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: null,
-            zapRequest: null,
-            result: 'no_event',
-            httpStatus: 400,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: 'This message cannot be paid yet' }, 400);
-      }
-      const author = await deps.authStore.getAccount(row.accountId);
-      const receiving = author === undefined ? null : receivingAddress(author, deps.lnurlServer);
-      if (author === undefined || receiving === null) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: row.accountId,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: null,
-            zapRequest: null,
-            result: 'no_author',
-            httpStatus: 400,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
-      }
-      const recipientPubkey = await deps.authStore.getNostrPublicKey(author.id);
-      /* v8 ignore start -- payable notes have keys after the worker */
-      if (recipientPubkey === undefined) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: author.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: receiving.address,
-            zapRequest: null,
-            result: 'no_key',
-            httpStatus: 400,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: 'This message cannot be paid yet' }, 400);
-      }
-      /* v8 ignore stop */
-      const kek = deps.nostrKek;
-      if (kek === undefined) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: author.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: receiving.address,
-            zapRequest: null,
-            result: 'no_key',
-            httpStatus: 503,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: 'Messages are unavailable' }, 503);
-      }
-      // A wallet cannot pay its own invoice: no heart and no paid reply on the own note.
-      // A reply there is posted unpaid with POST /messages.
-      if (row.accountId === account.id && (heart || invoiceText !== '')) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: author.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: receiving.address,
-            zapRequest: null,
-            result: heart ? 'self_heart' : 'self_reply',
-            httpStatus: 400,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json(
-          {
-            error: heart
-              ? 'You cannot send a heart to yourself'
-              : 'A reply on your own note is free; post it without a payment',
-          },
-          400,
-        );
-      }
-      // A heart is paid only fee-free in the app: without Spark invoices it is refused.
-      if (heart && deps.sparkInvoices === undefined) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: author.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: receiving.address,
-            zapRequest: null,
-            result: 'heart_unavailable',
-            httpStatus: 503,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: HEART_UNAVAILABLE }, 503);
-      }
-      const refusal = forumRateLimitExempt(account)
-        ? null
-        : heart
-          ? heartLimiter.check(account.id, row.id, deps.now())
-          : invoiceLimiter.check(account.id, deps.now());
-      if (refusal !== null) {
-        c.header('Retry-After', retryAfterFor(refusal));
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: author.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: receiving.address,
-            zapRequest: null,
-            result: 'rate_limited',
-            httpStatus: 429,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: 'Too many payments' }, 429);
-      }
-      const relays = resolveZapRelays(process.env);
-      const unsigned = buildZapRequest({
-        recipientPubkey,
-        eventId: row.eventId,
-        amountMsat,
-        relays,
-        content: invoiceText,
-      });
-      let signed;
-      try {
-        await ensureAccountNostrKey(deps.authStore, account.id, kek);
-        signed = await signEventForAccount(deps.authStore, account.id, kek, unsigned);
-        /* v8 ignore next 4 -- keygen or sign failure */
-      } catch {
-        logEvent('nostr.sign.failed', { messageId: row.id });
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: author.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: receiving.address,
-            zapRequest: null,
-            result: 'sign_failed',
-            httpStatus: 503,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-          }),
-        );
-        return c.json({ error: 'Messages are unavailable' }, 503);
-      }
-      const zapRequestJson = serializeZapRequest(signed);
-      const zapRequest = signed as unknown as Record<string, unknown>;
-      const zap = await requestZapInvoice({
-        address: receiving.address,
-        amountMsat,
-        zapRequestJson,
-        fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl, deps.authStore),
-      });
-      if (!zap.ok) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: author.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: receiving.address,
-            zapRequest,
-            result: zap.reason,
-            httpStatus: 400,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-            lnurlResponse: zap.lnurlResponse,
-          }),
-        );
-        if (zap.reason === 'noZap') {
+      return deps.store.withMessageLock(messageIdParam, async (lockedStore) => {
+        const row = await lockedStore.getById(messageIdParam);
+        if (row !== undefined && row.goalClosedAt instanceof Date) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: row.accountId ?? account.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: null,
+              zapRequest: null,
+              result: 'credit_closed',
+              httpStatus: 409,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'This credit no longer collects', code: 'credit_closed' }, 409);
+        }
+        if (row === undefined || row.deletedAt !== null) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: messageIdParam,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: UNKNOWN_ACCOUNT_ID,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: null,
+              zapRequest: null,
+              result: 'not_found',
+              httpStatus: 404,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.accountId === null) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: account.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: null,
+              zapRequest: null,
+              result: 'no_author',
+              httpStatus: 400,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
           return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
-        return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
-      }
-      const inspected = inspectBolt11(zap.pr);
-      const description = inspected?.description ?? null;
-      const descriptionHash = inspected?.descriptionHash ?? null;
-      const nip57 = isNip57Invoice(descriptionHash, zapRequestJson);
-      if (!nip57) {
+        if (row.eventId === null || row.eventId === '') {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: row.accountId,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: null,
+              zapRequest: null,
+              result: 'no_event',
+              httpStatus: 400,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'This message cannot be paid yet' }, 400);
+        }
+        const author = await deps.authStore.getAccount(row.accountId);
+        const receiving = author === undefined ? null : receivingAddress(author, deps.lnurlServer);
+        if (author === undefined || receiving === null) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: row.accountId,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: null,
+              zapRequest: null,
+              result: 'no_author',
+              httpStatus: 400,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
+        }
+        const recipientPubkey = await deps.authStore.getNostrPublicKey(author.id);
+        /* v8 ignore start -- payable notes have keys after the worker */
+        if (recipientPubkey === undefined) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest: null,
+              result: 'no_key',
+              httpStatus: 400,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'This message cannot be paid yet' }, 400);
+        }
+        /* v8 ignore stop */
+        const kek = deps.nostrKek;
+        if (kek === undefined) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest: null,
+              result: 'no_key',
+              httpStatus: 503,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
+        // A wallet cannot pay its own invoice: no heart and no paid reply on the own note.
+        // A reply there is posted unpaid with POST /messages.
+        if (row.accountId === account.id && (heart || invoiceText !== '')) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest: null,
+              result: heart ? 'self_heart' : 'self_reply',
+              httpStatus: 400,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json(
+            {
+              error: heart
+                ? 'You cannot send a heart to yourself'
+                : 'A reply on your own note is free; post it without a payment',
+            },
+            400,
+          );
+        }
+        // A heart is paid only fee-free in the app: without Spark invoices it is refused.
+        if (heart && deps.sparkInvoices === undefined) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest: null,
+              result: 'heart_unavailable',
+              httpStatus: 503,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: HEART_UNAVAILABLE }, 503);
+        }
+        const refusal = forumRateLimitExempt(account)
+          ? null
+          : heart
+            ? heartLimiter.check(account.id, row.id, deps.now())
+            : invoiceLimiter.check(account.id, deps.now());
+        if (refusal !== null) {
+          c.header('Retry-After', retryAfterFor(refusal));
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest: null,
+              result: 'rate_limited',
+              httpStatus: 429,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'Too many payments' }, 429);
+        }
+        const relays = resolveZapRelays(process.env);
+        const unsigned = buildZapRequest({
+          recipientPubkey,
+          eventId: row.eventId,
+          amountMsat,
+          relays,
+          content: invoiceText,
+        });
+        let signed;
+        try {
+          await ensureAccountNostrKey(deps.authStore, account.id, kek);
+          signed = await signEventForAccount(deps.authStore, account.id, kek, unsigned);
+          /* v8 ignore next 4 -- keygen or sign failure */
+        } catch {
+          logEvent('nostr.sign.failed', { messageId: row.id });
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest: null,
+              result: 'sign_failed',
+              httpStatus: 503,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
+        const zapRequestJson = serializeZapRequest(signed);
+        const zapRequest = signed as unknown as Record<string, unknown>;
+        const zap = await requestZapInvoice({
+          address: receiving.address,
+          amountMsat,
+          zapRequestJson,
+          fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl, deps.authStore),
+        });
+        if (!zap.ok) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest,
+              result: zap.reason,
+              httpStatus: 400,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+              lnurlResponse: zap.lnurlResponse,
+            }),
+          );
+          if (zap.reason === 'noZap') {
+            return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
+          }
+          return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
+        }
+        const inspected = inspectBolt11(zap.pr);
+        const description = inspected?.description ?? null;
+        const descriptionHash = inspected?.descriptionHash ?? null;
+        const nip57 = isNip57Invoice(descriptionHash, zapRequestJson);
+        if (!nip57) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest,
+              result: 'not_zap',
+              httpStatus: 400,
+              pr: zap.pr, // keep for debug; this is the exception to "failure rows have pr null"
+              paymentHash: inspected?.paymentHash ?? null,
+              description,
+              descriptionHash,
+              isNip57Invoice: false,
+              lnurlResponse: zap.lnurlResponse,
+            }),
+          );
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
+        }
+        const sparkInvoice = await issueSparkInvoice(deps, receiving, {
+          pr: zap.pr,
+          paymentHash: inspected?.paymentHash ?? null,
+          prAmountMsat: inspected?.amountMsat ?? null,
+          amountSats: zap.amountSats,
+          zapRequestJson,
+        });
+        // No Spark invoice for a heart: refuse, and never hand out or record `pr` as ok.
+        if (heart && sparkInvoice === null) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: author.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: receiving.address,
+              zapRequest,
+              result: 'heart_unavailable',
+              httpStatus: 503,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+              lnurlResponse: zap.lnurlResponse,
+            }),
+          );
+          return c.json({ error: HEART_UNAVAILABLE }, 503);
+        }
         await persistInvoiceAttempt(
-          deps.store,
+          lockedStore,
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
@@ -3836,71 +3932,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             shown,
             lightningAddress: receiving.address,
             zapRequest,
-            result: 'not_zap',
-            httpStatus: 400,
-            pr: zap.pr, // keep for debug; this is the exception to "failure rows have pr null"
+            result: 'ok',
+            httpStatus: 200,
+            pr: zap.pr,
             paymentHash: inspected?.paymentHash ?? null,
             description,
             descriptionHash,
-            isNip57Invoice: false,
+            isNip57Invoice: true,
             lnurlResponse: zap.lnurlResponse,
           }),
         );
-        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
-      }
-      const sparkInvoice = await issueSparkInvoice(deps, receiving, {
-        pr: zap.pr,
-        paymentHash: inspected?.paymentHash ?? null,
-        prAmountMsat: inspected?.amountMsat ?? null,
-        amountSats: zap.amountSats,
-        zapRequestJson,
+        return c.json({ pr: zap.pr, amountSats: zap.amountSats, sparkInvoice }, 200);
       });
-      // No Spark invoice for a heart: refuse, and never hand out or record `pr` as ok.
-      if (heart && sparkInvoice === null) {
-        await persistInvoiceAttempt(
-          deps.store,
-          invoiceAttemptBase({
-            messageId: row.id,
-            payerAccountId: account.id,
-            heart,
-            authorAccountId: author.id,
-            amountSats: parsed.data.sats,
-            shown,
-            lightningAddress: receiving.address,
-            zapRequest,
-            result: 'heart_unavailable',
-            httpStatus: 503,
-            pr: null,
-            paymentHash: null,
-            description: null,
-            descriptionHash: null,
-            isNip57Invoice: false,
-            lnurlResponse: zap.lnurlResponse,
-          }),
-        );
-        return c.json({ error: HEART_UNAVAILABLE }, 503);
-      }
-      await persistInvoiceAttempt(
-        deps.store,
-        invoiceAttemptBase({
-          messageId: row.id,
-          payerAccountId: account.id,
-          heart,
-          authorAccountId: author.id,
-          amountSats: parsed.data.sats,
-          shown,
-          lightningAddress: receiving.address,
-          zapRequest,
-          result: 'ok',
-          httpStatus: 200,
-          pr: zap.pr,
-          paymentHash: inspected?.paymentHash ?? null,
-          description,
-          descriptionHash,
-          isNip57Invoice: true,
-          lnurlResponse: zap.lnurlResponse,
-        }),
-      );
-      return c.json({ pr: zap.pr, amountSats: zap.amountSats, sparkInvoice }, 200);
     });
 }

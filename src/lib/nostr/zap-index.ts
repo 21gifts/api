@@ -39,7 +39,7 @@ import type { NotificationStore } from '@/lib/notification-store';
 import { normalizeHex32, preimageMatchesHash } from '@/lib/proof';
 import type { PushStore } from '@/lib/push-store';
 import { verifyEvent } from 'nostr-tools/pure';
-import { parseRepaymentDescription } from '@/lib/credit-repayment';
+import { parseRepaymentDescription, parseRepaymentPartDescription } from '@/lib/credit-repayment';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 
 /** Minimal zap receipt fields we validate. */
@@ -524,9 +524,9 @@ function zapIngestRow(args: {
  * A retry after a failed ingest write resumes even when the note was hidden in
  * the meantime; it then only completes the ingest row (no notification, no
  * gift-reply). A fresh settle on a hidden or missing note is refused.
- * The claim and credit are not one transaction, so the concurrent same-instant
- * race is limited to the window between them; competing different receipt ids
- * are serialised by the claim table's payment-hash primary key.
+ * For a repayment, the payment-hash claim and repayment row are stored under
+ * the same per-message lock, so invoice reservation cannot observe one without
+ * the other. Other receipts remain serialized by the claim table's hash key.
  * On a member note, fans out `notifyZap` and attempts the payer gift-reply
  * unless the settled invoice is a heart (`heart === true`): then credits
  * sats, calls `notifyHeart`, and skips `notifyZap` and the gift-reply.
@@ -615,22 +615,44 @@ export async function settleInvoiceManually(args: {
   if (indexed.some((row) => paymentHashFromReceipt(row.receipt) === paymentHash)) {
     return { ok: false, reason: 'duplicate' };
   }
-  if (!(await args.store.claimZapPayment(paymentHash, receiptId, new Date(args.now())))) {
+  const repayment = parseRepaymentDescription(invoice.description);
+  const part = parseRepaymentPartDescription(invoice.description);
+  const claimedAt = new Date(args.now());
+  const claimed =
+    repayment !== null && invoice.messageId === message.id
+      ? await args.store.settleRepaymentPayment(
+          paymentHash,
+          receiptId,
+          claimedAt,
+          part === null
+            ? {
+                kind: 'legacy',
+                messageId: message.id,
+                dayIndex: repayment.dayIndex,
+                recipientAccountId: repayment.recipientAccountId,
+                dueSats: invoice.amountSats,
+                paidAt: claimedAt,
+              }
+            : {
+                kind: 'part',
+                messageId: message.id,
+                dayIndex: part.dayIndex,
+                recipientAccountId: part.recipientAccountId,
+                partIndex: part.partIndex,
+                units: part.units,
+                sats: invoice.amountSats,
+                shareUnits: part.shareUnits,
+                paidAt: claimedAt,
+              },
+        )
+      : await args.store.claimZapPayment(paymentHash, receiptId, claimedAt);
+  if (!claimed) {
     return { ok: false, reason: 'duplicate' };
   }
-  const repayment = parseRepaymentDescription(invoice.description);
   if (repayment !== null && invoice.messageId === message.id) {
     if (indexed.some((row) => row.receiptId === receiptId)) {
       return { ok: false, reason: 'duplicate' };
     }
-    const paidAt = new Date(args.now());
-    await args.store.markRepaymentPaid({
-      messageId: message.id,
-      dayIndex: repayment.dayIndex,
-      recipientAccountId: repayment.recipientAccountId,
-      dueSats: invoice.amountSats,
-      paidAt,
-    });
     const tags: string[][] = [];
     if (typeof message.eventId === 'string' && message.eventId !== '') {
       tags.push(['e', message.eventId]);
@@ -1889,7 +1911,35 @@ async function settleRepaymentReceipt(
     );
     return true;
   }
-  if (!(await args.store.claimZapPayment(decoded.paymentHash, event.id, new Date(args.now())))) {
+  const part = parseRepaymentPartDescription(invoice.description);
+  const paidAt = new Date(args.now());
+  if (
+    !(await args.store.settleRepaymentPayment(
+      decoded.paymentHash,
+      event.id,
+      paidAt,
+      part === null
+        ? {
+            kind: 'legacy',
+            messageId: row.id,
+            dayIndex: repayment.dayIndex,
+            recipientAccountId: repayment.recipientAccountId,
+            dueSats: amountSats,
+            paidAt,
+          }
+        : {
+            kind: 'part',
+            messageId: row.id,
+            dayIndex: part.dayIndex,
+            recipientAccountId: part.recipientAccountId,
+            partIndex: part.partIndex,
+            units: part.units,
+            sats: amountSats,
+            shareUnits: part.shareUnits,
+            paidAt,
+          },
+    ))
+  ) {
     logEvent('nostr.zap.rejected', { reason: 'settled' });
     await persistZapIngest(
       args.store,
@@ -1906,13 +1956,6 @@ async function settleRepaymentReceipt(
     );
     return true;
   }
-  await args.store.markRepaymentPaid({
-    messageId: row.id,
-    dayIndex: repayment.dayIndex,
-    recipientAccountId: repayment.recipientAccountId,
-    dueSats: amountSats,
-    paidAt: new Date(args.now()),
-  });
   logEvent('nostr.zap.repaid', { messageId: row.id, sats: amountSats });
   await persistZapIngest(
     args.store,

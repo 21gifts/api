@@ -172,6 +172,42 @@ function doomedReadIndex(queries: readonly RecordedQuery[]): number {
 }
 
 describe('mergeAccounts', () => {
+  it('combines frozen snapshots and reindexes canonical repayment parts without loss', async () => {
+    const { db, queries } = fakeDatabase();
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+
+    const snapshot = queries.findIndex((query) =>
+      query.text.includes('INSERT INTO message_credit_payer_snapshot'),
+    );
+    const parts = queries.findIndex(
+      (query) =>
+        query.text.includes('UPDATE message_repayment_part AS part') &&
+        query.text.includes('row_number() OVER'),
+    );
+    const canonical = queries.findIndex(
+      (query) =>
+        query.text.includes('DELETE FROM message_repayment AS legacy') &&
+        query.text.includes('message_repayment_part AS part'),
+    );
+    const normalized = queries.findIndex(
+      (query) =>
+        query.text.includes('UPDATE message_repayment_part') &&
+        query.text.includes('SET part_index = -part_index - 1'),
+    );
+    const accountDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM account WHERE id = $1'),
+    );
+
+    expect(snapshot).toBeGreaterThanOrEqual(0);
+    expect(queries[snapshot]?.text).toContain('SUM(units)::bigint');
+    expect(queries[snapshot]?.text).toContain('ON CONFLICT (message_id, account_id) DO UPDATE');
+    expect(parts).toBeGreaterThan(snapshot);
+    expect(queries[parts]?.text).toContain('SET recipient_account_id = $2');
+    expect(canonical).toBeGreaterThan(parts);
+    expect(normalized).toBeGreaterThan(canonical);
+    expect(normalized).toBeLessThan(accountDelete);
+  });
+
   it('moves message.shop_account_id to the surviving account, so a shop stays listed', async () => {
     const { db, queries } = fakeDatabase();
     await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
@@ -362,9 +398,12 @@ describe('mergeAccounts', () => {
           query.params[0] === INTO,
       ),
     ).toBe(true);
-    expect(queries.some((query) => query.text.includes('$2') && !query.text.includes('$1'))).toBe(
-      false,
+    const moved = queries.find((query) =>
+      query.text.includes(
+        "UPDATE trust_edge SET subject_id = $2 WHERE subject_id = $1 AND kind = 'verify'",
+      ),
     );
+    expect(moved?.params).toEqual([FROM, INTO]);
   });
 
   it('returns same_account without opening a transaction', async () => {

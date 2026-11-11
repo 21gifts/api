@@ -98,7 +98,6 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(119);
     expect(MESSAGE_SCHEMA_SQL.at(-7)).toMatch(
       /ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false/,
     );
@@ -108,6 +107,18 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS first_post_free boolean/,
     );
+    const schema = MESSAGE_SCHEMA_SQL.join('\n');
+    expect(schema).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS message_invoice_repayment_part_description_uidx/,
+    );
+    expect(schema).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_closed_at timestamptz/,
+    );
+    expect(schema).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_debt_frozen boolean NOT NULL DEFAULT false/,
+    );
+    expect(schema).toMatch(/CREATE TABLE IF NOT EXISTS message_repayment_part/);
+    expect(schema).toMatch(/CREATE TABLE IF NOT EXISTS message_credit_payer_snapshot/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE UNIQUE INDEX IF NOT EXISTS message_first_post_free_uidx\s+ON message \(account_id\)\s+WHERE first_post_free IS TRUE/,
     );
@@ -303,6 +314,12 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     const fundedColumn = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
       statement.includes('ADD COLUMN IF NOT EXISTS goal_funded_at'),
     );
+    const closedColumn = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('ADD COLUMN IF NOT EXISTS goal_closed_at'),
+    );
+    const frozenColumn = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
+      statement.includes('ADD COLUMN IF NOT EXISTS goal_debt_frozen'),
+    );
     const fundedBackfill = MESSAGE_SCHEMA_SQL.findIndex((statement) =>
       statement.includes('SET goal_funded_at = now()'),
     );
@@ -311,43 +328,43 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     );
     expect(recordedColumn).toBeGreaterThan(-1);
     expect(fundedColumn).toBeGreaterThan(recordedColumn);
-    expect(fundedBackfill).toBe(fundedColumn + 1);
-    expect(recordedBackfill).toBe(fundedColumn + 2);
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain('FROM pg_trigger');
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain("tgname = 'trg_db_change'");
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain("jsonb_typeof(nostr_event) = 'string'");
-    expect(MESSAGE_SCHEMA_SQL[97]).not.toContain('EXCEPTION WHEN others');
-    expect(MESSAGE_SCHEMA_SQL[97]).not.toContain('EXCEPTION WHEN invalid_text_representation');
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain(
-      'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
-    );
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain(
-      "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
-    );
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain('SET nostr_event = unwrapped');
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain('nostr_attempts = 0');
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain('CONTINUE;');
-    expect(MESSAGE_SCHEMA_SQL[97]).toContain('AND nostr_event = repair_row.nostr_event');
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
+    expect(closedColumn).toBeGreaterThan(fundedColumn);
+    expect(frozenColumn).toBeGreaterThan(closedColumn);
+    expect(fundedBackfill).toBeGreaterThan(frozenColumn);
+    expect(recordedBackfill).toBeGreaterThan(fundedBackfill);
+    const repairSql = MESSAGE_SCHEMA_SQL.find((statement) => statement.includes('FROM pg_trigger'));
+    expect(repairSql).toContain("tgname = 'trg_db_change'");
+    expect(repairSql).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(repairSql).not.toContain('EXCEPTION WHEN others');
+    expect(repairSql).not.toContain('EXCEPTION WHEN invalid_text_representation');
+    expect(repairSql).toContain('EXCEPTION WHEN data_exception OR statement_too_complex THEN');
+    expect(repairSql).toContain("unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;");
+    expect(repairSql).toContain('SET nostr_event = unwrapped');
+    expect(repairSql).toContain('nostr_attempts = 0');
+    expect(repairSql).toContain('CONTINUE;');
+    expect(repairSql).toContain('AND nostr_event = repair_row.nostr_event');
+    expect(repairSql).toMatch(
       /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
     );
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
+    expect(repairSql).toMatch(
       /unwrapped := \(repair_row\.nostr_event #>> '\{\}'\)::jsonb;[\s\S]*?EXCEPTION WHEN data_exception OR statement_too_complex THEN[\s\S]*?CONTINUE;[\s\S]*?END;[\s\S]*?UPDATE message/,
     );
-    expect(MESSAGE_SCHEMA_SQL[97]).not.toContain('repair_row.unwrapped_event');
-    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(/CREATE TABLE IF NOT EXISTS message_edit/);
-    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(
+    expect(repairSql).not.toContain('repair_row.unwrapped_event');
+    const messageEditDdl = MESSAGE_SCHEMA_SQL.find((statement) =>
+      statement.includes('CREATE TABLE IF NOT EXISTS message_edit'),
+    );
+    const messageEditIndex = MESSAGE_SCHEMA_SQL.find((statement) =>
+      statement.includes('CREATE INDEX IF NOT EXISTS message_edit_message_created_idx'),
+    );
+    expect(messageEditDdl).toMatch(/CREATE TABLE IF NOT EXISTS message_edit/);
+    expect(messageEditDdl).toMatch(
       /CONSTRAINT message_edit_field_chk CHECK \(field IN \('text', 'place', 'shop_account'\)\)/,
     );
-    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(/REFERENCES message \(id\) ON DELETE CASCADE/);
-    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(/before jsonb NOT NULL/);
-    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(/after jsonb NOT NULL/);
-    expect(MESSAGE_SCHEMA_SQL[99]).toMatch(
-      /CREATE INDEX IF NOT EXISTS message_edit_message_created_idx/,
-    );
-    expect(MESSAGE_SCHEMA_SQL[99]).toMatch(
-      /ON message_edit \(message_id, created_at DESC, id DESC\)/,
-    );
+    expect(messageEditDdl).toMatch(/REFERENCES message \(id\) ON DELETE CASCADE/);
+    expect(messageEditDdl).toMatch(/before jsonb NOT NULL/);
+    expect(messageEditDdl).toMatch(/after jsonb NOT NULL/);
+    expect(messageEditIndex).toMatch(/CREATE INDEX IF NOT EXISTS message_edit_message_created_idx/);
+    expect(messageEditIndex).toMatch(/ON message_edit \(message_id, created_at DESC, id DESC\)/);
   });
 });
 
@@ -10756,6 +10773,182 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/payer_account_id IS NULL/);
   });
 
+  it('stores partial repayment parts and rejects a part above the remainder', async () => {
+    const memory = new InMemoryMessageStore();
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    expect(
+      await memory.markRepaymentPartPaid({
+        messageId: 'm1',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 0,
+        units: 4n,
+        sats: 4,
+        shareUnits: 10n,
+        paidAt,
+      }),
+    ).toMatchObject({ partIndex: 0, units: 4n, sats: 4 });
+    expect(await memory.listRepayments('m1')).toEqual([]);
+    expect(await memory.listRepaymentParts('m1')).toHaveLength(1);
+    expect(
+      await memory.markRepaymentPartPaid({
+        messageId: 'm1',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 1,
+        units: 6n,
+        sats: 6,
+        shareUnits: 10n,
+        paidAt,
+      }),
+    ).toMatchObject({ partIndex: 1, units: 6n });
+    expect(await memory.listRepayments('m1')).toEqual([]);
+    expect(
+      await memory.markRepaymentPartPaid({
+        messageId: 'm1',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 2,
+        units: 1n,
+        sats: 1,
+        shareUnits: 10n,
+        paidAt,
+      }),
+    ).toBeUndefined();
+    expect(await memory.listRepaymentParts('m1')).toHaveLength(2);
+  });
+
+  it('serializes concurrent repayment reservations and settlements per message', async () => {
+    const memory = new InMemoryMessageStore();
+    const entered: string[] = [];
+    let releaseFirst = (): void => undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = memory.withRepaymentLock('m1', 0, 'giver', async () => {
+      entered.push('first');
+      await firstGate;
+      entered.push('first-done');
+    });
+    const second = memory.withRepaymentLock('m1', 9, 'other-giver', async () => {
+      entered.push('second');
+    });
+    await Promise.resolve();
+    expect(entered).toEqual(['first']);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(entered).toEqual(['first', 'first-done', 'second']);
+
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const description = 'repayp:0:11111111-1111-4111-8111-111111111111:0:7:10';
+    const reserve = (): Promise<string> =>
+      memory.withRepaymentLock('m1', 0, 'giver', async (locked) => {
+        const existing = await locked.findOkInvoiceByDescription('m1', description);
+        if (existing !== undefined) {
+          return existing.id;
+        }
+        const id = crypto.randomUUID();
+        await locked.recordInvoiceAttempt({
+          id,
+          createdAt: paidAt,
+          messageId: 'm1',
+          payerAccountId: 'author',
+          authorAccountId: 'giver',
+          amountSats: 7,
+          lightningAddress: 'giver@example.test',
+          zapRequest: null,
+          result: 'ok',
+          httpStatus: 200,
+          pr: 'lnbc',
+          paymentHash: null,
+          description,
+          descriptionHash: null,
+          isNip57Invoice: true,
+          lnurlResponse: null,
+        });
+        return id;
+      });
+    const reserved = await Promise.all([reserve(), reserve()]);
+    expect(new Set(reserved).size).toBe(1);
+    expect(await memory.listInvoiceAttemptsForMessage('m1')).toHaveLength(1);
+
+    const settled = await Promise.all([
+      memory.markRepaymentPartPaid({
+        messageId: 'm2',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 0,
+        units: 7n,
+        sats: 7,
+        shareUnits: 10n,
+        paidAt,
+      }),
+      memory.markRepaymentPartPaid({
+        messageId: 'm2',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 1,
+        units: 7n,
+        sats: 7,
+        shareUnits: 10n,
+        paidAt,
+      }),
+    ]);
+    expect(settled.filter((part) => part !== undefined)).toHaveLength(1);
+    expect(
+      (await memory.listRepaymentParts('m2')).reduce((sum, part) => sum + part.units, 0n),
+    ).toBe(7n);
+  });
+
+  it('keeps a claimed repayment part reserved until its row is visible', async () => {
+    const memory = new InMemoryMessageStore();
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = memory.withMessageLock('m-claim', async () => gate);
+    await Promise.resolve();
+    const settled = memory.settleRepaymentPayment(
+      'AA',
+      'receipt-a',
+      new Date('2026-11-11T12:00:00.000Z'),
+      {
+        kind: 'part',
+        messageId: 'm-claim',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 0,
+        units: 7n,
+        sats: 7,
+        shareUnits: 10n,
+        paidAt: new Date('2026-11-11T12:00:00.000Z'),
+      },
+    );
+    const observed = memory.withMessageLock('m-claim', async (locked) => ({
+      claim: await locked.zapPaymentReceiptId('aa'),
+      parts: await locked.listRepaymentParts('m-claim'),
+    }));
+    release();
+    await held;
+    expect(await settled).toBe(true);
+    expect(await observed).toMatchObject({
+      claim: 'receipt-a',
+      parts: [{ partIndex: 0, units: 7n }],
+    });
+  });
+
+  it('uses one transaction-scoped Postgres advisory lock per message', async () => {
+    const sql = new MockSql();
+    sql.transaction = async (run) => run(sql);
+    const store = new PostgresMessageStore(sql);
+    const result = await store.withRepaymentLock('m1', 2, 'giver', async (locked) =>
+      locked === store ? 'same' : 'transaction',
+    );
+    expect(result).toBe('transaction');
+    expect(sql.queries[0]?.text).toMatch(/pg_advisory_xact_lock/);
+    expect(sql.queries[0]?.params).toEqual(['message:m1']);
+  });
+
   it('lists stored repayments and records a share once', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -11011,6 +11204,30 @@ describe('PostgresMessageStore', () => {
     });
   });
 
+  it('previews Postgres close cents per payer from each gift snapshot', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { account_id: 'giver-a', sats: '100', units: '100' },
+      { account_id: 'giver-b', sats: '100', units: '200' },
+      { account_id: 'giver-missing', sats: '100', units: '0' },
+    ];
+    const through = new Date('2026-11-11T12:00:00.000Z');
+    const preview = await new PostgresMessageStore(sql).previewCreditPayerSnapshot(
+      'credit',
+      'USD',
+      through,
+    );
+    expect(preview).toEqual([
+      { accountId: 'giver-a', sats: 100, units: 100n },
+      { accountId: 'giver-b', sats: 100, units: 200n },
+      { accountId: 'giver-missing', sats: 100, units: 0n },
+    ]);
+    expect(sql.queries[0]?.params).toEqual(['credit', 'USD', through]);
+    expect(sql.queries[0]?.text).toContain("WHEN 'USD' THEN i.fiat_usd");
+    expect(sql.queries[0]?.text).toContain('GROUP BY r.payer_account_id');
+    expect(sql.queries[0]?.text).not.toContain('goal_amount');
+  });
+
   it('ignores a gift that arrives after the credit has filled', async () => {
     const store = new InMemoryMessageStore();
     await store.create({
@@ -11030,6 +11247,126 @@ describe('PostgresMessageStore', () => {
       { accountId: 'giver', sats: 10, usd: null, chf: null, eur: null, php: null },
     ]);
     expect(await store.sumUnassignedCreditSats('filled')).toBe(0);
+  });
+
+  it('keeps an external zap gift recorded after close out of the repayment debt', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'closed',
+      goalSats: 100,
+      goalRepayable: true,
+      goalTermDays: 2,
+    });
+    const closed = await store.closeCredit('closed', new Date(0));
+    expect(closed?.fundedAt).toEqual(new Date(0));
+
+    expect(await store.recordZapReceipt('after-close', 'closed', 7, null)).toBe(true);
+    await store.updateZapReceiptGift('after-close', { payerAccountId: 'giver' });
+
+    expect((await store.getById('closed'))?.sats).toBe(7);
+    expect(await store.listCreditPayers('closed')).toEqual([]);
+    expect(await store.sumUnassignedCreditSats('closed')).toBe(0);
+  });
+
+  it('freezes only collected fiat cents on an early close, including missing snapshots', async () => {
+    for (const [id, delta, expected] of [
+      ['priced-close', { usd: '1.00', chf: null, eur: null, php: null }, '1.00'],
+      ['missing-close', null, '0.00'],
+    ] as const) {
+      const store = new InMemoryMessageStore();
+      await store.create({
+        ...EARLY,
+        id,
+        goalSats: 100,
+        goalCurrency: 'USD',
+        goalAmount: '10.00',
+        goalRepayable: true,
+        goalTermDays: 1,
+      });
+      await store.recordZapReceipt(`${id}-gift`, id, 10, delta);
+      await store.updateZapReceiptGift(`${id}-gift`, { payerAccountId: 'giver' });
+      await store.closeCredit(id, new Date('2099-01-01T00:00:00.000Z'));
+      expect(await store.listCreditPayers(id)).toEqual([
+        { accountId: 'giver', sats: 10, usd: expected, chf: null, eur: null, php: null },
+      ]);
+    }
+  });
+
+  it('freezes each giver at their own gift-time cents without redistributing missing cents', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'exact-close',
+      goalSats: 1_000,
+      goalCurrency: 'USD',
+      goalAmount: '9.00',
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    for (const [receiptId, accountId, usd] of [
+      ['gift-a', 'giver-a', '1.00'],
+      ['gift-b', 'giver-b', '2.00'],
+      ['gift-missing', 'giver-missing', null],
+    ] as const) {
+      await store.recordZapReceipt(
+        receiptId,
+        'exact-close',
+        100,
+        usd === null ? null : { usd, chf: null, eur: null, php: null },
+      );
+      await store.updateZapReceiptGift(receiptId, { payerAccountId: accountId });
+      await store.recordZapIngest({
+        id: `ingest-${receiptId}`,
+        createdAt: new Date('2026-11-11T10:00:00.000Z'),
+        receiptId,
+        noteEventId: null,
+        messageId: 'exact-close',
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 100,
+        amountUsd: usd,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+        receiptPubkey: null,
+        receipt: {},
+      });
+    }
+    await store.closeCredit('exact-close', new Date('2099-01-01T00:00:00.000Z'));
+    expect(await store.listCreditPayers('exact-close')).toEqual([
+      { accountId: 'giver-a', sats: 100, usd: '1.00', chf: null, eur: null, php: null },
+      { accountId: 'giver-b', sats: 100, usd: '2.00', chf: null, eur: null, php: null },
+      {
+        accountId: 'giver-missing',
+        sats: 100,
+        usd: '0.00',
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
+  });
+
+  it('marks debt frozen only for an early fiat close', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [
+      [{ goal_funded_at: null, goal_currency: 'BTC' }],
+      [
+        {
+          goal_funded_at: new Date('2026-11-11T12:00:00.000Z'),
+          goal_closed_at: new Date('2026-11-11T12:00:00.000Z'),
+        },
+      ],
+    ];
+    await new PostgresMessageStore(sql).closeCredit(
+      'btc-credit',
+      new Date('2026-11-11T12:00:00.000Z'),
+    );
+    const update = sql.queries.find((query) => query.text.includes('goal_debt_frozen'))?.text ?? '';
+    expect(update).toMatch(
+      /goal_funded_at IS NULL AND goal_currency IN \('USD','CHF','EUR','PHP'\)/,
+    );
   });
 
   it('listLoanLedger returns identified grants and repayments for payer and author', async () => {
@@ -11167,6 +11504,41 @@ describe('PostgresMessageStore', () => {
         }),
       ]),
     );
+  });
+
+  it('listLoanLedger counts a part-based share from its canonical part rows only', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'part-loan',
+      accountId: 'author',
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    const paidAt = new Date('2026-09-28T00:00:00.000Z');
+    await store.markRepaymentPartPaid({
+      messageId: 'part-loan',
+      dayIndex: 0,
+      recipientAccountId: 'payer',
+      partIndex: 0,
+      units: 10n,
+      sats: 7,
+      shareUnits: 10n,
+      paidAt,
+    });
+    // A legacy settlement arriving after a part must not create a second
+    // canonical source for the same share.
+    await store.markRepaymentPaid({
+      messageId: 'part-loan',
+      dayIndex: 0,
+      recipientAccountId: 'payer',
+      dueSats: 10,
+      paidAt,
+    });
+    expect(await store.listLoanLedger('payer')).toEqual([
+      expect.objectContaining({ kind: 'repayment', sats: 7, credit: true }),
+    ]);
   });
 
   it('listLoanLedger keeps an open note grant and skips unrelated accounts', async () => {
@@ -11520,6 +11892,8 @@ describe('PostgresMessageStore', () => {
     expect(text).toMatch(/payer_account_id IS NOT NULL/);
     expect(text).toMatch(/goal_funded_at IS NULL/);
     expect(text).toMatch(/recorded_at <= m.goal_funded_at/);
+    expect(text).not.toMatch(/recorded_at <= COALESCE\(m.goal_closed_at/);
+    expect(text).toMatch(/NOT EXISTS[\s\S]*message_repayment_part/);
     expect(text).toMatch(/message_repayment/);
     expect(text).toMatch(/due_sats/);
     expect(text).toContain('LEFT JOIN LATERAL');
@@ -13014,5 +13388,495 @@ describe('shop identity on message rows', () => {
     expect(sql.queries).toHaveLength(1);
     expect(await store.deleteById('m1')).toBe(true);
     expect(await store.deleteById('gone')).toBe(false);
+  });
+
+  it('freezes every supported fiat currency and previews the newest ingest values', async () => {
+    for (const currency of ['USD', 'CHF', 'EUR', 'PHP'] as const) {
+      const store = new InMemoryMessageStore();
+      const id = `credit-${currency}`;
+      await store.create({
+        ...EARLY,
+        id,
+        goalSats: 100,
+        goalCurrency: currency,
+        goalAmount: '1.00',
+        goalRepayable: true,
+        goalTermDays: 1,
+      });
+      await store.recordZapReceipt('receipt', id, 10, {
+        usd: '1.00',
+        chf: '2.00',
+        eur: '3.00',
+        php: '4.00',
+      });
+      await store.updateZapReceiptGift('receipt', { payerAccountId: 'giver' });
+      await store.closeCredit(id, new Date('2099-11-11T12:00:00.000Z'));
+      const [payer] = await store.listCreditPayers(id);
+      expect(payer?.[currency.toLowerCase() as 'usd' | 'chf' | 'eur' | 'php']).toBe(
+        currency === 'USD'
+          ? '1.00'
+          : currency === 'CHF'
+            ? '2.00'
+            : currency === 'EUR'
+              ? '3.00'
+              : '4.00',
+      );
+    }
+
+    const preview = new InMemoryMessageStore();
+    await preview.recordZapReceipt('preview-receipt', 'preview', 10, {
+      usd: '0.10',
+      chf: '0.20',
+      eur: '0.30',
+      php: '0.40',
+    });
+    await preview.updateZapReceiptGift('preview-receipt', { payerAccountId: 'giver' });
+    for (const [id, createdAt, amount] of [
+      ['ingest-old', new Date(1), '1.00'],
+      ['ingest-a', new Date(2), '2.00'],
+      ['ingest-z', new Date(2), '3.00'],
+    ] as const) {
+      await preview.recordZapIngest({
+        id,
+        createdAt,
+        receiptId: 'preview-receipt',
+        noteEventId: null,
+        messageId: 'preview',
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 10,
+        amountUsd: amount,
+        amountChf: amount,
+        amountEur: amount,
+        amountPhp: amount,
+        receiptPubkey: null,
+        receipt: {},
+      });
+    }
+    for (const currency of ['USD', 'CHF', 'EUR', 'PHP'] as const) {
+      expect(await preview.previewCreditPayerSnapshot('preview', currency)).toEqual([
+        { accountId: 'giver', sats: 10, units: 300n },
+      ]);
+    }
+  });
+
+  it('covers in-memory repayment conflict, duplicate, missing-note, and close guards', async () => {
+    const store = new InMemoryMessageStore();
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    await store.markRepaymentPaid({
+      messageId: 'legacy',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      dueSats: 10,
+      paidAt,
+    });
+    expect(
+      await store.markRepaymentPartPaid({
+        messageId: 'legacy',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 0,
+        units: 1n,
+        sats: 1,
+        shareUnits: 10n,
+        paidAt,
+      }),
+    ).toBeUndefined();
+
+    const part = {
+      messageId: 'missing-note',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      partIndex: 0,
+      units: 2n,
+      sats: 2,
+      shareUnits: 10n,
+      paidAt,
+    };
+    const first = await store.markRepaymentPartPaid(part);
+    const duplicate = await store.markRepaymentPartPaid({ ...part, paidAt: new Date(0) });
+    expect(duplicate).toEqual(first);
+    expect(duplicate?.paidAt).not.toBe(first?.paidAt);
+    expect(await store.listLoanLedger('giver')).toEqual([]);
+
+    await store.create({ ...EARLY, id: 'part-note', accountId: 'author' });
+    await store.markRepaymentPartPaid({ ...part, messageId: 'part-note', partIndex: 1 });
+    expect(await store.listLoanLedger('stranger')).toEqual([]);
+
+    expect(await store.closeCredit('missing', paidAt)).toBeUndefined();
+    await store.create({ ...EARLY, id: 'gift' });
+    expect(await store.closeCredit('gift', paidAt)).toBeUndefined();
+    await store.create({ ...EARLY, id: 'credit-no-term', goalRepayable: true });
+    expect(await store.closeCredit('credit-no-term', paidAt)).toBeUndefined();
+  });
+
+  it('sorts tied in-memory message invoice attempts by id', async () => {
+    const store = new InMemoryMessageStore();
+    const createdAt = new Date('2026-11-11T12:00:00.000Z');
+    const attempt = (id: string, at = createdAt): MessageInvoiceAttempt => ({
+      id,
+      createdAt: at,
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc',
+      paymentHash: null,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: false,
+      lnurlResponse: null,
+    });
+    await store.recordInvoiceAttempt(attempt('a'));
+    await store.recordInvoiceAttempt(attempt('z'));
+    await store.recordInvoiceAttempt(attempt('old', new Date(createdAt.getTime() - 1)));
+    expect((await store.listInvoiceAttemptsForMessage('m1')).map((row) => row.id)).toEqual([
+      'z',
+      'a',
+      'old',
+    ]);
+  });
+
+  it('maps Postgres frozen payer variants and an unbounded snapshot preview', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [
+      [
+        {
+          account_id: 'usd',
+          sats: '1',
+          usd: 'spot-usd',
+          chf: 'spot-chf',
+          eur: 'spot-eur',
+          php: 'spot-php',
+          debt_frozen: true,
+          goal_currency: 'USD',
+          snapshot_currency: null,
+          snapshot_units: null,
+        },
+        {
+          account_id: 'chf',
+          sats: 2,
+          usd: null,
+          chf: 'spot-chf',
+          eur: null,
+          php: null,
+          debt_frozen: 'f',
+          goal_currency: 'CHF',
+          snapshot_currency: 'CHF',
+          snapshot_units: '123',
+        },
+        {
+          account_id: 'eur',
+          sats: 3,
+          usd: null,
+          chf: null,
+          eur: 'spot-eur',
+          php: null,
+          debt_frozen: false,
+          goal_currency: 'EUR',
+          snapshot_currency: 'EUR',
+          snapshot_units: 234,
+        },
+        {
+          account_id: 'php',
+          sats: 4,
+          usd: null,
+          chf: null,
+          eur: null,
+          php: 'spot-php',
+          debt_frozen: false,
+          goal_currency: 'PHP',
+          snapshot_currency: 'PHP',
+          snapshot_units: 345,
+        },
+        {
+          account_id: 'spot',
+          sats: 5,
+          usd: 'spot-usd',
+          chf: 'spot-chf',
+          eur: 'spot-eur',
+          php: 'spot-php',
+          debt_frozen: false,
+          goal_currency: 'USD',
+          snapshot_currency: null,
+          snapshot_units: null,
+        },
+      ],
+      [{ account_id: 'giver', sats: '5', units: '6' }],
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.listCreditPayers('credit')).toEqual([
+      {
+        accountId: 'usd',
+        sats: 1,
+        usd: '0.00',
+        chf: 'spot-chf',
+        eur: 'spot-eur',
+        php: 'spot-php',
+      },
+      { accountId: 'chf', sats: 2, usd: null, chf: '1.23', eur: null, php: null },
+      { accountId: 'eur', sats: 3, usd: null, chf: null, eur: '2.34', php: null },
+      { accountId: 'php', sats: 4, usd: null, chf: null, eur: null, php: '3.45' },
+      {
+        accountId: 'spot',
+        sats: 5,
+        usd: 'spot-usd',
+        chf: 'spot-chf',
+        eur: 'spot-eur',
+        php: 'spot-php',
+      },
+    ]);
+    expect(await store.previewCreditPayerSnapshot('credit', 'PHP')).toEqual([
+      { accountId: 'giver', sats: 5, units: 6n },
+    ]);
+    expect(sql.queries[1]?.params).toEqual(['credit', 'PHP', null]);
+  });
+
+  it('lists and writes Postgres repayment parts, including idempotent fallbacks', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [
+      [
+        {
+          day_index: 0,
+          recipient_account_id: 'giver',
+          part_index: 1,
+          units: '2',
+          sats: '3',
+          paid_at: '2026-11-11T12:00:00.000Z',
+        },
+        {
+          day_index: 1,
+          recipient_account_id: 'giver',
+          part_index: 2,
+          units: 4,
+          sats: 5,
+          paid_at: new Date(6),
+        },
+      ],
+      [{ part_index: 3 }],
+      [],
+      [{ units: '7', sats: '8', paid_at: '2026-11-12T12:00:00.000Z' }],
+      [],
+      [],
+      [],
+      [{ units: 9, sats: 10, paid_at: new Date(11) }],
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.listRepaymentParts('m1')).toEqual([
+      {
+        messageId: 'm1',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 1,
+        units: 2n,
+        sats: 3,
+        paidAt: new Date('2026-11-11T12:00:00.000Z'),
+      },
+      {
+        messageId: 'm1',
+        dayIndex: 1,
+        recipientAccountId: 'giver',
+        partIndex: 2,
+        units: 4n,
+        sats: 5,
+        paidAt: new Date(6),
+      },
+    ]);
+    const row = {
+      messageId: 'm1',
+      dayIndex: 2,
+      recipientAccountId: 'giver',
+      partIndex: 3,
+      units: 6n,
+      sats: 7,
+      shareUnits: 10n,
+      paidAt: new Date(8),
+    };
+    expect(await store.markRepaymentPartPaid(row)).toEqual(row);
+    expect(sql.queries[1]?.params).toEqual(['m1', 2, 'giver', 3, '6', 7, new Date(8), '10']);
+    expect(await store.markRepaymentPartPaid(row)).toEqual({
+      messageId: 'm1',
+      dayIndex: 2,
+      recipientAccountId: 'giver',
+      partIndex: 3,
+      units: 7n,
+      sats: 8,
+      paidAt: new Date('2026-11-12T12:00:00.000Z'),
+    });
+    expect(await store.markRepaymentPartPaid({ ...row, partIndex: 4 })).toBeUndefined();
+    expect(await store.markRepaymentPartPaid({ ...row, partIndex: 5 })).toEqual({
+      messageId: 'm1',
+      dayIndex: 2,
+      recipientAccountId: 'giver',
+      partIndex: 5,
+      units: 9n,
+      sats: 10,
+      paidAt: new Date(11),
+    });
+  });
+
+  it('settles both Postgres repayment forms and leaves a foreign claim untouched', async () => {
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const legacySql = new MockSql();
+    legacySql.queryQueue = [[{ receipt_event_id: 'legacy-receipt' }]];
+    expect(
+      await new PostgresMessageStore(legacySql).settleRepaymentPayment(
+        'AA',
+        'legacy-receipt',
+        paidAt,
+        {
+          kind: 'legacy',
+          messageId: 'm1',
+          dayIndex: 0,
+          recipientAccountId: 'giver',
+          dueSats: 10,
+          paidAt,
+        },
+      ),
+    ).toBe(true);
+    expect(legacySql.executes[1]?.text).toMatch(/INSERT INTO message_repayment/);
+
+    const partSql = new MockSql();
+    partSql.queryQueue = [[{ receipt_event_id: 'part-receipt' }], [{ part_index: 0 }]];
+    expect(
+      await new PostgresMessageStore(partSql).settleRepaymentPayment('BB', 'part-receipt', paidAt, {
+        kind: 'part',
+        messageId: 'm2',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 0,
+        units: 4n,
+        sats: 4,
+        shareUnits: 10n,
+        paidAt,
+      }),
+    ).toBe(true);
+    expect(partSql.queries[1]?.text).toMatch(/message_repayment_part/);
+
+    const foreignSql = new MockSql();
+    foreignSql.queryQueue = [[{ receipt_event_id: 'someone-else' }]];
+    expect(
+      await new PostgresMessageStore(foreignSql).settleRepaymentPayment('CC', 'ours', paidAt, {
+        kind: 'legacy',
+        messageId: 'm3',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        dueSats: 1,
+        paidAt,
+      }),
+    ).toBe(false);
+    expect(foreignSql.executes).toHaveLength(1);
+  });
+
+  it('covers Postgres close misses, fiat snapshots, and timestamp mapping', async () => {
+    const missing = new MockSql();
+    missing.queryQueue = [[]];
+    expect(
+      await new PostgresMessageStore(missing).closeCredit('missing', new Date(1)),
+    ).toBeUndefined();
+
+    const fiat = new MockSql();
+    fiat.queryQueue = [
+      [{ goal_funded_at: null, goal_currency: 'CHF' }],
+      [{ account_id: 'giver', sats: '10', units: '123' }],
+      [
+        {
+          goal_funded_at: '2026-11-11T12:00:00.000Z',
+          goal_closed_at: new Date('2026-11-11T12:00:00.000Z'),
+        },
+      ],
+    ];
+    const closed = await new PostgresMessageStore(fiat).closeCredit('credit', new Date(2));
+    expect(closed).toEqual({
+      fundedAt: new Date('2026-11-11T12:00:00.000Z'),
+      closedAt: new Date('2026-11-11T12:00:00.000Z'),
+    });
+    expect(fiat.executes[0]?.params).toEqual(['credit', 'giver', 'CHF', '123']);
+
+    const raced = new MockSql();
+    raced.queryQueue = [[{ goal_funded_at: new Date(1), goal_currency: 'BTC' }], []];
+    expect(
+      await new PostgresMessageStore(raced).closeCredit('credit', new Date(2)),
+    ).toBeUndefined();
+
+    for (const currency of ['USD', 'EUR', 'PHP'] as const) {
+      const sql = new MockSql();
+      sql.queryQueue = [
+        [{ goal_funded_at: null, goal_currency: currency }],
+        [],
+        [
+          {
+            goal_funded_at: new Date(3),
+            goal_closed_at: '2026-11-12T12:00:00.000Z',
+          },
+        ],
+      ];
+      expect(await new PostgresMessageStore(sql).closeCredit('credit', new Date(3))).toEqual({
+        fundedAt: new Date(3),
+        closedAt: new Date('2026-11-12T12:00:00.000Z'),
+      });
+    }
+  });
+
+  it('maps Postgres closed-at strings and dates and lists attempts for one message', async () => {
+    const mappedSql = new MockSql();
+    mappedSql.nextRows = [
+      {
+        id: 'm1',
+        name: 'Ada',
+        text: 'closed',
+        created_at: new Date(0),
+        has_photo: false,
+        goal_closed_at: '2026-11-11T12:00:00.000Z',
+      },
+    ];
+    expect((await new PostgresMessageStore(mappedSql).getById('m1'))?.goalClosedAt).toEqual(
+      new Date('2026-11-11T12:00:00.000Z'),
+    );
+
+    const closedAt = new Date('2026-11-12T12:00:00.000Z');
+    const datedSql = new MockSql();
+    datedSql.nextRows = [
+      {
+        id: 'm2',
+        name: 'Bea',
+        text: 'already parsed',
+        created_at: new Date(0),
+        has_photo: false,
+        goal_closed_at: closedAt,
+      },
+    ];
+    expect((await new PostgresMessageStore(datedSql).getById('m2'))?.goalClosedAt).toBe(closedAt);
+
+    const attemptsSql = new MockSql();
+    attemptsSql.nextRows = [
+      {
+        id: 'invoice',
+        created_at: new Date(1),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'author',
+        amount_sats: '2',
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc',
+        payment_hash: null,
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: false,
+        lnurl_response: null,
+      },
+    ];
+    const attempts = await new PostgresMessageStore(attemptsSql).listInvoiceAttemptsForMessage(
+      'm1',
+    );
+    expect(attempts[0]?.amountSats).toBe(2);
+    expect(attemptsSql.queries[0]?.params).toEqual(['m1']);
   });
 });

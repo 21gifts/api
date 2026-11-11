@@ -195,6 +195,11 @@ export interface MessageRow {
    * Null until then, including on donations.
    */
   goalFundedAt?: Date | null;
+  /**
+   * When the author explicitly ended collecting on a repayable ask.
+   * Null until then; a close is final.
+   */
+  goalClosedAt?: Date | null;
   /** Canonical typed ask amount (dot decimal). Null when there is no currency ask. */
   goalAmount?: string | null;
   /** Gift-day USD snapshot of the frozen ask, or null. */

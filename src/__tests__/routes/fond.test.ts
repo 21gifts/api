@@ -1715,6 +1715,60 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'failed' });
   });
 
+  it('refuses a closed credit before minting either fond invoice', async () => {
+    const fetchImpl = vi.fn<FetchFn>(async () => {
+      throw new Error('LNURL must not be called');
+    });
+    const messages = new InMemoryMessageStore([
+      post({
+        accountId: 'ada',
+        hasVideo: true,
+        videoContentType: 'video/mp4',
+        goalSats: 1000,
+        goalRepayable: true,
+        goalTermDays: 2,
+        goalFundedAt: new Date('2026-11-08T10:00:00.000Z'),
+        goalClosedAt: new Date('2026-11-08T11:00:00.000Z'),
+      }),
+    ]);
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'ada',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 1,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 1,
+        note: null,
+      },
+    ]);
+    const { app, payouts } = await makeApp({
+      fetchImpl,
+      fundingStore,
+      messageStore: messages,
+      seedPlatform: true,
+      seedRecipient: true,
+      freePayments: true,
+    });
+    const actual = await vi.importActual<typeof import('@/routes/invoices')>('@/routes/invoices');
+    mockedIssue.mockImplementation(actual.issueGiftInvoice);
+    await payouts.enqueue(rowInput({ address: 'ada@gifts.test' }));
+
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'failed' });
+  });
+
   it('stores the issue refusal text and answers 409', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());

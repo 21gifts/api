@@ -1332,6 +1332,137 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.comment).toBe('gm');
   });
 
+  it('refuses a closed credit before the LNURL invoice is minted', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create(
+      {
+        id: POST_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'closed credit',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 1000,
+        goalRepayable: true,
+        goalTermDays: 2,
+        goalFundedAt: new Date('2026-08-02T00:00:00.000Z'),
+        goalClosedAt: new Date('2026-08-03T00:00:00.000Z'),
+      },
+      JPEG,
+    );
+    const invoiceStore = new InMemoryInvoiceStore();
+    const fetchImpl = vi.fn<FetchFn>(async () => {
+      throw new Error('LNURL must not be called');
+    });
+
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      invoiceStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: POST_ID,
+          comment: 'gm',
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('finishes minting and storing a note gift before a concurrent close completes', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create(
+      {
+        id: POST_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'collecting credit',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 1_000,
+        goalRepayable: true,
+        goalTermDays: 2,
+        goalFundedAt: null,
+      },
+      JPEG,
+    );
+    const invoiceStore = new InMemoryInvoiceStore();
+    let entered = (): void => undefined;
+    const mintStarted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release = (): void => undefined;
+    const mintGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return jsonResponse({
+          callback: 'https://example.test/lnurlp/alice/invoice',
+          minSendable: 1000,
+          maxSendable: MAX_SENDABLE,
+          commentAllowed: 255,
+        });
+      }
+      entered();
+      await mintGate;
+      return jsonResponse({ pr: PR });
+    };
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      invoiceStore,
+      fetchImpl,
+    });
+    const issue = app.request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: POST_ID,
+        }),
+      }),
+    );
+    await mintStarted;
+    let closeFinished = false;
+    const close = messageStore
+      .closeCredit(POST_ID, new Date('2026-11-11T12:00:00.000Z'))
+      .then((result) => {
+        closeFinished = true;
+        return result;
+      });
+    await Promise.resolve();
+    expect(closeFinished).toBe(false);
+    release();
+    const issued = await issue;
+    expect(issued.status).toBe(200);
+    const body = (await issued.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
+    expect((await close)?.closedAt).toEqual(new Date('2026-11-11T12:00:00.000Z'));
+  });
+
   it('stores an empty comment when messageId is set and comment is omitted', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
