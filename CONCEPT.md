@@ -859,7 +859,7 @@ DNS, and reverse-proxy routing.
 
 ## Hosting & Operations
 
-Three environments per service. Staging is the environment for experimental testing. A change that is good there is released to `develop` first. `main` receives changes only from `develop`. Staging is never released directly to `main`. Feature pull requests of app and api target `develop`, never `main` or `staging`; no pull request targets `staging` at present.
+Three environments per service. Staging is the environment for experimental testing. A change that is good there is released to `develop` first. `main` receives changes only from `develop`. Staging is never released directly to `main`. Feature pull requests of app and api target `develop`, never `main` or `staging`; no pull request targets `staging` at present. Opening pull requests against `staging` again (and how experimental changes reach it) is a product-owner decision that updates this section first.
 
 | Service | Env     | Source branch | Image tag  | Public URL             |
 | ------- | ------- | ------------- | ---------- | ---------------------- |
