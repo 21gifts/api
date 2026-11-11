@@ -1222,7 +1222,9 @@ local sections and then re-reads:
    and `budget` when no request could be sent.
 7. For a charge, none kept → stop and start the 60 s no-pair wait. For a
    pending charge, the pay link stays pinned and
-   `POST /pay/:username/payment` answers order 4. Order 7 applies during the
+   `POST /pay/:username/payment` answers order 4 only if the insert transaction
+   reaches its pending-charge check; its earlier 16 s or client-abort exit
+   answers order 9. Order 7 applies during the
    wait only when no charge is pending. For a payer, none kept is not an
    error: the payment is already open Lightning-only, and the offers fill
    inserts no second quote.

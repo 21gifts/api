@@ -596,8 +596,10 @@ under the creation lock. The lock covers those local checks and the insert. For
 a charge, the route list, mint, and quotes run outside it. The payer's creation
 skips the route list and quotes; its offers fill runs them after the insert, in
 the background. No Orchestra call is awaited while the lock is held. Order 7
-runs only there, once per creation. `IpRateLimiter.allow` records every call it
-allows. The api-wide counter is asked first, and the account counter only when
+runs only there, once per creation. `IpRateLimiter.allow` records every allowed
+call with a non-null key. The shop creation counters call it with `'api'` and the
+account id, so every creation they allow is recorded.
+The api-wide counter is asked first, and the account counter only when
 it allows, so a refusal by the account counter leaves one extra hit on the
 api-wide counter at most. A store failure during creation logs `pay.failed`;
 the page cannot tell whether a payment opened, so it repeats the request after
@@ -693,7 +695,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    creation in this container waits 60 s; the other container of a deploy
    keeps its own wait, so during a deploy an account can see two creations
    in 60 s. While the charge stays pending, the pay link stays pinned and
-   `POST /pay/:username/payment` answers order 4. Order 7 applies during the
+   `POST /pay/:username/payment` answers order 4 only if the insert transaction
+   reaches its pending-charge check; its earlier 16 s or client-abort exit
+   answers order 9. Order 7 applies during the
    wait only when no charge is pending. Order 9 is only a
    `findChargeForPayment` error, an insert at 16 s or later, or a disconnected
    client. For a payer, no committed pair is not an error: the payment is
