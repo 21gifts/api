@@ -105,12 +105,14 @@ export interface WalletStore {
    * @param accountId - Reporting account id.
    * @param limit - Maximum rows.
    * @param after - Optional keyset position; only rows strictly after it are returned.
+   * @param status - Restrict to one stored status. Omitted lists every status.
    * @returns Caller-owned payment rows.
    */
   listPayments(
     accountId: string,
     limit: number,
     after?: WalletPaymentCursor,
+    status?: WalletPaymentStatus,
   ): Promise<WalletPaymentRecord[]>;
 }
 
@@ -416,17 +418,20 @@ export class InMemoryWalletStore implements WalletStore {
    * @param accountId - Reporting account id.
    * @param limit - Maximum rows.
    * @param after - Optional keyset position after the last row of the previous page.
+   * @param status - Restrict to one stored status. Omitted lists every status.
    * @returns Sorted payment copies.
    */
   listPayments(
     accountId: string,
     limit: number,
     after?: WalletPaymentCursor,
+    status?: WalletPaymentStatus,
   ): Promise<WalletPaymentRecord[]> {
     return Promise.resolve(
       [...this.#payments.values()]
         .map((entry) => entry.row)
         .filter((row) => row.accountId === accountId)
+        .filter((row) => status === undefined || row.status === status)
         .filter(
           (row) =>
             after === undefined ||
@@ -789,12 +794,14 @@ GROUP BY direction`,
    * @param accountId - Reporting account id (`$1`).
    * @param limit - Maximum rows (`$2`).
    * @param after - Optional keyset position after the last row of the previous page.
+   * @param status - Restrict to one stored status. Omitted lists every status.
    * @returns Mapped payment rows.
    */
   async listPayments(
     accountId: string,
     limit: number,
     after?: WalletPaymentCursor,
+    status?: WalletPaymentStatus,
   ): Promise<WalletPaymentRecord[]> {
     const keyset =
       after === undefined
@@ -804,10 +811,14 @@ GROUP BY direction`,
     if (after !== undefined) {
       params.push(after.paidAt, after.paymentId);
     }
+    const statusFilter = status === undefined ? '' : ` AND status = $${params.length + 1}`;
+    if (status !== undefined) {
+      params.push(status);
+    }
     const rows = await this.sql.query<WalletPaymentSqlRow>(
       `SELECT ${PAYMENT_COLUMNS}
 FROM wallet_payment
-WHERE account_id = $1${keyset}
+WHERE account_id = $1${keyset}${statusFilter}
 ORDER BY paid_at DESC, payment_id COLLATE "C" DESC
 LIMIT $2`,
       params,

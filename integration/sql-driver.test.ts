@@ -3341,6 +3341,85 @@ describe('PostgresWalletStore', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('lists completed payments with an exclusive (paidAt, paymentId) keyset', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateWalletSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const accountId = crypto.randomUUID();
+      const otherId = crypto.randomUUID();
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      for (const [id, username] of [
+        [accountId, `payments_${accountId.slice(0, 8)}`],
+        [otherId, `payments_${otherId.slice(0, 8)}`],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+
+      const store = new PostgresWalletStore(client);
+      const paidAt = new Date('2026-11-11T13:31:01.000Z');
+      const row = (
+        account: string,
+        paymentId: string,
+        status: 'pending' | 'completed',
+      ): WalletPaymentRecord => ({
+        accountId: account,
+        paymentId,
+        direction: 'in',
+        status,
+        amountSats: 1,
+        feeSats: 0,
+        paidAt,
+        method: 'spark',
+        paymentHash: null,
+        invoice: null,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'unknown',
+        counterpartyAccountId: null,
+        firstSeenAt: paidAt,
+        updatedAt: paidAt,
+      });
+      const completedIds = Array.from(
+        { length: 51 },
+        (_, index) => `p-${String(index).padStart(2, '0')}`,
+      );
+      await store.upsertPayments([
+        ...completedIds.map((id) => row(accountId, id, 'completed')),
+        row(accountId, 'pending', 'pending'),
+        row(otherId, 'other', 'completed'),
+      ]);
+
+      const first = await store.listPayments(accountId, 51, undefined, 'completed');
+      expect(first.map((item) => item.paymentId)).toEqual([...completedIds].reverse());
+      const second = await store.listPayments(
+        accountId,
+        51,
+        { paidAt, paymentId: 'p-01' },
+        'completed',
+      );
+      expect(second.map((item) => item.paymentId)).toEqual(['p-00']);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 describe('PostgresFondPayoutStore', () => {

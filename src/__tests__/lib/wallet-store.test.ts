@@ -312,6 +312,42 @@ describe('InMemoryWalletStore', () => {
     ).resolves.toEqual([]);
   });
 
+  it('filters by status and applies an exclusive (paidAt, paymentId) keyset', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([
+      payment({ paymentId: 'A', status: 'completed', paidAt: T1 }),
+      payment({ paymentId: 'B', status: 'pending', paidAt: T1 }),
+      payment({ paymentId: 'C', status: 'completed', paidAt: T1 }),
+      payment({ paymentId: 'D', status: 'completed', paidAt: T2 }),
+      payment({ accountId: 'other', paymentId: 'E', status: 'completed', paidAt: T1 }),
+    ]);
+    expect(
+      (await store.listPayments('account', 10, undefined, 'completed')).map(
+        (row) => row.paymentId,
+      ),
+    ).toEqual(['D', 'C', 'A']);
+    expect(
+      (
+        await store.listPayments(
+          'account',
+          10,
+          { paidAt: T1, paymentId: 'C' },
+          'completed',
+        )
+      ).map((row) => row.paymentId),
+    ).toEqual(['A']);
+    expect(
+      (
+        await store.listPayments('account', 10, { paidAt: T1, paymentId: 'B' })
+      ).map((row) => row.paymentId),
+    ).toEqual(['A']);
+    expect(
+      (
+        await store.listPayments('account', 10, { paidAt: T2, paymentId: 'D' })
+      ).map((row) => row.paymentId),
+    ).toEqual(['C', 'B', 'A']);
+  });
+
   it('advances the staleness watermark on a no-op re-send, so an older different report is ignored', async () => {
     const t0 = new Date('2026-10-01T00:00:00.000Z');
     const t1 = new Date('2026-10-01T00:00:01.000Z');
@@ -784,6 +820,22 @@ describe('PostgresWalletStore', () => {
     await store.listPayments('account', 20);
     expect(sql.queries[1]?.text).not.toContain('paid_at <');
     expect(sql.queries[1]?.params).toEqual(['account', 20]);
+  });
+
+  it('adds status and keyset predicates with bound Postgres parameters', async () => {
+    const sql = new MockSql();
+    const paidAt = new Date('2026-10-02T00:00:00.000Z');
+    const store = new PostgresWalletStore(sql);
+    await store.listPayments('account', 51, { paidAt, paymentId: 'p' }, 'completed');
+    expect(sql.queries[0]?.text).toContain(
+      'AND (paid_at < $3 OR (paid_at = $3 AND payment_id COLLATE "C" < $4))',
+    );
+    expect(sql.queries[0]?.text).toContain('status = $5');
+    expect(sql.queries[0]?.params).toEqual(['account', 51, paidAt, 'p', 'completed']);
+    await store.listPayments('account', 51, undefined, 'completed');
+    expect(sql.queries[1]?.text).not.toContain('paid_at <');
+    expect(sql.queries[1]?.text).toContain('status = $3');
+    expect(sql.queries[1]?.params).toEqual(['account', 51, 'completed']);
   });
 
   it('never binds secret-shaped optional values after the real report parser filters them', async () => {

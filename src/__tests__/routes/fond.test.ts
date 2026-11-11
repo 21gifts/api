@@ -1009,6 +1009,346 @@ describe('GET /fond/summary', () => {
   });
 });
 
+describe('GET /fond/payments', () => {
+  const ALICE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const PLATFORM = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const MISSING = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const NO_USERNAME = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+  const PAID_A = new Date('2026-11-11T13:31:01.000Z');
+  const PAID_B = new Date('2026-11-11T13:30:01.000Z');
+  const PAID_C = new Date('2026-11-11T13:29:01.000Z');
+  const PAID_D = new Date('2026-11-11T13:28:01.000Z');
+
+  async function counterparty(
+    auth: InMemoryAuthStore,
+    id: string,
+    username: string | null,
+    name: string | null,
+    isPlatform = false,
+  ): Promise<void> {
+    await auth.createAccount({
+      id,
+      linkingKey: null,
+      role: 'verified',
+      name,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: id.replaceAll('-', '').slice(0, 64).padEnd(64, '0'),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      username,
+      ...(isPlatform ? { isPlatform: true } : {}),
+    });
+  }
+
+  async function seedFondPayments(
+    auth: InMemoryAuthStore,
+    walletStore: WalletStore,
+  ): Promise<void> {
+    await counterparty(auth, ALICE, 'alice', 'Alice');
+    await counterparty(auth, PLATFORM, 'platform', '21.gifts', true);
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'newest',
+        direction: 'in',
+        status: 'completed',
+        amountSats: 1_000,
+        feeSats: 0,
+        paidAt: PAID_A,
+        counterpartyAccountId: ALICE,
+      }),
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'older',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 21,
+        feeSats: 2,
+        paidAt: PAID_B,
+        counterpartyAccountId: PLATFORM,
+      }),
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'pending',
+        direction: 'in',
+        status: 'pending',
+        amountSats: 9_999,
+        paidAt: new Date('2026-11-11T14:00:00.000Z'),
+      }),
+    ]);
+  }
+
+  it('returns 404 with no-store unless PAYOUT_SIGNER is fond', async () => {
+    const { app } = await makeApp({ signer: 'spend' });
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(404);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns an empty page for a missing Fond account without reading payments', async () => {
+    const { app, walletStore } = await makeApp({ seedFond: false });
+    const list = vi.spyOn(walletStore, 'listPayments');
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ payments: [], next: null });
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('returns an empty page when the Fond username account cannot sign payouts', async () => {
+    const { app, auth, walletStore } = await makeApp({ seedFond: false });
+    await fondAccount(auth, { role: 'basis' });
+    const list = vi.spyOn(walletStore, 'listPayments');
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ payments: [], next: null });
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('lists completed payments newest first with known, null, platform, and missing counterparties', async () => {
+    const { app, auth, walletStore } = await makeApp();
+    await seedFondPayments(auth, walletStore);
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'missing',
+        status: 'completed',
+        amountSats: 3,
+        paidAt: PAID_C,
+        counterpartyAccountId: MISSING,
+      }),
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'private',
+        status: 'completed',
+        amountSats: 4,
+        paidAt: PAID_D,
+        counterpartyAccountId: null,
+      }),
+    ]);
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({
+      payments: [
+        {
+          id: expect.stringMatching(/^[0-9a-f]{16}$/),
+          direction: 'in',
+          amountSats: 1_000,
+          feeSats: 0,
+          paidAt: PAID_A.toISOString(),
+          counterparty: { accountId: ALICE, username: 'alice', name: 'Alice' },
+        },
+        {
+          id: expect.stringMatching(/^[0-9a-f]{16}$/),
+          direction: 'out',
+          amountSats: 21,
+          feeSats: 2,
+          paidAt: PAID_B.toISOString(),
+          counterparty: null,
+        },
+        {
+          id: expect.stringMatching(/^[0-9a-f]{16}$/),
+          direction: 'in',
+          amountSats: 3,
+          feeSats: 0,
+          paidAt: PAID_C.toISOString(),
+          counterparty: null,
+        },
+        {
+          id: expect.stringMatching(/^[0-9a-f]{16}$/),
+          direction: 'in',
+          amountSats: 4,
+          feeSats: 0,
+          paidAt: PAID_D.toISOString(),
+          counterparty: null,
+        },
+      ],
+      next: null,
+    });
+  });
+
+  it('returns a null counterparty username when the account has no username', async () => {
+    const { app, auth, walletStore } = await makeApp();
+    await counterparty(auth, NO_USERNAME, null, 'No Username');
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'no-username',
+        status: 'completed',
+        amountSats: 5,
+        paidAt: PAID_A,
+        counterpartyAccountId: NO_USERNAME,
+      }),
+    ]);
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      payments: [
+        {
+          id: expect.stringMatching(/^[0-9a-f]{16}$/),
+          direction: 'in',
+          amountSats: 5,
+          feeSats: 0,
+          paidAt: PAID_A.toISOString(),
+          counterparty: { accountId: NO_USERNAME, username: null, name: 'No Username' },
+        },
+      ],
+      next: null,
+    });
+  });
+
+  it('returns an opaque id that does not expose the stored payment id', async () => {
+    const { app, walletStore } = await makeApp();
+    await walletStore.upsertPayments([walletPayment({ accountId: 'fond-account' })]);
+    const res = await app.request('/fond/payments');
+    const body = (await res.json()) as { payments: Array<{ id: string }> };
+    expect(body.payments[0]?.id).toMatch(/^[0-9a-f]{16}$/);
+    expect(body.payments[0]?.id).not.toContain('p');
+  });
+
+  it('returns a next cursor for a full page and follows it without duplicates', async () => {
+    const { app, walletStore } = await makeApp();
+    const rows = Array.from({ length: 51 }, (_, index) =>
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: `p-${String(index).padStart(2, '0')}`,
+        status: 'completed',
+        amountSats: index,
+        paidAt: new Date(NOW - index * 1_000),
+      }),
+    );
+    await walletStore.upsertPayments(rows);
+    const first = await app.request('/fond/payments');
+    const firstBody = (await first.json()) as {
+      payments: Array<{ id: string }>;
+      next: string | null;
+    };
+    expect(firstBody.payments).toHaveLength(50);
+    expect(firstBody.next).toEqual(expect.any(String));
+    const second = await app.request(`/fond/payments?before=${firstBody.next}`);
+    const secondBody = (await second.json()) as {
+      payments: Array<{ id: string }>;
+      next: string | null;
+    };
+    expect(second.status).toBe(200);
+    expect(secondBody.payments).toHaveLength(1);
+    expect(secondBody.next).toBeNull();
+    expect(secondBody.payments[0]?.id).not.toBe(firstBody.payments[0]?.id);
+  });
+
+  it('uses (paidAt, paymentId) as an exclusive keyset with UTF-8 tie order', async () => {
+    const { app, walletStore } = await makeApp();
+    const ids = ['B', 'a', '\u{10000}', ...Array.from({ length: 48 }, (_, i) => `p-${i}`)];
+    await walletStore.upsertPayments(
+      ids.map((paymentId) =>
+        walletPayment({ accountId: 'fond-account', paymentId, paidAt: PAID_A }),
+      ),
+    );
+    const first = await app.request('/fond/payments');
+    const firstBody = (await first.json()) as {
+      payments: Array<{ id: string }>;
+      next: string | null;
+    };
+    expect(firstBody.payments).toHaveLength(50);
+    expect(firstBody.next).not.toBeNull();
+    const second = await app.request(`/fond/payments?before=${firstBody.next}`);
+    const secondBody = (await second.json()) as { payments: Array<{ id: string }> };
+    expect(second.status).toBe(200);
+    expect(secondBody.payments).toHaveLength(1);
+    expect(new Set([...firstBody.payments, ...secondBody.payments].map((row) => row.id)).size).toBe(
+      51,
+    );
+  });
+
+  it.each([
+    ['not-base64', '%%%'],
+    ['non-canonical base64url', 'AB'],
+    ['canonical mismatch', Buffer.from('{}', 'utf8').toString('base64url') + '='],
+    ['not JSON', Buffer.from('{', 'utf8').toString('base64url')],
+    ['array', Buffer.from('[]', 'utf8').toString('base64url')],
+    ['wrong keys', Buffer.from('{"a":"b"}', 'utf8').toString('base64url')],
+    [
+      'missing key',
+      Buffer.from(JSON.stringify({ paidAt: PAID_A.toISOString(), extra: 'x' }), 'utf8').toString(
+        'base64url',
+      ),
+    ],
+    [
+      'non-string time',
+      Buffer.from(JSON.stringify({ paidAt: 1, paymentId: 'p' }), 'utf8').toString('base64url'),
+    ],
+    [
+      'non-ISO time',
+      Buffer.from(
+        JSON.stringify({ paidAt: '2026-11-11T13:31:01.000X', paymentId: 'p' }),
+        'utf8',
+      ).toString('base64url'),
+    ],
+    [
+      'non-string payment id',
+      Buffer.from(JSON.stringify({ paidAt: PAID_A.toISOString(), paymentId: 1 }), 'utf8').toString(
+        'base64url',
+      ),
+    ],
+    [
+      'empty payment id',
+      Buffer.from(JSON.stringify({ paidAt: PAID_A.toISOString(), paymentId: '' }), 'utf8').toString(
+        'base64url',
+      ),
+    ],
+    [
+      'long payment id',
+      Buffer.from(
+        JSON.stringify({ paidAt: PAID_A.toISOString(), paymentId: 'p'.repeat(257) }),
+        'utf8',
+      ).toString('base64url'),
+    ],
+  ])('returns 400 Invalid cursor for %s', async (_name, before) => {
+    const { app, walletStore } = await makeApp();
+    const list = vi.spyOn(walletStore, 'listPayments');
+    const res = await app.request(`/fond/payments?before=${encodeURIComponent(before)}`);
+    expect(res.status).toBe(400);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ error: 'Invalid cursor' });
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 and logs when the account lookup throws', async () => {
+    const events = captureEvents();
+    const { app, auth } = await makeApp();
+    vi.spyOn(auth, 'getAccountByUsername').mockRejectedValue(new Error('down'));
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ error: 'Fond payments are unavailable' });
+    expect(events).toEqual(['fond.payments.failed']);
+  });
+
+  it('returns 503 and logs when the payment list throws', async () => {
+    const events = captureEvents();
+    const { app, walletStore } = await makeApp();
+    vi.spyOn(walletStore, 'listPayments').mockRejectedValue(new Error('down'));
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Fond payments are unavailable' });
+    expect(events).toEqual(['fond.payments.failed']);
+  });
+
+  it('returns 503 and logs when the counterparty lookup throws', async () => {
+    const events = captureEvents();
+    const { app, auth, walletStore } = await makeApp();
+    await seedFondPayments(auth, walletStore);
+    vi.spyOn(auth, 'getAccounts').mockRejectedValue(new Error('down'));
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Fond payments are unavailable' });
+    expect(events).toEqual(['fond.payments.failed']);
+  });
+});
+
 describe('POST /fond/payouts/:id/invoice', () => {
   it('returns 503 when the row cannot be read', async () => {
     const { app, payouts } = await makeApp();

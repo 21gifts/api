@@ -1796,6 +1796,13 @@ test('GET /fond/summary is 404 when PAYOUT_SIGNER is unset', async ({ request })
   expect(res.headers()['cache-control']).toBe('no-store');
 });
 
+test('GET /fond/payments is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
+  const res = await request.get('/fond/payments');
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+  expect(res.headers()['cache-control']).toBe('no-store');
+});
+
 test('GET /fond/payouts is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
   const res = await request.get('/fond/payouts');
   expect(res.status()).toBe(404);

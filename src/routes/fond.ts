@@ -4,8 +4,8 @@
  *
  * `GET /health` is public and unauthenticated. It reports whether queued
  * payouts are being paid. `GET /summary` is public and reads the Fond
- * account's completed wallet totals, latest balance snapshot, and paid
- * payouts. The other routes are the member session of the single `fond`
+ * account's completed wallet totals, latest balance snapshot, paid payouts,
+ * and completed payment list. The other routes are the member session of the single `fond`
  * account that pays the queued instructions from its own in-app wallet. The
  * API decides every payout in the ping path. Those routes only request the
  * recipient invoice and convert the stored USD amount at the current spot.
@@ -13,6 +13,7 @@
  * payment hashes, BOLT11, or Spark invoices.
  */
 
+import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { canSignFondPayouts } from '@/lib/auth/roles';
@@ -31,7 +32,11 @@ import { addUtcDays } from '@/lib/member-habit';
 import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import { normalizeUuid } from '@/lib/uuid';
-import type { WalletStore } from '@/lib/wallet-store';
+import type {
+  WalletPaymentCursor,
+  WalletPaymentRecord,
+  WalletStore,
+} from '@/lib/wallet-store';
 import { bearerToken } from '@/routes/me';
 import {
   issueGiftInvoice,
@@ -89,11 +94,140 @@ export const FOND_ONLY = 'Fond only';
 /** `503` body when a payout store read or transition throws. */
 const PAYOUTS_UNAVAILABLE = 'Payouts are unavailable';
 
-/** `Cache-Control` for the public Fond probe and summary. Neither may be cached. */
+/** `Cache-Control` for the public Fond probe, summary, and payment list. */
 const FOND_NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
 /** `503` body when the Fond summary reads throw or a sat sum is not safely representable. */
 const SUMMARY_UNAVAILABLE = 'Fond summary is unavailable';
+
+/** `503` body when the Fond payment list or its counterparty lookup throws. */
+const PAYMENTS_UNAVAILABLE = 'Fond payments are unavailable';
+
+/** Completed payments in one `GET /fond/payments` page. */
+const PAYMENTS_PAGE_SIZE = 50;
+
+/** Canonical unpadded base64url text. */
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+
+/** Largest stored wallet payment id (same bound as the wallet report parser). */
+const PAYMENT_ID_MAX_LENGTH = 256;
+
+/** Known account on the other side of a Fond payment. */
+interface FondPaymentCounterparty {
+  accountId: string;
+  username: string | null;
+  name: string | null;
+}
+
+/** One public `GET /fond/payments` row. */
+interface FondPaymentListRow {
+  id: string;
+  direction: 'in' | 'out';
+  amountSats: number;
+  feeSats: number;
+  paidAt: string;
+  counterparty: FondPaymentCounterparty | null;
+}
+
+/**
+ * Encode the last row of a page as an opaque cursor.
+ *
+ * @param row - Last returned payment.
+ * @returns Canonical unpadded base64url JSON `{ paidAt, paymentId }`.
+ */
+function encodeFondPaymentsCursor(row: WalletPaymentRecord): string {
+  return Buffer.from(
+    JSON.stringify({ paidAt: row.paidAt.toISOString(), paymentId: row.paymentId }),
+    'utf8',
+  ).toString('base64url');
+}
+
+/**
+ * Decode a `before` cursor, rejecting malformed text and non-canonical payloads.
+ *
+ * @param raw - `before` query value, or `undefined` when omitted.
+ * @returns The exclusive cursor, `null` for the first page, or `false` when invalid.
+ */
+function decodeFondPaymentsCursor(raw: string | undefined): WalletPaymentCursor | null | false {
+  if (raw === undefined) {
+    return null;
+  }
+  if (!BASE64URL_RE.test(raw)) {
+    return false;
+  }
+  const decoded = Buffer.from(raw, 'base64url');
+  if (decoded.toString('base64url') !== raw) {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decoded.toString('utf8'));
+  } catch {
+    return false;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return false;
+  }
+  if (
+    Object.keys(parsed).length !== 2 ||
+    !Object.hasOwn(parsed, 'paidAt') ||
+    !Object.hasOwn(parsed, 'paymentId')
+  ) {
+    return false;
+  }
+  const record = parsed as Record<string, unknown>;
+  const paidAtText = record['paidAt'];
+  const paymentId = record['paymentId'];
+  if (
+    typeof paidAtText !== 'string' ||
+    paidAtText.length !== 24 ||
+    typeof paymentId !== 'string' ||
+    paymentId.length < 1 ||
+    paymentId.length > PAYMENT_ID_MAX_LENGTH
+  ) {
+    return false;
+  }
+  const paidAt = new Date(paidAtText);
+  if (Number.isNaN(paidAt.getTime()) || paidAt.toISOString() !== paidAtText) {
+    return false;
+  }
+  return { paidAt, paymentId };
+}
+
+/**
+ * Stable public React key for a wallet payment without exposing its stored id.
+ *
+ * @param paymentId - Stored wallet payment id.
+ * @returns First 16 lowercase hex characters of its SHA-256 digest.
+ */
+function publicPaymentId(paymentId: string): string {
+  return createHash('sha256').update(paymentId, 'utf8').digest('hex').slice(0, 16);
+}
+
+/**
+ * Project a stored payment to the public Fond list row.
+ *
+ * @param row - Completed stored payment.
+ * @param counterparties - Known non-platform accounts by id.
+ * @returns Only the public id, direction, amounts, time, and counterparty.
+ */
+function publicPaymentRow(
+  row: WalletPaymentRecord,
+  counterparties: ReadonlyMap<string, FondPaymentCounterparty>,
+): FondPaymentListRow {
+  const counterparty =
+    row.counterpartyAccountId === null
+      ? null
+      : (counterparties.get(row.counterpartyAccountId) ?? null);
+  return {
+    id: publicPaymentId(row.paymentId),
+    direction: row.direction,
+    amountSats: row.amountSats,
+    feeSats: row.feeSats,
+    paidAt: row.paidAt.toISOString(),
+    counterparty,
+  };
+}
 
 /** Convert a non-negative bigint sat total to a JSON-safe number. */
 function safeSats(value: bigint): number {
@@ -274,8 +408,8 @@ async function payoutSparkInvoice(
 /**
  * Build the `/fond` route group.
  *
- * `GET /health` and `GET /summary` are public and do not read a session. The
- * other routes are the fond payer's session routes.
+ * `GET /health`, `GET /summary`, and `GET /payments` are public and do not
+ * read a session. The other routes are the fond payer's session routes.
  *
  * @param deps - Auth, queue, wallet, switch, username, clock, fetch, LNURL
  *   config, free-payment switch, and the extracted issue collaborators.
@@ -365,6 +499,61 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       } catch {
         logEvent('fond.summary.failed');
         return c.json({ error: SUMMARY_UNAVAILABLE }, 503, FOND_NO_STORE);
+      }
+    })
+    .get('/payments', async (c) => {
+      if (deps.payoutSigner !== 'fond') {
+        return c.json({ error: 'Not found' }, 404, FOND_NO_STORE);
+      }
+      const decodedBefore = decodeFondPaymentsCursor(c.req.query('before'));
+      if (decodedBefore === false) {
+        return c.json({ error: 'Invalid cursor' }, 400, FOND_NO_STORE);
+      }
+      const before: WalletPaymentCursor | undefined = decodedBefore ?? undefined;
+      try {
+        const account = await deps.authStore.getAccountByUsername(deps.fondUsername);
+        if (account === undefined || !canSignFondPayouts(account, deps.fondUsername)) {
+          return c.json({ payments: [], next: null }, 200, FOND_NO_STORE);
+        }
+        const rows = await deps.walletStore.listPayments(
+          account.id,
+          PAYMENTS_PAGE_SIZE + 1,
+          before,
+          'completed',
+        );
+        const hasMore = rows.length > PAYMENTS_PAGE_SIZE;
+        const page = rows.slice(0, PAYMENTS_PAGE_SIZE);
+        const counterpartyIds = [
+          ...new Set(
+            page.map((row) => row.counterpartyAccountId).filter((id): id is string => id !== null),
+          ),
+        ];
+        const counterparties = new Map<string, FondPaymentCounterparty>();
+        if (counterpartyIds.length > 0) {
+          for (const account of await deps.authStore.getAccounts(counterpartyIds)) {
+            if (account.isPlatform !== true) {
+              counterparties.set(account.id, {
+                accountId: account.id,
+                username: account.username ?? null,
+                name: account.name,
+              });
+            }
+          }
+        }
+        const next = hasMore
+          ? encodeFondPaymentsCursor(page[page.length - 1] as WalletPaymentRecord)
+          : null;
+        return c.json(
+          {
+            payments: page.map((row) => publicPaymentRow(row, counterparties)),
+            next,
+          },
+          200,
+          FOND_NO_STORE,
+        );
+      } catch {
+        logEvent('fond.payments.failed');
+        return c.json({ error: PAYMENTS_UNAVAILABLE }, 503, FOND_NO_STORE);
       }
     })
     .get('/payouts', async (c) => {
