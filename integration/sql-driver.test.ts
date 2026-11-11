@@ -3064,7 +3064,7 @@ describe('PostgresWalletStore', () => {
           linkingKey: null,
           role: 'basis',
           name: null,
-          username: `wallet_daily_${Date.now()}_${index}_${crypto.randomUUID().slice(0, 8)}`,
+          username: `wd${index}${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`,
           location: null,
           forumLawsDismissed: false,
           viewKey: hex64(),
