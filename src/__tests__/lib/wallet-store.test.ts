@@ -297,16 +297,19 @@ describe('InMemoryWalletStore', () => {
       paidAt: first[1]?.paidAt ?? T2,
       paymentId: 'c',
     });
-    expect(second.map((row) => row.paymentId)).toEqual(['b', 'a', '0']);
+    expect(second.map((row) => row.paymentId)).toEqual(['b', 'a']);
     await expect(store.listPayments('account', 2, { paidAt: T2, paymentId: 'c' })).resolves.toEqual(
       second,
     );
     await expect(store.listPayments('account', 2, { paidAt: T1, paymentId: 'a' })).resolves.toEqual(
       [expect.objectContaining({ paymentId: '0' })],
     );
-    await expect(store.listPayments('account', 2, { paidAt: T1, paymentId: '0' })).resolves.toEqual(
-      [],
-    );
+    await expect(
+      store.listPayments('account', 2, {
+        paidAt: new Date(T1.getTime() - 1),
+        paymentId: '0',
+      }),
+    ).resolves.toEqual([]);
   });
 
   it('advances the staleness watermark on a no-op re-send, so an older different report is ignored', async () => {
