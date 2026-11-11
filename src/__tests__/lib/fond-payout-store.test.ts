@@ -158,7 +158,7 @@ describe('InMemoryFondPayoutStore', () => {
     ]);
   });
 
-  it('formats paid USD amounts with exactly two decimals', async () => {
+  it('returns paid USD amounts as stored', async () => {
     const store = new InMemoryFondPayoutStore(() => NOW);
     for (const [id, amountUsd] of [
       ['one', '1'],
@@ -184,10 +184,29 @@ describe('InMemoryFondPayoutStore', () => {
       ),
     ).resolves.toEqual(
       new Map([
-        ['one'.padEnd(64, '0'), '1.00'],
-        ['two-and-a-half'.padEnd(64, '0'), '2.50'],
+        ['one'.padEnd(64, '0'), '1'],
+        ['two-and-a-half'.padEnd(64, '0'), '2.5'],
         ['three'.padEnd(64, '0'), '3.00'],
       ]),
+    );
+  });
+
+  it('omits a paid row whose stored USD amount is invalid', async () => {
+    const store = new InMemoryFondPayoutStore(() => NOW);
+    const paymentHash = 'cc'.repeat(32);
+    await store.enqueue(enqueue({ id: 'bad-amount', amountUsd: '1.000' }));
+    await store.claimForInvoice('bad-amount', '2026-11-09');
+    await store.setInvoiced('bad-amount', {
+      invoiceId: 'inv-bad',
+      paymentHash,
+      bolt11: 'lnbc-bad',
+      sparkInvoice: null,
+      amountMsat: 1_000_000,
+    });
+    await store.claimSettlement('bad-amount');
+    await store.markPaid('bad-amount');
+    await expect(store.paidUsdByPaymentHashOrInvoice([paymentHash], [])).resolves.toEqual(
+      new Map(),
     );
   });
 
@@ -478,6 +497,12 @@ describe('PostgresFondPayoutStore', () => {
           amount_usd: '2.5',
         },
         {
+          payment_hash: 'invalid',
+          spark_invoice: null,
+          bolt11: null,
+          amount_usd: '1.000',
+        },
+        {
           payment_hash: null,
           spark_invoice: 'spark-open',
           bolt11: 'lnbc-open',
@@ -493,13 +518,16 @@ describe('PostgresFondPayoutStore', () => {
     ];
     const store = new PostgresFondPayoutStore(sql);
     await expect(
-      store.paidUsdByPaymentHashOrInvoice(['aa', 'bb', 'cc'], ['spark-b', 'lnbc-a', 'unknown']),
+      store.paidUsdByPaymentHashOrInvoice(
+        ['aa', 'bb', 'cc', 'invalid'],
+        ['spark-b', 'lnbc-a', 'unknown'],
+      ),
     ).resolves.toEqual(
       new Map([
-        ['aa', '1.00'],
-        ['lnbc-a', '1.00'],
-        ['bb', '2.50'],
-        ['spark-b', '2.50'],
+        ['aa', '1'],
+        ['lnbc-a', '1'],
+        ['bb', '2.5'],
+        ['spark-b', '2.5'],
       ]),
     );
     expect(sql.queries[0]?.text).toContain(
@@ -508,7 +536,10 @@ describe('PostgresFondPayoutStore', () => {
     expect(sql.queries[0]?.text).toContain(
       'SELECT payment_hash, spark_invoice, bolt11, amount_usd',
     );
-    expect(sql.queries[0]?.params).toEqual(['{"aa","bb","cc"}', '{"spark-b","lnbc-a","unknown"}']);
+    expect(sql.queries[0]?.params).toEqual([
+      '{"aa","bb","cc","invalid"}',
+      '{"spark-b","lnbc-a","unknown"}',
+    ]);
     await expect(store.paidUsdByPaymentHashOrInvoice([], [])).resolves.toEqual(new Map());
     expect(sql.queries).toHaveLength(1);
   });

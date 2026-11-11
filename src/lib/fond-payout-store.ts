@@ -143,8 +143,9 @@ export interface FondPayoutStore {
    *
    * @param hashes - Wallet payment hashes of one page.
    * @param invoices - Wallet invoices of one page, matched against `spark_invoice` or `bolt11`.
-   * @returns Two-decimal `amount_usd` by every requested hash or invoice of each matched paid
-   *   row; an empty map without a read when both inputs are empty.
+   * @returns The stored `amount_usd` string by every requested hash or invoice of each matched
+   *   paid row, or no entry when the stored amount is not a valid non-negative USD amount with at
+   *   most two decimals; an empty map without a read when both inputs are empty.
    */
   paidUsdByPaymentHashOrInvoice(hashes: string[], invoices: string[]): Promise<Map<string, string>>;
 
@@ -334,6 +335,11 @@ function storedUsdCents(amountUsd: string): bigint {
   return cents;
 }
 
+/** The stored USD text when it is a valid non-negative amount with at most two decimals. */
+function storedUsdAmount(amountUsd: string): string | null {
+  return /^(0|[1-9]\d*)(\.\d{1,2})?$/.test(amountUsd) ? amountUsd : null;
+}
+
 /** Process-local {@link FondPayoutStore}; starts empty. */
 export class InMemoryFondPayoutStore implements FondPayoutStore {
   readonly #rows = new Map<string, FondPayoutRow>();
@@ -401,8 +407,9 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
    *
    * @param hashes - Wallet payment hashes of one page.
    * @param invoices - Wallet invoices of one page.
-   * @returns Two-decimal `amountUsd` by every requested hash or invoice of each matched paid row.
-   * @throws When a matched paid row stores an amount that is not a decimal USD string.
+   * @returns The stored `amountUsd` string by every requested hash or invoice of each matched
+   *   paid row, or no entry when the stored amount is not a valid non-negative USD amount with at
+   *   most two decimals.
    */
   async paidUsdByPaymentHashOrInvoice(
     hashes: string[],
@@ -430,7 +437,10 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       if (matchedKeys.length === 0) {
         continue;
       }
-      const amountUsd = formatCents(storedUsdCents(row.amountUsd));
+      const amountUsd = storedUsdAmount(row.amountUsd);
+      if (amountUsd === null) {
+        continue;
+      }
       for (const key of matchedKeys) {
         paid.set(key, amountUsd);
       }
@@ -837,10 +847,10 @@ WHERE status = 'paid'`,
    *
    * @param hashes - Wallet payment hashes of one page.
    * @param invoices - Wallet invoices of one page.
-   * @returns Two-decimal `amount_usd` by every requested hash or invoice of each matched paid
-   *   row; an empty map without a query when both inputs are empty.
-   * @throws When a matched paid row stores an amount that is not a decimal USD string, or a SQL
-   *   failure.
+   * @returns The stored `amount_usd` string by every requested hash or invoice of each matched
+   *   paid row, or no entry when the stored amount is not a valid non-negative USD amount with at
+   *   most two decimals; an empty map without a query when both inputs are empty.
+   * @throws Propagates SQL failures.
    */
   async paidUsdByPaymentHashOrInvoice(
     hashes: string[],
@@ -859,7 +869,10 @@ WHERE status = 'paid' AND (payment_hash = ANY($1::text[]) OR spark_invoice = ANY
       [postgresTextArrayLiteral(hashes), postgresTextArrayLiteral(invoices)],
     );
     for (const row of rows) {
-      const amountUsd = formatCents(storedUsdCents(row.amount_usd));
+      const amountUsd = storedUsdAmount(row.amount_usd);
+      if (amountUsd === null) {
+        continue;
+      }
       if (row.payment_hash !== null && wantedHashes.has(row.payment_hash)) {
         paid.set(row.payment_hash, amountUsd);
       }

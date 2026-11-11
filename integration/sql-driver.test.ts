@@ -3539,11 +3539,14 @@ describe('PostgresFondPayoutStore paid USD by payment hash or invoice', () => {
       const stamp = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
       const hashA = `a${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
       const hashB = `b${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const hashInvalid = `i${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
       const hashOpen = `c${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
       const sparkA = `spark1a_${stamp}`;
       const sparkB = `spark1b_${stamp}`;
+      const sparkInvalid = `spark1invalid_${stamp}`;
       const boltA = `lnbc1a_${stamp}`;
       const boltB = `lnbc1b_${stamp}`;
+      const boltInvalid = `lnbc1invalid_${stamp}`;
       const sparkOpen = `spark1open_${stamp}`;
       const boltOpen = `lnbc1open_${stamp}`;
       const paid = async (
@@ -3577,6 +3580,7 @@ describe('PostgresFondPayoutStore paid USD by payment hash or invoice', () => {
       };
       await paid('a', '1', hashA, boltA, sparkA);
       await paid('b', '2.5', hashB, boltB, sparkB);
+      await paid('invalid', '1.000', hashInvalid, boltInvalid, sparkInvalid);
       const open: FondPayoutEnqueue = {
         id: crypto.randomUUID(),
         utcDay: '2099-01-01',
@@ -3601,17 +3605,20 @@ describe('PostgresFondPayoutStore paid USD by payment hash or invoice', () => {
         [
           hashA,
           hashB,
+          hashInvalid,
           hashOpen,
           `d${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0'),
           hashA,
         ],
-        [sparkA, boltB, sparkOpen, boltOpen, 'unknown-invoice'],
+        [sparkA, boltB, sparkInvalid, sparkOpen, boltOpen, 'unknown-invoice'],
       );
       expect(found.size).toBe(4);
-      expect(found.get(hashA)).toBe('1.00');
-      expect(found.get(hashB)).toBe('2.50');
-      expect(found.get(sparkA)).toBe('1.00');
-      expect(found.get(boltB)).toBe('2.50');
+      expect(found.get(hashA)).toBe('1');
+      expect(found.get(hashB)).toBe('2.5');
+      expect(found.get(sparkA)).toBe('1');
+      expect(found.get(boltB)).toBe('2.5');
+      expect(found.has(hashInvalid)).toBe(false);
+      expect(found.has(sparkInvalid)).toBe(false);
       expect(found.has(hashOpen)).toBe(false);
       expect(found.has(sparkOpen)).toBe(false);
       expect(found.has(boltOpen)).toBe(false);

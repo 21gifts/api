@@ -1018,6 +1018,7 @@ describe('GET /fond/payments', () => {
   const PAID_B = new Date('2026-11-11T13:30:01.000Z');
   const PAID_C = new Date('2026-11-11T13:29:01.000Z');
   const PAID_D = new Date('2026-11-11T13:28:01.000Z');
+  const PAID_E = new Date('2026-11-11T13:27:01.000Z');
 
   async function counterparty(
     auth: InMemoryAuthStore,
@@ -1299,18 +1300,21 @@ describe('GET /fond/payments', () => {
       payments: Array<{ id: string; storedFiat: unknown }>;
     };
     expect(body.payments.map((row) => row.storedFiat)).toEqual([
-      { currency: 'USD', amount: '1.00' },
-      { currency: 'USD', amount: '2.50' },
+      { currency: 'USD', amount: '1' },
+      { currency: 'USD', amount: '2.5' },
     ]);
     expect(body.payments[0]).not.toHaveProperty('invoice');
   });
 
-  it('leaves storedFiat null for unmatched, incoming, hashless, and unpaid rows', async () => {
+  it('leaves storedFiat null for unmatched, incoming, hashless, unpaid, and invalid rows', async () => {
+    const events = captureEvents();
     const { app, payouts, walletStore } = await makeApp();
     const matchedHash = 'bb'.repeat(32);
     const unmatchedHash = 'cc'.repeat(32);
     const invoicedHash = 'dd'.repeat(32);
+    const invalidHash = 'ee'.repeat(32);
     await paidPayout(payouts, 'paid-out', matchedHash, '2.50');
+    await paidPayout(payouts, 'invalid-out', invalidHash, '1.000');
     await payouts.enqueue(rowInput({ id: 'invoiced', address: 'invoiced@example.com' }));
     await payouts.claimForInvoice('invoiced', TODAY);
     await payouts.setInvoiced('invoiced', {
@@ -1353,19 +1357,28 @@ describe('GET /fond/payments', () => {
         paidAt: PAID_D,
         paymentHash: null,
       }),
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'invalid-payout',
+        direction: 'out',
+        status: 'completed',
+        paidAt: PAID_E,
+        paymentHash: invalidHash,
+      }),
     ]);
     const lookup = vi.spyOn(payouts, 'paidUsdByPaymentHashOrInvoice');
     const res = await app.request('/fond/payments');
     expect(res.status).toBe(200);
     expect(lookup).toHaveBeenCalledTimes(1);
-    expect(lookup).toHaveBeenCalledWith([unmatchedHash, invoicedHash], []);
+    expect(lookup).toHaveBeenCalledWith([unmatchedHash, invoicedHash, invalidHash], []);
     const body = (await res.json()) as {
       payments: Array<{ direction: string; storedFiat: unknown }>;
     };
-    expect(body.payments).toHaveLength(4);
+    expect(body.payments).toHaveLength(5);
     for (const row of body.payments) {
       expect(row.storedFiat).toBeNull();
     }
+    expect(events).toEqual([]);
   });
 
   it('skips the paid payout read when the page has no outgoing hash or invoice', async () => {
