@@ -1,42 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import type { WebSocketLike } from '@/lib/nostr/publish';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FakeSocket, FakeSocketFactory } from '@/__tests__/helpers/fake-relay-socket';
+import { WebsocketNostrPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, WebsocketNostrQuerier } from '@/lib/nostr/query';
-
-/** In-memory WebSocket stub (no network). */
-class FakeSocket implements WebSocketLike {
-  readonly sent: string[] = [];
-  closed = false;
-  private readonly listeners = new Map<string, Array<(event: { data?: unknown }) => void>>();
-  throwOnSend = false;
-  throwOnClose = false;
-
-  addEventListener(type: string, listener: (event: { data?: unknown }) => void): void {
-    const list = this.listeners.get(type) ?? [];
-    list.push(listener);
-    this.listeners.set(type, list);
-  }
-
-  send(data: string): void {
-    if (this.throwOnSend) {
-      throw new Error('send failed');
-    }
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.throwOnClose) {
-      throw new Error('close failed');
-    }
-    this.closed = true;
-    this.emit('close', {});
-  }
-
-  emit(type: string, event: { data?: unknown } = {}): void {
-    for (const listener of this.listeners.get(type) ?? []) {
-      listener(event);
-    }
-  }
-}
+import { NostrRelayPool } from '@/lib/nostr/relay-pool';
 
 describe('RecordingQuerier', () => {
   it('records calls and returns event copies', async () => {
@@ -60,50 +26,91 @@ describe('RecordingQuerier', () => {
 });
 
 describe('WebsocketNostrQuerier', () => {
-  let originalWebSocket: typeof globalThis.WebSocket | undefined;
+  let factory: FakeSocketFactory;
+  let pool: NostrRelayPool;
+
+  beforeEach(() => {
+    factory = new FakeSocketFactory();
+    pool = new NostrRelayPool({ createSocket: factory.create });
+  });
 
   afterEach(() => {
-    if (originalWebSocket !== undefined) {
-      globalThis.WebSocket = originalWebSocket;
-      originalWebSocket = undefined;
-    }
+    pool.close();
   });
 
-  it('returns [] for empty urls', async () => {
-    const querier = new WebsocketNostrQuerier(() => new FakeSocket());
+  it('returns [] for a filter that cannot be serialized, without opening a socket', async () => {
+    const querier = new WebsocketNostrQuerier(pool);
+    await expect(
+      querier.query({ kinds: [1], since: 1n }, ['wss://a', 'wss://b'], 20),
+    ).resolves.toEqual([]);
+    expect(factory.sockets).toHaveLength(0);
+  });
+
+  describe('deadline counted from the call across relays', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A filter whose serialization takes `ms` of (fake) time. */
+    const slowFilter = (ms: number): Record<string, unknown> => ({
+      toJSON: () => {
+        vi.advanceTimersByTime(ms);
+        return { kinds: [1] };
+      },
+    });
+
+    it('gives the second relay only the time left after the first serialized', async () => {
+      const querier = new WebsocketNostrQuerier(pool);
+      const calls = vi.spyOn(pool, 'query');
+      const pending = querier.query(slowFilter(400), ['wss://a', 'wss://b'], 1_000);
+      expect(calls.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+        ['wss://a', 1_000],
+        ['wss://b', 600],
+      ]);
+      expect(factory.sockets).toHaveLength(2);
+      vi.advanceTimersByTime(1_000);
+      await expect(pending).resolves.toEqual([]);
+    });
+
+    it('skips the pool for a relay reached with no time left', async () => {
+      const querier = new WebsocketNostrQuerier(pool);
+      const calls = vi.spyOn(pool, 'query');
+      await expect(
+        querier.query(slowFilter(1_000), ['wss://a', 'wss://b'], 1_000),
+      ).resolves.toEqual([]);
+      expect(calls).toHaveBeenCalledTimes(1);
+      expect(factory.sockets).toHaveLength(0);
+    });
+  });
+
+  it('returns [] for empty urls without opening a socket', async () => {
+    const querier = new WebsocketNostrQuerier(pool);
     await expect(querier.query({ kinds: [1] }, [], 20)).resolves.toEqual([]);
+    expect(factory.sockets).toHaveLength(0);
   });
 
-  it('sends REQ, collects EVENT object payloads, CLOSEs on EOSE, and closes', async () => {
-    const socket = new FakeSocket();
-    const querier = new WebsocketNostrQuerier(() => socket);
+  it('sends REQ, collects EVENT object payloads, CLOSEs on EOSE, and keeps the socket', async () => {
+    const querier = new WebsocketNostrQuerier(pool);
     const filter = { kinds: [9735], '#e': ['note1'], limit: 200 };
     const pending = querier.query(filter, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      const req = JSON.parse(socket.sent[0]!) as unknown[];
-      expect(req[0]).toBe('REQ');
-      const subId = req[1] as string;
-      expect(req[2]).toEqual(filter);
-      socket.emit('message', {
-        data: JSON.stringify([
-          'EVENT',
-          subId,
-          {
-            id: 'evt1',
-            pubkey: 'pk1',
-            kind: 9735,
-            tags: [['e', 'note1']],
-            content: 'hello',
-            created_at: 1_700_000_000,
-            sig: 'ab'.repeat(32),
-          },
-        ]),
-      });
-      socket.emit('message', { data: JSON.stringify(['EOSE', subId]) });
+    const socket = factory.last();
+    socket.emit('open');
+    expect(socket.frames()[0]).toEqual(['REQ', socket.subId(), filter]);
+    socket.frame('EVENT', socket.subId(), {
+      id: 'evt1',
+      pubkey: 'pk1',
+      kind: 9735,
+      tags: [['e', 'note1']],
+      content: 'hello',
+      created_at: 1_700_000_000,
+      sig: 'ab'.repeat(32),
     });
-    const events = await pending;
-    expect(events).toEqual([
+    socket.frame('EOSE', socket.subId());
+    await expect(pending).resolves.toEqual([
       {
         id: 'evt1',
         pubkey: 'pk1',
@@ -114,209 +121,122 @@ describe('WebsocketNostrQuerier', () => {
         sig: 'ab'.repeat(32),
       },
     ]);
-    expect(socket.sent.some((frame) => frame.startsWith('["CLOSE"'))).toBe(true);
-    expect(socket.closed).toBe(true);
+    expect(socket.frames()).toContainEqual(['CLOSE', socket.subId()]);
+    expect(socket.closed).toBe(false);
   });
 
-  it('times out with no EOSE', async () => {
-    const socket = new FakeSocket();
-    const querier = new WebsocketNostrQuerier(() => socket);
-    const pending = querier.query({ kinds: [1] }, ['wss://a'], 20);
-    queueMicrotask(() => {
-      socket.emit('open');
-    });
-    await expect(pending).resolves.toEqual([]);
-    expect(socket.closed).toBe(true);
-  });
-
-  it('contributes [] when the factory throws', async () => {
-    const querier = new WebsocketNostrQuerier(() => {
-      throw new Error('no socket');
-    });
-    await expect(querier.query({ kinds: [1] }, ['wss://a'], 20)).resolves.toEqual([]);
-  });
-
-  it('returns [] on socket error', async () => {
-    const socket = new FakeSocket();
-    const querier = new WebsocketNostrQuerier(() => socket);
-    const pending = querier.query({ kinds: [1] }, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('error');
-    });
-    await expect(pending).resolves.toEqual([]);
-  });
-
-  it('returns [] on socket close before EOSE', async () => {
-    const socket = new FakeSocket();
-    const querier = new WebsocketNostrQuerier(() => socket);
-    const pending = querier.query({ kinds: [1] }, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      socket.emit('close');
-    });
-    await expect(pending).resolves.toEqual([]);
-  });
-
-  it('returns [] when send throws on open', async () => {
-    const socket = new FakeSocket();
-    socket.throwOnSend = true;
-    const querier = new WebsocketNostrQuerier(() => socket);
-    const pending = querier.query({ kinds: [1] }, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-    });
-    await expect(pending).resolves.toEqual([]);
-  });
-
-  it('settles when CLOSE send and close throw after EOSE', async () => {
-    const socket = new FakeSocket();
-    socket.throwOnClose = true;
-    let sendCount = 0;
-    const originalSend = socket.send.bind(socket);
-    socket.send = (data: string): void => {
-      sendCount += 1;
-      if (sendCount > 1) {
-        throw new Error('CLOSE failed');
+  it('runs 20 queries and 20 publishes of one querier and one publisher over a single socket', async () => {
+    const querier = new WebsocketNostrQuerier(pool);
+    const publisher = new WebsocketNostrPublisher(pool);
+    for (let i = 0; i < 20; i += 1) {
+      const pending = querier.query({ kinds: [1], limit: i }, ['wss://a'], 100);
+      const socket = factory.last();
+      if (i === 0) {
+        socket.emit('open');
       }
-      originalSend(data);
-    };
-    const querier = new WebsocketNostrQuerier(() => socket);
-    const pending = querier.query({ kinds: [1] }, ['wss://a'], 100);
-    queueMicrotask(() => {
+      socket.frame('EVENT', socket.subId(i), { id: `e${i}`, pubkey: 'pk', kind: 1, tags: [] });
+      socket.frame('EOSE', socket.subId(i));
+      await expect(pending).resolves.toHaveLength(1);
+      const acks = publisher.publish({ id: `p${i}`, kind: 1 }, ['wss://a'], 100);
+      socket.frame('OK', `p${i}`, true);
+      await expect(acks).resolves.toEqual([{ url: 'wss://a', ok: true }]);
+    }
+    expect(factory.sockets).toHaveLength(1);
+  });
+
+  it('returns the events delivered before a timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const querier = new WebsocketNostrQuerier(pool);
+      const pending = querier.query({ kinds: [1] }, ['wss://a'], 20);
+      const socket = factory.last();
       socket.emit('open');
-      const req = JSON.parse(socket.sent[0]!) as unknown[];
-      const subId = req[1] as string;
-      socket.emit('message', { data: JSON.stringify(['EOSE', subId]) });
-    });
+      socket.frame('EVENT', socket.subId(), { id: 'e', pubkey: 'p', kind: 1, tags: [] });
+      vi.advanceTimersByTime(20);
+      await expect(pending).resolves.toEqual([{ id: 'e', pubkey: 'p', kind: 1, tags: [] }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('contributes [] when the socket cannot be opened', async () => {
+    factory.throwNext = true;
+    const querier = new WebsocketNostrQuerier(pool);
+    await expect(querier.query({ kinds: [1] }, ['wss://a'], 100)).resolves.toEqual([]);
+  });
+
+  it('returns [] when the socket drops before EOSE', async () => {
+    const querier = new WebsocketNostrQuerier(pool);
+    const pending = querier.query({ kinds: [1] }, ['wss://a'], 100);
+    factory.last().emit('open');
+    factory.last().emit('close');
     await expect(pending).resolves.toEqual([]);
   });
 
-  it('ignores malformed frames and non-object EVENT payloads', async () => {
-    const socket = new FakeSocket();
-    const querier = new WebsocketNostrQuerier(() => socket);
+  it('ignores malformed EVENT payloads', async () => {
+    const querier = new WebsocketNostrQuerier(pool);
     const pending = querier.query({ kinds: [9735] }, ['wss://a'], 100);
-    queueMicrotask(() => {
-      socket.emit('open');
-      const req = JSON.parse(socket.sent[0]!) as unknown[];
-      const subId = req[1] as string;
-      socket.emit('message', { data: 42 });
-      socket.emit('message', { data: 'not-json{' });
-      socket.emit('message', { data: JSON.stringify(['NOTICE', 'hi']) });
-      socket.emit('message', { data: JSON.stringify(['EVENT']) });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', 'other-sub', { id: 'x', pubkey: 'y', kind: 1, tags: [] }]),
-      });
-      socket.emit('message', { data: JSON.stringify(['EVENT', subId, 'string-payload']) });
-      socket.emit('message', { data: JSON.stringify(['EVENT', subId, [1, 2]]) });
-      socket.emit('message', { data: JSON.stringify(['EVENT', subId, null]) });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: 1, pubkey: 'pk', kind: 1, tags: [] }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: 'id', pubkey: 2, kind: 1, tags: [] }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { pubkey: 'pk', kind: 1, tags: [] }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: 'id', pubkey: 'pk', kind: 1 }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: '', pubkey: 'pk', kind: 1, tags: [] }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: 'id', pubkey: '', kind: 1, tags: [] }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: 'id', pubkey: 'pk', kind: '1', tags: [] }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: 'id', pubkey: 'pk', kind: 1, tags: 'no' }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify([
-          'EVENT',
-          subId,
-          { id: 'id', pubkey: 'pk', kind: 1, tags: ['not-array'] },
-        ]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: 'id', pubkey: 'pk', kind: 1, tags: [[1]] }]),
-      });
-      socket.emit('message', {
-        data: JSON.stringify([
-          'EVENT',
-          subId,
-          {
-            id: 'good',
-            pubkey: 'pk',
-            kind: 9735,
-            tags: [['e', 'note']],
-            content: 123,
-          },
-        ]),
-      });
-      socket.emit('message', { data: JSON.stringify(['EOSE', subId]) });
-    });
-    const events = await pending;
-    expect(events).toEqual([
-      {
-        id: 'good',
-        pubkey: 'pk',
-        kind: 9735,
-        tags: [['e', 'note']],
-      },
+    const socket = factory.last();
+    socket.emit('open');
+    const subId = socket.subId();
+    for (const payload of [
+      'string-payload',
+      [1, 2],
+      null,
+      { id: 1, pubkey: 'pk', kind: 1, tags: [] },
+      { id: 'id', pubkey: 2, kind: 1, tags: [] },
+      { pubkey: 'pk', kind: 1, tags: [] },
+      { id: 'id', pubkey: 'pk', kind: 1 },
+      { id: '', pubkey: 'pk', kind: 1, tags: [] },
+      { id: 'id', pubkey: '', kind: 1, tags: [] },
+      { id: 'id', pubkey: 'pk', kind: '1', tags: [] },
+      { id: 'id', pubkey: 'pk', kind: 1, tags: 'no' },
+      { id: 'id', pubkey: 'pk', kind: 1, tags: ['not-array'] },
+      { id: 'id', pubkey: 'pk', kind: 1, tags: [[1]] },
+      { id: 'good', pubkey: 'pk', kind: 9735, tags: [['e', 'note']], content: 123, sig: '' },
+    ]) {
+      socket.frame('EVENT', subId, payload);
+    }
+    socket.frame('EOSE', subId);
+    await expect(pending).resolves.toEqual([
+      { id: 'good', pubkey: 'pk', kind: 9735, tags: [['e', 'note']] },
     ]);
   });
 
-  it('concatenates multiple URLs and dedups by id', async () => {
-    const a = new FakeSocket();
-    const b = new FakeSocket();
-    const sockets = [a, b];
-    let i = 0;
-    const querier = new WebsocketNostrQuerier(() => sockets[i++]!);
+  it('concatenates multiple URLs and dedups by id; the first URL wins', async () => {
+    const querier = new WebsocketNostrQuerier(pool);
     const pending = querier.query({ kinds: [1] }, ['wss://a', 'wss://b'], 100);
-    queueMicrotask(() => {
-      a.emit('open');
-      b.emit('open');
-      const subA = (JSON.parse(a.sent[0]!) as unknown[])[1] as string;
-      const subB = (JSON.parse(b.sent[0]!) as unknown[])[1] as string;
-      const shared = { id: 'same', pubkey: 'pk', kind: 1, tags: [] as string[][] };
-      a.emit('message', { data: JSON.stringify(['EVENT', subA, shared]) });
-      b.emit('message', {
-        data: JSON.stringify(['EVENT', subB, { ...shared, pubkey: 'other' }]),
-      });
-      b.emit('message', {
-        data: JSON.stringify(['EVENT', subB, { id: 'other', pubkey: 'pk2', kind: 1, tags: [] }]),
-      });
-      a.emit('message', { data: JSON.stringify(['EOSE', subA]) });
-      b.emit('message', { data: JSON.stringify(['EOSE', subB]) });
-    });
+    const [a, b] = factory.sockets as [FakeSocket, FakeSocket];
+    a.emit('open');
+    b.emit('open');
+    const shared = { id: 'same', pubkey: 'pk', kind: 1, tags: [] as string[][] };
+    b.frame('EVENT', b.subId(), { ...shared, pubkey: 'other' });
+    a.frame('EVENT', a.subId(), shared);
+    b.frame('EVENT', b.subId(), { id: 'other', pubkey: 'pk2', kind: 1, tags: [] });
+    a.frame('EOSE', a.subId());
+    b.frame('EOSE', b.subId());
     const events = await pending;
-    expect(events).toHaveLength(2);
     expect(events.map((e) => e.id).sort()).toEqual(['other', 'same']);
     expect(events.find((e) => e.id === 'same')?.pubkey).toBe('pk');
   });
 
-  it('uses the default WebSocket factory when constructed with no args', async () => {
-    originalWebSocket = globalThis.WebSocket;
+  it('uses the shared process pool when constructed with no args', async () => {
+    const originalWebSocket = globalThis.WebSocket;
     const socket = new FakeSocket();
     globalThis.WebSocket = class {
       constructor(_url: string) {
         return socket;
       }
     } as unknown as typeof WebSocket;
-
-    const querier = new WebsocketNostrQuerier();
-    const pending = querier.query({ kinds: [1] }, ['wss://default'], 100);
-    queueMicrotask(() => {
+    try {
+      const querier = new WebsocketNostrQuerier();
+      const pending = querier.query({ kinds: [1] }, ['wss://default'], 100);
       socket.emit('open');
-      const subId = (JSON.parse(socket.sent[0]!) as unknown[])[1] as string;
-      socket.emit('message', {
-        data: JSON.stringify(['EVENT', subId, { id: 'e', pubkey: 'p', kind: 1, tags: [] }]),
-      });
-      socket.emit('message', { data: JSON.stringify(['EOSE', subId]) });
-    });
-    await expect(pending).resolves.toEqual([{ id: 'e', pubkey: 'p', kind: 1, tags: [] }]);
+      socket.frame('EVENT', socket.subId(), { id: 'e', pubkey: 'p', kind: 1, tags: [] });
+      socket.frame('EOSE', socket.subId());
+      await expect(pending).resolves.toEqual([{ id: 'e', pubkey: 'p', kind: 1, tags: [] }]);
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+    }
   });
 });

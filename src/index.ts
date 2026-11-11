@@ -18,6 +18,7 @@ import type { SqlClient } from './lib/auth/sql';
 import { logPoolOptions } from './lib/sql-pool';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
+import { sharedNostrRelayPool } from './lib/nostr/relay-pool';
 import { PostRateLimiter, REPLY_POST_CAPS } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import {
@@ -151,7 +152,9 @@ if (import.meta.main) {
   // BTC_USD_CANDLES_URL and FRANKFURTER_RATES_URL are optional — resolvers
   // inside openBootStores fall back to Coinbase / Frankfurter ECB; unset
   // does not fail boot.
-  const querier = new WebsocketNostrQuerier();
+  // One long-lived socket per relay URL for every query and publish of this process.
+  const relayPool = sharedNostrRelayPool();
+  const querier = new WebsocketNostrQuerier(relayPool);
   const bootFx = {
     nostrQuerier: querier,
     zapRelayUrls: resolveZapRelays(process.env),
@@ -227,7 +230,7 @@ if (import.meta.main) {
   }
   const publisher =
     nostrKek !== undefined && messageStore !== undefined
-      ? new WebsocketNostrPublisher()
+      ? new WebsocketNostrPublisher(relayPool)
       : undefined;
   const lnurlServer = resolveLnurlServerConfig(process.env) ?? undefined;
   const spendPing = resolveSpendPing(process.env, globalThis.fetch, {
@@ -377,8 +380,9 @@ if (import.meta.main) {
     fiatRates,
     ...(lnurlServer === undefined ? {} : { lnurlServer }),
   };
+  let nostrWorker: { stop: () => void } | undefined;
   if (publisher !== undefined && nostrKek !== undefined && messageStore !== undefined) {
-    startNostrWorker(
+    nostrWorker = startNostrWorker(
       {
         ...ingestDeps,
         kek: nostrKek,
@@ -395,7 +399,7 @@ if (import.meta.main) {
       store: sparkInvoiceStore,
       config: freePayments,
       fetchImpl: globalThis.fetch,
-      publisher: publisher ?? new WebsocketNostrPublisher(),
+      publisher: publisher ?? new WebsocketNostrPublisher(relayPool),
       ingest: zapReceiptIngest(ingestDeps),
       claims: forumMessages,
       notifyPayment: (payment) =>
@@ -453,6 +457,15 @@ if (import.meta.main) {
         },
       });
     }
+  }
+  // On stop: end the Nostr worker and close the relay sockets, then let the
+  // signal terminate the process as it would without this handler.
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      nostrWorker?.stop();
+      relayPool.close();
+      process.kill(process.pid, signal);
+    });
   }
 }
 /* v8 ignore stop */

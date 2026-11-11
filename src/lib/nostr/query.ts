@@ -1,8 +1,8 @@
 /**
- * Injectable Nostr REQ querier. Production uses WebSockets; tests inject fakes.
+ * Injectable Nostr REQ querier. Production uses the shared relay pool; tests inject fakes.
  */
 
-import { type WebSocketFactory, type WebSocketLike } from '@/lib/nostr/publish';
+import { type NostrRelayPool, sharedNostrRelayPool } from '@/lib/nostr/relay-pool';
 
 /** Minimal EVENT payload collected from relays. */
 export interface NostrEventFrame {
@@ -73,32 +73,83 @@ export class RecordingQuerier implements NostrQuerier {
 }
 
 /**
- * Production querier: one WebSocket per relay URL.
+ * Validate one EVENT payload into a {@link NostrEventFrame}.
  *
- * @param createSocket - Socket factory. Default opens `new WebSocket(url)`.
+ * @param payload - Third element of an `["EVENT", subId, payload]` frame.
+ * @returns The frame, or `null` when id, pubkey, kind or tags are malformed.
+ */
+function parseEventFrame(payload: unknown): NostrEventFrame | null {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    return null;
+  }
+  const obj = payload as Record<string, unknown>;
+  if (
+    typeof obj['id'] !== 'string' ||
+    obj['id'] === '' ||
+    typeof obj['pubkey'] !== 'string' ||
+    obj['pubkey'] === '' ||
+    typeof obj['kind'] !== 'number' ||
+    !Array.isArray(obj['tags'])
+  ) {
+    return null;
+  }
+  const tags: string[][] = [];
+  for (const tag of obj['tags']) {
+    if (!Array.isArray(tag)) {
+      return null;
+    }
+    const row: string[] = [];
+    for (const cell of tag) {
+      if (typeof cell !== 'string') {
+        return null;
+      }
+      row.push(cell);
+    }
+    tags.push(row);
+  }
+  const frame: NostrEventFrame = {
+    id: obj['id'],
+    pubkey: obj['pubkey'],
+    kind: obj['kind'],
+    tags,
+  };
+  if (typeof obj['content'] === 'string') {
+    frame.content = obj['content'];
+  }
+  if (typeof obj['created_at'] === 'number') {
+    frame.created_at = obj['created_at'];
+  }
+  if (typeof obj['sig'] === 'string' && obj['sig'] !== '') {
+    frame.sig = obj['sig'];
+  }
+  return frame;
+}
+
+/**
+ * Production querier: REQ subscriptions on the shared connection per relay URL.
+ *
+ * @param pool - Relay pool. Default is the process-wide {@link sharedNostrRelayPool}.
  */
 export class WebsocketNostrQuerier implements NostrQuerier {
-  private readonly createSocket: WebSocketFactory;
-
   /**
-   * @param createSocket - Socket factory. Default opens `new WebSocket(url)`.
+   * @param pool - Relay pool. Default is the process-wide {@link sharedNostrRelayPool}.
    */
-  constructor(createSocket?: WebSocketFactory) {
-    this.createSocket =
-      createSocket ??
-      ((url: string): WebSocketLike => new WebSocket(url) as unknown as WebSocketLike);
-  }
+  constructor(private readonly pool: NostrRelayPool = sharedNostrRelayPool()) {}
 
   /**
-   * Open each relay, send REQ, collect EVENT frames, CLOSE on EOSE/timeout.
+   * Send REQ on each relay's shared connection, collect EVENT frames until
+   * EOSE, CLOSED or timeout, then CLOSE the subscription. The socket stays open.
    *
-   * Factory throw, socket error, or timeout for one URL contributes no events
-   * (never throws). Empty `urls` → `[]`. Results are deduped by event id;
-   * the first URL in `urls` that returns a given id wins.
+   * A relay that cannot connect, drops, or times out contributes the events
+   * it delivered before that (never throws). Empty `urls` → `[]`. Results are
+   * deduped by event id; the first URL in `urls` that returns a given id wins.
+   * Every relay's deadline counts from this call: each pool call gets only the
+   * time left, and a relay reached with no time left contributes `[]` without
+   * a pool call.
    *
    * @param filter - NIP-01 filter.
    * @param urls - Relay WebSocket URLs.
-   * @param timeoutMs - Per-relay timeout in milliseconds.
+   * @param timeoutMs - Per-relay timeout in milliseconds, counted from this call.
    * @returns Deduped {@link NostrEventFrame} list.
    */
   async query(
@@ -106,10 +157,23 @@ export class WebsocketNostrQuerier implements NostrQuerier {
     urls: readonly string[],
     timeoutMs: number,
   ): Promise<NostrEventFrame[]> {
-    if (urls.length === 0) {
-      return [];
-    }
-    const batches = await Promise.all(urls.map((url) => this.queryOne(filter, url, timeoutMs)));
+    const startedAt = Date.now();
+    const batches = await Promise.all(
+      urls.map(async (url) => {
+        const collected: NostrEventFrame[] = [];
+        const remainingMs = timeoutMs - (Date.now() - startedAt);
+        if (remainingMs <= 0) {
+          return collected;
+        }
+        await this.pool.query(filter, url, remainingMs, (payload) => {
+          const frame = parseEventFrame(payload);
+          if (frame !== null) {
+            collected.push(frame);
+          }
+        });
+        return collected;
+      }),
+    );
     const byId = new Map<string, NostrEventFrame>();
     for (const batch of batches) {
       for (const event of batch) {
@@ -119,137 +183,5 @@ export class WebsocketNostrQuerier implements NostrQuerier {
       }
     }
     return [...byId.values()];
-  }
-
-  /**
-   * Open one relay, REQ until EOSE/timeout, then CLOSE and close the socket.
-   *
-   * @param filter - Filter.
-   * @param url - Relay URL.
-   * @param timeoutMs - Settle deadline.
-   * @returns Events from this URL (may be empty).
-   */
-  private queryOne(
-    filter: Record<string, unknown>,
-    url: string,
-    timeoutMs: number,
-  ): Promise<NostrEventFrame[]> {
-    return new Promise((resolve) => {
-      const collected: NostrEventFrame[] = [];
-      let settled = false;
-      let socket: WebSocketLike | undefined;
-      const subId = `q-${Math.random().toString(36).slice(2, 10)}`;
-      const settle = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        try {
-          socket?.send(JSON.stringify(['CLOSE', subId]));
-        } catch {
-          // Ignore CLOSE failures after settle.
-        }
-        try {
-          socket?.close();
-        } catch {
-          // Ignore close failures after settle.
-        }
-        resolve(collected);
-      };
-      const timer = setTimeout(() => {
-        settle();
-      }, timeoutMs);
-
-      try {
-        socket = this.createSocket(url);
-      } catch {
-        settle();
-        return;
-      }
-
-      socket.addEventListener('open', () => {
-        try {
-          socket!.send(JSON.stringify(['REQ', subId, filter]));
-        } catch {
-          settle();
-        }
-      });
-
-      socket.addEventListener('message', (ev) => {
-        if (typeof ev.data !== 'string') {
-          return;
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(ev.data);
-        } catch {
-          return;
-        }
-        if (!Array.isArray(parsed) || parsed.length < 2) {
-          return;
-        }
-        if (parsed[0] === 'EOSE' && parsed[1] === subId) {
-          settle();
-          return;
-        }
-        if (parsed[0] !== 'EVENT' || parsed[1] !== subId) {
-          return;
-        }
-        const payload = parsed[2];
-        if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-          return;
-        }
-        const obj = payload as Record<string, unknown>;
-        if (
-          typeof obj['id'] !== 'string' ||
-          obj['id'] === '' ||
-          typeof obj['pubkey'] !== 'string' ||
-          obj['pubkey'] === '' ||
-          typeof obj['kind'] !== 'number' ||
-          !Array.isArray(obj['tags'])
-        ) {
-          return;
-        }
-        const tags: string[][] = [];
-        for (const tag of obj['tags']) {
-          if (!Array.isArray(tag)) {
-            return;
-          }
-          const row: string[] = [];
-          for (const cell of tag) {
-            if (typeof cell !== 'string') {
-              return;
-            }
-            row.push(cell);
-          }
-          tags.push(row);
-        }
-        const frame: NostrEventFrame = {
-          id: obj['id'],
-          pubkey: obj['pubkey'],
-          kind: obj['kind'],
-          tags,
-        };
-        if (typeof obj['content'] === 'string') {
-          frame.content = obj['content'];
-        }
-        if (typeof obj['created_at'] === 'number') {
-          frame.created_at = obj['created_at'];
-        }
-        if (typeof obj['sig'] === 'string' && obj['sig'] !== '') {
-          frame.sig = obj['sig'];
-        }
-        collected.push(frame);
-      });
-
-      socket.addEventListener('error', () => {
-        settle();
-      });
-
-      socket.addEventListener('close', () => {
-        settle();
-      });
-    });
   }
 }
