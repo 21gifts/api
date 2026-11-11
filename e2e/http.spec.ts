@@ -983,9 +983,11 @@ test('PATCH /debug/accounts/:id renames and refuses the session in one call', as
 
   const renamedLookup = await request.get('/debug/accounts', { headers: DEBUG });
   expect(renamedLookup.status()).toBe(200);
-  const after = ((await renamedLookup.json()) as {
-    accounts: Array<{ id: string; username: string }>;
-  }).accounts;
+  const after = (
+    (await renamedLookup.json()) as {
+      accounts: Array<{ id: string; username: string }>;
+    }
+  ).accounts;
   expect(after.some((row) => row.id === id && row.username === renamed)).toBe(true);
   expect(after.some((row) => row.username === username)).toBe(false);
 });
