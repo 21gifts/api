@@ -699,9 +699,10 @@ One procedure creates a shop payment, for a charge or for a payer:
    recheck before the no-pair wait, counters, mint, and insert; inside the insert transaction, its
    locks come first, the 16 s or client-abort exit answers order 9, and only a transaction that
    passes that exit can then answer order 4 for a pending charge. Order 7 applies during the
-   wait only when no charge is pending. Order 9 is only a
-   `findChargeForPayment` error, an insert at 16 s or later, or a disconnected
-   client. For a payer, no committed pair is not an error: the payment is
+   wait only when no charge is pending. Order 9 follows a `findChargeForPayment` error after the
+   mint, the insert transaction's 16 s or client-abort exit (nothing written), or an insert that
+   loses both attempts without finding a payment-hash holder, charge-invoice holder, or existing
+   payment of the charge. For a payer, no committed pair is not an error: the payment is
    already open Lightning-only, and the offers fill simply inserts no second
    quote.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
