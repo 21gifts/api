@@ -7,6 +7,7 @@ import {
   migrateAuthSchema,
   PostgresAuthStore,
 } from '@/lib/auth/postgres-store';
+import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import type { PasskeyChallenge, PendingRecovery } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
@@ -805,6 +806,55 @@ describe('staff_tag role migration on Postgres', () => {
       for (const id of Object.values(ids)) {
         await client.execute('DELETE FROM account WHERE id = $1', [id]);
       }
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('runs the staff_tag migration once when 8 boots race', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const id = crypto.randomUUID();
+    try {
+      await migrateAuthSchema(client);
+      await client.execute('ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text');
+      await client.execute(
+        `INSERT INTO account
+           (id, role, staff_tag, lightning_address_verified, forum_laws_dismissed, created_at)
+         VALUES ($1, 'moderator', 'software_developer', false, false, $2)`,
+        [id, new Date()],
+      );
+
+      const statement = AUTH_SCHEMA_SQL.find((s) => s.includes('$staff_tag_role$'));
+      expect(statement).toBeDefined();
+      if (statement === undefined) {
+        throw new Error('staff_tag migration statement is missing');
+      }
+
+      const boots = Array.from({ length: 8 }, () =>
+        createBunSqlClient(String(databaseUrl), { max: 1 }),
+      );
+      try {
+        const results = await Promise.allSettled(
+          boots.map(({ client: bootClient }) => bootClient.execute(statement)),
+        );
+        expect(results.filter((result) => result.status === 'rejected')).toEqual([]);
+      } finally {
+        await Promise.all(boots.map(({ sql: bootSql }) => closeIfPossible(bootSql)));
+      }
+
+      const rows = await client.query<{ role: string }>(
+        'SELECT role FROM account WHERE id = $1',
+        [id],
+      );
+      expect(rows[0]?.role).toBe('software_developer');
+      expect(
+        await client.query(
+          `SELECT 1 FROM information_schema.columns
+           WHERE table_schema = current_schema()
+             AND table_name = 'account' AND column_name = 'staff_tag'`,
+        ),
+      ).toEqual([]);
+    } finally {
+      await client.execute('DELETE FROM account WHERE id = $1', [id]);
       await closeIfPossible(sql);
     }
   });

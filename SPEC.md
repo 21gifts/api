@@ -369,11 +369,12 @@ same things. Every route that names a role names the **minimum** role:
 that rank or higher. Permission text names the minimum rank only. Do not write
 "moderator or initiator" or „Moderator oder Initiator“. Permission checks use
 `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role
-is a defect, except the two named exceptions `earnsModeratorGroupPay` (no
-moderator-group payout for `software_developer`) and `forumRateLimitExempt`
-(founder and `software_developer` skip the forum rate limits). The daily
-payout roster is `roleAtLeast(role, 'initiator')`, so the software developer,
-fond, and moderator are excluded. A state check on the _subject_ of an action
+is a defect. Two named functions carve out `software_developer` on purpose:
+`earnsModeratorGroupPay` (no moderator-group payout) and
+`forumRateLimitExempt` (founder and `software_developer` skip the forum rate
+limits). The daily payout roster is `roleAtLeast(role, 'initiator')`, so the
+software developer, fond, and moderator are excluded. A state check on the
+_subject_ of an action
 names its minimum too when the rule is cumulative: a
 subject already at or above moderator standing is
 `roleAtLeast(subject.role, 'moderator')`, so confirm, appoint, and the public

@@ -3397,7 +3397,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: forumRateLimitExempt
 
-- **Purpose:** The forum-rate-limit exemption. One of the two named exceptions to the minimum-role rule (the other is `earnsModeratorGroupPay`). True for a founder and for the `software_developer` role; initiators and moderators are not exempt. Such an account skips the top-level note limiter, the reply limiter, the note gift `InvoiceRateLimiter`, and the `HeartRateLimiter`. The IP-based limiters (auth, recovery, LNURL server, well-known) and the conversation, repayment, member-habit, and diagnostics limits do not use it.
+- **Purpose:** The forum-rate-limit exemption. One of the two named `software_developer` carve-outs (the other is `earnsModeratorGroupPay`). True for a founder and for the `software_developer` role; initiators and moderators are not exempt. Such an account skips the top-level note limiter, the reply limiter, the note gift `InvoiceRateLimiter`, and the `HeartRateLimiter`. The IP-based limiters (auth, recovery, LNURL server, well-known) and the conversation, repayment, member-habit, and diagnostics limits do not use it.
 - **Inputs:** `{ role }` of the live account.
 - **Returns / side effects:** boolean. No I/O. Callers ask it before the limiter, so an exempt attempt is never recorded in any limiter.
 - **Used by:** `POST /messages` (top-level and reply), `POST /messages/:id/invoice` (gift and heart), and the platform-note compose fee in zap ingest.
@@ -3801,7 +3801,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: roleAtLeast
 
-- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. True when `roleRank(role)` is ≥ `roleRank(min)`. Every role inherits every right of the ranks below it; `software_developer` and `fond` inherit every moderator right. Every permission names a minimum role; an equality test on the caller's role is a defect, except the two named exceptions `earnsModeratorGroupPay` (no moderator-group payout for `software_developer`) and `forumRateLimitExempt` (founder and `software_developer` skip the forum rate limits).
+- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. True when `roleRank(role)` is ≥ `roleRank(min)`. Every role inherits every right of the ranks below it; `software_developer` and `fond` inherit every moderator right. Every permission names a minimum role; an equality test on the caller's role is a defect. Two named functions carve out `software_developer` on purpose: `earnsModeratorGroupPay` (no moderator-group payout) and `forumRateLimitExempt` (founder and `software_developer` skip the forum rate limits).
 - **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
 - **Returns / side effects:** boolean (`roleRank(role) >= roleRank(min)`). No I/O.
 - **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`, `canEditDailyPayoutRoster`.
@@ -3822,7 +3822,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: earnsModeratorGroupPay
 
-- **Purpose:** Whether an account earns the moderator-group spend ping. True for a non-platform account that is at least moderator, except `software_developer`. The software developer is in the closed Moderators group with every moderator permission but is not paid for group messages (user decision 2026-11-09). This is one of the two named exceptions to the minimum-role rule: no moderator-group payout for `software_developer` (the other is `forumRateLimitExempt`).
+- **Purpose:** Whether an account earns the moderator-group spend ping. True for a non-platform account that is at least moderator, except `software_developer`. The software developer is in the closed Moderators group with every moderator permission but is not paid for group messages (user decision 2026-11-09). This is one of the two named `software_developer` carve-outs (the other is `forumRateLimitExempt`): no moderator-group payout for `software_developer`.
 - **Inputs:** `{ role: AccountRole, isPlatform?: boolean }`.
 - **Returns / side effects:** boolean (`isModeratorGroupMember(account) && account.role !== 'software_developer'`). No I/O.
 - **Used by:** `conversationRoutes` (moderator-group message ping), `replayPayoutWindow` (`payout === 'moderator'`).

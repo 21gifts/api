@@ -127,9 +127,9 @@ export function utcDayKey(nowMs: number): string {
 /**
  * Whether an account skips the forum rate limits: top-level notes, replies,
  * note invoices, and hearts. True for a founder and for the
- * `software_developer` role. This is one of the two named exceptions to the
- * minimum-role rule (the other is `earnsModeratorGroupPay`): founder
- * and `software_developer` skip the forum rate limits. Initiators and
+ * `software_developer` role. This is one of the two named
+ * `software_developer` carve-outs (the other is `earnsModeratorGroupPay`):
+ * founder and `software_developer` skip the forum rate limits. Initiators and
  * moderators are not exempt. Callers check this before the limiter, so an
  * exempt attempt is never recorded. IP-based limiters and the conversation,
  * repayment, and habit invoice limiters do not use it.
