@@ -3,12 +3,14 @@
  * `PAYOUT_SIGNER=fond`.
  *
  * `GET /health` is public and unauthenticated. It reports whether queued
- * payouts are being paid. The other routes are the member session of the
- * single `fond` account that pays the queued instructions from its own
- * in-app wallet. The API decides every payout in the ping path. Those routes
- * only request the recipient invoice and convert the stored USD amount at the
- * current spot. The API's paid worker detects settlement itself. Never log
- * addresses, payment hashes, BOLT11, or Spark invoices.
+ * payouts are being paid. `GET /summary` is public and reads the Fond
+ * account's completed wallet totals, latest balance snapshot, and paid
+ * payouts. The other routes are the member session of the single `fond`
+ * account that pays the queued instructions from its own in-app wallet. The
+ * API decides every payout in the ping path. Those routes only request the
+ * recipient invoice and convert the stored USD amount at the current spot.
+ * The API's paid worker detects settlement itself. Never log addresses,
+ * payment hashes, BOLT11, or Spark invoices.
  */
 
 import { Hono } from 'hono';
@@ -29,6 +31,7 @@ import { addUtcDays } from '@/lib/member-habit';
 import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import { normalizeUuid } from '@/lib/uuid';
+import type { WalletStore } from '@/lib/wallet-store';
 import { bearerToken } from '@/routes/me';
 import {
   issueGiftInvoice,
@@ -42,6 +45,8 @@ export interface FondRouteDeps {
   authStore: AuthStore;
   /** Durable payout queue. */
   fondPayoutStore: FondPayoutStore;
+  /** Wallet snapshots and payments of the Fond account. */
+  walletStore: WalletStore;
   /** `PAYOUT_SIGNER`; only `fond` mounts the surface. */
   payoutSigner: PayoutSigner;
   /** `FOND_USERNAME`; the one account allowed on the surface. */
@@ -84,8 +89,19 @@ export const FOND_ONLY = 'Fond only';
 /** `503` body when a payout store read or transition throws. */
 const PAYOUTS_UNAVAILABLE = 'Payouts are unavailable';
 
-/** `Cache-Control` for every `GET /fond/health` answer. The probe must not be cached. */
-const HEALTH_NO_STORE = { 'Cache-Control': 'no-store' } as const;
+/** `Cache-Control` for the public Fond probe and summary. Neither may be cached. */
+const FOND_NO_STORE = { 'Cache-Control': 'no-store' } as const;
+
+/** `503` body when the Fond summary reads throw or a sat sum is not safely representable. */
+const SUMMARY_UNAVAILABLE = 'Fond summary is unavailable';
+
+/** Convert a non-negative bigint sat total to a JSON-safe number. */
+function safeSats(value: bigint): number {
+  if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError('sat total is not a safe JSON number');
+  }
+  return Number(value);
+}
 
 /**
  * Resolve the session account for a `/fond` request.
@@ -258,11 +274,11 @@ async function payoutSparkInvoice(
 /**
  * Build the `/fond` route group.
  *
- * `GET /health` is public and does not read a session. The other routes are
- * the fond payer's session routes.
+ * `GET /health` and `GET /summary` are public and do not read a session. The
+ * other routes are the fond payer's session routes.
  *
- * @param deps - Auth, queue, switch, username, clock, fetch, LNURL config,
- *   free-payment switch, and the extracted issue collaborators.
+ * @param deps - Auth, queue, wallet, switch, username, clock, fetch, LNURL
+ *   config, free-payment switch, and the extracted issue collaborators.
  * @returns Hono app mounted at `/fond`.
  */
 export function fondRoutes(deps: FondRouteDeps): Hono {
@@ -282,7 +298,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
   return new Hono()
     .get('/health', async (c) => {
       if (deps.payoutSigner !== 'fond') {
-        return c.json({ error: 'Not found' }, 404, HEALTH_NO_STORE);
+        return c.json({ error: 'Not found' }, 404, FOND_NO_STORE);
       }
       const nowMs = deps.now();
       const today = utcDay(nowMs);
@@ -294,16 +310,62 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         yesterdayRows = await deps.fondPayoutStore.listOpen(yesterday);
       } catch {
         logEvent('fond.payouts.failed');
-        return c.json({ status: 'unavailable' }, 503, HEALTH_NO_STORE);
+        return c.json({ status: 'unavailable' }, 503, FOND_NO_STORE);
       }
       const open = todayRows.length;
       const overdue =
         todayRows.filter((row) => nowMs - row.createdAt.getTime() > FOND_OVERDUE_MS).length +
         yesterdayRows.length;
       if (overdue > 0) {
-        return c.json({ status: 'overdue', open, overdue }, 503, HEALTH_NO_STORE);
+        return c.json({ status: 'overdue', open, overdue }, 503, FOND_NO_STORE);
       }
-      return c.json({ status: 'ok', open }, 200, HEALTH_NO_STORE);
+      return c.json({ status: 'ok', open }, 200, FOND_NO_STORE);
+    })
+    .get('/summary', async (c) => {
+      if (deps.payoutSigner !== 'fond') {
+        return c.json({ error: 'Not found' }, 404, FOND_NO_STORE);
+      }
+      try {
+        const account = await deps.authStore.getAccountByUsername(deps.fondUsername);
+        if (account === undefined) {
+          return c.json(
+            {
+              username: deps.fondUsername,
+              receivedSats: 0,
+              paidOutSats: 0,
+              feesSats: 0,
+              balanceSats: null,
+              balanceSyncedAt: null,
+              payoutsPaid: 0,
+              payoutsPaidUsd: '0.00',
+            },
+            200,
+            FOND_NO_STORE,
+          );
+        }
+        const [payments, balance, payouts] = await Promise.all([
+          deps.walletStore.paymentTotals(account.id),
+          deps.walletStore.latestBalance(account.id),
+          deps.fondPayoutStore.paidTotals(),
+        ]);
+        return c.json(
+          {
+            username: deps.fondUsername,
+            receivedSats: safeSats(payments.receivedSats),
+            paidOutSats: safeSats(payments.paidOutSats),
+            feesSats: safeSats(payments.feesSats),
+            balanceSats: balance === undefined ? null : balance.balanceSats,
+            balanceSyncedAt: balance === undefined ? null : balance.syncedAt.toISOString(),
+            payoutsPaid: payouts.payoutsPaid,
+            payoutsPaidUsd: payouts.payoutsPaidUsd,
+          },
+          200,
+          FOND_NO_STORE,
+        );
+      } catch {
+        logEvent('fond.summary.failed');
+        return c.json({ error: SUMMARY_UNAVAILABLE }, 503, FOND_NO_STORE);
+      }
     })
     .get('/payouts', async (c) => {
       if (deps.payoutSigner !== 'fond') {

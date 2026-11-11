@@ -18,6 +18,11 @@ import {
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
+import {
+  migrateFondPayoutSchema,
+  PostgresFondPayoutStore,
+  type FondPayoutEnqueue,
+} from '@/lib/fond-payout-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
 import { DEBUG_DB_PAGE_SIZE, PostgresDebugDbStore } from '@/lib/debug-db';
 import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
@@ -2855,6 +2860,160 @@ describe('PostgresWalletStore', () => {
       expect(snapshotChanges[0]?.before).toBeNull();
       expect(snapshotChanges[0]?.after?.['account_id']).toBe(accountId);
       expect(Number(snapshotChanges[0]?.after?.['balance_sats'])).toBe(1000);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('aggregates completed payments by direction with bigint sums', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateWalletSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const accountId = crypto.randomUUID();
+      const otherId = crypto.randomUUID();
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      for (const [id, username] of [
+        [accountId, `summary_${accountId.slice(0, 8)}`],
+        [otherId, `summary_${otherId.slice(0, 8)}`],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+
+      const store = new PostgresWalletStore(client);
+      const at = new Date();
+      const row = (
+        account: string,
+        paymentId: string,
+        direction: 'in' | 'out',
+        status: 'pending' | 'completed' | 'failed',
+        amountSats: number,
+        feeSats: number,
+      ): WalletPaymentRecord => ({
+        accountId: account,
+        paymentId,
+        direction,
+        status,
+        amountSats,
+        feeSats,
+        paidAt: at,
+        method: 'spark',
+        paymentHash: null,
+        invoice: null,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'unknown',
+        counterpartyAccountId: null,
+        firstSeenAt: at,
+        updatedAt: at,
+      });
+      await store.upsertPayments([
+        row(accountId, 'in-1', 'in', 'completed', 1_000, 0),
+        row(accountId, 'in-2', 'in', 'completed', 250, 0),
+        row(accountId, 'out-1', 'out', 'completed', 40, 2),
+        row(accountId, 'out-2', 'out', 'completed', 1, 3),
+        row(accountId, 'pending', 'in', 'pending', 9_999, 0),
+        row(accountId, 'failed', 'out', 'failed', 8_888, 0),
+        row(otherId, 'other', 'in', 'completed', 7_777, 0),
+      ]);
+
+      await expect(store.paymentTotals(accountId)).resolves.toEqual({
+        receivedSats: 1_250n,
+        paidOutSats: 41n,
+        feesSats: 5n,
+      });
+      await expect(store.paymentTotals(crypto.randomUUID())).resolves.toEqual({
+        receivedSats: 0n,
+        paidOutSats: 0n,
+        feesSats: 0n,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresFondPayoutStore', () => {
+  test('aggregates paid rows and sums their USD strings', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateFondPayoutSchema(client);
+      const store = new PostgresFondPayoutStore(client);
+      const stamp = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const address = `paid_${stamp}@example.com`;
+      const add = async (id: string, amountUsd: string): Promise<FondPayoutEnqueue> => {
+        const row: FondPayoutEnqueue = {
+          id: crypto.randomUUID(),
+          utcDay: '2099-01-01',
+          kind: 'welcome',
+          address: `${id}_${address}`,
+          amountUsd,
+          comment: 'summary',
+          messageId: null,
+          groupMessageId: null,
+        };
+        await store.enqueue(row);
+        return row;
+      };
+      const paidA = await add('a', '1.00');
+      const paidB = await add('b', '2.50');
+      await add('open', '9.99');
+      for (const row of [paidA, paidB]) {
+        await store.claimForInvoice(row.id, row.utcDay);
+        await store.setInvoiced(row.id, {
+          invoiceId: `inv-${row.id}`,
+          paymentHash: crypto.randomUUID().replaceAll('-', '').repeat(2),
+          bolt11: 'lnbc1',
+          amountMsat: 1_000_000,
+        });
+        await store.claimSettlement(row.id);
+        await store.markPaid(row.id);
+      }
+
+      const before = await store.paidTotals();
+      await add('c', '1.00');
+      await add('d', '2.50');
+      for (const rowAddress of [`c_${address}`, `d_${address}`]) {
+        const [row] = await client.query<{ id: string; utc_day: string }>(
+          `SELECT id, utc_day FROM fond_payout WHERE address = $1`,
+          [rowAddress],
+        );
+        if (row === undefined) {
+          throw new Error('expected payout row');
+        }
+        await store.claimForInvoice(row.id, '2099-01-01');
+        await store.setInvoiced(row.id, {
+          invoiceId: `inv-${row.id}`,
+          paymentHash: crypto.randomUUID().replaceAll('-', '').repeat(2),
+          bolt11: 'lnbc1',
+          amountMsat: 1_000_000,
+        });
+        await store.claimSettlement(row.id);
+        await store.markPaid(row.id);
+      }
+      const after = await store.paidTotals();
+      expect(after.payoutsPaid - before.payoutsPaid).toBe(2);
+      const cents = (value: string): bigint => {
+        const [whole = '0', frac = ''] = value.split('.');
+        return BigInt(whole) * 100n + BigInt(frac.padEnd(2, '0'));
+      };
+      expect(cents(after.payoutsPaidUsd) - cents(before.payoutsPaidUsd)).toBe(350n);
     } finally {
       await closeIfPossible(sql);
     }

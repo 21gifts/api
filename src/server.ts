@@ -1234,6 +1234,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     fondRoutes({
       authStore: store,
       fondPayoutStore,
+      walletStore,
       payoutSigner,
       fondUsername,
       now,

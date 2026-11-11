@@ -36,6 +36,16 @@ export interface WalletPaymentRecord extends ReportedWalletPayment, WalletPaymen
   updatedAt: Date;
 }
 
+/** Completed wallet movement totals for one account. */
+export interface WalletPaymentTotals {
+  /** Sum of `amount_sats` on completed incoming payments. */
+  receivedSats: bigint;
+  /** Sum of `amount_sats` on completed outgoing payments. */
+  paidOutSats: bigint;
+  /** Sum of `fee_sats` on completed outgoing payments. */
+  feesSats: bigint;
+}
+
 /** Persistence contract for wallet report data. */
 export interface WalletStore {
   /**
@@ -64,6 +74,14 @@ export interface WalletStore {
    * @returns A caller-owned snapshot, or `undefined`.
    */
   latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined>;
+
+  /**
+   * Aggregate completed payments by direction for one account.
+   *
+   * @param accountId - Reporting account id.
+   * @returns Incoming, outgoing, and outgoing-fee sats.
+   */
+  paymentTotals(accountId: string): Promise<WalletPaymentTotals>;
 
   /**
    * List an account's payments by paid time then payment id, newest first.
@@ -322,6 +340,29 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
+   * Sum completed payments by direction over stored rows.
+   *
+   * @param accountId - Reporting account id.
+   * @returns Incoming and outgoing totals in whole sats.
+   */
+  paymentTotals(accountId: string): Promise<WalletPaymentTotals> {
+    const totals: WalletPaymentTotals = { receivedSats: 0n, paidOutSats: 0n, feesSats: 0n };
+    for (const entry of this.#payments.values()) {
+      const row = entry.row;
+      if (row.accountId !== accountId || row.status !== 'completed') {
+        continue;
+      }
+      if (row.direction === 'in') {
+        totals.receivedSats += BigInt(row.amountSats);
+      } else {
+        totals.paidOutSats += BigInt(row.amountSats);
+        totals.feesSats += BigInt(row.feeSats);
+      }
+    }
+    return Promise.resolve(totals);
+  }
+
+  /**
    * List payment copies newest first.
    *
    * @param accountId - Reporting account id.
@@ -369,6 +410,12 @@ interface WalletPaymentSqlRow {
   counterparty_account_id: string | null;
   first_seen_at: Date | string;
   updated_at: Date | string;
+}
+
+interface WalletPaymentTotalsSqlRow {
+  direction: WalletPaymentDirection;
+  amount_sats: number | string | bigint | null;
+  fee_sats: number | string | bigint | null;
 }
 
 function sqlDate(value: Date | string): Date {
@@ -622,6 +669,34 @@ LIMIT 1`,
     );
     const row = rows[0];
     return row === undefined ? undefined : mapBalance(row);
+  }
+
+  /**
+   * Aggregate completed payments by direction in one grouped query.
+   *
+   * @param accountId - Reporting account id (`$1`).
+   * @returns Incoming and outgoing totals in whole sats.
+   */
+  async paymentTotals(accountId: string): Promise<WalletPaymentTotals> {
+    const rows = await this.sql.query<WalletPaymentTotalsSqlRow>(
+      `SELECT direction,
+       COALESCE(SUM(amount_sats), 0)::bigint AS amount_sats,
+       COALESCE(SUM(fee_sats), 0)::bigint AS fee_sats
+FROM wallet_payment
+WHERE account_id = $1 AND status = 'completed'
+GROUP BY direction`,
+      [accountId],
+    );
+    const totals: WalletPaymentTotals = { receivedSats: 0n, paidOutSats: 0n, feesSats: 0n };
+    for (const row of rows) {
+      if (row.direction === 'in') {
+        totals.receivedSats = BigInt(row.amount_sats ?? 0);
+      } else if (row.direction === 'out') {
+        totals.paidOutSats = BigInt(row.amount_sats ?? 0);
+        totals.feesSats = BigInt(row.fee_sats ?? 0);
+      }
+    }
+    return totals;
   }
 
   /**

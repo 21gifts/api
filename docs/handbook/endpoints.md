@@ -1689,6 +1689,14 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Used by:** the public status page monitor.
 - **Auth:** public.
 
+## Endpoint: GET /fond/summary
+
+- **Purpose:** Public, read-only totals for the Fond account resolved by `FOND_USERNAME` through the existing auth-store username lookup. Routed only when `PAYOUT_SIGNER=fond` (404 `{ error: 'Not found' }` otherwise) and mounted next to `GET /fond/health`. No session; a bearer is ignored. `receivedSats`, `paidOutSats`, and `feesSats` are completed `wallet_payment` rows of that account: incoming `amount_sats`, outgoing `amount_sats`, and the `fee_sats` of the outgoing rows. The totals come from one wallet-store aggregate grouped by direction, never from a row list. `balanceSats` and `balanceSyncedAt` are the newest `wallet_balance_snapshot` of that account by receive time and id; `balanceSyncedAt` is the snapshot's `synced_at` as ISO 8601, and both are `null` when no snapshot exists. `payoutsPaid` and `payoutsPaidUsd` count and sum `fond_payout` rows with status `paid`; the USD sum is the exact two-decimal stored string sum, not a new spot or daily close. Sats are JSON numbers, so a non-negative aggregate above `Number.MAX_SAFE_INTEGER` is unavailable rather than rounded.
+- **Inputs:** None. No path parameter, query, body, or session. `username` in the body is the resolved `FOND_USERNAME` string. No account with that username yields 200 with all sums `0` and both balance fields `null`; no payout rows yields `payoutsPaid: 0` and `payoutsPaidUsd: "0.00"`.
+- **Returns / side effects:** 200 `{ username, receivedSats, paidOutSats, feesSats, balanceSats, balanceSyncedAt, payoutsPaid, payoutsPaidUsd }` with `Cache-Control: no-store`. 404 on the same switch rule as `GET /fond/health`, also `no-store`. 503 `{ error: 'Fond summary is unavailable' }` when the auth lookup, wallet aggregate, latest balance read, or payout aggregate throws, or when a sat total is negative or exceeds `Number.MAX_SAFE_INTEGER`; that logs `fond.summary.failed` with no PII. Read-only: no write, no schema change.
+- **Used by:** app page `/fonds/[username]` (public Fond totals: received, paid out, balance).
+- **Auth:** public.
+
 ## Endpoint: GET /fond/payouts
 
 - **Purpose:** Member-session list for the Fond payer. Routed only when `PAYOUT_SIGNER=fond` (404 otherwise). Returns `{ payouts: [{ id, kind, status, utcDay, paymentHash }] }` for the current UTC day's `owed`, `issuing`, `invoiced`, and `settling` rows, oldest first, so the payer sees and retries them. `paymentHash` is the stored `payment_hash` for an `invoiced` or `settling` row, and `null` for an `owed` or `issuing` row or when an `invoiced`/`settling` row has no stored hash. The hash lets the payer correlate its own invoice; the API detects settlement itself. A payment hash is not secret: it is inside every BOLT11. No addresses, amounts, comments, or invoices in the body; the hash is not an invoice.

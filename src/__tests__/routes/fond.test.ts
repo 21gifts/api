@@ -16,6 +16,11 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { setDiagnosticSink } from '@/lib/log';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
+import {
+  InMemoryWalletStore,
+  type WalletPaymentRecord,
+  type WalletStore,
+} from '@/lib/wallet-store';
 import { fondRoutes } from '@/routes/fond';
 import { issueGiftInvoice } from '@/routes/invoices';
 
@@ -64,6 +69,29 @@ function rowInput(partial: Partial<FondPayoutEnqueue> = {}): FondPayoutEnqueue {
     comment: 'thanks',
     messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     groupMessageId: null,
+    ...partial,
+  };
+}
+
+function walletPayment(partial: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord {
+  return {
+    accountId: 'fond-account',
+    paymentId: 'p',
+    direction: 'in',
+    status: 'completed',
+    amountSats: 21,
+    feeSats: 0,
+    paidAt: new Date(NOW),
+    method: 'spark',
+    paymentHash: null,
+    invoice: null,
+    destination: null,
+    description: null,
+    lnurlComment: null,
+    category: 'unknown',
+    counterpartyAccountId: null,
+    firstSeenAt: new Date(NOW),
+    updatedAt: new Date(NOW),
     ...partial,
   };
 }
@@ -158,6 +186,7 @@ interface AppOptions {
   seedFond?: boolean;
   actionsStore?: InMemoryInvoiceStore;
   payoutStore?: InMemoryFondPayoutStore;
+  walletStore?: WalletStore;
   messageStore?: InMemoryMessageStore;
   fundingStore?: InMemoryFundingStore;
   fetchImpl?: FetchFn;
@@ -172,6 +201,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
   app: Hono;
   auth: InMemoryAuthStore;
   payouts: InMemoryFondPayoutStore;
+  walletStore: WalletStore;
   invoices: InMemoryInvoiceStore;
   messages: InMemoryMessageStore;
 }> {
@@ -198,6 +228,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
     });
   }
   const payouts = options.payoutStore ?? new InMemoryFondPayoutStore(now);
+  const walletStore: WalletStore = options.walletStore ?? new InMemoryWalletStore();
   const invoices = options.actionsStore ?? new InMemoryInvoiceStore();
   const messages = options.messageStore ?? new InMemoryMessageStore();
   const fetchImpl = options.fetchImpl ?? (async () => new Response(null, { status: 500 }));
@@ -206,6 +237,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
     fondRoutes({
       authStore: auth,
       fondPayoutStore: payouts,
+      walletStore,
       payoutSigner: options.signer ?? 'fond',
       fondUsername: FOND,
       now,
@@ -228,6 +260,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
     app,
     auth,
     payouts,
+    walletStore,
     invoices,
     messages,
   };
@@ -414,6 +447,7 @@ describe('fondRoutes switch and auth', () => {
       fondRoutes({
         authStore: platformAuth,
         fondPayoutStore: new InMemoryFondPayoutStore(),
+        walletStore: new InMemoryWalletStore(),
         payoutSigner: 'fond',
         fondUsername: FOND,
         now: () => NOW,
@@ -747,6 +781,181 @@ describe('GET /fond/health', () => {
       expect(listOpen).toHaveBeenNthCalledWith(1, item.today);
       expect(listOpen).toHaveBeenNthCalledWith(2, item.yesterday);
     }
+  });
+});
+
+describe('GET /fond/summary', () => {
+  async function paidRow(
+    payouts: InMemoryFondPayoutStore,
+    id: string,
+    amountUsd: string,
+  ): Promise<void> {
+    await payouts.enqueue(rowInput({ id, amountUsd, address: `${id}@example.com` }));
+    await payouts.claimForInvoice(id, TODAY);
+    await payouts.setInvoiced(id, {
+      invoiceId: `inv-${id}`,
+      paymentHash: (id.charCodeAt(0) % 16).toString(16).repeat(64),
+      bolt11: `lnbc-${id}`,
+      sparkInvoice: null,
+      amountMsat: 1_000_000,
+    });
+    await payouts.claimSettlement(id);
+    await payouts.markPaid(id);
+  }
+
+  it('returns 404 unless PAYOUT_SIGNER is fond', async () => {
+    const { app } = await makeApp({ signer: 'spend' });
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(404);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('returns zeros and null balance when the Fond account is missing', async () => {
+    const { app } = await makeApp({ seedFond: false });
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({
+      username: FOND,
+      receivedSats: 0,
+      paidOutSats: 0,
+      feesSats: 0,
+      balanceSats: null,
+      balanceSyncedAt: null,
+      payoutsPaid: 0,
+      payoutsPaidUsd: '0.00',
+    });
+  });
+
+  it('sums completed movements, latest balance, and paid payouts', async () => {
+    const { app, payouts, walletStore } = await makeApp();
+    await walletStore.upsertPayments([
+      walletPayment({ paymentId: 'in-1', amountSats: 1_000 }),
+      walletPayment({ paymentId: 'in-2', amountSats: 250 }),
+      walletPayment({ paymentId: 'out-1', direction: 'out', amountSats: 40, feeSats: 2 }),
+      walletPayment({ paymentId: 'out-2', direction: 'out', amountSats: 1, feeSats: 3 }),
+      walletPayment({ paymentId: 'pending', status: 'pending', amountSats: 9_999 }),
+      walletPayment({ paymentId: 'failed', status: 'failed', amountSats: 8_888 }),
+      walletPayment({ accountId: 'other', paymentId: 'other', amountSats: 7_777 }),
+    ]);
+    await walletStore.recordBalance({
+      id: 'old',
+      accountId: 'fond-account',
+      balanceSats: 10,
+      syncedAt: new Date('2026-11-10T09:00:00.000Z'),
+      receivedAt: new Date('2026-11-10T09:00:00.000Z'),
+    });
+    await walletStore.recordBalance({
+      id: 'new',
+      accountId: 'fond-account',
+      balanceSats: 1_209,
+      syncedAt: new Date('2026-11-10T10:00:00.000Z'),
+      receivedAt: new Date('2026-11-10T10:00:00.000Z'),
+    });
+    await paidRow(payouts, 'aaaa', '1.00');
+    await paidRow(payouts, 'bbbb', '2.50');
+    await payouts.enqueue(rowInput({ id: 'cccc', amountUsd: '9.99', address: 'open@example.com' }));
+
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({
+      username: FOND,
+      receivedSats: 1_250,
+      paidOutSats: 41,
+      feesSats: 5,
+      balanceSats: 1_209,
+      balanceSyncedAt: '2026-11-10T10:00:00.000Z',
+      payoutsPaid: 2,
+      payoutsPaidUsd: '3.50',
+    });
+  });
+
+  it('keeps the balance null when the account has no snapshot', async () => {
+    const { app, walletStore } = await makeApp();
+    await walletStore.upsertPayments([walletPayment({ amountSats: 5 })]);
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      username: FOND,
+      receivedSats: 5,
+      paidOutSats: 0,
+      feesSats: 0,
+      balanceSats: null,
+      balanceSyncedAt: null,
+      payoutsPaid: 0,
+      payoutsPaidUsd: '0.00',
+    });
+  });
+
+  it('returns 503 without PII when the account lookup throws', async () => {
+    const events = captureEvents();
+    const { app, auth } = await makeApp();
+    vi.spyOn(auth, 'getAccountByUsername').mockRejectedValue(new Error('lookup down'));
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ error: 'Fond summary is unavailable' });
+    expect(events).toEqual(['fond.summary.failed']);
+  });
+
+  it('returns 503 when a wallet aggregate throws', async () => {
+    const events = captureEvents();
+    const { app, walletStore } = await makeApp();
+    vi.spyOn(walletStore, 'paymentTotals').mockRejectedValue(new Error('wallet down'));
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Fond summary is unavailable' });
+    expect(events).toEqual(['fond.summary.failed']);
+  });
+
+  it('returns 503 when the balance read throws', async () => {
+    const events = captureEvents();
+    const { app, walletStore } = await makeApp();
+    vi.spyOn(walletStore, 'latestBalance').mockRejectedValue(new Error('balance down'));
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Fond summary is unavailable' });
+    expect(events).toEqual(['fond.summary.failed']);
+  });
+
+  it('returns 503 when the payout aggregate throws', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    vi.spyOn(payouts, 'paidTotals').mockRejectedValue(new Error('payouts down'));
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Fond summary is unavailable' });
+    expect(events).toEqual(['fond.summary.failed']);
+  });
+
+  it('returns 503 when a sat total exceeds the safe JSON integer range', async () => {
+    const events = captureEvents();
+    const { app, walletStore } = await makeApp();
+    vi.spyOn(walletStore, 'paymentTotals').mockResolvedValue({
+      receivedSats: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+      paidOutSats: 0n,
+      feesSats: 0n,
+    });
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Fond summary is unavailable' });
+    expect(events).toEqual(['fond.summary.failed']);
+  });
+
+  it('returns 503 for a negative sat total', async () => {
+    const events = captureEvents();
+    const { app, walletStore } = await makeApp();
+    vi.spyOn(walletStore, 'paymentTotals').mockResolvedValue({
+      receivedSats: 0n,
+      paidOutSats: -1n,
+      feesSats: 0n,
+    });
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Fond summary is unavailable' });
+    expect(events).toEqual(['fond.summary.failed']);
   });
 });
 
