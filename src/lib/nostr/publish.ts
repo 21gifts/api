@@ -129,11 +129,13 @@ export class WebsocketNostrPublisher implements NostrPublisher {
    * The event goes through {@link normalizeSignedEvent} first; an unusable
    * event is `ok: false` for every URL without a send. A relay that cannot
    * connect, drops, rejects, or does not answer within `timeoutMs` is
-   * `ok: false`. Never throws.
+   * `ok: false`. Every relay's deadline counts from this call, including the
+   * normalization: each pool call gets only the time left, and a relay reached
+   * with no time left is `ok: false` without a pool call. Never throws.
    *
    * @param event - Signed NIP-01 event object.
    * @param urls - Relay WebSocket URLs.
-   * @param timeoutMs - Per-relay timeout in milliseconds.
+   * @param timeoutMs - Per-relay timeout in milliseconds, counted from this call.
    * @returns One {@link RelayAck} per URL, same order as `urls`.
    */
   publish(
@@ -141,12 +143,16 @@ export class WebsocketNostrPublisher implements NostrPublisher {
     urls: readonly string[],
     timeoutMs: number,
   ): Promise<RelayAck[]> {
+    const startedAt = Date.now();
     const normalized = normalizeSignedEvent(event);
     return Promise.all(
-      urls.map(async (url) => ({
-        url,
-        ok: normalized !== null && (await this.pool.publish(normalized, url, timeoutMs)),
-      })),
+      urls.map(async (url) => {
+        const remainingMs = timeoutMs - (Date.now() - startedAt);
+        if (normalized === null || remainingMs <= 0) {
+          return { url, ok: false };
+        }
+        return { url, ok: await this.pool.publish(normalized, url, remainingMs) };
+      }),
     );
   }
 }

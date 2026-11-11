@@ -46,6 +46,47 @@ describe('WebsocketNostrQuerier', () => {
     expect(factory.sockets).toHaveLength(0);
   });
 
+  describe('deadline counted from the call across relays', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A filter whose serialization takes `ms` of (fake) time. */
+    const slowFilter = (ms: number): Record<string, unknown> => ({
+      toJSON: () => {
+        vi.advanceTimersByTime(ms);
+        return { kinds: [1] };
+      },
+    });
+
+    it('gives the second relay only the time left after the first serialized', async () => {
+      const querier = new WebsocketNostrQuerier(pool);
+      const calls = vi.spyOn(pool, 'query');
+      const pending = querier.query(slowFilter(400), ['wss://a', 'wss://b'], 1_000);
+      expect(calls.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+        ['wss://a', 1_000],
+        ['wss://b', 600],
+      ]);
+      expect(factory.sockets).toHaveLength(2);
+      vi.advanceTimersByTime(1_000);
+      await expect(pending).resolves.toEqual([]);
+    });
+
+    it('skips the pool for a relay reached with no time left', async () => {
+      const querier = new WebsocketNostrQuerier(pool);
+      const calls = vi.spyOn(pool, 'query');
+      await expect(
+        querier.query(slowFilter(1_000), ['wss://a', 'wss://b'], 1_000),
+      ).resolves.toEqual([]);
+      expect(calls).toHaveBeenCalledTimes(1);
+      expect(factory.sockets).toHaveLength(0);
+    });
+  });
+
   it('returns [] for empty urls without opening a socket', async () => {
     const querier = new WebsocketNostrQuerier(pool);
     await expect(querier.query({ kinds: [1] }, [], 20)).resolves.toEqual([]);

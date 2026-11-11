@@ -3424,14 +3424,14 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 - **Purpose:** Production `NostrPublisher`. Runs `normalizeSignedEvent` so the EVENT second element is an object, then sends `["EVENT", event]` on the shared `NostrRelayPool` connection of each relay URL and waits for the `["OK", id, true|false]` with that event id. The socket stays open for the next call.
 - **Inputs:** Optional `NostrRelayPool` (default `sharedNostrRelayPool()`); `publish(event, urls, timeoutMs)`.
-- **Returns / side effects:** One `RelayAck` per URL in input order. `ok: false` for an unusable event (no send), an OK false, a timeout, a dropped socket, a socket that cannot open, or a closed pool. Never throws.
+- **Returns / side effects:** One `RelayAck` per URL in input order. `ok: false` for an unusable event (no send), an OK false, a timeout, a dropped socket, a socket that cannot open, or a closed pool. Every relay's `timeoutMs` counts from the call, including `normalizeSignedEvent`; a relay reached with no time left is `ok: false` without a pool call. Never throws.
 - **Used by:** Process entry `src/index.ts` (nostr worker and spark invoice worker), with the same pool as `WebsocketNostrQuerier`.
 
 ## Function: WebsocketNostrQuerier
 
 - **Purpose:** Production `NostrQuerier`. Sends `["REQ", subId, filter]` on the shared `NostrRelayPool` connection of each URL, collects EVENT object payloads (id, pubkey, kind, tags, plus content/created_at/sig when present) until EOSE, CLOSED or timeout, then sends `["CLOSE", subId]`. The socket stays open. Dedup by id; the first URL in the list wins.
 - **Inputs:** Optional `NostrRelayPool` (default `sharedNostrRelayPool()`); `query(filter, urls, timeoutMs)`.
-- **Returns / side effects:** `NostrEventFrame[]`. A relay that cannot connect, drops, or times out contributes the events it delivered before that. Never throws; no subscription stays open past the call.
+- **Returns / side effects:** `NostrEventFrame[]`. A relay that cannot connect, drops, or times out contributes the events it delivered before that. Every relay's `timeoutMs` counts from the call; a relay reached with no time left contributes nothing and gets no pool call. Never throws; no subscription stays open past the call.
 - **Used by:** `src/index.ts` worker wiring and `openBootStores` (zapper backfill).
 
 ## Function: NostrRelayPool

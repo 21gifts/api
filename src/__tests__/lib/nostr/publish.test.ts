@@ -85,6 +85,60 @@ describe('WebsocketNostrPublisher', () => {
     expect(factory.sockets).toHaveLength(0);
   });
 
+  describe('deadline counted from the call across relays', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('gives the second relay only the time left after the first serialized', async () => {
+      const publisher = new WebsocketNostrPublisher(pool);
+      const calls = vi.spyOn(pool, 'publish');
+      const tags = {
+        toJSON: () => {
+          vi.advanceTimersByTime(400);
+          return [];
+        },
+      };
+      const pending = publisher.publish(
+        { id: 'abc123', kind: 1, tags },
+        ['wss://a', 'wss://b'],
+        1_000,
+      );
+      expect(calls.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+        ['wss://a', 1_000],
+        ['wss://b', 600],
+      ]);
+      vi.advanceTimersByTime(1_000);
+      await expect(pending).resolves.toEqual([
+        { url: 'wss://a', ok: false },
+        { url: 'wss://b', ok: false },
+      ]);
+    });
+
+    it('counts normalization and skips the pool when no time is left', async () => {
+      const publisher = new WebsocketNostrPublisher(pool);
+      const calls = vi.spyOn(pool, 'publish');
+      const event: Record<string, unknown> = { id: 'abc123' };
+      Object.defineProperty(event, 'kind', {
+        enumerable: true,
+        get: () => {
+          vi.advanceTimersByTime(1_000);
+          return 1;
+        },
+      });
+      await expect(publisher.publish(event, ['wss://a', 'wss://b'], 1_000)).resolves.toEqual([
+        { url: 'wss://a', ok: false },
+        { url: 'wss://b', ok: false },
+      ]);
+      expect(calls).not.toHaveBeenCalled();
+      expect(factory.sockets).toHaveLength(0);
+    });
+  });
+
   it('returns [] for empty urls', async () => {
     const pub = new WebsocketNostrPublisher(pool);
     await expect(pub.publish(event, [], 20)).resolves.toEqual([]);

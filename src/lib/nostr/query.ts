@@ -143,10 +143,13 @@ export class WebsocketNostrQuerier implements NostrQuerier {
    * A relay that cannot connect, drops, or times out contributes the events
    * it delivered before that (never throws). Empty `urls` → `[]`. Results are
    * deduped by event id; the first URL in `urls` that returns a given id wins.
+   * Every relay's deadline counts from this call: each pool call gets only the
+   * time left, and a relay reached with no time left contributes `[]` without
+   * a pool call.
    *
    * @param filter - NIP-01 filter.
    * @param urls - Relay WebSocket URLs.
-   * @param timeoutMs - Per-relay timeout in milliseconds.
+   * @param timeoutMs - Per-relay timeout in milliseconds, counted from this call.
    * @returns Deduped {@link NostrEventFrame} list.
    */
   async query(
@@ -154,10 +157,15 @@ export class WebsocketNostrQuerier implements NostrQuerier {
     urls: readonly string[],
     timeoutMs: number,
   ): Promise<NostrEventFrame[]> {
+    const startedAt = Date.now();
     const batches = await Promise.all(
       urls.map(async (url) => {
         const collected: NostrEventFrame[] = [];
-        await this.pool.query(filter, url, timeoutMs, (payload) => {
+        const remainingMs = timeoutMs - (Date.now() - startedAt);
+        if (remainingMs <= 0) {
+          return collected;
+        }
+        await this.pool.query(filter, url, remainingMs, (payload) => {
           const frame = parseEventFrame(payload);
           if (frame !== null) {
             collected.push(frame);
