@@ -6,6 +6,7 @@ import {
   type WalletBalanceSnapshot,
   type WalletPaymentCursor,
   type WalletPaymentRecord,
+  type WalletPaymentTotals,
   type WalletStore,
 } from '@/lib/wallet-store';
 import {
@@ -59,6 +60,10 @@ class FailingWalletStore implements WalletStore {
   }
 
   latestBalance(_accountId: string): Promise<WalletBalanceSnapshot | undefined> {
+    return Promise.reject(new Error('sql failed'));
+  }
+
+  paymentTotals(_accountId: string): Promise<WalletPaymentTotals> {
     return Promise.reject(new Error('sql failed'));
   }
 
@@ -352,7 +357,8 @@ describe('debugWalletRoutes', () => {
   });
 
   it('returns 503 and logs no amounts when the wallet store fails', async () => {
-    const app = await walletApp({ debugToken: 'secret', walletStore: new FailingWalletStore() });
+    const walletStore = new FailingWalletStore();
+    const app = await walletApp({ debugToken: 'secret', walletStore });
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
       headers: { authorization: 'Bearer secret' },
     });
@@ -367,5 +373,6 @@ describe('debugWalletRoutes', () => {
       expect(event).not.toHaveProperty('invoice');
       expect(event).not.toHaveProperty('counterpartyAccountId');
     }
+    await expect(walletStore.paymentTotals(ACCOUNT_ID)).rejects.toThrow('sql failed');
   });
 });
