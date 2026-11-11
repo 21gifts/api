@@ -6562,11 +6562,12 @@ after that id is resolved: a resolved moderator payout is recorded as
 per account, whichever address it went to. Stores `comment` on the invoice whenever it is sent, so a `Welcome` invoice without `messageId` is still recorded as a welcome gift on proof; with `messageId` it stores `messageId` and `comment` (or `''`).
 When `groupMessageId` is set (no `messageId`), the living-room post gate
 still applies. The id is display-only: it is stored only when it is that
-address's message in the closed `moderator_group` thread, the sender
-`earnsModeratorGroupPay` (`isModeratorGroupMember` except `software_developer`),
-and an `isPlatform` account exists; otherwise the invoice is still issued, the
-field is omitted, and `invoice.group_message_ignored` is logged. A software
-developer's group message is therefore never resolved and cannot be paid a
+address's message in the closed `moderator_group` thread, the sender is not a
+moderator-group member who does not earn the group payout (the software
+developer), and an `isPlatform` account exists; otherwise the invoice is still
+issued, the field is omitted, and `invoice.group_message_ignored` is logged. A
+group message of a moderator-group member who does not earn the group payout
+(the software developer) is therefore never resolved and cannot be paid a
 moderator stipend. A missing
 conversation store or a failing lookup never blocks the **200**.
 

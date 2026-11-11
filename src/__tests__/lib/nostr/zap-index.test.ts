@@ -13775,6 +13775,8 @@ describe('platform-note compose fee picks the note limiter', () => {
   it.each([
     ['founder', 'top-level', { role: 'founder' as const }],
     ['founder', 'reply', { role: 'founder' as const }],
+    ['initiator', 'top-level', { role: 'initiator' as const }],
+    ['initiator', 'reply', { role: 'initiator' as const }],
     ['software_developer', 'top-level', { role: 'software_developer' as const }],
     ['software_developer', 'reply', { role: 'software_developer' as const }],
   ])('lets a %s %s compose past a refusing limiter without asking it', async (_l, kind, patch) => {
@@ -13797,7 +13799,7 @@ describe('platform-note compose fee picks the note limiter', () => {
     expect(l.replyLimiter.check('manual-payer', 1_800)).toBeNull();
   });
 
-  it.each(['basis', 'verified', 'moderator', 'fond', 'initiator'] as const)(
+  it.each(['basis', 'verified', 'moderator', 'fond'] as const)(
     'still limits a compose by a %s payer',
     async (role) => {
       const { store, auth } = await composeSetup({ role });
