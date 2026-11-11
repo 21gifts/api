@@ -325,7 +325,9 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
         `INSERT INTO message_repayment_part (
            message_id, day_index, recipient_account_id, part_index, units, sats, paid_at
          )
-         SELECT $1, $2, $3, COALESCE(MAX(part_index) + 1, 0), $4::bigint, $5::bigint, $6
+         SELECT $1::uuid, $2::integer, $3::uuid,
+                COALESCE(MAX(part_index) + 1, 0),
+                $4::bigint, $5::bigint, $6::timestamptz
          FROM message_repayment_part
          WHERE message_id = $1 AND day_index = $2 AND recipient_account_id = $3`,
         [
@@ -552,8 +554,8 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     await tx.query(
       `UPDATE message_repayment_part
        SET part_index = -part_index - 1
-       WHERE recipient_account_id = $2 AND part_index < 0`,
-      [input.from, input.into],
+       WHERE recipient_account_id = $1::uuid AND part_index < 0`,
+      [input.into],
     );
 
     // The source's social recovery rows belong to its own wallets, which go

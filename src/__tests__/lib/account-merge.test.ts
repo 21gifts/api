@@ -229,6 +229,8 @@ describe('mergeAccounts', () => {
     expect(queries[parts]?.text).toContain('SET recipient_account_id = $2');
     expect(normalized).toBeGreaterThan(parts);
     expect(normalized).toBeLessThan(accountDelete);
+    expect(queries[normalized]?.text).toContain('recipient_account_id = $1::uuid');
+    expect(queries[normalized]?.params).toEqual([INTO]);
   });
 
   it('converts a legacy fiat share with its original schedule units before merging identities', async () => {
@@ -271,6 +273,8 @@ describe('mergeAccounts', () => {
     );
 
     expect(converted?.params).toEqual([messageId, 0, FROM, '100', 5000, paidAt]);
+    expect(converted?.text).toContain('SELECT $1::uuid, $2::integer, $3::uuid');
+    expect(converted?.text).toContain('$4::bigint, $5::bigint, $6::timestamptz');
     expect(deleted?.params).toEqual([messageId, 0, FROM]);
     expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
   });
