@@ -401,6 +401,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         );
       }
       const updated = { ...existing };
+      let renamedTo: string | undefined;
       if (username !== undefined) {
         const renamed = await deps.store.renameUsername(existing.id, username);
         if (!renamed.ok) {
@@ -408,7 +409,8 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
             ? c.json({ error: 'Username is already in use' }, 409)
             : c.json({ error: 'Not found' }, 404);
         }
-        updated.username = username;
+        renamedTo = username;
+        updated.username = renamedTo;
       }
       if (parsed.data.role !== undefined) {
         updated.role = parsed.data.role;
@@ -430,10 +432,10 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       if (parsed.data.role !== undefined) {
         logEvent('debug.accounts.role_set', { accountId: updated.id, role: updated.role });
       }
-      if (username !== undefined) {
+      if (renamedTo !== undefined) {
         logEvent('debug.accounts.username_renamed', {
           accountId: updated.id,
-          username,
+          username: renamedTo,
         });
       }
       if (parsed.data.platform !== undefined) {
