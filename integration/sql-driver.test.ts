@@ -3639,6 +3639,148 @@ describe('PostgresMessageStore deleteById on a credit', () => {
   });
 });
 
+describe('PostgresMessageStore loan ledger fiat', () => {
+  test('oldest same-note indexed ingest sets grant chf, and bare-grant and repayment fiat stay null', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const authorId = crypto.randomUUID();
+    const payerId = crypto.randomUUID();
+    const loanId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const receiptId = `receipt-${crypto.randomUUID()}`;
+    const bareReceiptId = `receipt-${crypto.randomUUID()}`;
+    let ready = false;
+    try {
+      await migrateAuthSchema(client);
+      await migrateBtcUsdSchema(client);
+      await migrateFiatSchema(client);
+      await migrateMessageSchema(client);
+      await migrateShopIdentitySchema(client);
+      ready = true;
+      const auth = new PostgresAuthStore(client);
+      await auth.createAccount({
+        id: authorId,
+        linkingKey: `02${authorId.replaceAll('-', '').padEnd(64, '0')}`,
+        role: 'verified',
+        name: 'Ada',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: authorId.replaceAll('-', '').padEnd(64, 'a'),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      await auth.createAccount({
+        id: payerId,
+        linkingKey: `02${payerId.replaceAll('-', '').padEnd(64, '1')}`,
+        role: 'verified',
+        name: 'Bea',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: payerId.replaceAll('-', '').padEnd(64, 'b'),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      const store = new PostgresMessageStore(client);
+      const base = {
+        accountId: authorId,
+        name: 'Ada',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      };
+      await store.create({
+        ...base,
+        id: loanId,
+        text: 'loan',
+        goalSats: 1_000_000,
+        goalRepayable: true,
+      });
+      await store.create({ ...base, id: otherId, text: 'other' });
+      expect(await store.recordZapReceipt(receiptId, loanId, 450, null)).toBe(true);
+      await store.updateZapReceiptGift(receiptId, { payerAccountId: payerId });
+      const recordIngest = (
+        createdAt: string,
+        outcome: 'indexed' | 'rejected',
+        amountChf: string,
+        messageId: string,
+      ): Promise<void> =>
+        store.recordZapIngest({
+          id: crypto.randomUUID(),
+          createdAt: new Date(createdAt),
+          receiptId,
+          noteEventId: null,
+          messageId,
+          outcome,
+          reason: null,
+          amountSats: 450,
+          amountChf,
+          receiptPubkey: null,
+          receipt: { id: receiptId, kind: 9735 },
+        });
+      const grantChf = async (sats: number): Promise<(string | null)[]> =>
+        (await store.listLoanLedger(payerId))
+          .filter((row) => row.kind === 'grant' && row.sats === sats)
+          .map((row) => row.amountChf);
+      await recordIngest('2026-06-03T00:00:00.000Z', 'indexed', '4.50', loanId);
+      await recordIngest('2026-06-04T00:00:00.000Z', 'indexed', '1.00', loanId);
+      expect(await grantChf(450)).toEqual(['4.50']);
+      await recordIngest('2026-06-02T00:00:00.000Z', 'indexed', '77.77', otherId);
+      expect(await grantChf(450)).toEqual(['4.50']);
+      await recordIngest('2026-06-01T00:00:00.000Z', 'rejected', '99.99', loanId);
+      expect(await grantChf(450)).toEqual(['4.50']);
+      expect(await store.listCreditPayers(loanId)).toEqual([
+        {
+          accountId: payerId,
+          sats: 450,
+          usd: null,
+          chf: '4.50',
+          eur: null,
+          php: null,
+        },
+      ]);
+      expect(await store.recordZapReceipt(bareReceiptId, loanId, 8, null)).toBe(true);
+      await store.updateZapReceiptGift(bareReceiptId, { payerAccountId: payerId });
+      const bareFiat = (await store.listLoanLedger(payerId))
+        .filter((row) => row.kind === 'grant' && row.sats === 8)
+        .map((row) => ({
+          amountUsd: row.amountUsd,
+          amountChf: row.amountChf,
+          amountEur: row.amountEur,
+          amountPhp: row.amountPhp,
+        }));
+      expect(bareFiat).toEqual([
+        { amountUsd: null, amountChf: null, amountEur: null, amountPhp: null },
+      ]);
+      await store.markRepaymentPaid({
+        messageId: loanId,
+        dayIndex: 0,
+        recipientAccountId: payerId,
+        dueSats: 40,
+        paidAt: new Date('2026-06-05T00:00:00.000Z'),
+      });
+      const repaymentFiat = (await store.listLoanLedger(payerId))
+        .filter((row) => row.kind === 'repayment' && row.sats === 40)
+        .map((row) => ({
+          amountUsd: row.amountUsd,
+          amountChf: row.amountChf,
+          amountEur: row.amountEur,
+          amountPhp: row.amountPhp,
+        }));
+      expect(repaymentFiat).toEqual([
+        { amountUsd: null, amountChf: null, amountEur: null, amountPhp: null },
+      ]);
+    } finally {
+      if (ready) {
+        await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1', [receiptId]);
+        await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1', [loanId]);
+        await client.execute('DELETE FROM message_repayment WHERE message_id = $1', [loanId]);
+        await client.execute('DELETE FROM message WHERE id = $1 OR id = $2', [loanId, otherId]);
+        await client.execute('DELETE FROM account WHERE id = $1 OR id = $2', [authorId, payerId]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 /** Every table `mergeAccounts` names, so the merge runs end to end. */
 async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateAuthSchema(client);

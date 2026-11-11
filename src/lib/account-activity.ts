@@ -5,11 +5,16 @@
  * Donation series count confirmed forum zaps on non-loan notes, plus house
  * gifts of kind daily and welcome. Loans (`goalRepayable === true`), repayment
  * invoices, and moderator stipends stay out of `donatedSats` / `receivedSats`.
- * Loan series are not `buildGiftStats`: balances can fall, only movement days
- * are emitted, and every fiat field is JSON `null` because a loan movement
- * stores no fiat figure. Public JSON never includes invoices, payment
- * hashes, or nsec. Does not change `GET /gifts/stats` (that route remains house
- * outbound only).
+ * Loan series are not `buildGiftStats`: balances can fall, and only movement
+ * days are emitted. Each loan fiat field is the signed sum of the stored
+ * grant amounts for that currency. A grant amount is the oldest indexed
+ * ingest line of that receipt on the same note, the amount fixed when it
+ * was paid. A later ingest does not replace it. A repayment stores no fiat
+ * figure, so it does not change that sum. A day whose movements all lack a
+ * currency is JSON `null` for it and does not clear the cumulative. No rate
+ * book is read.
+ * Public JSON never includes invoices, payment hashes, or nsec. Does not
+ * change `GET /gifts/stats` (that route remains house outbound only).
  */
 
 import type { Account } from '@/lib/auth/store';
@@ -56,9 +61,15 @@ export interface AccountActivity {
   owedSats: number;
   /** Sats other people still owe this account (Guthaben). */
   creditSats: number;
-  /** UTC days with an owed movement; cumulative may fall; no gap days. */
+  /**
+   * UTC days with an owed movement. No gap days. Cumulative sats may fall.
+   * Fiat is the signed sum of stored grant amounts; a missing currency stays null.
+   */
   owedOverTime: SpendDay[];
-  /** UTC days with a credit movement; cumulative may fall; no gap days. */
+  /**
+   * UTC days with a credit movement. No gap days. Cumulative sats may fall.
+   * Fiat is the signed sum of stored grant amounts; a missing currency stays null.
+   */
   creditOverTime: SpendDay[];
   /** Quote metadata (always present, including empty activity). */
   fx: GiftStatsFx;
@@ -178,14 +189,20 @@ export function matchConfirmedGivenZaps(
  * username, once the in-app wallet is verified). A loan is a note with
  * `goalRepayable === true`. Self-zaps on a non-loan note count on both sides.
  * Loan series come from `listLoanLedger`: grants raise a side, repayments lower
- * it, balances are not clamped, and only movement days are emitted. A loan
- * movement stores no fiat figure, so every loan USD/CHF/EUR/PHP field is JSON
- * `null`; loan series carry sats and BTC only. Does not change
- * `GET /gifts/stats`. Empty input (no donations and no loan movements) is
- * zeros. Amounts are the stored figures. A missing stored amount stays null
- * and is not priced from a daily close. Donation series (`donatedOverTime` /
- * `receivedOverTime`) are the same `spendOverTime` day objects as
- * `GET /gifts/stats`.
+ * it, balances are not clamped, and only movement days are emitted. A grant's
+ * stored USD/CHF/EUR/PHP is the oldest indexed ingest line of that receipt on
+ * the same note, the amount fixed when it was paid. A later ingest does not
+ * replace it. Those amounts are summed per UTC day with the same rule as a gift
+ * series: the day is the sum of movements that stored that currency, and all
+ * missing is `null`. The cumulative is the running sum of days that stored a
+ * value. A `null` day does not clear it. Before the first stored value it is
+ * `null`. The sign matches the sats: a grant adds, a repayment subtracts.
+ * A repayment has no stored fiat today, so it leaves the fiat cumulative
+ * unchanged. Does not change `GET /gifts/stats`. Empty input (no donations and
+ * no loan movements) is zeros. Amounts are the stored figures. A missing
+ * stored amount stays null and is not priced from a daily close. Donation
+ * series (`donatedOverTime` / `receivedOverTime`) are the same `spendOverTime`
+ * day objects as `GET /gifts/stats`.
  *
  * @param args - Account, stores, BTC-USD rate book, optional USD→CHF/EUR/PHP
  *   book, and clock. The books are not read.
@@ -280,10 +297,88 @@ function compareLoanMovements(a: LoanLedgerMovement, b: LoanLedgerMovement): num
   return loanKindRank(a.kind) - loanKindRank(b.kind);
 }
 
+/** Two-decimal stored amount. Anything else, including a missing string, is absent. */
+const STORED_FIAT_RE = /^\d+\.\d{2}$/;
+
+/**
+ * Cents of one stored loan amount.
+ *
+ * Parsed as bigint so a `numeric(20, 2)` column stays exact. A missing string
+ * or any other shape stays `null` and is not filled from sats or a rate.
+ *
+ * @param value - Stored decimal, or `null`.
+ * @returns Integer cents, or `null` when the figure is missing.
+ */
+function loanCents(value: string | null): bigint | null {
+  if (value === null || !STORED_FIAT_RE.test(value)) {
+    return null;
+  }
+  return BigInt(value.replace('.', ''));
+}
+
+/**
+ * Signed cents of one movement. A grant adds. A repayment subtracts.
+ *
+ * @param movement - Ledger row.
+ * @param value - That row's stored amount for one currency.
+ * @returns Signed cents, or `null` when this movement did not store the currency.
+ */
+function signedLoanCents(movement: LoanLedgerMovement, value: string | null): bigint | null {
+  const cents = loanCents(value);
+  if (cents === null) {
+    return null;
+  }
+  return movement.kind === 'grant' ? cents : -cents;
+}
+
+/**
+ * Add cents that are present. A null side is skipped. Both null stays null.
+ *
+ * @param left - Running total, or null when nothing stored has been seen.
+ * @param right - This figure's cents, or null when it has none.
+ * @returns The sum of the figures that exist.
+ */
+function addLoanCents(left: bigint | null, right: bigint | null): bigint | null {
+  if (left === null) {
+    return right;
+  }
+  if (right === null) {
+    return left;
+  }
+  return left + right;
+}
+
+/**
+ * Format signed cents as `-?\d+\.\d{2}`.
+ *
+ * @param cents - Integer cents, or `null`.
+ * @returns Two-decimal string, or `null`.
+ */
+function formatLoanFiat(cents: bigint | null): string | null {
+  if (cents === null) {
+    return null;
+  }
+  const negative = cents < 0n;
+  const digits = (negative ? -cents : cents).toString().padStart(3, '0');
+  const text = `${digits.slice(0, -2)}.${digits.slice(-2)}`;
+  return negative ? `-${text}` : text;
+}
+
+/** Running fiat cents of one loan side. A null currency has not been stored yet. */
+interface LoanFiatRunning {
+  usd: bigint | null;
+  chf: bigint | null;
+  eur: bigint | null;
+  php: bigint | null;
+}
+
 /**
  * Outstanding balance series for one loan side.
  *
- * A movement stores no fiat figure, so every USD/CHF/EUR/PHP field is `null`.
+ * Fiat follows the gift-series rule on {@link SpendDay}: a day's value is the
+ * sum of movements that stored that currency, and all missing is `null`. The
+ * cumulative is the running sum of those days. A `null` day does not clear it.
+ * Before the first stored value it is `null`. The sign matches the sats.
  *
  * @param ledger - Sorted grant/repayment movements.
  * @param side - `owed` or `credit` flag on each row.
@@ -294,7 +389,10 @@ function buildLoanSide(
   side: 'owed' | 'credit',
 ): { balance: number; overTime: SpendDay[] } {
   let balance = 0;
-  const byDay = new Map<string, { net: number; count: number; balanceAfter: number }>();
+  const byDay = new Map<
+    string,
+    { net: number; count: number; balanceAfter: number; fiat: LoanFiatRunning }
+  >();
   for (const movement of ledger) {
     const onSide = side === 'owed' ? movement.owed : movement.credit;
     if (!onSide) {
@@ -303,14 +401,30 @@ function buildLoanSide(
     const signed = movement.kind === 'grant' ? movement.sats : -movement.sats;
     balance += signed;
     const day = movement.at.toISOString().slice(0, 10);
-    const bucket = byDay.get(day) ?? { net: 0, count: 0, balanceAfter: 0 };
+    const bucket = byDay.get(day) ?? {
+      net: 0,
+      count: 0,
+      balanceAfter: 0,
+      fiat: { usd: null, chf: null, eur: null, php: null },
+    };
     bucket.net += signed;
     bucket.count += 1;
     bucket.balanceAfter = balance;
+    bucket.fiat = {
+      usd: addLoanCents(bucket.fiat.usd, signedLoanCents(movement, movement.amountUsd)),
+      chf: addLoanCents(bucket.fiat.chf, signedLoanCents(movement, movement.amountChf)),
+      eur: addLoanCents(bucket.fiat.eur, signedLoanCents(movement, movement.amountEur)),
+      php: addLoanCents(bucket.fiat.php, signedLoanCents(movement, movement.amountPhp)),
+    };
     byDay.set(day, bucket);
   }
   const overTime: SpendDay[] = [];
+  const cumulative: LoanFiatRunning = { usd: null, chf: null, eur: null, php: null };
   for (const [day, bucket] of byDay) {
+    cumulative.usd = addLoanCents(cumulative.usd, bucket.fiat.usd);
+    cumulative.chf = addLoanCents(cumulative.chf, bucket.fiat.chf);
+    cumulative.eur = addLoanCents(cumulative.eur, bucket.fiat.eur);
+    cumulative.php = addLoanCents(cumulative.php, bucket.fiat.php);
     overTime.push({
       day,
       giftCount: bucket.count,
@@ -319,14 +433,14 @@ function buildLoanSide(
       cumulativeSats: bucket.balanceAfter,
       btc: signedBtcString(bucket.net),
       cumulativeBtc: signedBtcString(bucket.balanceAfter),
-      usd: null,
-      cumulativeUsd: null,
-      chf: null,
-      cumulativeChf: null,
-      eur: null,
-      cumulativeEur: null,
-      php: null,
-      cumulativePhp: null,
+      usd: formatLoanFiat(bucket.fiat.usd),
+      cumulativeUsd: formatLoanFiat(cumulative.usd),
+      chf: formatLoanFiat(bucket.fiat.chf),
+      cumulativeChf: formatLoanFiat(cumulative.chf),
+      eur: formatLoanFiat(bucket.fiat.eur),
+      cumulativeEur: formatLoanFiat(cumulative.eur),
+      php: formatLoanFiat(bucket.fiat.php),
+      cumulativePhp: formatLoanFiat(cumulative.php),
     });
   }
   return { balance, overTime };
