@@ -828,6 +828,56 @@ describe('GET /fond/summary', () => {
     });
   });
 
+  it('returns zeros and does not read wallet or payouts for a basis account with the Fond username', async () => {
+    const { app, auth, payouts, walletStore } = await makeApp({ seedFond: false });
+    await fondAccount(auth, { role: 'basis' });
+    const paymentTotals = vi.spyOn(walletStore, 'paymentTotals');
+    const latestBalance = vi.spyOn(walletStore, 'latestBalance');
+    const paidTotals = vi.spyOn(payouts, 'paidTotals');
+
+    const res = await app.request('/fond/summary');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      username: FOND,
+      receivedSats: 0,
+      paidOutSats: 0,
+      feesSats: 0,
+      balanceSats: null,
+      balanceSyncedAt: null,
+      payoutsPaid: 0,
+      payoutsPaidUsd: '0.00',
+    });
+    expect(paymentTotals).not.toHaveBeenCalled();
+    expect(latestBalance).not.toHaveBeenCalled();
+    expect(paidTotals).not.toHaveBeenCalled();
+  });
+
+  it('returns zeros and does not read wallet or payouts for the platform account with the Fond username', async () => {
+    const { app, auth, payouts, walletStore } = await makeApp({ seedFond: false });
+    await fondAccount(auth, { role: 'founder', isPlatform: true });
+    const paymentTotals = vi.spyOn(walletStore, 'paymentTotals');
+    const latestBalance = vi.spyOn(walletStore, 'latestBalance');
+    const paidTotals = vi.spyOn(payouts, 'paidTotals');
+
+    const res = await app.request('/fond/summary');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      username: FOND,
+      receivedSats: 0,
+      paidOutSats: 0,
+      feesSats: 0,
+      balanceSats: null,
+      balanceSyncedAt: null,
+      payoutsPaid: 0,
+      payoutsPaidUsd: '0.00',
+    });
+    expect(paymentTotals).not.toHaveBeenCalled();
+    expect(latestBalance).not.toHaveBeenCalled();
+    expect(paidTotals).not.toHaveBeenCalled();
+  });
+
   it('sums completed movements, latest balance, and paid payouts', async () => {
     const { app, payouts, walletStore } = await makeApp();
     await walletStore.upsertPayments([

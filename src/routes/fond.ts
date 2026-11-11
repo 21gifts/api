@@ -327,7 +327,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       }
       try {
         const account = await deps.authStore.getAccountByUsername(deps.fondUsername);
-        if (account === undefined) {
+        if (account === undefined || !canSignFondPayouts(account, deps.fondUsername)) {
           return c.json(
             {
               username: deps.fondUsername,
