@@ -46,6 +46,7 @@ import { debugApiLogRoutes } from '@/routes/debug-api-log';
 import { debugDiagnosticsRoutes } from '@/routes/debug-diagnostics';
 import { diagnosticsRoutes } from '@/routes/diagnostics';
 import { debugDbRoutes } from '@/routes/debug-db';
+import { debugWalletRoutes } from '@/routes/debug-wallet';
 import type { DebugDbStore } from '@/lib/debug-db';
 import { assertDistinctDebugTokens } from '@/lib/debug-token';
 import type { MergeDb } from '@/lib/account-merge';
@@ -177,13 +178,14 @@ export interface AppDeps {
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
    * `POST /debug/trust-edges`, `POST /debug/shop-keys`,
    * `POST /debug/shop-notes`, and `POST /debug/passkey-renew/reopen`
-   * return 503. `GET /debug/db` returns 503 when this token and
-   * `debugReadToken` are both unset or blank.
+   * return 503. `GET /debug/db` and `GET /debug/accounts/:id/wallet` return
+   * 503 when this token and `debugReadToken` are both unset or blank.
    */
   debugToken?: string;
   /**
-   * Read-only bearer for `GET /debug/db`, `GET /funding/goal`, the operator staff GET reads,
-   * and `GET /funding/daily-roster/links`
+   * Read-only bearer for `GET /debug/db`, `GET /debug/accounts/:id/wallet`,
+   * `GET /funding/goal`, the operator staff GET reads, and
+   * `GET /funding/daily-roster/links`
    * (default: `process.env.DEBUG_READ_TOKEN`).
    * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
    * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
@@ -515,7 +517,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`),
  *   walletStore (optional; default {@link InMemoryWalletStore}; mounts
- *   `POST /me/wallet/report` and `GET /wallets/stats`; SQL boot injects
+ *   `POST /me/wallet/report`, `GET /wallets/stats`, and
+ *   `GET /debug/accounts/:id/wallet`; SQL boot injects
  *   {@link PostgresWalletStore}),
  *   and memberEventStore (optional; default {@link InMemoryMemberEventStore};
  *   mounts `POST /me/events`; SQL boot injects
@@ -909,6 +912,16 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route(
     '/lightning-address',
     lightningAddressRoutes({ cache: lnAddressCache, now, fetchImpl }),
+  );
+  app.route(
+    '/debug/accounts',
+    debugWalletRoutes({
+      walletStore,
+      authStore: store,
+      debugToken,
+      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+      now,
+    }),
   );
   app.route(
     '/debug/accounts',

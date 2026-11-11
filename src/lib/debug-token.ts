@@ -54,8 +54,9 @@ export function assertDistinctDebugTokens(
 }
 
 /**
- * Classify a Bearer header for `GET /debug/db` and, through
- * {@link isOperatorBearer}, for the operator reads on staff GET routes and
+ * Classify a Bearer header for `GET /debug/db` and
+ * `GET /debug/accounts/:id/wallet` and, through {@link isOperatorBearer},
+ * for the operator reads on staff GET routes and
  * `GET /funding/daily-roster/links`.
  *
  * Trim both tokens. Both empty → `unconfigured`. Otherwise the write token

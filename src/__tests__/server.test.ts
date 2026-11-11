@@ -229,6 +229,45 @@ describe('createApp', () => {
     expect(res.status).toBe(503);
   });
 
+  it('mounts the read-only wallet route before the write-token debug group', async () => {
+    const authStore = new InMemoryAuthStore();
+    const accountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await authStore.createAccount({
+      id: accountId,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1_700_000_000_000,
+      rulesAgreedAt: 1_700_000_000_000,
+    });
+    const walletStore = new InMemoryWalletStore();
+    await walletStore.recordBalance({
+      id: 'snapshot-1',
+      accountId,
+      balanceSats: 1000,
+      syncedAt: new Date(1_700_000_000_000),
+      receivedAt: new Date(1_700_000_000_000),
+    });
+    const app = createApp({
+      authStore,
+      walletStore,
+      debugToken: 'write-token',
+      debugReadToken: 'read-token',
+    });
+    const res = await app.request(`/debug/accounts/${accountId}/wallet`, {
+      headers: { authorization: 'Bearer read-token' },
+    });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      accountId,
+      balance: { balanceSats: 1000 },
+      payments: [],
+    });
+  });
+
   it('dumps rate tables on GET /debug/dump', async () => {
     const app = createApp({
       debugToken: 'secret',
