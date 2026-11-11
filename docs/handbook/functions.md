@@ -3771,9 +3771,9 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: roleRank
 
-- **Purpose:** Integer rank of an `AccountRole` from the rank map (`basis` = 0, `verified` = 1, `moderator` = 2, `software_developer` = 3, `fond` = 3, `initiator` = 4, `founder` = 5). `ROLE_ORDER` is the identity list in the same order.
+- **Purpose:** Integer rank of an `AccountRole` from the rank map (`basis` = 0, `verified` = 1, `moderator` = 2, `fond` = 3, `software_developer` = 4, `initiator` = 5, `founder` = 6). `ROLE_ORDER` is the identity list in the same order.
 - **Inputs:** `role` (`AccountRole`: `basis` \| `verified` \| `moderator` \| `software_developer` \| `fond` \| `initiator` \| `founder`).
-- **Returns / side effects:** Integer 0–5. No I/O.
+- **Returns / side effects:** Integer 0–6. No I/O.
 - **Used by:** `roleAtLeast`.
 
 ## Function: roleAtLeast
@@ -3827,7 +3827,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: buildTrustChain
 
-- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are accounts at least verified (never `basis`), sorted founder, initiator, fond, software developer, moderator, then verified, then oldest `createdAt`, then `id`; every chain role has a rank, including `fond`. Groups stored edges by `subjectId` and projects at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show. Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when the live subject is at least a moderator (`roleAtLeast(subject.role, 'moderator')`). Never invents edges; `moderator_confirm` and `moderator_reject` are omitted; a pending propose (subject still `verified`) stays private; later appoint, confirm, or propose do not replace an earlier eligible contact; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
+- **Purpose:** Project live accounts and stored trust edges to the public graph. Nodes are accounts at least verified (never `basis`), sorted founder, initiator, software developer, fond, moderator, then verified, then oldest `createdAt`, then `id`; every chain role has a rank, including `fond`. Groups stored edges by `subjectId` and projects at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show. Eligible: `verify`, `moderator_appoint`, and `moderator_propose` only when the live subject is at least a moderator (`roleAtLeast(subject.role, 'moderator')`). Never invents edges; `moderator_confirm` and `moderator_reject` are omitted; a pending propose (subject still `verified`) stays private; later appoint, confirm, or propose do not replace an earlier eligible contact; omits lightning addresses, view keys, and linking keys. A node with no stored incoming edge stays disconnected.
 - **Inputs:** `accounts` (`readonly Account[]`), `edges` (`readonly TrustEdge[]`).
 - **Returns / side effects:** `{ nodes, edges }` (`TrustChain`). No I/O.
 - **Used by:** `trustChainRoutes` (`GET /trust-chain`).

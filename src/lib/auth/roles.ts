@@ -5,8 +5,8 @@ export const ROLE_ORDER: readonly AccountRole[] = [
   'basis',
   'verified',
   'moderator',
-  'software_developer',
   'fond',
+  'software_developer',
   'initiator',
   'founder',
 ];
@@ -15,19 +15,19 @@ const ROLE_RANK: Record<AccountRole, number> = {
   basis: 0,
   verified: 1,
   moderator: 2,
-  software_developer: 3,
   fond: 3,
-  initiator: 4,
-  founder: 5,
+  software_developer: 4,
+  initiator: 5,
+  founder: 6,
 };
 
 /**
  * Rank of `role` from the rank map (basis 0, verified 1, moderator 2,
- * software_developer 3, fond 3, initiator 4, founder 5). {@link ROLE_ORDER}
+ * fond 3, software_developer 4, initiator 5, founder 6). {@link ROLE_ORDER}
  * is the identity list.
  *
  * @param role - Live account role.
- * @returns Integer rank 0–5.
+ * @returns Integer rank 0–6.
  */
 export function roleRank(role: AccountRole): number {
   return ROLE_RANK[role];

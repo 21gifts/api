@@ -319,7 +319,7 @@ describe('buildTrustChain', () => {
     );
   });
 
-  it('sorts founder, initiator, fond, software developer, moderator, then verified; oldest createdAt then id', () => {
+  it('sorts founder, initiator, software developer, fond, moderator, then verified; oldest createdAt then id', () => {
     const verifiedLate = account({ id: 'v2', role: 'verified', createdAt: 3, name: 'V2' });
     const verifiedEarly = account({ id: 'v1', role: 'verified', createdAt: 2, name: 'V1' });
     const verifiedTieHigh = account({ id: 'v9', role: 'verified', createdAt: 2, name: 'V9' });
@@ -361,16 +361,16 @@ describe('buildTrustChain', () => {
       'f1',
       'f2',
       'i',
-      'd',
       's',
+      'd',
       'm',
       'v1',
       'v9',
       'v2',
     ]);
     expect(chain.nodes[2]).toEqual({ id: 'i', name: 'Init', role: 'initiator' });
-    expect(chain.nodes[3]).toEqual({ id: 'd', name: 'Fond', role: 'fond' });
-    expect(chain.nodes[4]).toEqual({ id: 's', name: 'Dev', role: 'software_developer' });
+    expect(chain.nodes[3]).toEqual({ id: 's', name: 'Dev', role: 'software_developer' });
+    expect(chain.nodes[4]).toEqual({ id: 'd', name: 'Fond', role: 'fond' });
     expect(chain.nodes[0]).toEqual({ id: 'f1', name: 'F1', role: 'founder' });
     expect(chain.nodes[0]).not.toHaveProperty('lightningAddress');
     expect(chain.nodes[0]).not.toHaveProperty('viewKey');

@@ -59,7 +59,7 @@ export interface TrustChainEdge {
 
 /** Public trust graph. */
 export interface TrustChain {
-  /** Chain nodes (founder, initiator, fond, software developer, moderator, then verified). */
+  /** Chain nodes (founder, initiator, software developer, fond, moderator, then verified). */
   nodes: TrustChainNode[];
   /** Stored public edges whose endpoints are in `nodes`. */
   edges: TrustChainEdge[];
@@ -120,8 +120,8 @@ export interface TrustEdgeJson {
 const ROLE_RANK: Record<TrustChainNode['role'], number> = {
   founder: 0,
   initiator: 1,
-  fond: 2,
-  software_developer: 3,
+  software_developer: 2,
+  fond: 3,
   moderator: 4,
   verified: 5,
 };
@@ -140,7 +140,7 @@ export function isStaffRole(role: AccountRole): boolean {
  * Project stored accounts and edges to the public trust graph.
  *
  * Nodes are accounts at least verified (never `basis`), sorted founder →
- * initiator → fond → software developer → moderator → verified, then oldest
+ * initiator → software developer → fond → moderator → verified, then oldest
  * `createdAt`, then `id`.
  * Groups stored edges by `subjectId` and projects
  * at most one incoming edge per subject: the oldest eligible sibling
@@ -398,7 +398,7 @@ function compareTrustEdgesOldestFirst(a: TrustEdge, b: TrustEdge): number {
   return 0;
 }
 
-/** Founder, initiator, fond, software developer, moderator, verified; oldest `createdAt`, then `id`. */
+/** Founder, initiator, software developer, fond, moderator, verified; oldest `createdAt`, then `id`. */
 function compareChainAccounts(a: Account, b: Account): number {
   const aRole = a.role as TrustChainNode['role'];
   const bRole = b.role as TrustChainNode['role'];

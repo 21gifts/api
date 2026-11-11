@@ -361,7 +361,7 @@ memory otherwise (a memory boot always starts from `LOGINS_OPEN_DEFAULT`).
 ## Role hierarchy
 
 Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2,
-`software_developer` 3, `fond` 3, `initiator` 4, `founder` 5. A higher rank
+`fond` 3, `software_developer` 4, `initiator` 5, `founder` 6. A higher rank
 can always do and see everything a lower rank can; equal ranks can do the
 same things. Every route that names a role names the **minimum** role:
 "Bearer (moderator+)" means that rank or higher, "Bearer (verified+)" means

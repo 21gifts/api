@@ -14,8 +14,8 @@ const roles: readonly AccountRole[] = [
   'basis',
   'verified',
   'moderator',
-  'software_developer',
   'fond',
+  'software_developer',
   'initiator',
   'founder',
 ];
@@ -26,8 +26,8 @@ describe('ROLE_ORDER', () => {
       'basis',
       'verified',
       'moderator',
-      'software_developer',
       'fond',
+      'software_developer',
       'initiator',
       'founder',
     ]);
@@ -39,10 +39,10 @@ describe('roleRank', () => {
     expect(roleRank('basis')).toBe(0);
     expect(roleRank('verified')).toBe(1);
     expect(roleRank('moderator')).toBe(2);
-    expect(roleRank('software_developer')).toBe(3);
     expect(roleRank('fond')).toBe(3);
-    expect(roleRank('initiator')).toBe(4);
-    expect(roleRank('founder')).toBe(5);
+    expect(roleRank('software_developer')).toBe(4);
+    expect(roleRank('initiator')).toBe(5);
+    expect(roleRank('founder')).toBe(6);
   });
 });
 
@@ -80,7 +80,7 @@ describe('roleAtLeast', () => {
       ['fond', 'basis', true],
       ['fond', 'verified', true],
       ['fond', 'moderator', true],
-      ['fond', 'software_developer', true],
+      ['fond', 'software_developer', false],
       ['fond', 'fond', true],
       ['fond', 'initiator', false],
       ['fond', 'founder', false],
@@ -109,6 +109,12 @@ describe('roleAtLeast', () => {
   it('lets fond inherit every moderator right', () => {
     expect(roleAtLeast('fond', 'moderator')).toBe(true);
     expect(roleAtLeast('fond', 'verified')).toBe(true);
+  });
+
+  it('ranks the software developer above fond and below initiator', () => {
+    expect(roleAtLeast('software_developer', 'fond')).toBe(true);
+    expect(roleAtLeast('fond', 'software_developer')).toBe(false);
+    expect(roleAtLeast('software_developer', 'initiator')).toBe(false);
   });
 });
 

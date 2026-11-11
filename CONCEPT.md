@@ -143,7 +143,7 @@ and will be replaced by a non-custodial setup. Receiving stays non-custodial
 ### Roles
 
 One exclusive `account.role` per account. Ranks: `basis` 0, `verified` 1,
-`moderator` 2, `software_developer` 3, `fond` 3, `initiator` 4, `founder` 5.
+`moderator` 2, `fond` 3, `software_developer` 4, `initiator` 5, `founder` 6.
 A higher rank can always do and see everything a lower rank can; equal ranks
 can do the same things. Permission text names the minimum rank only. Do not
 write "moderator or initiator" or „Moderator oder Initiator“. The daily payout
@@ -180,7 +180,7 @@ row (`createdAt` desc, then `id` desc), both without changing `role`.
 | Verified           | Everything Basis can, plus a forum tag: a moderator physically met this person. Not a verified wallet. May post and reply without a Bitcoin payment.                                                                                                                          |
 | Moderator          | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag. No moderator-group payout for group messages unless on the moderator roster. |
 | Software Developer | Everything Moderator can, including the closed Moderators group and every moderator permission. No moderator-group payout. Cannot edit the daily payout roster. Forum tag.                                                                                                    |
-| Initiator          | Rank 4, above the software developer and moderator. Can edit the daily payout roster. Forum tag.                                                                                                                                                                              |
+| Initiator          | Rank 5, above the software developer, fond and moderator. Can edit the daily payout roster. Forum tag.                                                                                                                                                                        |
 | Founder            | Everything Initiator can, plus appointing moderators directly. Forum tag.                                                                                                                                                                                                     |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
