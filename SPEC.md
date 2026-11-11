@@ -1221,9 +1221,15 @@ local sections and then re-reads:
    too: `check` `body` for an HTTP 200 whose body does not parse, `http`
    for a request sent without an HTTP 200 answer (another 2xx included),
    and `budget` when no request could be sent.
-7. For a charge, none kept → stop and start the 60 s no-pair wait. For a
-   payer, none kept is not an error: the payment is already open
-   Lightning-only, and the offers fill inserts no second quote.
+7. For a charge, none kept → stop and start the 60 s no-pair wait. While a charge is pending, the
+   pay link stays pinned and `POST /pay/:username/payment` answers order 4 after the account lookup
+   or at the creation-lock recheck before the no-pair wait, counters, mint, and insert; inside the
+   insert transaction, its locks come first, the 16 s or client-abort exit answers order 9, and
+   only a transaction that passes that exit can then answer order 4 for a pending charge. Order 7
+   applies during the
+   wait only when no charge is pending. For a payer, none kept is not an
+   error: the payment is already open Lightning-only, and the offers fill
+   inserts no second quote.
 8. In one transaction that first takes the payment hash claim
    (`SELECT pg_advisory_xact_lock($1, $2)`: a fixed namespace and the first
    32 bits of the hash as a signed integer; an in-process map shared with
