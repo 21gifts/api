@@ -172,7 +172,8 @@ describe('issueSparkInvoice', () => {
       markSettled: () => Promise.resolve(false),
       issueMember: () => Promise.resolve(),
       listOpenMember: () => Promise.resolve([]),
-      markMemberNotified: () => Promise.resolve(false),
+      claimMemberNotified: () => Promise.resolve(false),
+      releaseMemberNotified: () => Promise.resolve(false),
       pruneMember: () => Promise.resolve(0),
     };
     expect(await issueSparkInvoice({ now: () => 1, sparkInvoices: store }, wallet, zap)).toBeNull();

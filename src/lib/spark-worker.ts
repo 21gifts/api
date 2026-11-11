@@ -129,18 +129,26 @@ async function settleRow(
 }
 
 /**
- * Push for one finalized member invoice, then mark it notified.
+ * Claim one finalized member invoice, then push for it.
  *
- * The push goes through `notifyPaymentReceived` with no zap request and the
- * SHA-256 hex of the invoice string as its payment key, so the
- * once-per-payment claim holds across ticks and restarts. Every outcome marks
- * the row notified and logs `payment_received` with that outcome; a rejecting
- * call logs `payment_received.failed` and leaves the row open for the next tick.
+ * The coordinator call can take a while, so the row is claimed with a fresh
+ * clock reading first: only a row that still exists, is `open`, and has not
+ * expired (it may have been deleted at the cap or pruned meanwhile) moves to
+ * `notified`, and only that claim leads to a push. The push goes through
+ * `notifyPaymentReceived` with no zap request and the SHA-256 hex of the
+ * invoice string as its payment key, so the once-per-payment claim holds
+ * across ticks and restarts. Every outcome logs `payment_received` with that
+ * outcome; a rejecting call logs `payment_received.failed` and hands the row
+ * back to `open` for the next tick. A process that stops between the claim and
+ * the push leaves the row `notified` without a push.
  *
  * @param deps - Worker collaborators.
- * @param row - The open member row.
+ * @param row - The open member row as listed before the coordinator call.
  */
 async function notifyMemberRow(deps: SparkWorkerDeps, row: MemberSparkInvoiceRow): Promise<void> {
+  if (!(await deps.store.claimMemberNotified(row.invoice, new Date(deps.now())))) {
+    return;
+  }
   let outcome: PaymentReceivedOutcome;
   try {
     outcome = await deps.notifyPayment({
@@ -151,10 +159,10 @@ async function notifyMemberRow(deps: SparkWorkerDeps, row: MemberSparkInvoiceRow
     });
   } catch (error) {
     logEvent('payment_received.failed', { kind: row.kind, ...errorLogFields(error) });
+    await deps.store.releaseMemberNotified(row.invoice);
     return;
   }
   logEvent('payment_received', { outcome, kind: row.kind });
-  await deps.store.markMemberNotified(row.invoice);
 }
 
 /**
@@ -210,7 +218,8 @@ async function pollFinalized<Row extends { invoice: string }>(
  * the ingest (the payment hash is claimed once). Member rows whose
  * `expiresAt` has passed are deleted first, so an unpaid member invoice is
  * never pushed for after its window; an open one reported `finalized` gets
- * one push. Rows reported in any other status stay open.
+ * one push when it is still open and unexpired after the coordinator call.
+ * Rows reported in any other status stay open.
  *
  * @param deps - Worker collaborators.
  * @returns Resolves when every batch has been handled.

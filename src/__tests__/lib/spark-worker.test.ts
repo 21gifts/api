@@ -11,6 +11,7 @@ import { notifyPaymentReceived, type PaymentReceived } from '@/lib/payment-recei
 import { InMemoryPushStore } from '@/lib/push-store';
 import {
   InMemorySparkInvoiceStore,
+  MEMBER_SPARK_INVOICE_CAP,
   type MemberSparkInvoiceIssue,
   type SparkInvoiceIssue,
   type SparkInvoiceStore,
@@ -571,17 +572,28 @@ describe('runSparkInvoiceTick member invoices', () => {
     expect(notifyPayment).toHaveBeenCalledTimes(1);
   });
 
-  it('enqueues one push across repeated ticks and a restart that lost the notified mark', async () => {
+  it('enqueues one push across repeated ticks when a call rejects after queueing it', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const push = new InMemoryPushStore();
     const store = new InMemorySparkInvoiceStore();
     await store.issueMember(memberRow(1));
-    // The process stops after the push was queued but before the row was marked.
-    vi.spyOn(store, 'markMemberNotified').mockResolvedValueOnce(false);
+    const real = realNotify(push);
+    let calls = 0;
+    // The first call queues the push and then fails, so the row goes back to open.
+    const notifyPayment: SparkWorkerDeps['notifyPayment'] = async (payment) => {
+      calls += 1;
+      const outcome = await real(payment);
+      if (calls === 1) {
+        throw new Error('db down after enqueue');
+      }
+      return outcome;
+    };
     const fetchImpl = operator(new Map([['spark1pay1', { status: 2 }]]));
-    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment: realNotify(push) }));
-    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment: realNotify(push) }));
-    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment: realNotify(push) }));
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment }));
+    expect(await store.listOpenMember(new Date(NOW))).toHaveLength(1);
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment }));
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment }));
+    expect(calls).toBe(2);
     const outbox = await push.listAllOutbox(10);
     expect(outbox).toHaveLength(1);
     expect(JSON.parse(outbox[0]?.payload ?? '{}')).toMatchObject({
@@ -633,6 +645,41 @@ describe('runSparkInvoiceTick member invoices', () => {
     expect(await store.listOpenMember(new Date(NOW))).toEqual([]);
   });
 
+  it('does not push for a row that expired during the coordinator call', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(1));
+    let clock = NOW;
+    const answer = operator(new Map([['spark1pay1', { status: 2 }]]));
+    const fetchImpl: SparkWorkerDeps['fetchImpl'] = async (url, init) => {
+      clock = NOW - 1000 + SPARK_INVOICE_WINDOW_MS;
+      return answer(url, init);
+    };
+    const notifyPayment = vi.fn(async () => 'queued' as const);
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment, now: () => clock }));
+    expect(answer.batches).toEqual([['spark1pay1']]);
+    expect(notifyPayment).not.toHaveBeenCalled();
+    expect(await store.pruneMember(new Date(clock))).toBe(1);
+  });
+
+  it('does not push for a row dropped at the cap during the coordinator call', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(0));
+    const answer = operator(new Map([['spark1pay0', { status: 2 }]]));
+    const fetchImpl: SparkWorkerDeps['fetchImpl'] = async (url, init) => {
+      for (let n = 1; n <= MEMBER_SPARK_INVOICE_CAP; n += 1) {
+        await store.issueMember(memberRow(n, { createdAt: new Date(NOW) }));
+      }
+      return answer(url, init);
+    };
+    const notifyPayment = vi.fn(async () => 'queued' as const);
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment }));
+    expect(answer.batches).toEqual([['spark1pay0']]);
+    expect(notifyPayment).not.toHaveBeenCalled();
+    const open = (await store.listOpenMember(new Date(NOW))).map((member) => member.invoice);
+    expect(open).toHaveLength(MEMBER_SPARK_INVOICE_CAP);
+    expect(open).not.toContain('spark1pay0');
+  });
+
   it('skips a failed member batch', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const store = new InMemorySparkInvoiceStore();
@@ -661,7 +708,8 @@ describe('startSparkInvoiceWorker', () => {
       markSettled: vi.fn(),
       issueMember: vi.fn(),
       listOpenMember: vi.fn(async () => []),
-      markMemberNotified: vi.fn(),
+      claimMemberNotified: vi.fn(),
+      releaseMemberNotified: vi.fn(),
       pruneMember: vi.fn(async () => 0),
     };
     const handle = startSparkInvoiceWorker(deps(store, vi.fn()));
@@ -687,7 +735,8 @@ describe('startSparkInvoiceWorker', () => {
       markSettled: vi.fn(),
       issueMember: vi.fn(),
       listOpenMember: vi.fn(),
-      markMemberNotified: vi.fn(),
+      claimMemberNotified: vi.fn(),
+      releaseMemberNotified: vi.fn(),
       pruneMember: vi.fn(),
     };
     const handle = startSparkInvoiceWorker(deps(store, vi.fn()), 1000);

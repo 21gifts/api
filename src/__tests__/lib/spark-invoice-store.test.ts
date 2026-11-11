@@ -145,7 +145,7 @@ describe('InMemorySparkInvoiceStore member invoices', () => {
   it('does not count notified invoices against the cap', async () => {
     const store = new InMemorySparkInvoiceStore();
     await store.issueMember(member({ invoice: 'paid', createdAt: new Date(T0 - 1) }));
-    expect(await store.markMemberNotified('paid')).toBe(true);
+    expect(await store.claimMemberNotified('paid', new Date(T0))).toBe(true);
     for (let i = 0; i < MEMBER_SPARK_INVOICE_CAP; i += 1) {
       await store.issueMember(
         member({ invoice: `m${String(i).padStart(2, '0')}`, createdAt: new Date(T0) }),
@@ -155,17 +155,35 @@ describe('InMemorySparkInvoiceStore member invoices', () => {
     expect(await store.pruneMember(new Date(T0 + HOUR))).toBe(MEMBER_SPARK_INVOICE_CAP + 1);
   });
 
-  it('marks an open member invoice notified once and returns copies', async () => {
+  it('claims an open member invoice once and returns copies', async () => {
     const store = new InMemorySparkInvoiceStore();
-    expect(await store.markMemberNotified('spark1m')).toBe(false);
+    expect(await store.claimMemberNotified('spark1m', new Date(T0))).toBe(false);
     await store.issueMember(member());
     const listed = await store.listOpenMember(new Date(T0));
     listed[0]?.createdAt.setTime(0);
     listed[0]?.expiresAt.setTime(0);
     expect((await store.listOpenMember(new Date(T0)))[0]?.expiresAt.getTime()).toBe(T0 + HOUR);
-    expect(await store.markMemberNotified('spark1m')).toBe(true);
-    expect(await store.markMemberNotified('spark1m')).toBe(false);
+    expect(await store.claimMemberNotified('spark1m', new Date(T0))).toBe(true);
+    expect(await store.claimMemberNotified('spark1m', new Date(T0))).toBe(false);
     expect(await store.listOpenMember(new Date(T0))).toEqual([]);
+  });
+
+  it('does not claim an expired member invoice', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(member());
+    expect(await store.claimMemberNotified('spark1m', new Date(T0 + HOUR))).toBe(false);
+    expect(await store.listOpenMember(new Date(T0))).toHaveLength(1);
+  });
+
+  it('releases a claimed member invoice back to open once', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    expect(await store.releaseMemberNotified('spark1m')).toBe(false);
+    await store.issueMember(member());
+    expect(await store.releaseMemberNotified('spark1m')).toBe(false);
+    expect(await store.claimMemberNotified('spark1m', new Date(T0))).toBe(true);
+    expect(await store.releaseMemberNotified('spark1m')).toBe(true);
+    expect(await store.releaseMemberNotified('spark1m')).toBe(false);
+    expect(await store.listOpenMember(new Date(T0))).toHaveLength(1);
   });
 
   it('prunes member invoices that expired at or before now', async () => {
@@ -318,15 +336,29 @@ describe('PostgresSparkInvoiceStore', () => {
     expect(rows).toEqual([{ ...member({ invoice: 'i1', receiverPubkey: 'p1' }), status: 'open' }]);
   });
 
-  it('marks only an open member invoice notified', async () => {
+  it('claims only an open, unexpired member invoice', async () => {
     const sql = new MockSql();
     const store = new PostgresSparkInvoiceStore(sql);
     sql.rows = [{ invoice: 'i1' }];
-    expect(await store.markMemberNotified('i1')).toBe(true);
-    expect(sql.queries[0]?.text).toContain("WHERE invoice = $1 AND status = 'open'");
+    expect(await store.claimMemberNotified('i1', new Date(T0))).toBe(true);
+    expect(sql.queries[0]?.text).toContain(
+      "WHERE invoice = $1 AND status = 'open' AND expires_at > $2",
+    );
+    expect(sql.queries[0]?.params).toEqual(['i1', new Date(T0).toISOString()]);
+    sql.rows = [];
+    expect(await store.claimMemberNotified('i1', new Date(T0))).toBe(false);
+  });
+
+  it('releases only a notified member invoice', async () => {
+    const sql = new MockSql();
+    const store = new PostgresSparkInvoiceStore(sql);
+    sql.rows = [{ invoice: 'i1' }];
+    expect(await store.releaseMemberNotified('i1')).toBe(true);
+    expect(sql.queries[0]?.text).toContain("SET status = 'open'");
+    expect(sql.queries[0]?.text).toContain("WHERE invoice = $1 AND status = 'notified'");
     expect(sql.queries[0]?.params).toEqual(['i1']);
     sql.rows = [];
-    expect(await store.markMemberNotified('i1')).toBe(false);
+    expect(await store.releaseMemberNotified('i1')).toBe(false);
   });
 
   it('prunes expired member invoices and counts them', async () => {

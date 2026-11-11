@@ -9014,14 +9014,19 @@ that deleted invoice gets no push. Concurrent requests for one account can
 each miss the others' rows and briefly leave more open rows; the account's
 next store trims back. The same worker tick first deletes every member invoice
 whose `expires_at` has passed, then asks the coordinator about the open ones.
-For one reported `FINALIZED` it runs the receive push of
+For one reported `FINALIZED` it first claims the row: one conditional write
+moves it to `notified` only while it still exists, is `open`, and its
+`expires_at` is after a clock reading taken after the coordinator answered, so
+an invoice deleted at the cap or expired during the coordinator call gets no
+push. Only after that claim it runs the receive push of
 `POST /webhooks/lnurl` (`notifyPaymentReceived`) with the stored wallet key and
 amount, no zap request (so no sender name), and the lower-case SHA-256 hex of
-the invoice string as its payment key, logs `payment_received` with the
-outcome and `kind`, and marks the row `notified`. The push claim
-(`push_payment_received`) holds that key, so a repeated tick or a restart
-never pushes twice. A failed push call logs `payment_received.failed` and the
-row stays open for the next tick. An unpaid invoice is never pushed for.
+the invoice string as its payment key, and logs `payment_received` with the
+outcome and `kind`. The push claim (`push_payment_received`) holds that key,
+so a repeated tick or a restart never pushes twice. A failed push call logs
+`payment_received.failed` and moves the row back to `open` for the next tick;
+a process that stops between the claim and the push leaves the row `notified`
+without a push. An unpaid invoice is never pushed for.
 A boot with `DATABASE_URL` whose Spark invoice worker is off (free in-app
 payments or the LNURL server not configured) still deletes the member
 invoices whose `expires_at` has passed: once at boot and then every hour,

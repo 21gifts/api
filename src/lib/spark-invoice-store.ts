@@ -118,12 +118,25 @@ export interface SparkInvoiceStore {
    */
   listOpenMember(now: Date): Promise<MemberSparkInvoiceRow[]>;
   /**
-   * Mark an open member invoice notified.
+   * Claim a member invoice for its push: change it from `open` to `notified`
+   * only while it still exists, is `open`, and expires after `now`, in one
+   * conditional write.
    *
    * @param invoice - The `spark1…` invoice string.
-   * @returns `true` only when this call changed the row from `open`.
+   * @param now - Current time.
+   * @returns `true` only when this call claimed the row; `false` when it was
+   *   deleted (pruned, or dropped at the cap), is already `notified`, or has
+   *   expired.
    */
-  markMemberNotified(invoice: string): Promise<boolean>;
+  claimMemberNotified(invoice: string, now: Date): Promise<boolean>;
+  /**
+   * Hand a claimed member invoice back: change it from `notified` to `open`,
+   * so the next worker tick tries its push again.
+   *
+   * @param invoice - The `spark1…` invoice string.
+   * @returns `true` only when this call changed the row from `notified`.
+   */
+  releaseMemberNotified(invoice: string): Promise<boolean>;
   /**
    * Delete member invoices that expired at or before `now`.
    *
@@ -300,17 +313,33 @@ export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
   }
 
   /**
-   * Mark an open member invoice notified.
+   * Claim an open member invoice that expires after `now`.
    *
    * @param invoice - The `spark1…` invoice string.
+   * @param now - Current time.
    * @returns `true` only when this call changed the row from `open`.
    */
-  async markMemberNotified(invoice: string): Promise<boolean> {
+  async claimMemberNotified(invoice: string, now: Date): Promise<boolean> {
     const row = this.#members.get(invoice);
-    if (row === undefined || row.status !== 'open') {
+    if (row === undefined || row.status !== 'open' || row.expiresAt.getTime() <= now.getTime()) {
       return false;
     }
     this.#members.set(invoice, { ...row, status: 'notified' });
+    return true;
+  }
+
+  /**
+   * Hand a claimed member invoice back to `open`.
+   *
+   * @param invoice - The `spark1…` invoice string.
+   * @returns `true` only when this call changed the row from `notified`.
+   */
+  async releaseMemberNotified(invoice: string): Promise<boolean> {
+    const row = this.#members.get(invoice);
+    if (row === undefined || row.status !== 'notified') {
+      return false;
+    }
+    this.#members.set(invoice, { ...row, status: 'open' });
     return true;
   }
 
@@ -542,17 +571,36 @@ ORDER BY created_at ASC, invoice ASC`,
   }
 
   /**
-   * One conditional `UPDATE … WHERE status = 'open'`.
+   * One conditional `UPDATE … WHERE status = 'open' AND expires_at > now`.
    *
    * @param invoice - The `spark1…` invoice string.
+   * @param now - Current time.
    * @returns `true` only when this call changed the row from `open`.
    * @throws Propagates SQL failures.
    */
-  async markMemberNotified(invoice: string): Promise<boolean> {
+  async claimMemberNotified(invoice: string, now: Date): Promise<boolean> {
     const rows = await this.#sql.query<{ invoice: string }>(
       `UPDATE member_spark_invoice
 SET status = 'notified'
-WHERE invoice = $1 AND status = 'open'
+WHERE invoice = $1 AND status = 'open' AND expires_at > $2
+RETURNING invoice`,
+      [invoice, now.toISOString()],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * One conditional `UPDATE … WHERE status = 'notified'`.
+   *
+   * @param invoice - The `spark1…` invoice string.
+   * @returns `true` only when this call changed the row from `notified`.
+   * @throws Propagates SQL failures.
+   */
+  async releaseMemberNotified(invoice: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ invoice: string }>(
+      `UPDATE member_spark_invoice
+SET status = 'open'
+WHERE invoice = $1 AND status = 'notified'
 RETURNING invoice`,
       [invoice],
     );

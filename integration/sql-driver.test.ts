@@ -1894,8 +1894,14 @@ describe('PostgresSparkInvoiceStore member invoices', () => {
       );
       expect(first).toMatchObject({ kind: 'pay', amountSats: 21, status: 'open', expiresAt });
 
-      expect(await store.markMemberNotified(invoiceAt(1))).toBe(true);
-      expect(await store.markMemberNotified(invoiceAt(1))).toBe(false);
+      expect(await store.claimMemberNotified(invoiceAt(2), expiresAt)).toBe(false);
+      expect(await store.claimMemberNotified(invoiceAt(0), issuedAt)).toBe(false);
+      expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(true);
+      expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(false);
+      expect(await store.releaseMemberNotified(invoiceAt(1))).toBe(true);
+      expect(await store.releaseMemberNotified(invoiceAt(1))).toBe(false);
+      expect(await mine(issuedAt)).toContain(invoiceAt(1));
+      expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(true);
       expect(await mine(issuedAt)).not.toContain(invoiceAt(1));
       expect(await mine(expiresAt)).toEqual([]);
 
