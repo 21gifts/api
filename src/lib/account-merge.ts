@@ -1,4 +1,5 @@
 import type { SqlClient } from '@/lib/auth/sql';
+import { invoiceStillOpen } from '@/lib/bolt11';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import { PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
@@ -65,6 +66,11 @@ interface LegacyRepaymentRow {
   goal_term_days: number | string | null;
 }
 
+interface OpenRepaymentInvoiceRow {
+  created_at: Date | string;
+  pr: string;
+}
+
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
 
 /** Quote a catalog identifier after the strict public-schema allowlist check. */
@@ -101,10 +107,13 @@ function quoteIdentifier(identifier: string): string {
  * merged account's `held_share_box` rows: each box is sealed to the merged
  * account's id and words, so the surviving account could never open it.
  * Frozen credit snapshots are combined by message. Before either identity is
- * moved, legacy full-share repayments are reconstructed from the original
- * loan schedule and converted to canonical parts. A schedule that cannot be
- * reconstructed refuses the merge without writes. Parts from both identities
- * are then moved and reindexed without losing units or sats.
+ * moved, the merge refuses without writes when both identities gave to one
+ * credit with a settled repayment, or when a still-payable repayment invoice
+ * names the source as its recipient. Otherwise, legacy full-share repayments
+ * are reconstructed from the original loan schedule and converted to
+ * canonical parts. A schedule that cannot be reconstructed refuses the merge
+ * without writes. Parts from both identities are then moved and reindexed
+ * without losing units or sats.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -217,6 +226,78 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        ORDER BY affected.message_id`,
       accountParams,
     );
+    // Combining two givers after any repayment settled can change the rounded
+    // day slices of their combined debt. Keep the settled schedule immutable:
+    // the operator can merge only before that credit has any paid unit.
+    const settledMergeConflicts = await tx.query<{ message_id: string }>(
+      `SELECT credit.id AS message_id
+       FROM message AS credit
+       WHERE credit.goal_repayable IS TRUE
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS source_gift
+           WHERE source_gift.message_id = credit.id
+             AND source_gift.payer_account_id = $1
+             AND (
+               credit.goal_funded_at IS NULL
+               OR source_gift.recorded_at IS NULL
+               OR source_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS survivor_gift
+           WHERE survivor_gift.message_id = credit.id
+             AND survivor_gift.payer_account_id = $2
+             AND (
+               credit.goal_funded_at IS NULL
+               OR survivor_gift.recorded_at IS NULL
+               OR survivor_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
+         AND (
+           EXISTS (
+             SELECT 1 FROM message_repayment AS settled
+             WHERE settled.message_id = credit.id
+           )
+           OR EXISTS (
+             SELECT 1 FROM message_repayment_part AS settled_part
+             WHERE settled_part.message_id = credit.id
+           )
+         )
+       LIMIT 1`,
+      accountParams,
+    );
+    if (settledMergeConflicts.length > 0) {
+      return { ok: false, error: 'repayment_unavailable' };
+    }
+    // A repayment description is settlement metadata and embeds its recipient
+    // account id. Moving only the invoice foreign keys would orphan this open
+    // reservation, so wait until it is paid or expires.
+    const openRepaymentInvoices = await tx.query<OpenRepaymentInvoiceRow>(
+      `SELECT invoice.created_at, invoice.pr
+       FROM message_invoice AS invoice
+       WHERE invoice.result = 'ok'
+         AND invoice.pr IS NOT NULL
+         AND (
+           invoice.description LIKE 'repay:%:' || $1::text
+           OR invoice.description LIKE 'repayp:%:' || $1::text || ':%'
+         )
+         AND (
+           invoice.payment_hash IS NULL
+           OR NOT EXISTS (
+             SELECT 1 FROM nostr_zap_payment AS payment
+             WHERE payment.payment_hash = invoice.payment_hash
+           )
+         )
+       ORDER BY invoice.created_at, invoice.id`,
+      [input.from],
+    );
+    if (
+      openRepaymentInvoices.some((invoice) =>
+        invoiceStillOpen(invoice.pr, new Date(invoice.created_at).getTime(), Date.now()),
+      )
+    ) {
+      return { ok: false, error: 'repayment_unavailable' };
+    }
     const legacyRepayments = await tx.query<LegacyRepaymentRow>(
       `SELECT legacy.message_id, legacy.day_index, legacy.recipient_account_id,
               legacy.due_sats, legacy.paid_at, message.goal_currency,

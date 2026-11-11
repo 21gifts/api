@@ -4770,6 +4770,14 @@ cents for a fiat loan); its stored `due_sats` remains the part's sats.
 The conversion and the later collision-safe part reindexing hold the same
 per-message advisory lock as repayment settlement.
 
+Under those locks and before any write, the merge is refused when both
+identities gave to the same repayable credit and that credit has any settled
+legacy repayment or repayment part. Combining the giver shares could otherwise
+change their rounded day slices and make paid debt due again. It is also refused
+while a successful, unpaid, unexpired `repay:` or `repayp:` invoice names the
+source account as its recipient, because the recipient id embedded in that
+settlement description cannot be moved by the account foreign-key updates.
+
 An invalid body is **400**
 `{ "error": "Expected a JSON body with \"from\" and \"into\"" }`
 before the database is required. The same id is **409**
@@ -4794,6 +4802,10 @@ merge goes on. A due pending charge is not a collision and is not deleted.
 If an affected legacy repayment's exact original schedule units cannot be
 reconstructed, the merge is **409**
 `{ "error": "Repayment history is unavailable" }` and changes nothing.
+The same **409** and no changes apply to the settled dual-giver collision and
+the still-payable source-recipient repayment invoice described above. The
+merge can be retried after the invoice is paid or expires; accounts with a
+settled dual-giver credit remain separate.
 The source's paid and closed shop payments move like every other row. Every
 charge row of both accounts is locked first in id order (`SELECT id …
 WHERE account_id = $1 OR account_id = $2 ORDER BY id FOR UPDATE`), the
@@ -7699,6 +7711,12 @@ Success → **Response** `200`:
 
 `collectedAmount` is the loan-currency two-decimal string for a fiat loan, else null. `collectedSats` is the collected sat total.
 
+Debt availability is checked before the close write when the existing funded
+debt is sufficient to decide it. An early fiat close may first need to commit
+its missing-snapshot zero-cent rows. If debt is still unavailable after that
+second check, the response is **503**
+`{ "error": "Ask amount is unavailable" }` and the loan is already closed.
+
 Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. Unknown id, a non-UUID after a valid session, a note that is not a live repayable top-level ask with a term, or a caller who is not the author → **404** `{ "error": "Not found" }`. Author missing `forum.pay` → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 
 After close, every route that mints a gift or zap invoice for that note answers **409** `{ "error": "This credit no longer collects", "code": "credit_closed" }` and mints nothing. A loan that filled on its own keeps accepting gifts.
@@ -7715,7 +7733,7 @@ Same guards as `POST /messages/:id/repayment` (session, `forum.pay`, Sunday rest
 
 BTC loans take a whole positive sat string. Fiat loans take a decimal string in the loan currency with at most two decimals, comma or dot; cents are stored per [docs/fiat-amounts.md](docs/fiat-amounts.md), and each part is priced in sats at the rate `POST /messages/:id/repayment` uses now. Amount 0, negative, malformed, more than two decimals on a fiat loan, or a non-integer on a BTC loan → **400** `{ "error": "Invalid amount", "code": "invalid_amount" }`.
 
-The amount is applied to unpaid remainder shares in plan order: day ascending, then the order of the repayment list within a day. Shares whose giver cannot receive are skipped and listed in `waiting`; they never consume amount. When a wallet refuses, its unused allocation is immediately reallocated to later receivers in the same request. Every bill already created or reused earlier in that request remains a fixed reservation, consumes the requested amount, and is returned even when a later share of the same giver refuses. The last share reached may be paid partially. An open part bill is returned through the common bill path, including its Spark invoice and current-address conflict check. An oversized open part, a conflicting legacy full-share bill, or a plan made stale by another reservation before it acquired the message lock is **409** `{ "error": "A payment for this share is still open" }` and mints nothing.
+The amount is applied to unpaid remainder shares in plan order: day ascending, then the order of the repayment list within a day. Shares whose giver cannot receive are skipped and listed in `waiting`; they never consume amount. When a wallet refuses, its unused allocation is immediately reallocated to later receivers in the same request. Every bill already created or reused earlier in that request remains a fixed reservation, consumes the requested amount, and is returned even when a later share of the same giver refuses. The replacement allocation has only the unused slots of the 60-bill limit; if the requested remainder does not fit, no replacement is minted and the bills completed before the refusal are returned. The last share reached may be paid partially. An open part bill is returned through the common bill path, including its Spark invoice and current-address conflict check. Fiat open parts are validated by their reserved cents even when their fixed sats differ from today's rate; exact sat matching applies only to BTC. An oversized open part, a conflicting legacy full-share bill, or a plan made stale by another reservation before it acquired the message lock is **409** `{ "error": "A payment for this share is still open" }` and mints nothing.
 
 `max` is the sum of every unpaid remainder whose giver can receive. An amount above it is **400** `{ "error": "Amount is above what is left", "code": "amount_too_high", "maxSats": <int|null>, "maxAmount": <string|null> }` with nothing minted. `max` 0 is **400** `{ "error": "Nothing is due" }`. More than 60 parts are needed → **400** `{ "error": "Too many shares for one payment", "code": "too_many_shares", "maxSats": <int|null>, "maxAmount": <string|null> }`, where the max is the largest amount that fits in 60 bills.
 

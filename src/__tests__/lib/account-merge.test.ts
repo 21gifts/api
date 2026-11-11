@@ -71,6 +71,10 @@ interface FakeDatabaseOptions {
     eur: string | null;
     php: string | null;
   }[];
+  /** Repayable credits where both identities gave and some repayment settled. */
+  repaymentConflicts?: readonly { message_id: string }[];
+  /** Successful, unpaid source-recipient repayment invoices. */
+  openRepaymentInvoices?: readonly { created_at: Date; pr: string }[];
 }
 
 function fakeDatabase(options: FakeDatabaseOptions = {}): {
@@ -97,6 +101,12 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           }
           if (text.includes('payer_account_id IS NULL') && text.includes('SUM(r.sats)')) {
             return [{ sats: 0 }] as T[];
+          }
+          if (text.includes('FROM message AS credit') && text.includes('source_gift')) {
+            return (options.repaymentConflicts ?? []) as T[];
+          }
+          if (text.includes('FROM message_invoice AS invoice')) {
+            return (options.openRepaymentInvoices ?? []) as T[];
           }
           if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
             return [];
@@ -336,6 +346,49 @@ describe('mergeAccounts', () => {
       missingShare.queries.some((query) =>
         /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart()),
       ),
+    ).toBe(false);
+  });
+
+  it('refuses without writes when both accounts gave to a credit with a settled repayment', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const { db, queries } = fakeDatabase({
+      repaymentConflicts: [{ message_id: messageId }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    const conflict = queries.find((query) => query.text.includes('source_gift'));
+    expect(conflict?.params).toEqual([FROM, INTO]);
+    expect(conflict?.text).toContain('credit.goal_repayable IS TRUE');
+    expect(conflict?.text).toContain('source_gift.payer_account_id = $1');
+    expect(conflict?.text).toContain('survivor_gift.payer_account_id = $2');
+    expect(conflict?.text).toContain('source_gift.recorded_at <= credit.goal_funded_at');
+    expect(conflict?.text).toContain('survivor_gift.recorded_at <= credit.goal_funded_at');
+    expect(conflict?.text).toContain('FROM message_repayment AS settled');
+    expect(conflict?.text).toContain('FROM message_repayment_part AS settled_part');
+    expect(
+      queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+    ).toBe(false);
+  });
+
+  it('refuses without writes while a source-recipient repayment invoice is still payable', async () => {
+    const { db, queries } = fakeDatabase({
+      openRepaymentInvoices: [{ created_at: new Date(), pr: 'lnbc-open-repayment' }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    const open = queries.find((query) => query.text.includes('FROM message_invoice AS invoice'));
+    expect(open?.params).toEqual([FROM]);
+    expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $1::text");
+    expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $1::text || ':%'");
+    expect(open?.text).toContain('FROM nostr_zap_payment AS payment');
+    expect(
+      queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
     ).toBe(false);
   });
 

@@ -284,6 +284,7 @@ async function duePlan(
       });
       reserved += units;
     }
+    openParts.sort((a, b) => a.partIndex - b.partIndex);
     shares.push({
       dayIndex: slice.dayIndex,
       accountId: slice.accountId,
@@ -1130,11 +1131,20 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
   if (!payGate.ok) {
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
   }
+  const beforeClose = await creditOwed(deps, opened.row);
+  if (beforeClose.owed === 'unavailable' && opened.row.goalFundedAt instanceof Date) {
+    return c.json({ error: 'Ask amount is unavailable' }, 503);
+  }
   const closed = await deps.store.closeCredit(opened.row.id, new Date(opened.nowMs));
   if (closed === undefined) {
     return c.json({ error: 'Not found' }, 404);
   }
-  const { payers, unassignedSats, owed } = await creditOwed(deps, opened.row);
+  // An early fiat close freezes collected gift-time cents (including missing
+  // snapshots as zero), so its final debt always comes from a post-close read.
+  const { payers, unassignedSats, owed } =
+    opened.row.goalFundedAt === null && isFiatCredit(opened.row)
+      ? await creditOwed(deps, opened.row)
+      : beforeClose;
   if (owed === 'unavailable') {
     return c.json({ error: 'Ask amount is unavailable' }, 503);
   }
@@ -1282,7 +1292,7 @@ export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<
     }
     plannedSats += BigInt(billedSats);
   }
-  if (hasOpenBill && plannedSats > BigInt(requestedSats)) {
+  if (!plan.fiat && hasOpenBill && plannedSats > BigInt(requestedSats)) {
     return c.json({ error: OPEN_PAYMENT_BODY }, 409);
   }
   let mintAllowed: boolean | undefined;
@@ -1363,8 +1373,10 @@ export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<
             (sum, completedPart) => sum + completedPart.units,
             0n,
           );
-          allocation = allocateRepayment(
-            parsed.units - fixedUnits,
+          const remainingUnits = parsed.units - fixedUnits;
+          const remainingBillSlots = Math.max(0, REPAYMENT_BILLS_MAX - completedParts.size);
+          const replacement = allocateRepayment(
+            remainingUnits,
             allocationShares().map((allocationShare) => {
               const fixed = fixedUnitsForShare(allocationShare.dayIndex, allocationShare.accountId);
               const completedIndexes = new Set(
@@ -1394,8 +1406,16 @@ export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<
                 ),
               };
             }),
-            REPAYMENT_BILLS_MAX,
+            remainingBillSlots,
           );
+          if (
+            replacement.parts.length === remainingBillSlots &&
+            replacement.usedUnits < remainingUnits
+          ) {
+            allocation = { ...replacement, parts: [] };
+            break allocationLoop;
+          }
+          allocation = replacement;
           continue allocationLoop;
         }
         return billError(c, bill);

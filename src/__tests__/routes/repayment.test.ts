@@ -1113,7 +1113,7 @@ describe('repayment from the in-app wallet', () => {
         username,
         forumLawsDismissed: false,
         location: null,
-        viewKey: `${index}`.repeat(64).slice(0, 64),
+        viewKey: index.toString(16).padStart(64, '0'),
         createdAt: 1,
         rulesAgreedAt: 1,
         walletRequired: true,
@@ -2187,6 +2187,46 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
+  it('returns only completed bills when refusal reallocation would exceed sixty bills', async () => {
+    await withNip57(async () => {
+      const laterGivers: Giver[] = Array.from({ length: REPAYMENT_BILLS_MAX }, () => ({
+        id: crypto.randomUUID(),
+        sats: 1,
+        wallet: true,
+      }));
+      const { app, messages } = await loanSetup({
+        termDays: 1,
+        refuseUsername: 'giver1',
+        givers: [
+          { id: WALLET_GIVER, sats: 61, wallet: true },
+          { id: NO_WALLET, sats: 60, wallet: true },
+          ...laterGivers,
+        ],
+      });
+
+      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '121' }),
+      });
+      const body = (await response.json()) as {
+        amountSats: number;
+        bills: Array<{ recipientAccountId: string; amountSats: number }>;
+        waiting: Array<{ recipientAccountId: string }>;
+      };
+
+      expect(response.status).toBe(200);
+      expect(body.amountSats).toBe(61);
+      expect(body.bills[0]).toMatchObject({
+        recipientAccountId: WALLET_GIVER,
+        amountSats: 61,
+      });
+      expect(body.bills).toHaveLength(1);
+      expect(body.waiting).toEqual([expect.objectContaining({ recipientAccountId: NO_WALLET })]);
+      expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(1);
+    });
+  });
+
   it('returns the close-route authorization, storage, and debt errors', async () => {
     const rules = await readyCredit({ fundedAt: null, rules: false });
     const forbidden = await rules.app.request(`/messages/${CREDIT}/repayment/close`, {
@@ -2210,13 +2250,32 @@ describe('repayment from the in-app wallet', () => {
       goalAmount: null,
       rate: true,
     });
-    vi.spyOn(unavailable.messages, 'listCreditPayers').mockResolvedValueOnce([]);
+    vi.spyOn(unavailable.messages, 'listCreditPayers').mockResolvedValue([]);
     const noDebt = await unavailable.app.request(`/messages/${CREDIT}/repayment/close`, {
       method: 'POST',
       headers: { authorization: 'Bearer acc' },
     });
     expect(noDebt.status).toBe(503);
     expect(await noDebt.json()).toEqual({ error: 'Ask amount is unavailable' });
+    expect((await unavailable.messages.getById(CREDIT))?.goalClosedAt).toBeInstanceOf(Date);
+
+    const fundedUnavailable = await readyCredit({
+      goalCurrency: 'USD',
+      goalAmount: null,
+      rate: true,
+    });
+    vi.spyOn(fundedUnavailable.messages, 'listCreditPayers').mockResolvedValue([]);
+    const close = vi.spyOn(fundedUnavailable.messages, 'closeCredit');
+    const refusedBeforeClose = await fundedUnavailable.app.request(
+      `/messages/${CREDIT}/repayment/close`,
+      {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc' },
+      },
+    );
+    expect(refusedBeforeClose.status).toBe(503);
+    expect(await refusedBeforeClose.json()).toEqual({ error: 'Ask amount is unavailable' });
+    expect(close).not.toHaveBeenCalled();
   });
 
   it('returns the prepay request, close, pricing, and empty-plan errors', async () => {
@@ -2410,6 +2469,46 @@ describe('repayment from the in-app wallet', () => {
     });
     expect(tooLarge.status).toBe(409);
     expect(await tooLarge.json()).toEqual({ error: 'A payment for this share is still open' });
+  });
+
+  it('reuses a fiat part by its reserved cents after the exchange rate moves', async () => {
+    const rates = { usd: '50000.00' };
+    const { app, messages, clock } = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '1.00',
+      termDays: 1,
+      rates: async () => ({
+        sats: 100_000_000,
+        usd: rates.usd,
+        chf: null,
+        eur: null,
+        php: null,
+      }),
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true, fiatAmount: '1.00' }],
+    });
+    await messages.recordInvoiceAttempt(openPartAttempt(200, 10n, 100n, new Date(clock.now)));
+    rates.usd = '100000.00';
+
+    const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0.10' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      amountSats: 200,
+      amount: '0.10',
+      bills: [
+        expect.objectContaining({
+          recipientAccountId: WALLET_GIVER,
+          amountSats: 200,
+          amount: '0.10',
+        }),
+      ],
+      waiting: [],
+    });
+    expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(1);
   });
 
   it('rejects inconsistent open part reservations under the message lock', async () => {
@@ -2627,7 +2726,7 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
-  it('reuses each exact description when several share parts are open', async () => {
+  it('allocates several open share parts by part index instead of attempt age', async () => {
     const { app, messages, clock } = await loanSetup({
       termDays: 1,
       givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
@@ -2641,12 +2740,12 @@ describe('repayment from the in-app wallet', () => {
     const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ amount: '50' }),
+      body: JSON.stringify({ amount: '30' }),
     });
     const body = (await response.json()) as { bills: Array<{ amountSats: number }> };
 
     expect(response.status).toBe(200);
-    expect(body.bills.map((bill) => bill.amountSats)).toEqual([30, 20]);
+    expect(body.bills.map((bill) => bill.amountSats)).toEqual([30]);
     expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(2);
   });
 

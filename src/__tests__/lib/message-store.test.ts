@@ -11467,6 +11467,31 @@ describe('PostgresMessageStore', () => {
     ]);
   });
 
+  it('uses zero frozen cents when a receipt payer is attributed after early close', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'late-payer-close',
+      goalSats: 1_000,
+      goalCurrency: 'USD',
+      goalAmount: '9.00',
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    await store.recordZapReceipt('late-payer-gift', 'late-payer-close', 100, {
+      usd: '1.00',
+      chf: null,
+      eur: null,
+      php: null,
+    });
+    await store.closeCredit('late-payer-close', new Date('2099-01-01T00:00:00.000Z'));
+    await store.updateZapReceiptGift('late-payer-gift', { payerAccountId: 'giver' });
+
+    expect(await store.listCreditPayers('late-payer-close')).toEqual([
+      { accountId: 'giver', sats: 100, usd: '0.00', chf: null, eur: null, php: null },
+    ]);
+  });
+
   it('marks debt frozen only for an early fiat close', async () => {
     const sql = new MockSql();
     sql.queryQueue = [

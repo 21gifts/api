@@ -4431,8 +4431,7 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(
       [...totals.entries()].map(([accountId, total]) => {
         const frozen = snapshot?.unitsByAccount.get(accountId);
-        const frozenAmount =
-          snapshot === undefined ? null : storedAmountFromCents(frozen as bigint);
+        const frozenAmount = snapshot === undefined ? null : storedAmountFromCents(frozen ?? 0n);
         return {
           accountId,
           sats: total.sats,
