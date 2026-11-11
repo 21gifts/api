@@ -471,6 +471,57 @@ describe('NostrRelayPool', () => {
       expect(held()).toBe(0);
     });
   });
+
+  describe('serialization time counts toward the deadline', () => {
+    /** A value whose serialization takes `ms` of (fake) time. */
+    const slow = (ms: number, value: Record<string, unknown>): Record<string, unknown> => ({
+      ...value,
+      toJSON: () => {
+        vi.advanceTimersByTime(ms);
+        return value;
+      },
+    });
+
+    it('resolves a query at once without a connection when serializing used the whole timeout', async () => {
+      const q = startQuery(pool, URL_A, 1_000, slow(1_000, { kinds: [1] }));
+      await q.promise;
+      expect(factory.sockets).toHaveLength(0);
+    });
+
+    it('fails a publish at once without a connection when serializing used the whole timeout', async () => {
+      const event = { id: 'e1', kind: 1, tags: slow(1_500, {}) };
+      await expect(pool.publish(event, URL_A, 1_000)).resolves.toBe(false);
+      expect(factory.sockets).toHaveLength(0);
+    });
+
+    it('gives a query only the time left after serializing', async () => {
+      const q = startQuery(pool, URL_A, 1_000, slow(600, { kinds: [1] }));
+      factory.last().emit('open');
+      expect(factory.last().frames()[0]).toEqual(['REQ', factory.last().subId(), { kinds: [1] }]);
+      vi.advanceTimersByTime(399);
+      await Promise.resolve();
+      expect(q.done()).toBe(false);
+      vi.advanceTimersByTime(1);
+      await q.promise;
+      expect(q.done()).toBe(true);
+    });
+
+    it('gives a publish only the time left after serializing', async () => {
+      let settled = false;
+      const pending = pool
+        .publish({ id: 'e1', kind: 1, tags: slow(600, {}) }, URL_A, 1_000)
+        .then((ok) => {
+          settled = true;
+          return ok;
+        });
+      factory.last().emit('open');
+      vi.advanceTimersByTime(399);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      vi.advanceTimersByTime(1);
+      await expect(pending).resolves.toBe(false);
+    });
+  });
 });
 
 describe('NostrRelayPool defaults', () => {

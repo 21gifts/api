@@ -434,10 +434,12 @@ export class NostrRelayPool {
    *
    * @param filter - NIP-01 filter.
    * @param url - Relay WebSocket URL.
-   * @param timeoutMs - Deadline for EOSE in milliseconds.
+   * @param timeoutMs - Deadline for EOSE in milliseconds, counted from this
+   *   call; time spent serializing the filter counts.
    * @param onEvent - Receives the raw payload of each EVENT for this REQ.
-   * @returns Resolves when the REQ ends, and at once for a closed pool or a
-   *   filter that cannot be serialized; never rejects.
+   * @returns Resolves when the REQ ends, and at once without a connection for a
+   *   closed pool, a filter that cannot be serialized, or no time left after
+   *   serializing; never rejects.
    */
   query(
     filter: Record<string, unknown>,
@@ -445,11 +447,13 @@ export class NostrRelayPool {
     timeoutMs: number,
     onEvent: (payload: unknown) => void,
   ): Promise<void> {
+    const startedAt = Date.now();
     const filterJson = serialize(filter);
-    if (this.closed || filterJson === undefined) {
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    if (this.closed || filterJson === undefined || remainingMs <= 0) {
       return Promise.resolve();
     }
-    return this.connection(url).subscribe(filterJson, timeoutMs, onEvent);
+    return this.connection(url).subscribe(filterJson, remainingMs, onEvent);
   }
 
   /**
@@ -457,18 +461,22 @@ export class NostrRelayPool {
    *
    * @param event - Signed event object.
    * @param url - Relay WebSocket URL.
-   * @param timeoutMs - Deadline for OK in milliseconds.
+   * @param timeoutMs - Deadline for OK in milliseconds, counted from this call;
+   *   time spent serializing the event counts.
    * @returns `true` when the relay accepted the event; `false` on rejection,
    *   timeout, drop, a missing string `id`, an event that cannot be serialized,
-   *   or a closed pool. No connection is opened when it fails before sending.
+   *   no time left after serializing, or a closed pool. No connection is opened
+   *   when it fails before sending.
    */
   publish(event: Record<string, unknown>, url: string, timeoutMs: number): Promise<boolean> {
+    const startedAt = Date.now();
     const eventId = event['id'];
     const frame = serialize(['EVENT', event]);
-    if (this.closed || typeof eventId !== 'string' || frame === undefined) {
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    if (this.closed || typeof eventId !== 'string' || frame === undefined || remainingMs <= 0) {
       return Promise.resolve(false);
     }
-    return this.connection(url).publish(frame, eventId, timeoutMs);
+    return this.connection(url).publish(frame, eventId, remainingMs);
   }
 
   /** Close every connection and fail every waiting call. Later calls fail at once. */
