@@ -754,15 +754,6 @@ async function issueGiftInvoiceLocked(
 
   const forumMessage =
     input.messageId === undefined ? undefined : await deps.messageStore.getById(input.messageId);
-  if (forumMessage !== undefined && forumMessage.goalClosedAt instanceof Date) {
-    logEvent('invoice.credit_closed', { messageId: forumMessage.id });
-    return {
-      ok: false,
-      status: 409,
-      error: 'This credit no longer collects',
-      code: 'credit_closed',
-    };
-  }
 
   const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
   if (receiver === undefined && (await passkeyWithoutWallet(deps, address))) {
@@ -827,6 +818,15 @@ async function issueGiftInvoiceLocked(
     const platform = accounts.find((item) => item.isPlatform === true);
     if (platform === undefined) {
       return { ok: false, status: 503, error: 'Platform account is not configured' };
+    }
+    if (message.goalClosedAt instanceof Date) {
+      logEvent('invoice.credit_closed', { messageId: message.id });
+      return {
+        ok: false,
+        status: 409,
+        error: 'This credit no longer collects',
+        code: 'credit_closed',
+      };
     }
   } else {
     const hasPosted = await accountHasPosted(deps.messageStore, account);

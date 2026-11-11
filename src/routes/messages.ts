@@ -3537,29 +3537,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       return deps.store.withMessageLock(messageIdParam, async (lockedStore) => {
         const row = await lockedStore.getById(messageIdParam);
-        if (row !== undefined && row.goalClosedAt instanceof Date) {
-          await persistInvoiceAttempt(
-            lockedStore,
-            invoiceAttemptBase({
-              messageId: row.id,
-              payerAccountId: account.id,
-              heart,
-              authorAccountId: row.accountId ?? account.id,
-              amountSats: parsed.data.sats,
-              shown,
-              lightningAddress: null,
-              zapRequest: null,
-              result: 'credit_closed',
-              httpStatus: 409,
-              pr: null,
-              paymentHash: null,
-              description: null,
-              descriptionHash: null,
-              isNip57Invoice: false,
-            }),
-          );
-          return c.json({ error: 'This credit no longer collects', code: 'credit_closed' }, 409);
-        }
         if (row === undefined || row.deletedAt !== null) {
           await persistInvoiceAttempt(
             lockedStore,
@@ -3582,6 +3559,29 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             }),
           );
           return c.json({ error: 'Not found' }, 404);
+        }
+        if (row.goalClosedAt instanceof Date) {
+          await persistInvoiceAttempt(
+            lockedStore,
+            invoiceAttemptBase({
+              messageId: row.id,
+              payerAccountId: account.id,
+              heart,
+              authorAccountId: row.accountId ?? account.id,
+              amountSats: parsed.data.sats,
+              shown,
+              lightningAddress: null,
+              zapRequest: null,
+              result: 'credit_closed',
+              httpStatus: 409,
+              pr: null,
+              paymentHash: null,
+              description: null,
+              descriptionHash: null,
+              isNip57Invoice: false,
+            }),
+          );
+          return c.json({ error: 'This credit no longer collects', code: 'credit_closed' }, 409);
         }
         if (row.accountId === null) {
           await persistInvoiceAttempt(

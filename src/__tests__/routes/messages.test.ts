@@ -11083,6 +11083,21 @@ describe('DELETE /messages/:id', () => {
 
   it('hides the note from public reads, list, invoice, and inReplyTo', async () => {
     const { auth, messages } = await staffStore('founder');
+    const closedHiddenId = '33333333-3333-4333-8333-333333333333';
+    await messages.create({
+      id: closedHiddenId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'closed hidden credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalClosedAt: new Date(now()),
+    });
+    expect(await messages.markDeleted(closedHiddenId, new Date(now()), 'acc')).toBe(true);
     const mp4Bytes = new Uint8Array(32);
     mp4Bytes.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
     const videoId = '22222222-2222-4222-8222-222222222222';
@@ -11128,6 +11143,17 @@ describe('DELETE /messages/:id', () => {
         })
       ).status,
     ).toBe(404);
+    const closedHiddenInvoice = await app.request(`/messages/${closedHiddenId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(closedHiddenInvoice.status).toBe(404);
+    expect(await closedHiddenInvoice.json()).toEqual({ error: 'Not found' });
+    expect((await messages.listInvoiceAttempts(1))[0]).toMatchObject({
+      messageId: closedHiddenId,
+      result: 'not_found',
+    });
     expect(
       (
         await app.request('/messages', {

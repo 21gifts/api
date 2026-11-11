@@ -1792,7 +1792,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when messageId is a reply', async () => {
+  it('returns 403 when messageId is a closed reply', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
@@ -1815,6 +1815,7 @@ describe('POST /invoices', () => {
         hasPhoto: false,
         ...unsignedNostrDefaults(),
         parentId: POST_ID,
+        goalClosedAt: new Date('2026-08-03T00:00:00.000Z'),
       },
     ]);
     const res = await createApp({
@@ -2142,7 +2143,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when messageId is another account's post", async () => {
+  it("returns 403 when messageId is another account's closed post", async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     await authStore.createAccount({
@@ -2173,8 +2174,9 @@ describe('POST /invoices', () => {
         name: 'Bob',
         text: 'bob',
         createdAt: new Date('2026-08-01T00:00:00.000Z'),
-        hasPhoto: false,
+        hasPhoto: true,
         ...unsignedNostrDefaults(),
+        goalClosedAt: new Date('2026-08-03T00:00:00.000Z'),
       },
     ]);
     const res = await createApp({
@@ -2198,14 +2200,26 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when messageId is a live top-level text-only post', async () => {
+  it('returns 403 when messageId is a closed top-level text-only post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: POST_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'closed text-only credit',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalClosedAt: new Date('2026-08-03T00:00:00.000Z'),
+      },
+    ]);
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
-      messageStore: uuidPostStore(),
+      messageStore,
       fetchImpl,
     }).request(
       '/invoices',
