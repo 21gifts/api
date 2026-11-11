@@ -841,10 +841,9 @@ describe('staff_tag role migration on Postgres', () => {
         await Promise.all(boots.map(({ sql: bootSql }) => closeIfPossible(bootSql)));
       }
 
-      const rows = await client.query<{ role: string }>(
-        'SELECT role FROM account WHERE id = $1',
-        [id],
-      );
+      const rows = await client.query<{ role: string }>('SELECT role FROM account WHERE id = $1', [
+        id,
+      ]);
       expect(rows[0]?.role).toBe('software_developer');
       expect(
         await client.query(
