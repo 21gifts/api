@@ -2560,6 +2560,11 @@ test('Function: startSparkInvoiceWorker — free in-app payments are off on the 
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: startMemberSparkInvoicePrune — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: runPosPaidTick — the LNURL server is off on the default boot', async ({
   request,
 }) => {
