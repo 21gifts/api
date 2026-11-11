@@ -63,6 +63,10 @@ class FailingWalletStore implements WalletStore {
     return Promise.reject(new Error('sql failed'));
   }
 
+  dailyBalances(): Promise<WalletBalanceSnapshot[]> {
+    return Promise.reject(new Error('sql failed'));
+  }
+
   paymentTotals(_accountId: string): Promise<WalletPaymentTotals> {
     return Promise.reject(new Error('sql failed'));
   }
@@ -374,5 +378,6 @@ describe('debugWalletRoutes', () => {
       expect(event).not.toHaveProperty('counterpartyAccountId');
     }
     await expect(walletStore.paymentTotals(ACCOUNT_ID)).rejects.toThrow('sql failed');
+    await expect(walletStore.dailyBalances()).rejects.toThrow('sql failed');
   });
 });
