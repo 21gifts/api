@@ -6,9 +6,15 @@ import { HEART_SATS_MAX } from '@/lib/config';
  * `ALTER TABLE` backfills `account.name`, nullable `linking_key`,
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
- * `wallet_backup_seen_at`, `staff_tag`, `spark_pubkey`, `spark_pubkey_verified_at`,
- * `notify_hearts`, `heart_sats`, `wallet_intro_seen`, `spark_address`, and `passkey_challenge.requested_name` on databases created before those
+ * `wallet_backup_seen_at`, `spark_pubkey`, `spark_pubkey_verified_at`,
+ * `notify_hearts`, `heart_sats`, `wallet_intro_seen`, `spark_address`, and
+ * `passkey_challenge.requested_name` on databases created before those
  * columns existed. `spark_address` values are filled by `backfillSparkAddresses`, not here.
+ * A pre-role-label database is migrated by the block below: only when
+ * `account.staff_tag` exists, rows with `staff_tag = 'software_developer'`
+ * get `role = 'software_developer'` while their current role is below
+ * software developer, then the old label column is dropped. The old boot
+ * statement gave `dansw` that label, so the label alone carries `dansw`.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows), and the social recovery tables
  * `recovery_share` (the encrypted 21.gifts share per account and wallet key),
@@ -178,10 +184,24 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx
     ON passkey_renew_attempt (account_id, created_at DESC)`,
   `ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text`,
-  `ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text`,
-  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk`,
-  `ALTER TABLE account ADD CONSTRAINT account_staff_tag_chk CHECK (staff_tag IS NULL OR staff_tag IN ('software_developer'))`,
-  `UPDATE account SET staff_tag = 'software_developer' WHERE lower(trim(username)) = 'dansw' AND staff_tag IS DISTINCT FROM 'software_developer'`,
+  // The staff label became a real role. Migrate any existing column once, then drop it.
+  `DO $staff_tag_role$
+  BEGIN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'account'
+        AND column_name = 'staff_tag'
+    ) THEN
+      UPDATE account
+      SET role = 'software_developer'
+      WHERE staff_tag = 'software_developer'
+        AND role IN ('basis', 'verified', 'moderator');
+      ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk;
+      ALTER TABLE account DROP COLUMN staff_tag;
+    END IF;
+  END
+  $staff_tag_role$`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey text`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey_verified_at timestamptz`,
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_pubkey_chk`,

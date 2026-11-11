@@ -1255,6 +1255,7 @@ describe('memberHabitRoutes', () => {
     }
     expect((await seed('verified')).status).toBe(403);
     expect((await seed('moderator')).status).toBe(200);
+    expect((await seed('software_developer')).status).toBe(200);
     expect((await seed('fond')).status).toBe(200);
     expect((await seed('initiator')).status).toBe(200);
     expect((await seed('founder')).status).toBe(200);

@@ -1940,6 +1940,7 @@ describe('FondQueueSink', () => {
         claimSettlement: async () => undefined,
         markPaid: async () => undefined,
         releaseSettlement: () => Promise.resolve(undefined),
+        paidTotals: async () => ({ payoutsPaid: 0, payoutsPaidUsd: '0.00' }),
       },
     });
     expect(await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'x' })).toEqual({
@@ -2011,6 +2012,7 @@ describe('FondQueueSink', () => {
         claimSettlement: async () => undefined,
         markPaid: async () => undefined,
         releaseSettlement: () => Promise.resolve(undefined),
+        paidTotals: async () => ({ payoutsPaid: 0, payoutsPaidUsd: '0.00' }),
       },
     });
     expect(

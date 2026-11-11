@@ -853,7 +853,7 @@ describe('GET /messages', () => {
     expect(body.messages.map((row) => row.id)).toEqual(['unpaid-note']);
   });
 
-  it('includes unpaid staff and paid basis in active mode', async () => {
+  it('includes unpaid staff notes but drops an unpaid staff ask in active mode', async () => {
     const authStore = await namedStore('Ada');
     await authStore.createAccount({
       id: 'founder-1',
@@ -874,6 +874,17 @@ describe('GET /messages', () => {
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
+      createdAt: now(),
+      rulesAgreedAt: now(),
+    });
+    await authStore.createAccount({
+      id: 'dev-1',
+      linkingKey: null,
+      role: 'software_developer',
+      name: 'Dev',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'd'.repeat(64),
       createdAt: now(),
       rulesAgreedAt: now(),
     });
@@ -915,15 +926,35 @@ describe('GET /messages', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
+    await messageStore.create({
+      id: 'unpaid-software-developer',
+      accountId: 'dev-1',
+      name: 'Dev',
+      text: 'unpaid software developer',
+      createdAt: new Date(now() + 4),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messageStore.create({
+      id: 'unpaid-moderator-ask',
+      accountId: 'mod-1',
+      name: 'Mod',
+      text: 'unpaid moderator ask',
+      createdAt: new Date(now() + 5),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21_000,
+    });
     const res = await mount(authStore, messageStore).request('/messages?mode=active', {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<{ id: string }> };
     expect(body.messages.map((row) => row.id).sort()).toEqual(
-      ['paid-basis', 'unpaid-founder', 'unpaid-moderator'].sort(),
+      ['paid-basis', 'unpaid-founder', 'unpaid-moderator', 'unpaid-software-developer'].sort(),
     );
     expect(body.messages.map((row) => row.id)).not.toContain('unpaid-basis');
+    expect(body.messages.map((row) => row.id)).not.toContain('unpaid-moderator-ask');
   });
 
   it('lists only positive sats newest-sats-first in popular mode', async () => {
@@ -14965,7 +14996,7 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
 
   it.each([
     ['founder', { role: 'founder' as const }],
-    ['software_developer', { role: 'verified' as const, staffTag: 'software_developer' as const }],
+    ['software_developer', { role: 'software_developer' as const }],
   ])(
     'lets a %s mint gifts and hearts past every cap without recording them',
     async (_label, payer) => {
@@ -14997,13 +15028,13 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
     },
   );
 
-  it.each(['basis', 'verified', 'moderator', 'initiator'] as const)(
-    'still limits gifts and hearts of a %s payer without the staff tag',
+  it.each(['basis', 'verified', 'moderator', 'fond', 'initiator'] as const)(
+    'still limits gifts and hearts of a %s payer',
     async (role) => {
       await withMintedInvoices(async () => {
         const { app } = await heartSetup({
           sparkInvoices: new InMemorySparkInvoiceStore(),
-          payer: { role, staffTag: null },
+          payer: { role },
         });
         expect((await send(app, NOTE_A, { sats: 21 })).status).toBe(200);
         expect((await send(app, NOTE_B, { sats: 21 })).status).toBe(429);
@@ -15280,7 +15311,7 @@ describe('shop identity hooks', () => {
 describe('separate top-level and reply limits on POST /messages', () => {
   const PARENT = 'dddddddd-dddd-4ddd-8ddd-dddddddddd01';
 
-  /** Named member `acc` with the given role / staff tag, plus its own top-level note. */
+  /** Named member `acc` with the given role, plus its own top-level note. */
   async function memberSetup(
     patch: Partial<Account>,
   ): Promise<{ authStore: InMemoryAuthStore; messages: InMemoryMessageStore }> {
@@ -15376,11 +15407,7 @@ describe('separate top-level and reply limits on POST /messages', () => {
 
   it.each([
     ['founder', { role: 'founder' as const }],
-    ['software_developer', { role: 'verified' as const, staffTag: 'software_developer' as const }],
-    [
-      'software_developer moderator',
-      { role: 'moderator' as const, staffTag: 'software_developer' as const },
-    ],
+    ['software_developer', { role: 'software_developer' as const }],
   ])('lets a %s post and reply past every cap without recording it', async (_label, patch) => {
     const { authStore, messages } = await memberSetup(patch);
     const postLimiter = new PostRateLimiter();
@@ -15403,10 +15430,10 @@ describe('separate top-level and reply limits on POST /messages', () => {
     expect(replyLimiter.check('acc', now())).toBeNull();
   });
 
-  it.each(['basis', 'verified', 'moderator', 'initiator'] as const)(
-    'still limits a %s member without the staff tag',
+  it.each(['basis', 'verified', 'moderator', 'fond', 'initiator'] as const)(
+    'still limits a %s member',
     async (role) => {
-      const { authStore, messages } = await memberSetup({ role, staffTag: null });
+      const { authStore, messages } = await memberSetup({ role });
       const app = mount(authStore, messages);
       // A reply on the own note is free for every role, so basis reaches the limiter too.
       expect((await post(app, { text: 'reply one', inReplyTo: PARENT })).status).toBe(200);

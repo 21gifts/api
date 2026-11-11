@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
-import { staffTagOf, type Account, type AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
@@ -287,7 +287,6 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         const edges = await deps.trustStore.listEdgesForSubject(account.id);
         const accounts = await deps.authStore.listAccounts();
         const grant = await fundingStore.getByAccountId(account.id);
-        const memberTag = staffTagOf(account.staffTag);
         return c.json(
           {
             id: account.id,
@@ -309,7 +308,6 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             fundingReviewedByName: await fundingReviewedByName(grant, deps.now(), (accountId) =>
               deps.authStore.getAccount(accountId),
             ),
-            ...(memberTag === null ? {} : { staffTag: memberTag }),
           },
           200,
         );

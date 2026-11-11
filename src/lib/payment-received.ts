@@ -5,9 +5,11 @@
  * settled invoice, signed with HMAC-SHA256 of the raw body in
  * `X-Breez-Signature`. Every field used here comes from that signed body; a
  * sender is named only from a signed NIP-57 zap request that names the
- * receiver and this amount. One push per payment hash
- * (`PushStore.enqueuePaymentReceived`), also for a zap on a forum note, whose
- * zap notification is a separate notification about the note.
+ * receiver and this amount. The Spark invoice worker uses the same push for a
+ * paid member Spark invoice, keyed by the SHA-256 of the invoice string. One
+ * push per payment key (`PushStore.enqueuePaymentReceived`), also for a zap on
+ * a forum note, whose zap notification is a separate notification about the
+ * note.
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -19,9 +21,17 @@ import { normalizeHex32 } from '@/lib/proof';
 import { buildPaymentReceivedPushPayload } from '@/lib/push';
 import type { PushStore } from '@/lib/push-store';
 
-/** One settled payment from a signed LNURL server webhook. */
+/**
+ * One settled payment: from a signed LNURL server webhook, or a member Spark
+ * invoice the Spark invoice worker saw finalized.
+ */
 export interface PaymentReceived {
-  /** BOLT11 payment hash, lowercase hex. */
+  /**
+   * Payment key, 64 lowercase hex: the BOLT11 payment hash of a webhook
+   * payment, or the SHA-256 of the invoice string of a member Spark invoice
+   * (a Spark transfer has no BOLT11 payment hash). Claimed once per push and
+   * used in the push tag.
+   */
   paymentHash: string;
   /** Receiver's Spark identity pubkey, as the LNURL server stores it. */
   userPubkey: string;
@@ -183,8 +193,8 @@ function zapRequestSigner(raw: string, receiverPubkey: string, amountSats: numbe
  * signer is a 21.gifts account with a name.
  *
  * @param deps - Stores and clock.
- * @param payment - Parsed signed webhook payment.
- * @returns What was done; `duplicate` when this payment hash was already pushed.
+ * @param payment - Parsed signed webhook payment, or a paid member Spark invoice.
+ * @returns What was done; `duplicate` when this payment key was already pushed.
  * @throws If a store read or the enqueue rejects.
  */
 export async function notifyPaymentReceived(

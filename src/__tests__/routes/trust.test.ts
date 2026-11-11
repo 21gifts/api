@@ -2350,7 +2350,7 @@ describe('POST /trust/*', () => {
       expect((await authStore.getAccount(SUBJECT))?.role).toBe('verified');
     });
 
-    it.each(['initiator', 'fond', 'founder'] as const)(
+    it.each(['initiator', 'software_developer', 'fond', 'founder'] as const)(
       'returns 200 and leaves role %s when the caller already confirmed the subject',
       async (role) => {
         const { authStore, trustStore } = await staffed([
@@ -2373,7 +2373,7 @@ describe('POST /trust/*', () => {
       },
     );
 
-    it.each(['initiator', 'fond', 'founder'] as const)(
+    it.each(['initiator', 'software_developer', 'fond', 'founder'] as const)(
       'returns 409 when confirming a %s subject with no caller-owned confirm edge',
       async (role) => {
         const { authStore, trustStore } = await staffed([
@@ -3614,7 +3614,7 @@ describe('POST /trust/*', () => {
       );
     });
 
-    it.each(['initiator', 'fond'] as const)(
+    it.each(['initiator', 'software_developer', 'fond', 'founder'] as const)(
       'returns 409 when appointing a %s subject with no caller-owned appoint edge',
       async (role) => {
         const { authStore, trustStore } = await staffed([
@@ -3634,7 +3634,7 @@ describe('POST /trust/*', () => {
       },
     );
 
-    it.each(['initiator', 'fond'] as const)(
+    it.each(['initiator', 'software_developer', 'fond'] as const)(
       'returns 200 and leaves role %s when the caller already appointed the subject',
       async (role) => {
         const { authStore, trustStore } = await staffed([
@@ -3661,6 +3661,25 @@ describe('POST /trust/*', () => {
         expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['appoint']);
       },
     );
+
+    it('returns 409 and leaves a founder unchanged even when the caller already stored an appoint edge', async () => {
+      const { authStore, trustStore } = await staffed([
+        account({ id: SUBJECT, role: 'founder', name: 'Sub' }),
+      ]);
+      await trustStore.insertEdge({
+        id: 'appoint',
+        subjectId: SUBJECT,
+        actorId: FOUNDER,
+        kind: 'moderator_appoint',
+        createdAt: 1,
+      });
+      const res = await post(mount(authStore, trustStore), '/trust/appoint-moderator', 'founder', {
+        accountId: SUBJECT,
+      });
+      expect(res.status).toBe(409);
+      expect((await authStore.getAccount(SUBJECT))?.role).toBe('founder');
+      expect((await trustStore.listEdges()).map((row) => row.id)).toEqual(['appoint']);
+    });
 
     it('still returns 200 when push enqueue throws', async () => {
       const { authStore, trustStore } = await staffed([

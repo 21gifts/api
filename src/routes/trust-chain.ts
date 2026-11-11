@@ -16,7 +16,7 @@ import { bearerToken } from '@/routes/me';
  * one hop of the oldest eligible public edge per subject (`createdAt` then
  * `id`), skipping a non-chain oldest sibling so a later displayable contact
  * can show. Eligible: `verify`, `moderator_appoint`, and `moderator_propose`
- * only when the live subject is a `moderator`. `moderator_confirm` and
+ * only when the live subject is at least a moderator. `moderator_confirm` and
  * `moderator_reject` never. Neighborhood loads all edges for each subject in
  * the touching set (`listEdgesForSubject`) so a non-touching older eligible
  * edge still wins over a touching newer one. A pending propose (subject still
@@ -92,7 +92,7 @@ function isInvalidUuid(error: unknown): boolean {
  * One hop around `aroundId`: the focus account, stored public edges of the
  * oldest eligible edge per subject after `isProjectedTrustEdge` (`createdAt`
  * then `id`; `verify`, `moderator_appoint`, and `moderator_propose` only when
- * the live subject is a `moderator`; never `moderator_confirm`), skipping a
+ * the live subject is at least a moderator; never `moderator_confirm`), skipping a
  * non-chain oldest sibling so a later displayable contact can show, and the
  * accounts on those filtered edges. Loads all edges for each touching subject
  * (`listEdgesForSubject`) so a non-touching older eligible edge still wins

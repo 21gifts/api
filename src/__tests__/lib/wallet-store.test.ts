@@ -133,6 +133,41 @@ describe('InMemoryWalletStore', () => {
     expect((await store.listPayments('account', 1))[0]?.paidAt).toEqual(T2);
   });
 
+  it('aggregates completed payments by direction and ignores other states and accounts', async () => {
+    const store = new InMemoryWalletStore();
+    expect(await store.paymentTotals('account')).toEqual({
+      receivedSats: 0n,
+      paidOutSats: 0n,
+      feesSats: 0n,
+    });
+    await store.upsertPayments([
+      payment({ paymentId: 'in-1', direction: 'in', status: 'completed', amountSats: 1_000 }),
+      payment({ paymentId: 'in-2', direction: 'in', status: 'completed', amountSats: 250 }),
+      payment({
+        paymentId: 'out-1',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 40,
+        feeSats: 2,
+      }),
+      payment({
+        paymentId: 'out-2',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 1,
+        feeSats: 3,
+      }),
+      payment({ paymentId: 'pending', status: 'pending', amountSats: 9_999 }),
+      payment({ paymentId: 'failed', direction: 'in', status: 'failed', amountSats: 8_888 }),
+      payment({ accountId: 'other', paymentId: 'other', status: 'completed', amountSats: 7_777 }),
+    ]);
+    expect(await store.paymentTotals('account')).toEqual({
+      receivedSats: 1_250n,
+      paidOutSats: 41n,
+      feesSats: 5n,
+    });
+  });
+
   it('updates mutable fields, coalesces null details, preserves firstSeenAt, and advances updatedAt only on change', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([payment()]);
@@ -569,6 +604,54 @@ describe('PostgresWalletStore', () => {
     expect(sql.queries[0]?.params).toEqual(['account']);
     sql.rows = [];
     await expect(store.latestBalance('none')).resolves.toBeUndefined();
+  });
+
+  it('aggregates completed payments in one direction-grouped query', async () => {
+    const sql = new MockSql();
+    sql.rows = [
+      { direction: 'in', amount_sats: '1250', fee_sats: 0n },
+      { direction: 'out', amount_sats: 41n, fee_sats: '5' },
+    ];
+    const store = new PostgresWalletStore(sql);
+    await expect(store.paymentTotals('account')).resolves.toEqual({
+      receivedSats: 1_250n,
+      paidOutSats: 41n,
+      feesSats: 5n,
+    });
+    expect(sql.queries[0]?.text).toContain("WHERE account_id = $1 AND status = 'completed'");
+    expect(sql.queries[0]?.text).toContain('GROUP BY direction');
+    expect(sql.queries[0]?.text).toContain('SUM(amount_sats)');
+    expect(sql.queries[0]?.text).toContain('SUM(fee_sats)');
+    expect(sql.queries[0]?.params).toEqual(['account']);
+  });
+
+  it('returns zero totals for no grouped rows and ignores an unknown direction', async () => {
+    const sql = new MockSql();
+    const store = new PostgresWalletStore(sql);
+    await expect(store.paymentTotals('none')).resolves.toEqual({
+      receivedSats: 0n,
+      paidOutSats: 0n,
+      feesSats: 0n,
+    });
+    sql.rows = [{ direction: 'sideways', amount_sats: 9, fee_sats: 9 }];
+    await expect(store.paymentTotals('account')).resolves.toEqual({
+      receivedSats: 0n,
+      paidOutSats: 0n,
+      feesSats: 0n,
+    });
+  });
+
+  it('treats null aggregate values as zero', async () => {
+    const sql = new MockSql();
+    sql.rows = [
+      { direction: 'in', amount_sats: null, fee_sats: null },
+      { direction: 'out', amount_sats: null, fee_sats: null },
+    ];
+    await expect(new PostgresWalletStore(sql).paymentTotals('account')).resolves.toEqual({
+      receivedSats: 0n,
+      paidOutSats: 0n,
+      feesSats: 0n,
+    });
   });
 
   it('maps and orders payment rows with number/string/bigint fields and timestamp variants', async () => {

@@ -13775,16 +13775,8 @@ describe('platform-note compose fee picks the note limiter', () => {
   it.each([
     ['founder', 'top-level', { role: 'founder' as const }],
     ['founder', 'reply', { role: 'founder' as const }],
-    [
-      'software_developer',
-      'top-level',
-      { role: 'basis' as const, staffTag: 'software_developer' as const },
-    ],
-    [
-      'software_developer',
-      'reply',
-      { role: 'basis' as const, staffTag: 'software_developer' as const },
-    ],
+    ['software_developer', 'top-level', { role: 'software_developer' as const }],
+    ['software_developer', 'reply', { role: 'software_developer' as const }],
   ])('lets a %s %s compose past a refusing limiter without asking it', async (_l, kind, patch) => {
     const { store, auth } = await composeSetup(patch);
     const l = limiters();
@@ -13805,10 +13797,10 @@ describe('platform-note compose fee picks the note limiter', () => {
     expect(l.replyLimiter.check('manual-payer', 1_800)).toBeNull();
   });
 
-  it.each(['basis', 'verified', 'moderator', 'initiator'] as const)(
-    'still limits a compose by a %s payer without the staff tag',
+  it.each(['basis', 'verified', 'moderator', 'fond', 'initiator'] as const)(
+    'still limits a compose by a %s payer',
     async (role) => {
-      const { store, auth } = await composeSetup({ role, staffTag: null });
+      const { store, auth } = await composeSetup({ role });
       const l = limiters();
       expect(l.postLimiter.allow('manual-payer', 1_800)).toBe(true);
       await settleCompose({ store, auth, content: 'Limited', seed: 'c1', ...l });

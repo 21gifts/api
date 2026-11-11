@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
-import { staffTagOf, type Account, type AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import {
   countRoundAdmissions,
   CURRENT_GRANT_ROUND,
@@ -750,7 +750,6 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               Math.max(0, row.replyCount - dropped),
               true,
               undefined,
-              staffTagOf(account.staffTag),
             ),
           );
         }

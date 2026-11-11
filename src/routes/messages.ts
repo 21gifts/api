@@ -4,7 +4,7 @@ import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import { roleAtLeast } from '@/lib/auth/roles';
-import { staffTagOf, type Account, type AccountRole, type AuthStore } from '@/lib/auth/store';
+import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
@@ -1316,7 +1316,6 @@ async function persistForumPost(
               undefined,
               true,
               undefined,
-              staffTagOf(account.staffTag),
             ),
           ],
         );
@@ -1550,7 +1549,6 @@ async function persistForumPost(
           undefined,
           true,
           undefined,
-          staffTagOf(account.staffTag),
         ),
       ],
     );
@@ -1937,15 +1935,7 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
         const author = authors[i];
         const pay = messagePay(row, author, deps.lnurlServer);
         const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-        return serializeMessage(
-          row,
-          pay,
-          role,
-          row.replyCount,
-          true,
-          undefined,
-          staffTagOf(author?.staffTag),
-        );
+        return serializeMessage(row, pay, role, row.replyCount, true, undefined);
       }),
     );
     const last = page[page.length - 1];
@@ -2100,15 +2090,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const author = authors[i];
             const pay = messagePay(row, author, deps.lnurlServer);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-            return serializeMessage(
-              row,
-              pay,
-              role,
-              row.replyCount,
-              true,
-              undefined,
-              staffTagOf(author?.staffTag),
-            );
+            return serializeMessage(row, pay, role, row.replyCount, true, undefined);
           }),
         );
         let nextCursor: string | undefined;
@@ -2391,18 +2373,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
               const deletedBy = await resolveDeletedBy(deps.authStore, row);
               messages.push(
-                serializeMessage(
-                  row,
-                  NOT_PAYABLE,
-                  role,
-                  undefined,
-                  true,
-                  {
-                    deletedAt: row.deletedAt,
-                    deletedBy,
-                  },
-                  staffTagOf(author?.staffTag),
-                ),
+                serializeMessage(row, NOT_PAYABLE, role, undefined, true, {
+                  deletedAt: row.deletedAt,
+                  deletedBy,
+                }),
               );
             } catch {
               // One child must not 503 the thread (invalid createdAt, author lookup).
@@ -2420,17 +2394,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             const pay =
               row.accountId === null ? NOT_PAYABLE : messagePay(kept, author, deps.lnurlServer);
-            messages.push(
-              serializeMessage(
-                kept,
-                pay,
-                role,
-                undefined,
-                true,
-                undefined,
-                staffTagOf(author?.staffTag),
-              ),
-            );
+            messages.push(serializeMessage(kept, pay, role, undefined, true, undefined));
           } catch {
             // One child must not 503 the thread (invalid createdAt, author lookup).
             continue;
@@ -2801,7 +2765,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               await deps.store.countAttributedReplies(updated.id),
               undefined,
               undefined,
-              staffTagOf(author?.staffTag),
             ),
           ],
         );
@@ -2921,7 +2884,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               await deps.store.countAttributedReplies(updated.id),
               undefined,
               undefined,
-              staffTagOf(author?.staffTag),
             ),
           ],
         );
@@ -3007,7 +2969,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                 await deps.store.countAttributedReplies(row.id),
                 undefined,
                 undefined,
-                staffTagOf(author?.staffTag),
               ),
             ],
           );
@@ -3062,7 +3023,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               await deps.store.countAttributedReplies(updated.id),
               undefined,
               undefined,
-              staffTagOf(author?.staffTag),
             ),
           ],
         );
@@ -3160,7 +3120,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               await deps.store.countAttributedReplies(written.id),
               undefined,
               undefined,
-              staffTagOf(author?.staffTag),
             ),
           ],
         );
@@ -3410,7 +3369,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                     deletedAt: row.deletedAt,
                     deletedBy,
                   },
-                  staffTagOf(author?.staffTag),
                 ),
               ],
             );
@@ -3457,7 +3415,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                   : undefined,
                 true,
                 undefined,
-                staffTagOf(author?.staffTag),
               ),
             ],
           );

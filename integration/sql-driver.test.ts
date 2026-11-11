@@ -18,6 +18,11 @@ import {
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
+import {
+  migrateFondPayoutSchema,
+  PostgresFondPayoutStore,
+  type FondPayoutEnqueue,
+} from '@/lib/fond-payout-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
 import { DEBUG_DB_PAGE_SIZE, PostgresDebugDbStore } from '@/lib/debug-db';
 import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
@@ -44,7 +49,11 @@ import {
   type ShopTx,
 } from '@/lib/shop-payment-store';
 import { encodeSparkAddress } from '@/lib/spark-address';
-import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
+import {
+  MEMBER_SPARK_INVOICE_CAP,
+  migrateSparkInvoiceSchema,
+  PostgresSparkInvoiceStore,
+} from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
 import { parseWalletReport } from '@/lib/wallet-report';
@@ -1920,6 +1929,93 @@ describe('PostgresSparkInvoiceStore', () => {
   });
 });
 
+describe('PostgresSparkInvoiceStore member invoices', () => {
+  test('store, cap per account, list open, notify once, prune, and db_change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateSparkInvoiceSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const store = new PostgresSparkInvoiceStore(client);
+      const accountId = crypto.randomUUID();
+      const stamp = crypto.randomUUID().replaceAll('-', '');
+      const issuedAt = new Date(Date.now() - 10 * 60_000);
+      const expiresAt = new Date(issuedAt.getTime() + 60 * 60_000);
+      const invoiceAt = (i: number): string => `spark1pay${stamp}${String(i).padStart(2, '0')}`;
+      for (let i = 0; i <= MEMBER_SPARK_INVOICE_CAP; i += 1) {
+        await store.issueMember({
+          invoice: invoiceAt(i),
+          kind: 'pay',
+          accountId,
+          receiverPubkey: `02${'a'.repeat(64)}`,
+          amountSats: 21,
+          createdAt: new Date(issuedAt.getTime() + i),
+          expiresAt,
+        });
+      }
+      const mine = async (now: Date): Promise<string[]> =>
+        (await store.listOpenMember(now))
+          .filter((row) => row.accountId === accountId)
+          .map((row) => row.invoice);
+      const open = await mine(issuedAt);
+      expect(open).toHaveLength(MEMBER_SPARK_INVOICE_CAP);
+      expect(open).not.toContain(invoiceAt(0));
+      expect(open[0]).toBe(invoiceAt(1));
+      const first = (await store.listOpenMember(issuedAt)).find(
+        (row) => row.invoice === invoiceAt(1),
+      );
+      expect(first).toMatchObject({ kind: 'pay', amountSats: 21, status: 'open', expiresAt });
+
+      expect(await store.claimMemberNotified(invoiceAt(2), expiresAt)).toBe(false);
+      expect(await store.claimMemberNotified(invoiceAt(0), issuedAt)).toBe(false);
+      expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(true);
+      expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(false);
+      expect(await store.releaseMemberNotified(invoiceAt(1))).toBe(true);
+      expect(await store.releaseMemberNotified(invoiceAt(1))).toBe(false);
+      expect(await mine(issuedAt)).toContain(invoiceAt(1));
+      expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(true);
+      expect(await mine(issuedAt)).not.toContain(invoiceAt(1));
+      expect(await mine(expiresAt)).toEqual([]);
+
+      expect(await store.pruneMember(expiresAt)).toBeGreaterThanOrEqual(MEMBER_SPARK_INVOICE_CAP);
+      const left = await client.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM member_spark_invoice WHERE account_id = $1`,
+        [accountId],
+      );
+      expect(left[0]?.n).toBe('0');
+
+      const changes = await client.query<{
+        op: string;
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT op, before, after
+         FROM db_change
+         WHERE table_name = 'member_spark_invoice'
+           AND (before ->> 'account_id' = $1 OR after ->> 'account_id' = $1)
+         ORDER BY id ASC`,
+        [accountId],
+      );
+      expect(changes.filter((change) => change.op === 'INSERT')).toHaveLength(
+        MEMBER_SPARK_INVOICE_CAP + 1,
+      );
+      expect(
+        changes.some(
+          (change) =>
+            change.op === 'UPDATE' &&
+            change.before?.['status'] === 'open' &&
+            change.after?.['status'] === 'notified',
+        ),
+      ).toBe(true);
+      expect(changes.filter((change) => change.op === 'DELETE')).toHaveLength(
+        MEMBER_SPARK_INVOICE_CAP + 1,
+      );
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresPosStore paid tracking', () => {
   test('migrate an old status check, record invoices, watch, pay once, and db_change', async () => {
     const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
@@ -2859,6 +2955,160 @@ describe('PostgresWalletStore', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('aggregates completed payments by direction with bigint sums', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateWalletSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const accountId = crypto.randomUUID();
+      const otherId = crypto.randomUUID();
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      for (const [id, username] of [
+        [accountId, `summary_${accountId.slice(0, 8)}`],
+        [otherId, `summary_${otherId.slice(0, 8)}`],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+
+      const store = new PostgresWalletStore(client);
+      const at = new Date();
+      const row = (
+        account: string,
+        paymentId: string,
+        direction: 'in' | 'out',
+        status: 'pending' | 'completed' | 'failed',
+        amountSats: number,
+        feeSats: number,
+      ): WalletPaymentRecord => ({
+        accountId: account,
+        paymentId,
+        direction,
+        status,
+        amountSats,
+        feeSats,
+        paidAt: at,
+        method: 'spark',
+        paymentHash: null,
+        invoice: null,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'unknown',
+        counterpartyAccountId: null,
+        firstSeenAt: at,
+        updatedAt: at,
+      });
+      await store.upsertPayments([
+        row(accountId, 'in-1', 'in', 'completed', 1_000, 0),
+        row(accountId, 'in-2', 'in', 'completed', 250, 0),
+        row(accountId, 'out-1', 'out', 'completed', 40, 2),
+        row(accountId, 'out-2', 'out', 'completed', 1, 3),
+        row(accountId, 'pending', 'in', 'pending', 9_999, 0),
+        row(accountId, 'failed', 'out', 'failed', 8_888, 0),
+        row(otherId, 'other', 'in', 'completed', 7_777, 0),
+      ]);
+
+      await expect(store.paymentTotals(accountId)).resolves.toEqual({
+        receivedSats: 1_250n,
+        paidOutSats: 41n,
+        feesSats: 5n,
+      });
+      await expect(store.paymentTotals(crypto.randomUUID())).resolves.toEqual({
+        receivedSats: 0n,
+        paidOutSats: 0n,
+        feesSats: 0n,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresFondPayoutStore', () => {
+  test('aggregates paid rows and sums their USD strings', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateFondPayoutSchema(client);
+      const store = new PostgresFondPayoutStore(client);
+      const stamp = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const address = `paid_${stamp}@example.com`;
+      const add = async (id: string, amountUsd: string): Promise<FondPayoutEnqueue> => {
+        const row: FondPayoutEnqueue = {
+          id: crypto.randomUUID(),
+          utcDay: '2099-01-01',
+          kind: 'welcome',
+          address: `${id}_${address}`,
+          amountUsd,
+          comment: 'summary',
+          messageId: null,
+          groupMessageId: null,
+        };
+        await store.enqueue(row);
+        return row;
+      };
+      const paidA = await add('a', '1.00');
+      const paidB = await add('b', '2.50');
+      await add('open', '9.99');
+      for (const row of [paidA, paidB]) {
+        await store.claimForInvoice(row.id, row.utcDay);
+        await store.setInvoiced(row.id, {
+          invoiceId: `inv-${row.id}`,
+          paymentHash: crypto.randomUUID().replaceAll('-', '').repeat(2),
+          bolt11: 'lnbc1',
+          amountMsat: 1_000_000,
+        });
+        await store.claimSettlement(row.id);
+        await store.markPaid(row.id);
+      }
+
+      const before = await store.paidTotals();
+      await add('c', '1.00');
+      await add('d', '2.50');
+      for (const rowAddress of [`c_${address}`, `d_${address}`]) {
+        const [row] = await client.query<{ id: string; utc_day: string }>(
+          `SELECT id, utc_day FROM fond_payout WHERE address = $1`,
+          [rowAddress],
+        );
+        if (row === undefined) {
+          throw new Error('expected payout row');
+        }
+        await store.claimForInvoice(row.id, '2099-01-01');
+        await store.setInvoiced(row.id, {
+          invoiceId: `inv-${row.id}`,
+          paymentHash: crypto.randomUUID().replaceAll('-', '').repeat(2),
+          bolt11: 'lnbc1',
+          amountMsat: 1_000_000,
+        });
+        await store.claimSettlement(row.id);
+        await store.markPaid(row.id);
+      }
+      const after = await store.paidTotals();
+      expect(after.payoutsPaid - before.payoutsPaid).toBe(2);
+      const cents = (value: string): bigint => {
+        const [whole = '0', frac = ''] = value.split('.');
+        return BigInt(whole) * 100n + BigInt(frac.padEnd(2, '0'));
+      };
+      expect(cents(after.payoutsPaidUsd) - cents(before.payoutsPaidUsd)).toBe(350n);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 describe('PostgresWalletStore pairing by payment id', () => {
@@ -3542,6 +3792,148 @@ describe('PostgresMessageStore deleteById on a credit', () => {
         await client.execute('DELETE FROM message WHERE parent_id = $1', [creditId]);
         await client.execute('DELETE FROM message WHERE account_id = $1', [accountId]);
         await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresMessageStore loan ledger fiat', () => {
+  test('oldest same-note indexed ingest sets grant chf, and bare-grant and repayment fiat stay null', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const authorId = crypto.randomUUID();
+    const payerId = crypto.randomUUID();
+    const loanId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const receiptId = `receipt-${crypto.randomUUID()}`;
+    const bareReceiptId = `receipt-${crypto.randomUUID()}`;
+    let ready = false;
+    try {
+      await migrateAuthSchema(client);
+      await migrateBtcUsdSchema(client);
+      await migrateFiatSchema(client);
+      await migrateMessageSchema(client);
+      await migrateShopIdentitySchema(client);
+      ready = true;
+      const auth = new PostgresAuthStore(client);
+      await auth.createAccount({
+        id: authorId,
+        linkingKey: `02${authorId.replaceAll('-', '').padEnd(64, '0')}`,
+        role: 'verified',
+        name: 'Ada',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: authorId.replaceAll('-', '').padEnd(64, 'a'),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      await auth.createAccount({
+        id: payerId,
+        linkingKey: `02${payerId.replaceAll('-', '').padEnd(64, '1')}`,
+        role: 'verified',
+        name: 'Bea',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: payerId.replaceAll('-', '').padEnd(64, 'b'),
+        createdAt: 1,
+        rulesAgreedAt: null,
+      });
+      const store = new PostgresMessageStore(client);
+      const base = {
+        accountId: authorId,
+        name: 'Ada',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      };
+      await store.create({
+        ...base,
+        id: loanId,
+        text: 'loan',
+        goalSats: 1_000_000,
+        goalRepayable: true,
+      });
+      await store.create({ ...base, id: otherId, text: 'other' });
+      expect(await store.recordZapReceipt(receiptId, loanId, 450, null)).toBe(true);
+      await store.updateZapReceiptGift(receiptId, { payerAccountId: payerId });
+      const recordIngest = (
+        createdAt: string,
+        outcome: 'indexed' | 'rejected',
+        amountChf: string,
+        messageId: string,
+      ): Promise<void> =>
+        store.recordZapIngest({
+          id: crypto.randomUUID(),
+          createdAt: new Date(createdAt),
+          receiptId,
+          noteEventId: null,
+          messageId,
+          outcome,
+          reason: null,
+          amountSats: 450,
+          amountChf,
+          receiptPubkey: null,
+          receipt: { id: receiptId, kind: 9735 },
+        });
+      const grantChf = async (sats: number): Promise<(string | null)[]> =>
+        (await store.listLoanLedger(payerId))
+          .filter((row) => row.kind === 'grant' && row.sats === sats)
+          .map((row) => row.amountChf);
+      await recordIngest('2026-06-03T00:00:00.000Z', 'indexed', '4.50', loanId);
+      await recordIngest('2026-06-04T00:00:00.000Z', 'indexed', '1.00', loanId);
+      expect(await grantChf(450)).toEqual(['4.50']);
+      await recordIngest('2026-06-02T00:00:00.000Z', 'indexed', '77.77', otherId);
+      expect(await grantChf(450)).toEqual(['4.50']);
+      await recordIngest('2026-06-01T00:00:00.000Z', 'rejected', '99.99', loanId);
+      expect(await grantChf(450)).toEqual(['4.50']);
+      expect(await store.listCreditPayers(loanId)).toEqual([
+        {
+          accountId: payerId,
+          sats: 450,
+          usd: null,
+          chf: '4.50',
+          eur: null,
+          php: null,
+        },
+      ]);
+      expect(await store.recordZapReceipt(bareReceiptId, loanId, 8, null)).toBe(true);
+      await store.updateZapReceiptGift(bareReceiptId, { payerAccountId: payerId });
+      const bareFiat = (await store.listLoanLedger(payerId))
+        .filter((row) => row.kind === 'grant' && row.sats === 8)
+        .map((row) => ({
+          amountUsd: row.amountUsd,
+          amountChf: row.amountChf,
+          amountEur: row.amountEur,
+          amountPhp: row.amountPhp,
+        }));
+      expect(bareFiat).toEqual([
+        { amountUsd: null, amountChf: null, amountEur: null, amountPhp: null },
+      ]);
+      await store.markRepaymentPaid({
+        messageId: loanId,
+        dayIndex: 0,
+        recipientAccountId: payerId,
+        dueSats: 40,
+        paidAt: new Date('2026-06-05T00:00:00.000Z'),
+      });
+      const repaymentFiat = (await store.listLoanLedger(payerId))
+        .filter((row) => row.kind === 'repayment' && row.sats === 40)
+        .map((row) => ({
+          amountUsd: row.amountUsd,
+          amountChf: row.amountChf,
+          amountEur: row.amountEur,
+          amountPhp: row.amountPhp,
+        }));
+      expect(repaymentFiat).toEqual([
+        { amountUsd: null, amountChf: null, amountEur: null, amountPhp: null },
+      ]);
+    } finally {
+      if (ready) {
+        await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1', [receiptId]);
+        await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1', [loanId]);
+        await client.execute('DELETE FROM message_repayment WHERE message_id = $1', [loanId]);
+        await client.execute('DELETE FROM message WHERE id = $1 OR id = $2', [loanId, otherId]);
+        await client.execute('DELETE FROM account WHERE id = $1 OR id = $2', [authorId, payerId]);
       }
       await closeIfPossible(sql);
     }

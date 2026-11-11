@@ -18,6 +18,7 @@ import type { SqlClient } from './lib/auth/sql';
 import { logPoolOptions } from './lib/sql-pool';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
+import { sharedNostrRelayPool } from './lib/nostr/relay-pool';
 import { PostRateLimiter, REPLY_POST_CAPS } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import {
@@ -42,7 +43,14 @@ import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
 import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
 import { InMemoryPushStore } from './lib/push-store';
-import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
+import {
+  accountHasLiveSubscription,
+  PUSH_WORKER_INTERVAL_MS,
+  startPushWorker,
+} from './lib/push-worker';
+import { InMemoryNotificationStore } from './lib/notification-store';
+import { inboxUnreadCountFor } from './lib/conversation-push';
+import { notifyPaymentReceived } from './lib/payment-received';
 import { resolveMediaDir } from './lib/video';
 import {
   resolveFreePaymentsConfig,
@@ -56,7 +64,7 @@ import { OrchestraClient } from './lib/orchestra';
 import { ShopPayments } from './lib/shop-payment';
 import { InMemoryShopPaymentStore, PostgresShopPaymentStore } from './lib/shop-payment-store';
 import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
-import { startSparkInvoiceWorker } from './lib/spark-worker';
+import { startMemberSparkInvoicePrune, startSparkInvoiceWorker } from './lib/spark-worker';
 import { startPosPaidWorker } from './lib/pos-paid-worker';
 import { startFondPaidWorker } from './lib/fond-paid-worker';
 import { resolveFxSpotUrl, startFxSpotWorker } from './lib/fx-spot';
@@ -144,7 +152,9 @@ if (import.meta.main) {
   // BTC_USD_CANDLES_URL and FRANKFURTER_RATES_URL are optional — resolvers
   // inside openBootStores fall back to Coinbase / Frankfurter ECB; unset
   // does not fail boot.
-  const querier = new WebsocketNostrQuerier();
+  // One long-lived socket per relay URL for every query and publish of this process.
+  const relayPool = sharedNostrRelayPool();
+  const querier = new WebsocketNostrQuerier(relayPool);
   const bootFx = {
     nostrQuerier: querier,
     zapRelayUrls: resolveZapRelays(process.env),
@@ -197,8 +207,6 @@ if (import.meta.main) {
     diagnosticStore,
     walletStore,
     memberEventStore,
-    conversationStore,
-    notificationStore,
     trustStore,
     fundingStore,
     rosterStore,
@@ -206,6 +214,9 @@ if (import.meta.main) {
     debugDbStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
+  // One instance each, shared by createApp and the Spark invoice worker's receive push.
+  const conversationStore = boot.conversationStore ?? new InMemoryConversationStore();
+  const notificationStore = boot.notificationStore ?? new InMemoryNotificationStore();
   const vapid = resolveVapidConfig(process.env);
   let sender: PushSender = new UnconfiguredPushSender();
   let vapidPublicKey: string | undefined;
@@ -219,7 +230,7 @@ if (import.meta.main) {
   }
   const publisher =
     nostrKek !== undefined && messageStore !== undefined
-      ? new WebsocketNostrPublisher()
+      ? new WebsocketNostrPublisher(relayPool)
       : undefined;
   const lnurlServer = resolveLnurlServerConfig(process.env) ?? undefined;
   const spendPing = resolveSpendPing(process.env, globalThis.fetch, {
@@ -241,7 +252,6 @@ if (import.meta.main) {
       ? (boot.sparkInvoiceStore ?? new InMemorySparkInvoiceStore())
       : undefined;
   const appGiftStore = giftStore ?? new InMemoryGiftStore();
-  const appConversationStore = conversationStore ?? new InMemoryConversationStore();
   const appFundingStore = fundingStore ?? new InMemoryFundingStore();
   const appInvoiceStore = new InMemoryInvoiceStore();
   const shopConfig = resolveShopPaymentConfig(process.env);
@@ -305,8 +315,8 @@ if (import.meta.main) {
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
     ...(walletStore === undefined ? {} : { walletStore }),
     ...(memberEventStore === undefined ? {} : { memberEventStore }),
-    conversationStore: appConversationStore,
-    ...(notificationStore === undefined ? {} : { notificationStore }),
+    conversationStore,
+    notificationStore,
     ...(trustStore === undefined ? {} : { trustStore }),
     fundingStore: appFundingStore,
     rosterStore,
@@ -363,15 +373,16 @@ if (import.meta.main) {
     pushStore,
     postLimiter,
     replyLimiter,
-    ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
-    ...(notificationStore === undefined ? {} : { notificationStore }),
+    ...(boot.conversationStore === undefined ? {} : { conversations: boot.conversationStore }),
+    ...(boot.notificationStore === undefined ? {} : { notificationStore: boot.notificationStore }),
     ...(spendPing === undefined ? {} : { spendPing }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
     fiatRates,
     ...(lnurlServer === undefined ? {} : { lnurlServer }),
   };
+  let nostrWorker: { stop: () => void } | undefined;
   if (publisher !== undefined && nostrKek !== undefined && messageStore !== undefined) {
-    startNostrWorker(
+    nostrWorker = startNostrWorker(
       {
         ...ingestDeps,
         kek: nostrKek,
@@ -388,11 +399,28 @@ if (import.meta.main) {
       store: sparkInvoiceStore,
       config: freePayments,
       fetchImpl: globalThis.fetch,
-      publisher: publisher ?? new WebsocketNostrPublisher(),
+      publisher: publisher ?? new WebsocketNostrPublisher(relayPool),
       ingest: zapReceiptIngest(ingestDeps),
       claims: forumMessages,
+      notifyPayment: (payment) =>
+        notifyPaymentReceived(
+          {
+            auth: authStore,
+            pushStore,
+            hasLiveDevice: (accountId) =>
+              accountHasLiveSubscription(pushStore, authStore, Date.now(), accountId),
+            notifications: notificationStore,
+            inboxUnreadCount: inboxUnreadCountFor(conversationStore, authStore),
+            now: Date.now,
+          },
+          payment,
+        ),
       now: Date.now,
     });
+  } else if (boot.sparkInvoiceStore !== undefined) {
+    // The worker prunes on every tick; without it, expired member invoices
+    // stored while free in-app payments were on are still deleted.
+    startMemberSparkInvoicePrune({ store: boot.sparkInvoiceStore, now: Date.now });
   }
   if (lnurlServer !== undefined) {
     startPosPaidWorker({
@@ -420,7 +448,7 @@ if (import.meta.main) {
           now: Date.now,
           fetchImpl: globalThis.fetch,
           lnurlServer,
-          conversationStore: appConversationStore,
+          conversationStore,
           fundingStore: appFundingStore,
           recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
           gifts: appGiftStore,
@@ -429,6 +457,15 @@ if (import.meta.main) {
         },
       });
     }
+  }
+  // On stop: end the Nostr worker and close the relay sockets, then let the
+  // signal terminate the process as it would without this handler.
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      nostrWorker?.stop();
+      relayPool.close();
+      process.kill(process.pid, signal);
+    });
   }
 }
 /* v8 ignore stop */
