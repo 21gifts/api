@@ -369,16 +369,23 @@ same things. Every route that names a role names the **minimum** role:
 that rank or higher. Permission text names the minimum rank only. Do not write
 "moderator or initiator" or „Moderator oder Initiator“. Permission checks use
 `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role
-is a defect. The daily payout roster is `roleAtLeast(role, 'initiator')`, so
-the software developer and moderator are excluded. A state check on the
-_subject_ of an action names its minimum too when the rule is cumulative: a
+is a defect, except the two named exceptions `earnsModeratorGroupPay` (no
+moderator-group payout for `software_developer`) and `forumRateLimitExempt`
+(founder and `software_developer` skip the forum rate limits). The daily
+payout roster is `roleAtLeast(role, 'initiator')`, so the software developer,
+fond, and moderator are excluded. A state check on the _subject_ of an action
+names its minimum too when the rule is cumulative: a
 subject already at or above moderator standing is
 `roleAtLeast(subject.role, 'moderator')`, so confirm, appoint, and the public
 propose edge never demote or hide an initiator, software developer, fond, or
 founder. The exact "subject is still `verified`" pending-proposal rule stays
 exact. Initiator and software developer are not created by propose, confirm,
 or appoint. Only the boot UPDATE and operator `PATCH /debug/accounts/:id` set
-them.
+them. The boot migration runs under a fixed advisory lock. When the old
+`account.staff_tag` column exists, it sets `role = 'software_developer'` for
+rows labelled `software_developer` whose role is `basis`, `verified`,
+`moderator`, or `fond` (every rank below software developer), then drops the
+column. An `initiator` or `founder` with that label keeps its role.
 
 ### `GET /healthz`
 
@@ -2789,7 +2796,7 @@ stays `null`)).
 | ---------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                         | string         | Opaque account id                                                                                                                                                                                                                                                                                                                                                                                 |
 | `linkingKey`                 | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                                                                                                                                           |
-| `role`                       | string         | `basis`, `verified`, `moderator`, `software_developer`, `fond`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                                         |
+| `role`                       | string         | `basis`, `verified`, `moderator`, `fond`, `software_developer`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                                         |
 | `name`                       | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                                                                                                                                                 |
 | `username`                   | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`, no trailing `.`, no `..`), or `null` until set. Cannot skip. Fixed once the wallet is verified.                                                                                                                                                                                                                                                   |
 | `location`                   | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                                                                                                                                          |
@@ -4581,7 +4588,7 @@ second call:
 { "username": "tondo-fond-lost" }
 ```
 
-`role` must be one of `basis`, `verified`, `moderator`, `software_developer`, `fond`, `initiator`, or `founder`.
+`role` must be one of `basis`, `verified`, `moderator`, `fond`, `software_developer`, `initiator`, or `founder`.
 `platform` is a
 boolean; `true` clears any other platform flag (at most one `isPlatform`
 account) and, when a conversation store is wired, points every

@@ -40,7 +40,7 @@ export interface AccountResponse {
   id: string;
   /** Legacy LNURL-auth linking key, or `null` for passkey accounts. */
   linkingKey: string | null;
-  /** Permission / forum display tier (`basis` \| `verified` \| `moderator` \| `software_developer` \| `initiator` \| `founder`). */
+  /** Permission / forum display tier in rank order (`basis` \| `verified` \| `moderator` \| `fond` \| `software_developer` \| `initiator` \| `founder`). */
   role: string;
   /** Display name, or `null` until set. */
   name: string | null;

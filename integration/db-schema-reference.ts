@@ -3,7 +3,6 @@ import { randomBytes } from 'node:crypto';
 import { readdir, readFile, rm, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { format, resolveConfig } from 'prettier';
-import { ROLE_ORDER } from '@/lib/auth/roles';
 import { openBootStores } from '@/lib/boot-stores';
 import { setDiagnosticSink } from '@/lib/log';
 import type { SqlClient } from '@/lib/auth/sql';
@@ -986,10 +985,6 @@ function renderTablePage(
     externalFile === undefined
       ? `Source: ${sourceLinks(paths, '../../../')}`
       : `Source: ${sourceLinks(paths, '../../../')} Created outside this service; definition from ${externalFile}.`;
-  const roleValues =
-    table.name === 'account'
-      ? ['', '## Role values', '', ROLE_ORDER.map((role) => `\`${role}\``).join(', ')]
-      : [];
   const parts = [
     GENERATED_HEADER,
     '',
@@ -1000,7 +995,6 @@ function renderTablePage(
     '## Columns',
     '',
     renderColumns(table),
-    ...roleValues,
     '',
     '## Indexes',
     '',

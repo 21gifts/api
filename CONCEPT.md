@@ -149,8 +149,12 @@ can do the same things. Permission text names the minimum rank only. Do not
 write "moderator or initiator" or „Moderator oder Initiator“. The daily payout
 roster is `roleAtLeast(role, 'initiator')`. The software developer is in the
 closed Moderators group with every moderator permission, does not earn the
-moderator-group payout, and cannot edit the daily payout roster. New passkey
-accounts are **Basis**.
+moderator-group payout, and cannot edit the daily payout roster. The boot
+migration runs under a fixed advisory lock. When the old `staff_tag` column
+exists, it promotes rows labelled `software_developer` from `basis`,
+`verified`, `moderator`, or `fond` (every rank below software developer), so an
+`initiator` or `founder` with that label keeps its role, then drops the column.
+New passkey accounts are **Basis**.
 `verified` is a moderator confirming this person in real life
 (forum badge), not a verified wallet. `POST /trust/verify` must have
 confirmed the stored name. A **funding-program grant** is
@@ -174,14 +178,15 @@ write trust edges; `POST /debug/trust-edges` backfills stored edges and
 `DELETE /debug/trust-edges` removes the latest stored `(subjectId, kind)`
 row (`createdAt` desc, then `id` desc), both without changing `role`.
 
-| Role               | Capabilities                                                                                                                                                                                                                                                                  |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Basis              | Log in, maintain a profile, receive gifts (default). No forum tag. Pays 1 sat to 21.gifts before posting or replying, except a free first top-level post and a reply on their own note.                                                                                       |
-| Verified           | Everything Basis can, plus a forum tag: a moderator physically met this person. Not a verified wallet. May post and reply without a Bitcoin payment.                                                                                                                          |
-| Moderator          | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag. No moderator-group payout for group messages unless on the moderator roster. |
-| Software Developer | Everything Moderator can, including the closed Moderators group and every moderator permission. No moderator-group payout. Cannot edit the daily payout roster. Forum tag.                                                                                                    |
-| Initiator          | Rank 5, above the software developer, fond and moderator. Can edit the daily payout roster. Forum tag.                                                                                                                                                                        |
-| Founder            | Everything Initiator can, plus appointing moderators directly. Forum tag.                                                                                                                                                                                                     |
+| Role               | Capabilities                                                                                                                                                                                                            |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Basis              | Log in, maintain a profile, receive gifts (default). No forum tag. Pays 1 sat to 21.gifts before posting or replying, except a free first top-level post and a reply on their own note.                                 |
+| Verified           | Everything Basis can, plus a forum tag: a moderator physically met this person. Not a verified wallet. May post and reply without a Bitcoin payment.                                                                    |
+| Moderator          | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag.                        |
+| Fond               | Everything Moderator can (rank 3). The configured Fond account (`FOND_USERNAME`, not the platform account) can sign Fond payouts from its own wallet when `PAYOUT_SIGNER=fond` (`canSignFondPayouts`, at least `fond`). |
+| Software Developer | Everything Moderator can, including the closed Moderators group and every moderator permission. No moderator-group payout. Cannot edit the daily payout roster. Forum tag.                                              |
+| Initiator          | Rank 5, above the software developer, fond and moderator. Can edit the daily payout roster. Forum tag.                                                                                                                  |
+| Founder            | Everything Initiator can, plus appointing moderators directly. Forum tag.                                                                                                                                               |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below). The forum shows a tag only for Verified, Moderator,

@@ -13,7 +13,7 @@
  * earlier eligible contact.
  */
 
-import { roleAtLeast } from '@/lib/auth/roles';
+import { roleAtLeast, roleRank } from '@/lib/auth/roles';
 import type { Account, AccountRole } from '@/lib/auth/store';
 
 /** Stored grant kind. Pending `moderator_propose` is staff-only until the subject is at least a moderator. */
@@ -116,15 +116,6 @@ export interface TrustEdgeJson {
   /** ISO-8601 creation timestamp. */
   createdAt: string;
 }
-
-const ROLE_RANK: Record<TrustChainNode['role'], number> = {
-  founder: 0,
-  initiator: 1,
-  software_developer: 2,
-  fond: 3,
-  moderator: 4,
-  verified: 5,
-};
 
 /**
  * Whether `role` may run staff trust routes (minimum `moderator`).
@@ -398,11 +389,12 @@ function compareTrustEdgesOldestFirst(a: TrustEdge, b: TrustEdge): number {
   return 0;
 }
 
-/** Founder, initiator, software developer, fond, moderator, verified; oldest `createdAt`, then `id`. */
+/**
+ * Founder, initiator, software developer, fond, moderator, verified (descending
+ * `roleRank`); then oldest `createdAt`, then `id`.
+ */
 function compareChainAccounts(a: Account, b: Account): number {
-  const aRole = a.role as TrustChainNode['role'];
-  const bRole = b.role as TrustChainNode['role'];
-  const byRole = ROLE_RANK[aRole] - ROLE_RANK[bRole];
+  const byRole = roleRank(b.role) - roleRank(a.role);
   if (byRole !== 0) {
     return byRole;
   }

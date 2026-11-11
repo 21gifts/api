@@ -756,6 +756,60 @@ describe('daily roster keyed by account', () => {
   });
 });
 
+describe('staff_tag role migration on Postgres', () => {
+  test('promotes fond and the lower ranks; initiator and founder keep their role', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const ids = {
+      basis: crypto.randomUUID(),
+      verified: crypto.randomUUID(),
+      moderator: crypto.randomUUID(),
+      fond: crypto.randomUUID(),
+      initiator: crypto.randomUUID(),
+      founder: crypto.randomUUID(),
+    };
+    try {
+      await migrateAuthSchema(client);
+      await client.execute('ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text');
+      for (const [role, id] of Object.entries(ids)) {
+        await client.execute(
+          `INSERT INTO account
+             (id, role, staff_tag, lightning_address_verified, forum_laws_dismissed, created_at)
+           VALUES ($1, $2, 'software_developer', false, false, $3)`,
+          [id, role, new Date()],
+        );
+      }
+
+      await migrateAuthSchema(client);
+
+      const roleOf = async (id: string): Promise<string | undefined> => {
+        const rows = await client.query<{ role: string }>(
+          'SELECT role FROM account WHERE id = $1',
+          [id],
+        );
+        return rows[0]?.role;
+      };
+      expect(await roleOf(ids.basis)).toBe('software_developer');
+      expect(await roleOf(ids.verified)).toBe('software_developer');
+      expect(await roleOf(ids.moderator)).toBe('software_developer');
+      expect(await roleOf(ids.fond)).toBe('software_developer');
+      expect(await roleOf(ids.initiator)).toBe('initiator');
+      expect(await roleOf(ids.founder)).toBe('founder');
+      expect(
+        await client.query(
+          `SELECT 1 FROM information_schema.columns
+           WHERE table_schema = current_schema()
+             AND table_name = 'account' AND column_name = 'staff_tag'`,
+        ),
+      ).toEqual([]);
+    } finally {
+      for (const id of Object.values(ids)) {
+        await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore spark pubkey', () => {
   test('claim, verify, unique index, username freeze, and db_change', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);

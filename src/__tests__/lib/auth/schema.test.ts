@@ -177,11 +177,16 @@ describe('AUTH_SCHEMA_SQL', () => {
       ),
     );
     const migration = AUTH_SCHEMA_SQL[migrationAt] ?? '';
-    expect(migration).toContain('information_schema.columns');
+    const lockAt = migration.indexOf('PERFORM pg_advisory_xact_lock(21499002);');
+    expect(lockAt).toBeGreaterThan(-1);
+    expect(lockAt).toBeLessThan(migration.indexOf('information_schema.columns'));
+    expect(migration.indexOf('information_schema.columns')).toBeLessThan(
+      migration.indexOf("UPDATE account\n      SET role = 'software_developer'"),
+    );
     expect(migration).toContain('table_schema = current_schema()');
     expect(migration).toContain("column_name = 'staff_tag'");
     expect(migration).toContain(
-      "UPDATE account\n      SET role = 'software_developer'\n      WHERE staff_tag = 'software_developer'\n        AND role IN ('basis', 'verified', 'moderator');",
+      "UPDATE account\n      SET role = 'software_developer'\n      WHERE staff_tag = 'software_developer'\n        AND role IN ('basis', 'verified', 'moderator', 'fond');",
     );
     expect(migration).toContain(
       'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk;',

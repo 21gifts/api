@@ -87,7 +87,7 @@ update stuff
 - **No `console.log`** in committed code — `console.warn` / `console.error` only, for legitimate operator-facing output
 - **Named exports**, no default exports
 - **Path alias `@/`** points at `src/` (configured in `tsconfig.json` and `vitest.config.ts`)
-- **Permission checks** — caller/viewer role uses `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role (`role === '...'` / `role !== '...'`) is a defect. The rank order is `basis` < `verified` < `moderator` < `fond` < `software_developer` < `initiator` < `founder`. `software_developer` is in the closed Moderators group with every moderator permission, but `earnsModeratorGroupPay` excludes it from the moderator-group payout. The daily payout roster is `roleAtLeast(role, 'initiator')`; the software developer ranks below it.
+- **Permission checks** — caller/viewer role uses `roleAtLeast` (`src/lib/auth/roles.ts`); an equality test on the caller's role (`role === '...'` / `role !== '...'`) is a defect, except the two named exceptions `earnsModeratorGroupPay` (no moderator-group payout for `software_developer`) and `forumRateLimitExempt` (founder and `software_developer` skip the forum rate limits). The rank order is `basis` < `verified` < `moderator` < `fond` < `software_developer` < `initiator` < `founder`. `software_developer` is in the closed Moderators group with every moderator permission. The daily payout roster is `roleAtLeast(role, 'initiator')`; the software developer ranks below it.
 
 ### TSDoc
 
