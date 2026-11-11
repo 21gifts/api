@@ -264,7 +264,7 @@ Public base URLs used in examples:
 | GET    | `/debug/accounts`                                    | `Authorization: Bearer`                      | Operator account listing (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/debug/accounts/:id`                                | `Authorization: Bearer`                      | Operator one-account detail (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/debug/accounts`                                    | `Authorization: Bearer`                      | Operator provision name + optional username (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`                      | Operator set `role` / `platform` / `sessionRefused`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`                      | Operator set `role` / `username` / `platform` / `sessionRefused`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`                      | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | POST   | `/debug/accounts/merge`                              | `Authorization: Bearer`                      | Operator merge of one account into another (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | POST   | `/debug/shop-proofs/:id/retry`                       | `Authorization: Bearer`                      | Operator retry of a `stuck` shop payment proof (`DEBUG_TOKEN`; mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -4552,15 +4552,15 @@ and `username`.
 
 ### `PATCH /debug/accounts/:id`
 
-Operator assignment of the account's forum display role, the official
-platform flag (`isPlatform`), and/or
+Operator assignment of the account's forum display role, username, the
+official platform flag (`isPlatform`), and/or
 session refusal (`sessionRefused`). Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN` (same gate as
-`GET /debug/accounts`). Body is one or more of `role`, `platform`, and
+`GET /debug/accounts`). Body is one or more of `role`, `username`, `platform`, and
 `sessionRefused`; any other key (including `lightningAddress`) is refused:
 
 ```json
-{ "role": "basis", "platform": true, "sessionRefused": true }
+{ "role": "basis", "username": "tondo-fond-lost", "sessionRefused": true }
 ```
 
 `role` must be one of `basis`, `verified`, `moderator`, `initiator`, or `founder`.
@@ -4591,13 +4591,33 @@ Missing or non-matching bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Body is not JSON with a known `role`, `platform` boolean, and/or
+Body is not JSON with a known `role`, `username`, `platform` boolean, and/or
 `sessionRefused` boolean, or has another key → **Response** `400`:
 
 ```json
 {
-  "error": "Expected a JSON body with a \"role\" string, platform boolean, and/or sessionRefused boolean"
+  "error": "Expected a JSON body with a \"role\" string, \"username\" string, platform boolean, and/or sessionRefused boolean"
 }
+```
+
+An invalid `username` → **Response** `400`:
+
+```json
+{
+  "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot"
+}
+```
+
+A `username` owned by another account → **Response** `409`:
+
+```json
+{ "error": "Username is already in use" }
+```
+
+A `username` on the official platform account → **Response** `409`:
+
+```json
+{ "error": "The platform account cannot be renamed" }
 ```
 
 Unknown account id → **Response** `404`:
@@ -4614,7 +4634,14 @@ and Nostr debug fields). Role changes log `debug.accounts.role_set`
 with the account id and new role. Platform changes log
 `debug.accounts.platform_set` with the account id and the new flag.
 Session-refusal changes log `debug.accounts.session_refused_set` with the
-account id and the new flag.
+account id and the new flag. A `username` is validated and normalised by
+`normalizeUsername` and written through `AuthStore.renameUsername`, including
+for a wallet-verified account; an invalid handle is 400 and another account's
+handle is 409. The platform account cannot be renamed (409). The 21.gifts
+Lightning address (`<username>@<host>`) and Nostr NIP-05 names follow the new
+handle, and links using the old handle stop resolving; nothing else is
+migrated. Renames log `debug.accounts.username_renamed` with the account id and
+new handle.
 
 ### `POST /debug/accounts/:id/session`
 

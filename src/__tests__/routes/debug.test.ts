@@ -20,7 +20,7 @@ async function createMergeAccount(
   store: InMemoryAuthStore,
   id: string,
   viewKey: string,
-  extras: { isPlatform?: boolean } = {},
+  extras: { isPlatform?: boolean; username?: string } = {},
 ): Promise<void> {
   await store.createAccount({
     id,
@@ -33,6 +33,7 @@ async function createMergeAccount(
     createdAt: 1_700_000_000_000,
     rulesAgreedAt: 1_700_000_000_000,
     ...(extras.isPlatform === true ? { isPlatform: true } : {}),
+    ...(extras.username === undefined ? {} : { username: extras.username }),
   });
 }
 
@@ -400,7 +401,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
+        'Expected a JSON body with a "role" string, "username" string, platform boolean, and/or sessionRefused boolean',
     });
   });
 
@@ -420,7 +421,7 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error:
-        'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
+        'Expected a JSON body with a "role" string, "username" string, platform boolean, and/or sessionRefused boolean',
     });
   });
 
@@ -455,6 +456,197 @@ describe('debugRoutes', () => {
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('PATCH renames a verified account and the receiving address follows it', async () => {
+    const store = new InMemoryAuthStore();
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await createWalletAccount(store, id, 'ada');
+    const updateAccount = vi.spyOn(store, 'updateAccount');
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, debugToken: 'secret', lnurlServer: LNURL_SERVER }),
+    );
+    const res = await app.request(`/debug/accounts/${id}`, {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: '  Grace ' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(
+      expect.objectContaining({
+        id,
+        username: 'grace',
+        lightningAddress: 'grace@example.test',
+        lightningAddressVerified: true,
+      }),
+    );
+    expect(updateAccount).not.toHaveBeenCalled();
+    expect(await store.getAccountByUsername('ada')).toBeUndefined();
+    expect((await store.getAccountByUsername('grace'))?.id).toBe(id);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'debug.accounts.username_renamed' && e['username'] === 'grace',
+      ),
+    ).toBe(true);
+  });
+
+  it('PATCH renames and refuses a session in the same call', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'grace', sessionRefused: true }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { username: string; sessionRefused: boolean }).toMatchObject({
+      username: 'grace',
+      sessionRefused: true,
+    });
+    expect(await store.getAccount('acc')).toMatchObject({
+      username: 'grace',
+      sessionRefused: true,
+    });
+  });
+
+  it('PATCH returns 400 for an invalid username', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    for (const username of ['bad name', 'ada..', '_', 'a'.repeat(33)]) {
+      const res = await app.request('/debug/accounts/acc', {
+        method: 'PATCH',
+        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot',
+      });
+    }
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('PATCH returns 409 for a username owned by another account, case-insensitively', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    await createMergeAccount(store, 'other', 'c'.repeat(64), { username: 'grace' });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: ' GRACE ' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Username is already in use' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it("PATCH accepts the account's own username", async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: ' ADA ' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { username: string }).toMatchObject({ username: 'ada' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('PATCH maps a rename race reported by the store to 409', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    vi.spyOn(store, 'renameUsername').mockResolvedValue({ ok: false, reason: 'taken' });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'grace' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Username is already in use' });
+  });
+
+  it('PATCH returns 404 when the account disappears before the rename write', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    vi.spyOn(store, 'renameUsername').mockResolvedValue({ ok: false, reason: 'missing' });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'grace' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('PATCH returns 404 for a missing account when renaming', async () => {
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+    );
+    const res = await app.request('/debug/accounts/missing', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'grace' }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+  });
+
+  it('PATCH renames and changes the role in one call', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'grace', role: 'moderator' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { username: string; role: string }).toMatchObject({
+      username: 'grace',
+      role: 'moderator',
+    });
+    expect(await store.getAccount('acc')).toMatchObject({ username: 'grace', role: 'moderator' });
+  });
+
+  it('PATCH refuses to rename the platform account', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'plat', 'b'.repeat(64), {
+      username: 'platform',
+      isPlatform: true,
+    });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/plat', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'renamed' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'The platform account cannot be renamed' });
+    expect((await store.getAccount('plat'))?.username).toBe('platform');
+  });
+
+  it('PATCH refuses a rename that also promotes the account to platform', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
+    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const res = await app.request('/debug/accounts/acc', {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'platform', platform: true }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'The platform account cannot be renamed' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+    expect((await store.getAccount('acc'))?.isPlatform).not.toBe(true);
   });
 
   it('PATCH sets the role and returns the updated account', async () => {
@@ -917,7 +1109,7 @@ describe('debugRoutes', () => {
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
         error:
-          'Expected a JSON body with a "role" string, platform boolean, and/or sessionRefused boolean',
+          'Expected a JSON body with a "role" string, "username" string, platform boolean, and/or sessionRefused boolean',
       });
     }
     expect((await store.getAccount('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'))?.role).toBe('verified');
