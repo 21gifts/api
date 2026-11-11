@@ -4757,11 +4757,18 @@ that exists only between these two accounts is deleted. Two
 conversations with the same other person are folded into one, and the
 messages are kept. Where a second row would break a unique key, the
 survivor's row stays and the source's row is dropped: the same image
-slot, the same notification, the same repayment day, a second address
-check, and a second open till charge. When both accounts have a free
+slot, the same notification, a second address check, and a second open
+till charge. When both accounts have a free
 first post, the source note moves but is no longer marked free, so the
 survivor keeps one free first post. Two funding grants are refused
 before any of those writes.
+
+Before either identity moves, every affected legacy full-share repayment
+is converted to a canonical repayment part. Its units are reconstructed
+from the original loan schedule (sats for a BTC loan and exact original
+cents for a fiat loan); its stored `due_sats` remains the part's sats.
+The conversion and the later collision-safe part reindexing hold the same
+per-message advisory lock as repayment settlement.
 
 An invalid body is **400**
 `{ "error": "Expected a JSON body with \"from\" and \"into\"" }`
@@ -4784,6 +4791,9 @@ account rows, before any write. Due pending charges on either account are marked
 collision read. When the survivor still has an unexpired pending till
 charge, the source's unexpired pending charge is deleted (below) and the
 merge goes on. A due pending charge is not a collision and is not deleted.
+If an affected legacy repayment's exact original schedule units cannot be
+reconstructed, the merge is **409**
+`{ "error": "Repayment history is unavailable" }` and changes nothing.
 The source's paid and closed shop payments move like every other row. Every
 charge row of both accounts is locked first in id order (`SELECT id …
 WHERE account_id = $1 OR account_id = $2 ORDER BY id FOR UPDATE`), the
@@ -7656,11 +7666,11 @@ Success → **Response** `200`:
 }
 ```
 
-`bills` has one entry for every due (day index below `daysDue`), unpaid share whose giver can receive, oldest day first, then the order of the repayment list. A partially settled share exposes and bills only its unpaid remainder. Each bill uses the legacy or part description as appropriate. An open, still-payable part bill is returned again, never a second one; an open legacy full-share bill after a partial settlement is a 409 conflict until it expires. `waiting` lists due, unpaid remainders whose giver cannot receive. `amountSats` and fiat `amount` describe only the billed remainder. Nothing due → **200** with both lists empty.
+`bills` has one entry for every due (day index below `daysDue`), unpaid share whose giver can receive, oldest day first, then the order of the repayment list. A partially settled share exposes and bills only its unpaid remainder. Each bill uses the legacy or part description as appropriate. An open, still-payable part bill is returned again, never a second one; an open legacy full-share bill after a partial settlement is a 409 conflict until it expires. `waiting` lists due shares whose giver cannot receive. Its `amountSats` and fiat `amount` always describe the whole unpaid share remainder (`share.units - share.paidUnits`), even when a smaller open bill already reserves part of it. Bill amounts describe the returned or newly minted bill only. Nothing due → **200** with both lists empty.
 
 At most **60** bills per call. The remaining payable shares come on the next call. The repayment invoice limiter is asked once per call, by the first bill that has to be minted; a call that only returns open bills does not ask it.
 
-Close, note-gift mint and durable invoice storage, repayment reservation, and settlement are serialized by one lock per message. A repayment payment-hash claim and its repayment row become visible together. The zap receipt, or the Spark invoice worker for a paid `sparkInvoice`, stores a legacy full share on `message_repayment` or an exact part on `message_repayment_part`, never both.
+Close, note-gift mint and durable invoice storage, repayment reservation, and settlement are serialized by one lock per message. Under that lock reservation rereads every settled and still-payable part, reuses an exact description first, validates all reserved units against the share, and refuses a stale part index or size with 409. A repayment payment-hash claim and its matching repayment row become visible together; an immutable part-key conflict leaves no claim. The zap receipt, or the Spark invoice worker for a paid `sparkInvoice`, stores a legacy full share on `message_repayment` or an exact part on `message_repayment_part`, never both.
 
 Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID.
 Unknown id, a non-UUID after a valid session, a note that is not a live repayable ask, a credit that is not funded yet, or a caller who is not the author → **404** `{ "error": "Not found" }`.
@@ -7705,7 +7715,7 @@ Same guards as `POST /messages/:id/repayment` (session, `forum.pay`, Sunday rest
 
 BTC loans take a whole positive sat string. Fiat loans take a decimal string in the loan currency with at most two decimals, comma or dot; cents are stored per [docs/fiat-amounts.md](docs/fiat-amounts.md), and each part is priced in sats at the rate `POST /messages/:id/repayment` uses now. Amount 0, negative, malformed, more than two decimals on a fiat loan, or a non-integer on a BTC loan → **400** `{ "error": "Invalid amount", "code": "invalid_amount" }`.
 
-The amount is applied to unpaid remainder shares in plan order: day ascending, then the order of the repayment list within a day. Shares whose giver cannot receive are skipped and listed in `waiting`; they never consume amount. When a wallet refuses, its unused allocation is immediately reallocated to later receivers in the same request. Every bill already created or reused earlier in that request remains a fixed reservation, consumes the requested amount, and is returned even when a later share of the same giver refuses. The last share reached may be paid partially. An open part bill is returned through the common bill path, including its Spark invoice and current-address conflict check. An oversized open part or a conflicting legacy full-share bill is **409** `{ "error": "A payment for this share is still open" }` and mints nothing.
+The amount is applied to unpaid remainder shares in plan order: day ascending, then the order of the repayment list within a day. Shares whose giver cannot receive are skipped and listed in `waiting`; they never consume amount. When a wallet refuses, its unused allocation is immediately reallocated to later receivers in the same request. Every bill already created or reused earlier in that request remains a fixed reservation, consumes the requested amount, and is returned even when a later share of the same giver refuses. The last share reached may be paid partially. An open part bill is returned through the common bill path, including its Spark invoice and current-address conflict check. An oversized open part, a conflicting legacy full-share bill, or a plan made stale by another reservation before it acquired the message lock is **409** `{ "error": "A payment for this share is still open" }` and mints nothing.
 
 `max` is the sum of every unpaid remainder whose giver can receive. An amount above it is **400** `{ "error": "Amount is above what is left", "code": "amount_too_high", "maxSats": <int|null>, "maxAmount": <string|null> }` with nothing minted. `max` 0 is **400** `{ "error": "Nothing is due" }`. More than 60 parts are needed → **400** `{ "error": "Too many shares for one payment", "code": "too_many_shares", "maxSats": <int|null>, "maxAmount": <string|null> }`, where the max is the largest amount that fits in 60 bills.
 

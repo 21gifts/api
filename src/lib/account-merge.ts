@@ -1,3 +1,4 @@
+import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** One reserved database transaction connection used by an account merge. */
@@ -29,7 +30,13 @@ type MergeResult =
   | { ok: true; messages: number }
   | {
       ok: false;
-      error: 'not_found' | 'same_account' | 'platform' | 'both_grants' | 'shop_payment_open';
+      error:
+        | 'not_found'
+        | 'same_account'
+        | 'platform'
+        | 'both_grants'
+        | 'shop_payment_open'
+        | 'repayment_unavailable';
     };
 
 interface LockedAccountRow {
@@ -43,6 +50,26 @@ interface CatalogColumnRow {
   schema_name: string;
   table_name: string;
   column_name: string;
+}
+
+interface LegacyRepaymentRow {
+  message_id: string;
+  day_index: number | string;
+  recipient_account_id: string;
+  due_sats: number | string;
+  paid_at: Date | string;
+  goal_currency: string | null;
+  goal_amount: string | null;
+  goal_term_days: number | string | null;
+}
+
+interface MergePayerRow {
+  account_id: string;
+  sats: number | string;
+  usd: string | null;
+  chf: string | null;
+  eur: string | null;
+  php: string | null;
 }
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
@@ -80,10 +107,11 @@ function quoteIdentifier(identifier: string): string {
  * to the merged account's wallets, which go with its row. It also deletes the
  * merged account's `held_share_box` rows: each box is sealed to the merged
  * account's id and words, so the surviving account could never open it.
- * Frozen credit snapshots are combined by message. Repayment parts from both
- * identities are moved and reindexed without losing units or sats; whenever
- * parts exist, a colliding legacy full-share row is removed so parts remain
- * the canonical payment source.
+ * Frozen credit snapshots are combined by message. Before either identity is
+ * moved, legacy full-share repayments are reconstructed from the original
+ * loan schedule and converted to canonical parts. A schedule that cannot be
+ * reconstructed refuses the merge without writes. Parts from both identities
+ * are then moved and reindexed without losing units or sats.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -165,6 +193,156 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     );
     const messages = counts[0]?.n ?? 0;
     const savedProfileMessageId = fromAccount.profile_message_id;
+
+    // Repayment writes use the same message advisory lock. Take every affected
+    // lock before reading legacy rows so conversion and later reindexing see a
+    // stable paid state.
+    await tx.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended('message:' || affected.message_id::text, 0))
+       FROM (
+         SELECT message_id FROM message_repayment
+         WHERE recipient_account_id = $1 OR recipient_account_id = $2
+         UNION
+         SELECT message_id FROM message_repayment_part
+         WHERE recipient_account_id = $1 OR recipient_account_id = $2
+         UNION
+         SELECT message_id FROM message_invoice
+         WHERE result = 'ok'
+           AND (
+             description LIKE 'repay:%:' || $1::text
+             OR description LIKE 'repay:%:' || $2::text
+             OR description LIKE 'repayp:%:' || $1::text || ':%'
+             OR description LIKE 'repayp:%:' || $2::text || ':%'
+           )
+         UNION
+         SELECT receipt.message_id
+         FROM nostr_zap_receipt AS receipt
+         JOIN message ON message.id = receipt.message_id
+         WHERE message.goal_repayable IS TRUE
+           AND (receipt.payer_account_id = $1 OR receipt.payer_account_id = $2)
+       ) AS affected
+       ORDER BY affected.message_id`,
+      accountParams,
+    );
+    const legacyRepayments = await tx.query<LegacyRepaymentRow>(
+      `SELECT legacy.message_id, legacy.day_index, legacy.recipient_account_id,
+              legacy.due_sats, legacy.paid_at, message.goal_currency,
+              COALESCE(NULLIF(message.goal_amount_text, ''), message.goal_amount::text) AS goal_amount,
+              message.goal_term_days
+       FROM message_repayment AS legacy
+       JOIN message ON message.id = legacy.message_id
+       WHERE legacy.recipient_account_id = $1 OR legacy.recipient_account_id = $2
+       ORDER BY legacy.message_id, legacy.day_index, legacy.recipient_account_id
+       FOR UPDATE OF legacy, message`,
+      accountParams,
+    );
+    const canonicalLegacy: Array<LegacyRepaymentRow & { units: bigint }> = [];
+    for (const legacy of legacyRepayments) {
+      const payerRows = await tx.query<MergePayerRow>(
+        `WITH named AS (
+           SELECT receipt.payer_account_id AS account_id,
+                  SUM(receipt.sats)::bigint AS sats,
+                  SUM(ingest.fiat_usd)::text AS usd,
+                  SUM(ingest.fiat_chf)::text AS chf,
+                  SUM(ingest.fiat_eur)::text AS eur,
+                  SUM(ingest.fiat_php)::text AS php,
+                  message.goal_debt_frozen,
+                  message.goal_currency
+           FROM nostr_zap_receipt AS receipt
+           LEFT JOIN LATERAL (
+             SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
+             FROM nostr_zap_ingest
+             WHERE receipt_id = receipt.event_id
+               AND outcome = 'indexed'
+               AND message_id = receipt.message_id
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+           ) AS ingest ON true
+           JOIN message ON message.id = receipt.message_id
+           WHERE receipt.message_id = $1 AND receipt.payer_account_id IS NOT NULL
+             AND (
+               message.goal_funded_at IS NULL
+               OR receipt.recorded_at IS NULL
+               OR receipt.recorded_at <= message.goal_funded_at
+             )
+           GROUP BY receipt.payer_account_id, message.goal_debt_frozen, message.goal_currency
+         ), unassigned AS (
+           SELECT COALESCE(SUM(receipt.sats), 0)::bigint AS sats
+           FROM nostr_zap_receipt AS receipt
+           JOIN message ON message.id = receipt.message_id
+           WHERE receipt.message_id = $1 AND receipt.payer_account_id IS NULL
+             AND (
+               message.goal_funded_at IS NULL
+               OR receipt.recorded_at IS NULL
+               OR receipt.recorded_at <= message.goal_funded_at
+             )
+         )
+         SELECT named.account_id, named.sats,
+                CASE WHEN named.goal_debt_frozen
+                          AND COALESCE(snapshot.currency, named.goal_currency) = 'USD'
+                     THEN (COALESCE(snapshot.units, 0)::numeric / 100)::text ELSE named.usd END AS usd,
+                CASE WHEN named.goal_debt_frozen
+                          AND COALESCE(snapshot.currency, named.goal_currency) = 'CHF'
+                     THEN (COALESCE(snapshot.units, 0)::numeric / 100)::text ELSE named.chf END AS chf,
+                CASE WHEN named.goal_debt_frozen
+                          AND COALESCE(snapshot.currency, named.goal_currency) = 'EUR'
+                     THEN (COALESCE(snapshot.units, 0)::numeric / 100)::text ELSE named.eur END AS eur,
+                CASE WHEN named.goal_debt_frozen
+                          AND COALESCE(snapshot.currency, named.goal_currency) = 'PHP'
+                     THEN (COALESCE(snapshot.units, 0)::numeric / 100)::text ELSE named.php END AS php
+         FROM named
+         LEFT JOIN message_credit_payer_snapshot AS snapshot
+           ON snapshot.message_id = $1 AND snapshot.account_id = named.account_id
+         UNION ALL
+         SELECT ''::text, unassigned.sats, NULL::text, NULL::text, NULL::text, NULL::text
+         FROM unassigned`,
+        [legacy.message_id],
+      );
+      const payers = payerRows.map((payer) => ({
+        accountId: payer.account_id,
+        sats: Number(payer.sats),
+        usd: payer.usd,
+        chf: payer.chf,
+        eur: payer.eur,
+        php: payer.php,
+      }));
+      const owed = payerDebtUnits(legacy.goal_currency, legacy.goal_amount, payers);
+      if (owed === 'unavailable') {
+        return { ok: false, error: 'repayment_unavailable' };
+      }
+      const share = repaymentSchedule(Number(legacy.goal_term_days), owed).find(
+        (slice) =>
+          slice.dayIndex === Number(legacy.day_index) &&
+          slice.accountId === legacy.recipient_account_id,
+      );
+      if (share === undefined) {
+        return { ok: false, error: 'repayment_unavailable' };
+      }
+      canonicalLegacy.push({ ...legacy, units: share.units });
+    }
+    for (const legacy of canonicalLegacy) {
+      await tx.query(
+        `INSERT INTO message_repayment_part (
+           message_id, day_index, recipient_account_id, part_index, units, sats, paid_at
+         )
+         SELECT $1, $2, $3, COALESCE(MAX(part_index) + 1, 0), $4::bigint, $5::bigint, $6
+         FROM message_repayment_part
+         WHERE message_id = $1 AND day_index = $2 AND recipient_account_id = $3`,
+        [
+          legacy.message_id,
+          Number(legacy.day_index),
+          legacy.recipient_account_id,
+          legacy.units.toString(),
+          legacy.due_sats,
+          legacy.paid_at,
+        ],
+      );
+      await tx.query(
+        `DELETE FROM message_repayment
+         WHERE message_id = $1 AND day_index = $2 AND recipient_account_id = $3`,
+        [legacy.message_id, Number(legacy.day_index), legacy.recipient_account_id],
+      );
+    }
 
     await tx.query('UPDATE account SET profile_message_id = NULL WHERE id = $1', [input.from]);
 
@@ -372,36 +550,10 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     await tx.query(
-      `DELETE FROM message_repayment AS legacy
-       WHERE (legacy.recipient_account_id = $1 OR legacy.recipient_account_id = $2)
-         AND EXISTS (
-           SELECT 1
-           FROM message_repayment_part AS part
-           WHERE part.message_id = legacy.message_id
-             AND part.day_index = legacy.day_index
-             AND part.recipient_account_id = $2
-         )`,
-      accountParams,
-    );
-    await tx.query(
       `UPDATE message_repayment_part
        SET part_index = -part_index - 1
        WHERE recipient_account_id = $2 AND part_index < 0`,
       [input.from, input.into],
-    );
-
-    await tx.query(
-      `DELETE FROM message_repayment AS src
-       USING message_repayment AS dst
-       WHERE src.recipient_account_id = $1
-         AND dst.recipient_account_id = $2
-         AND dst.message_id = src.message_id
-         AND dst.day_index = src.day_index`,
-      accountParams,
-    );
-    await tx.query(
-      'UPDATE message_repayment SET recipient_account_id = $2 WHERE recipient_account_id = $1',
-      accountParams,
     );
 
     // The source's social recovery rows belong to its own wallets, which go

@@ -546,7 +546,7 @@ type RepaymentBill =
  *
  * @param deps - Store, auth, LNURL fetch, and the optional LNURL server and Spark store.
  * @param opened - Author, credit, and clock.
- * @param share - Day, giver, and sats.
+ * @param share - Day, giver, full units, and billed sats.
  * @param mayMint - Asked only before a new bill is minted; false is a 429.
  * @returns The bill, or the error.
  */
@@ -556,6 +556,7 @@ async function repaymentBill(
   share: {
     dayIndex: number;
     accountId: string;
+    shareUnits: bigint;
     sats: number;
     description: string;
   },
@@ -573,6 +574,7 @@ async function repaymentBillLocked(
   share: {
     dayIndex: number;
     accountId: string;
+    shareUnits: bigint;
     sats: number;
     description: string;
   },
@@ -612,17 +614,11 @@ async function repaymentBillLocked(
       paid.recipientAccountId === share.accountId &&
       paidParts.length === 0,
   );
-  if (
-    legacyPaid ||
-    (requestedPart === null && paidUnits > 0n) ||
-    (requestedPart !== null &&
-      (paidParts.some((part) => part.partIndex === requestedPart.partIndex) ||
-        paidUnits + requestedPart.units > requestedPart.shareUnits))
-  ) {
-    return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
-  }
   const attempts = await deps.store.listInvoiceAttemptsForMessage(opened.row.id);
-  let outstanding: MessageInvoiceAttempt | undefined;
+  const openAttempts: Array<{
+    attempt: MessageInvoiceAttempt;
+    part: ReturnType<typeof parseRepaymentPartDescription>;
+  }> = [];
   for (const attempt of attempts) {
     const parsed = parseRepaymentDescription(attempt.description);
     if (
@@ -641,8 +637,57 @@ async function repaymentBillLocked(
     ) {
       continue;
     }
-    outstanding = attempt;
-    break;
+    openAttempts.push({
+      attempt,
+      part: parseRepaymentPartDescription(attempt.description),
+    });
+  }
+  const outstanding = openAttempts.find(
+    (item) => item.attempt.description === description,
+  )?.attempt;
+  if (requestedPart === null) {
+    if (legacyPaid || paidUnits > 0n || openAttempts.some((item) => item.attempt !== outstanding)) {
+      return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
+    }
+  } else {
+    let reservedUnits = paidUnits;
+    let nextPartIndex = paidParts.reduce((next, part) => Math.max(next, part.partIndex + 1), 0);
+    const immutableParts = new Map<number, { units: bigint; sats: number }>();
+    for (const paidPart of paidParts) {
+      immutableParts.set(paidPart.partIndex, { units: paidPart.units, sats: paidPart.sats });
+    }
+    for (const attempt of attempts) {
+      const historical = parseRepaymentPartDescription(attempt.description);
+      if (
+        historical !== null &&
+        historical.dayIndex === share.dayIndex &&
+        historical.recipientAccountId === share.accountId
+      ) {
+        nextPartIndex = Math.max(nextPartIndex, historical.partIndex + 1);
+      }
+    }
+    for (const open of openAttempts) {
+      const part = open.part;
+      const immutable = part === null ? undefined : immutableParts.get(part.partIndex);
+      if (part === null || part.shareUnits !== share.shareUnits || immutable !== undefined) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: 'A payment for this share is still open' },
+        };
+      }
+      immutableParts.set(part.partIndex, { units: part.units, sats: open.attempt.amountSats });
+      reservedUnits += part.units;
+    }
+    if (
+      legacyPaid ||
+      reservedUnits > share.shareUnits ||
+      (outstanding === undefined &&
+        (requestedPart.partIndex !== nextPartIndex ||
+          requestedPart.units > share.shareUnits - reservedUnits))
+    ) {
+      return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
+    }
   }
   if (
     outstanding !== undefined &&
@@ -653,15 +698,6 @@ async function repaymentBillLocked(
     // Minted for an earlier receiving address and still payable: a second
     // invoice could pay the same share twice, so wait until it expires.
     return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
-  }
-  if (outstanding !== undefined && outstanding.description !== description) {
-    const outstandingPart = parseRepaymentPartDescription(outstanding.description);
-    if (requestedPart === null || outstandingPart === null) {
-      return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
-    }
-    // The planner reserves every fitting open part before adding another part
-    // of the same share. Reuse only an exact match; mint the planned next part.
-    outstanding = undefined;
   }
   if (
     outstanding !== undefined &&
@@ -906,12 +942,26 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
     if (payable && bills.length >= REPAYMENT_BILLS_MAX) {
       continue;
     }
-    const part = billableSharePart(share);
-    const sats = price(part.units);
-    if (sats === null) {
+    const waitingUnits = share.units - share.paidUnits;
+    const waitingSats = price(waitingUnits);
+    if (waitingSats === null) {
       return c.json({ error: 'Ask amount is unavailable' }, 503);
     }
     const giver = await giverOf(share.accountId);
+    const waitingLine = {
+      dayIndex: share.dayIndex,
+      recipientAccountId: share.accountId,
+      name: giver.name,
+      username: giver.username,
+      amountSats: waitingSats,
+      amount: fiat ? formatCents(waitingUnits) : null,
+    };
+    if (!payable) {
+      waiting.push(waitingLine);
+      continue;
+    }
+    const part = billableSharePart(share);
+    const sats = price(part.units) as number;
     const line = {
       dayIndex: share.dayIndex,
       recipientAccountId: share.accountId,
@@ -920,16 +970,13 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
       amountSats: sats,
       amount: fiat ? formatCents(part.units) : null,
     };
-    if (!payable) {
-      waiting.push(line);
-      continue;
-    }
     const bill = await repaymentBill(
       deps,
       opened,
       {
         dayIndex: share.dayIndex,
         accountId: share.accountId,
+        shareUnits: share.units,
         sats,
         description: part.description,
       },
@@ -938,7 +985,7 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
     if (!bill.ok) {
       if (bill.body.code === CANNOT_RECEIVE) {
         refused.add(share.accountId);
-        waiting.push(line);
+        waiting.push(waitingLine);
         continue;
       }
       return billError(c, bill);
@@ -1295,6 +1342,7 @@ export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<
         {
           dayIndex: part.dayIndex,
           accountId: part.accountId,
+          shareUnits: share.units,
           sats,
           description:
             part.description ??
@@ -1456,6 +1504,7 @@ async function nextShare(
     sats: number;
     description: string;
     units: bigint;
+    shareUnits: bigint;
     partIndex: number;
   } | null;
   waiting: boolean;
@@ -1521,6 +1570,7 @@ async function nextShare(
               payable.units,
             )),
       units,
+      shareUnits: payable.units,
       partIndex: openPart?.partIndex ?? payable.nextPartIndex,
     },
     waiting: false,

@@ -51,6 +51,26 @@ interface FakeDatabaseOptions {
   pendingCharges?: readonly { id: string }[];
   /** Rows of the survivor's open shop payment beside the merged account's pending charge. */
   openBesideCharge?: readonly { id: string }[];
+  /** Legacy full-share repayments read before the first merge write. */
+  legacyRepayments?: readonly {
+    message_id: string;
+    day_index: number;
+    recipient_account_id: string;
+    due_sats: number;
+    paid_at: Date;
+    goal_currency: string | null;
+    goal_amount: string | null;
+    goal_term_days: number | null;
+  }[];
+  /** Original credit payers used to reconstruct each legacy share. */
+  repaymentPayers?: readonly {
+    account_id: string;
+    sats: number;
+    usd: string | null;
+    chf: string | null;
+    eur: string | null;
+    php: string | null;
+  }[];
 }
 
 function fakeDatabase(options: FakeDatabaseOptions = {}): {
@@ -66,6 +86,15 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
       return run({
         async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
           queries.push({ text, params });
+          if (
+            text.includes('SELECT legacy.message_id') &&
+            text.includes('FROM message_repayment AS legacy')
+          ) {
+            return (options.legacyRepayments ?? []) as T[];
+          }
+          if (text.includes('WITH named AS') && text.includes('message_credit_payer_snapshot')) {
+            return (options.repaymentPayers ?? []) as T[];
+          }
           if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
             return [];
           }
@@ -184,11 +213,6 @@ describe('mergeAccounts', () => {
         query.text.includes('UPDATE message_repayment_part AS part') &&
         query.text.includes('row_number() OVER'),
     );
-    const canonical = queries.findIndex(
-      (query) =>
-        query.text.includes('DELETE FROM message_repayment AS legacy') &&
-        query.text.includes('message_repayment_part AS part'),
-    );
     const normalized = queries.findIndex(
       (query) =>
         query.text.includes('UPDATE message_repayment_part') &&
@@ -203,9 +227,105 @@ describe('mergeAccounts', () => {
     expect(queries[snapshot]?.text).toContain('ON CONFLICT (message_id, account_id) DO UPDATE');
     expect(parts).toBeGreaterThan(snapshot);
     expect(queries[parts]?.text).toContain('SET recipient_account_id = $2');
-    expect(canonical).toBeGreaterThan(parts);
-    expect(normalized).toBeGreaterThan(canonical);
+    expect(normalized).toBeGreaterThan(parts);
     expect(normalized).toBeLessThan(accountDelete);
+  });
+
+  it('converts a legacy fiat share with its original schedule units before merging identities', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const { db, queries } = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 5000,
+          paid_at: paidAt,
+          goal_currency: 'USD',
+          goal_amount: '2.00',
+          goal_term_days: 1,
+        },
+      ],
+      repaymentPayers: [
+        { account_id: FROM, sats: 50, usd: '1.00', chf: null, eur: null, php: null },
+        { account_id: INTO, sats: 50, usd: '1.00', chf: null, eur: null, php: null },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+    const converted = queries.find(
+      (query) =>
+        query.text.includes('INSERT INTO message_repayment_part') &&
+        query.text.includes('COALESCE(MAX(part_index) + 1, 0)'),
+    );
+    const deleted = queries.find(
+      (query) =>
+        query.text.includes('DELETE FROM message_repayment') && query.params[0] === messageId,
+    );
+    const identityMove = queries.findIndex((query) =>
+      query.text.includes('UPDATE message_repayment_part AS part'),
+    );
+
+    expect(converted?.params).toEqual([messageId, 0, FROM, '100', 5000, paidAt]);
+    expect(deleted?.params).toEqual([messageId, 0, FROM]);
+    expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
+  });
+
+  it('refuses a merge without writes when legacy loan units cannot be reconstructed', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const { db, queries } = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 5000,
+          paid_at: new Date('2026-11-11T12:00:00.000Z'),
+          goal_currency: 'USD',
+          goal_amount: null,
+          goal_term_days: 1,
+        },
+      ],
+      repaymentPayers: [{ account_id: FROM, sats: 50, usd: null, chf: null, eur: null, php: null }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    expect(
+      queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+    ).toBe(false);
+
+    const missingShare = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 9,
+          recipient_account_id: FROM,
+          due_sats: 5000,
+          paid_at: new Date('2026-11-11T12:00:00.000Z'),
+          goal_currency: 'USD',
+          goal_amount: '1.00',
+          goal_term_days: 1,
+        },
+      ],
+      repaymentPayers: [
+        { account_id: FROM, sats: 50, usd: '1.00', chf: null, eur: null, php: null },
+      ],
+    });
+    await expect(
+      mergeAccounts(missingShare.db, { from: FROM, into: INTO, verify: 'into' }),
+    ).resolves.toEqual({ ok: false, error: 'repayment_unavailable' });
+    expect(
+      missingShare.queries.some((query) =>
+        /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart()),
+      ),
+    ).toBe(false);
   });
 
   it('moves message.shop_account_id to the surviving account, so a shop stays listed', async () => {

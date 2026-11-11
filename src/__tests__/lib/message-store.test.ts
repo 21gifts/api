@@ -10818,6 +10818,51 @@ describe('PostgresMessageStore', () => {
     expect(await memory.listRepaymentParts('m1')).toHaveLength(2);
   });
 
+  it('keeps a repayment part immutable and releases a failed settlement claim', async () => {
+    const memory = new InMemoryMessageStore();
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    await memory.markRepaymentPartPaid({
+      messageId: 'immutable',
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      partIndex: 0,
+      units: 4n,
+      sats: 40,
+      shareUnits: 10n,
+      paidAt,
+    });
+    expect(
+      await memory.markRepaymentPartPaid({
+        messageId: 'immutable',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 0,
+        units: 5n,
+        sats: 40,
+        shareUnits: 10n,
+        paidAt,
+      }),
+    ).toBeUndefined();
+
+    expect(
+      await memory.settleRepaymentPayment('AA', 'conflicting-receipt', paidAt, {
+        kind: 'part',
+        messageId: 'immutable',
+        dayIndex: 0,
+        recipientAccountId: 'giver',
+        partIndex: 0,
+        units: 4n,
+        sats: 50,
+        shareUnits: 10n,
+        paidAt,
+      }),
+    ).toBe(false);
+    expect(await memory.zapPaymentReceiptId('aa')).toBeUndefined();
+    expect(await memory.listRepaymentParts('immutable')).toEqual([
+      expect.objectContaining({ partIndex: 0, units: 4n, sats: 40 }),
+    ]);
+  });
+
   it('serializes concurrent repayment reservations and settlements per message', async () => {
     const memory = new InMemoryMessageStore();
     const entered: string[] = [];
@@ -13659,11 +13704,11 @@ describe('shop identity on message rows', () => {
       ],
       [{ part_index: 3 }],
       [],
-      [{ units: '7', sats: '8', paid_at: '2026-11-12T12:00:00.000Z' }],
+      [{ units: '6', sats: '7', paid_at: '2026-11-12T12:00:00.000Z' }],
       [],
       [],
       [],
-      [{ units: 9, sats: 10, paid_at: new Date(11) }],
+      [{ units: 6, sats: 10, paid_at: new Date(11) }],
     ];
     const store = new PostgresMessageStore(sql);
     expect(await store.listRepaymentParts('m1')).toEqual([
@@ -13703,20 +13748,12 @@ describe('shop identity on message rows', () => {
       dayIndex: 2,
       recipientAccountId: 'giver',
       partIndex: 3,
-      units: 7n,
-      sats: 8,
+      units: 6n,
+      sats: 7,
       paidAt: new Date('2026-11-12T12:00:00.000Z'),
     });
     expect(await store.markRepaymentPartPaid({ ...row, partIndex: 4 })).toBeUndefined();
-    expect(await store.markRepaymentPartPaid({ ...row, partIndex: 5 })).toEqual({
-      messageId: 'm1',
-      dayIndex: 2,
-      recipientAccountId: 'giver',
-      partIndex: 5,
-      units: 9n,
-      sats: 10,
-      paidAt: new Date(11),
-    });
+    expect(await store.markRepaymentPartPaid({ ...row, partIndex: 5 })).toBeUndefined();
   });
 
   it('settles both Postgres repayment forms and leaves a foreign claim untouched', async () => {
@@ -13756,6 +13793,36 @@ describe('shop identity on message rows', () => {
       }),
     ).toBe(true);
     expect(partSql.queries[1]?.text).toMatch(/message_repayment_part/);
+
+    const conflictSql = new MockSql();
+    conflictSql.queryQueue = [
+      [{ receipt_event_id: 'conflicting-receipt' }],
+      [],
+      [{ units: '5', sats: '50', paid_at: paidAt }],
+    ];
+    expect(
+      await new PostgresMessageStore(conflictSql).settleRepaymentPayment(
+        'DD',
+        'conflicting-receipt',
+        paidAt,
+        {
+          kind: 'part',
+          messageId: 'm4',
+          dayIndex: 0,
+          recipientAccountId: 'giver',
+          partIndex: 0,
+          units: 4n,
+          sats: 40,
+          shareUnits: 10n,
+          paidAt,
+        },
+      ),
+    ).toBe(false);
+    expect(conflictSql.executes.at(-1)).toEqual({
+      text: `DELETE FROM nostr_zap_payment
+             WHERE payment_hash = $1 AND receipt_event_id = $2`,
+      params: ['dd', 'conflicting-receipt'],
+    });
 
     const foreignSql = new MockSql();
     foreignSql.queryQueue = [[{ receipt_event_id: 'someone-else' }]];

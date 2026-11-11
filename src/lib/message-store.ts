@@ -20,6 +20,7 @@ import type { FiatAmounts } from '@/lib/money';
 import type { PostDayCount } from '@/lib/post-stats';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
+import { logEvent } from '@/lib/log';
 import {
   forumContentFingerprint,
   MESSAGE_LIST_LIMIT,
@@ -1404,13 +1405,15 @@ export interface MessageStore {
   ): Promise<T>;
 
   /**
-   * Record one settled part. Repeats of the same part are a no-op. A settled
-   * part is never stored above the locked share remainder, and a call for the
-   * exact remainder stores exactly that part. No legacy full-share row is
-   * written for a part-based share.
+   * Record one settled part. A repeat is idempotent only when its units and
+   * sats exactly match the immutable stored part. A settled part is never
+   * stored above the locked share remainder, and a call for the exact
+   * remainder stores exactly that part. No legacy full-share row is written
+   * for a part-based share.
    *
    * @param row - Part that a zap or Spark transfer just settled.
-   * @returns The stored part, or `undefined` when its units exceed the remainder.
+   * @returns The stored part, or `undefined` on an immutable-field conflict or
+   *   when its units exceed the remainder.
    */
   markRepaymentPartPaid(
     row: RepaymentPartRow & { paidAt: Date; shareUnits: bigint },
@@ -1423,7 +1426,8 @@ export interface MessageStore {
    * @param receiptEventId - Receipt that owns the claim.
    * @param claimedAt - Claim timestamp.
    * @param settlement - Legacy or part repayment to store.
-   * @returns `false` only when another receipt already owns the hash.
+   * @returns `false` when another receipt owns the hash or the repayment row
+   *   conflicts; a failed row write leaves no claim for this receipt.
    */
   settleRepaymentPayment(
     paymentHash: string,
@@ -4661,7 +4665,7 @@ export class InMemoryMessageStore implements MessageStore {
     run: (store: MessageStore) => Promise<T>,
   ): Promise<T> {
     const previous = this.#messageLocks.get(messageId) ?? Promise.resolve();
-    let release = (): void => undefined;
+    let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
@@ -4716,7 +4720,11 @@ export class InMemoryMessageStore implements MessageStore {
     );
     const existing = sameShare.find((item) => item.partIndex === row.partIndex);
     if (existing !== undefined) {
-      return Promise.resolve({ ...existing, paidAt: new Date(existing.paidAt.getTime()) });
+      return Promise.resolve(
+        existing.units === row.units && existing.sats === row.sats
+          ? { ...existing, paidAt: new Date(existing.paidAt.getTime()) }
+          : undefined,
+      );
     }
     const paidBefore = sameShare.reduce((sum, item) => sum + item.units, 0n);
     if (row.units <= 0n || paidBefore + row.units > row.shareUnits) {
@@ -4740,7 +4748,16 @@ export class InMemoryMessageStore implements MessageStore {
       if (settlement.kind === 'legacy') {
         await this.#markRepaymentPaidUnlocked(settlement);
       } else {
-        await this.#markRepaymentPartPaidUnlocked(settlement);
+        const stored = await this.#markRepaymentPartPaidUnlocked(settlement);
+        if (stored === undefined) {
+          this.#zapPayments.delete(paymentHash.toLowerCase());
+          logEvent('repayment.settlement.conflict', {
+            messageId: settlement.messageId,
+            dayIndex: settlement.dayIndex,
+            partIndex: settlement.partIndex,
+          });
+          return false;
+        }
       }
       return true;
     });
@@ -8650,17 +8667,22 @@ export class PostgresMessageStore implements MessageStore {
         [row.messageId, row.dayIndex, row.recipientAccountId, row.partIndex],
       );
       const found = existing[0];
-      return found === undefined
-        ? undefined
-        : {
-            messageId: row.messageId,
-            dayIndex: row.dayIndex,
-            recipientAccountId: row.recipientAccountId,
-            partIndex: row.partIndex,
-            units: BigInt(found.units),
-            sats: Number(found.sats),
-            paidAt: found.paid_at instanceof Date ? found.paid_at : new Date(found.paid_at),
-          };
+      if (
+        found === undefined ||
+        BigInt(found.units) !== row.units ||
+        Number(found.sats) !== row.sats
+      ) {
+        return undefined;
+      }
+      return {
+        messageId: row.messageId,
+        dayIndex: row.dayIndex,
+        recipientAccountId: row.recipientAccountId,
+        partIndex: row.partIndex,
+        units: BigInt(found.units),
+        sats: Number(found.sats),
+        paidAt: found.paid_at instanceof Date ? found.paid_at : new Date(found.paid_at),
+      };
     }
     return { ...row };
   }
@@ -8679,7 +8701,20 @@ export class PostgresMessageStore implements MessageStore {
       if (settlement.kind === 'legacy') {
         await store.#markRepaymentPaidUnlocked(settlement);
       } else {
-        await store.#markRepaymentPartPaidUnlocked(settlement);
+        const stored = await store.#markRepaymentPartPaidUnlocked(settlement);
+        if (stored === undefined) {
+          await store.#sql.execute(
+            `DELETE FROM nostr_zap_payment
+             WHERE payment_hash = $1 AND receipt_event_id = $2`,
+            [paymentHash.toLowerCase(), receiptEventId],
+          );
+          logEvent('repayment.settlement.conflict', {
+            messageId: settlement.messageId,
+            dayIndex: settlement.dayIndex,
+            partIndex: settlement.partIndex,
+          });
+          return false;
+        }
       }
       return true;
     });

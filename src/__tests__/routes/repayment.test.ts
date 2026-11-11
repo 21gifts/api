@@ -2016,6 +2016,27 @@ describe('repayment from the in-app wallet', () => {
     expect(await messages.listInvoiceAttempts(10)).toHaveLength(1);
   });
 
+  it('shows the whole unpaid remainder while an open part waits for its giver', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: false }],
+    });
+    await messages.recordInvoiceAttempt(openPartAttempt(30, 30n, 100n, new Date(clock.now)));
+
+    const response = await post(app, `/messages/${CREDIT}/repayment/due`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      bills: [],
+      waiting: [
+        expect.objectContaining({
+          recipientAccountId: WALLET_GIVER,
+          amountSats: 100,
+          amount: null,
+        }),
+      ],
+    });
+  });
+
   it('keeps fiat sats null while partial, and marks a legacy fiat row fully paid', async () => {
     const partial = await readyCredit({ goalCurrency: 'USD', goalAmount: '0.21', rate: true });
     await partial.messages.markRepaymentPartPaid({
@@ -2391,6 +2412,116 @@ describe('repayment from the in-app wallet', () => {
     expect(await tooLarge.json()).toEqual({ error: 'A payment for this share is still open' });
   });
 
+  it('rejects inconsistent open part reservations under the message lock', async () => {
+    const wrongShare = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    await wrongShare.messages.recordInvoiceAttempt(
+      openPartAttempt(30, 30n, 99n, new Date(wrongShare.clock.now)),
+    );
+    const wrongShareResponse = await wrongShare.app.request(
+      `/messages/${CREDIT}/repayment/prepay`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '30' }),
+      },
+    );
+    expect(wrongShareResponse.status).toBe(409);
+
+    const duplicateKey = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    await duplicateKey.messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      partIndex: 0,
+      units: 20n,
+      sats: 20,
+      shareUnits: 100n,
+      paidAt: new Date(duplicateKey.clock.now),
+    });
+    await duplicateKey.messages.recordInvoiceAttempt(
+      openPartAttempt(20, 20n, 100n, new Date(duplicateKey.clock.now)),
+    );
+    const duplicateResponse = await duplicateKey.app.request(
+      `/messages/${CREDIT}/repayment/prepay`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '10' }),
+      },
+    );
+    expect(duplicateResponse.status).toBe(409);
+
+    const staleLegacy = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    const staleLegacyLock = staleLegacy.messages.withMessageLock.bind(staleLegacy.messages);
+    vi.spyOn(staleLegacy.messages, 'withMessageLock').mockImplementation((messageId, run) =>
+      staleLegacyLock(messageId, async (locked) => {
+        await locked.recordInvoiceAttempt(
+          openPartAttempt(30, 30n, 100n, new Date(staleLegacy.clock.now)),
+        );
+        return run(locked);
+      }),
+    );
+    const staleLegacyResponse = await post(staleLegacy.app, `/messages/${CREDIT}/repayment/due`);
+    expect(staleLegacyResponse.status).toBe(409);
+
+    const stalePaid = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    vi.spyOn(stalePaid.messages, 'listRepaymentParts')
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          messageId: CREDIT,
+          dayIndex: 0,
+          recipientAccountId: WALLET_GIVER,
+          partIndex: 0,
+          units: 20n,
+          sats: 20,
+          paidAt: new Date(stalePaid.clock.now),
+        },
+      ]);
+    const stalePaidResponse = await post(stalePaid.app, `/messages/${CREDIT}/repayment/due`);
+    expect(stalePaidResponse.status).toBe(409);
+
+    const overReserved = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    await overReserved.messages.recordInvoiceAttempt(
+      openPartAttempt(60, 60n, 100n, new Date(overReserved.clock.now)),
+    );
+    await overReserved.messages.closeCredit(CREDIT, new Date(overReserved.clock.now));
+    const overReservedLock = overReserved.messages.withMessageLock.bind(overReserved.messages);
+    vi.spyOn(overReserved.messages, 'withMessageLock').mockImplementation((messageId, run) =>
+      overReservedLock(messageId, async (locked) => {
+        await locked.recordInvoiceAttempt({
+          ...openPartAttempt(50, 50n, 100n, new Date(overReserved.clock.now + 1)),
+          description: repaymentPartDescription(0, WALLET_GIVER, 1, 50n, 100n),
+        });
+        return run(locked);
+      }),
+    );
+    const overReservedResponse = await overReserved.app.request(
+      `/messages/${CREDIT}/repayment/prepay`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '60' }),
+      },
+    );
+    expect(overReservedResponse.status).toBe(409);
+  });
+
   it('ignores paid, duplicate, oversized, and fully reserved open attempts', async () => {
     const paidHash = await loanSetup({
       termDays: 1,
@@ -2454,7 +2585,7 @@ describe('repayment from the in-app wallet', () => {
     expect((await full.app.request(`/messages/${CREDIT}/repayment`)).status).toBe(200);
   });
 
-  it('drops an attempt settled between planning and billing', async () => {
+  it('rejects a plan whose open attempt settles before billing', async () => {
     await withNip57(async () => {
       const { app, messages, clock } = await loanSetup({
         termDays: 1,
@@ -2472,8 +2603,9 @@ describe('repayment from the in-app wallet', () => {
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '10' }),
       });
-      expect(response.status).toBe(200);
-      expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(2);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'A payment for this share is still open' });
+      expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(1);
     });
   });
 
@@ -2492,6 +2624,62 @@ describe('repayment from the in-app wallet', () => {
       expect(response.status).toBe(200);
       const body = (await response.json()) as { bills: Array<{ amountSats: number }> };
       expect(body.bills.map((bill) => bill.amountSats)).toEqual([10, 11]);
+    });
+  });
+
+  it('reuses each exact description when several share parts are open', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    await messages.recordInvoiceAttempt(openPartAttempt(30, 30n, 100n, new Date(clock.now)));
+    await messages.recordInvoiceAttempt({
+      ...openPartAttempt(20, 20n, 100n, new Date(clock.now + 1)),
+      description: repaymentPartDescription(0, WALLET_GIVER, 1, 20n, 100n),
+    });
+
+    const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '50' }),
+    });
+    const body = (await response.json()) as { bills: Array<{ amountSats: number }> };
+
+    expect(response.status).toBe(200);
+    expect(body.bills.map((bill) => bill.amountSats)).toEqual([30, 20]);
+    expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(2);
+  });
+
+  it('rejects a stale prepay part after another reservation wins the message lock', async () => {
+    await withNip57(async () => {
+      const { app, messages, clock, fetched } = await loanSetup({
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+      });
+      await messages.recordInvoiceAttempt(openPartAttempt(1, 1n, 100n, new Date(0)));
+      await messages.closeCredit(CREDIT, new Date(clock.now));
+      const withMessageLock = messages.withMessageLock.bind(messages);
+      let injected = false;
+      vi.spyOn(messages, 'withMessageLock').mockImplementation((messageId, run) =>
+        withMessageLock(messageId, async (locked) => {
+          if (!injected) {
+            injected = true;
+            await locked.recordInvoiceAttempt(openPartAttempt(80, 80n, 100n, new Date(clock.now)));
+          }
+          return run(locked);
+        }),
+      );
+
+      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '50' }),
+      });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'A payment for this share is still open' });
+      expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(2);
+      expect(fetched).toEqual([]);
     });
   });
 
