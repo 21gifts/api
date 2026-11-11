@@ -21,6 +21,7 @@ Source: [src/lib/fond-payout-store.ts](../../../src/lib/fond-payout-store.ts)
 | `invoice_id`       | Free text          | `text`                     | Yes      | –       | –          |
 | `payment_hash`     | Free text          | `text`                     | Yes      | –       | –          |
 | `bolt11`           | Free text          | `text`                     | Yes      | –       | –          |
+| `spark_invoice`    | Free text          | `text`                     | Yes      | –       | –          |
 | `amount_msat`      | Integer            | `bigint`                   | Yes      | –       | –          |
 | `claimed_at`       | Date/time          | `timestamp with time zone` | Yes      | –       | –          |
 | `created_at`       | Date/time          | `timestamp with time zone` | No       | `now()` | –          |

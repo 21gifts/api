@@ -82,6 +82,7 @@ import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
+import { walletAccountKind } from '@/lib/wallet-category';
 import { InMemoryWalletStore, type WalletStore } from '@/lib/wallet-store';
 import { InMemoryMemberEventStore, type MemberEventStore } from '@/lib/member-event-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
@@ -621,7 +622,11 @@ export function createApp(deps: AppDeps = {}): Hono {
   const shopDeps = shopPayments === undefined ? {} : { shopPayments };
   const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
   const diagnosticStore = deps.diagnosticStore ?? new InMemoryDiagnosticStore();
-  const walletStore = deps.walletStore ?? new InMemoryWalletStore();
+  const walletStore =
+    deps.walletStore ??
+    new InMemoryWalletStore((accountId) =>
+      walletAccountKind({ authStore: store, messages: messageStore }, accountId),
+    );
   const memberEventStore = deps.memberEventStore ?? new InMemoryMemberEventStore();
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -1234,6 +1239,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       fetchImpl,
       ...receivingDeps,
+      ...(sparkInvoices === undefined ? {} : { freePayments: true }),
       actions: {
         store: invoiceStore,
         authStore: store,

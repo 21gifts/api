@@ -61,7 +61,18 @@ function parseYmd(key: string): { year: number; month: number; day: number } {
   };
 }
 
-function addUtcDays(key: string, days: number): string {
+/**
+ * Shift a UTC calendar day key by `days`.
+ *
+ * Month, year, and leap-day boundaries follow the UTC calendar. A negative
+ * value moves backward. `key` must be `YYYY-MM-DD`.
+ *
+ * @param key - UTC day key `YYYY-MM-DD`.
+ * @param days - Calendar days to add; negative values move backward.
+ * @returns The shifted UTC day key `YYYY-MM-DD`.
+ * @throws When `key` is not `YYYY-MM-DD`.
+ */
+export function addUtcDays(key: string, days: number): string {
   const { year, month, day } = parseYmd(key);
   const utc = new Date(Date.UTC(year, month - 1, day + days));
   const y = String(utc.getUTCFullYear()).padStart(4, '0');

@@ -27,6 +27,10 @@ import {
   zapReceiptIngest,
 } from './lib/nostr/worker';
 import { InMemoryMessageStore } from './lib/message-store';
+import { InMemoryConversationStore } from './lib/conversation-store';
+import { InMemoryFundingStore } from './lib/funding-store';
+import { InMemoryGiftStore } from './lib/gift-store';
+import { InMemoryInvoiceStore } from './lib/invoice-store';
 import { seedDevShopPlaces } from './lib/dev-shop-places';
 import { resolveMapPush } from './lib/ocp-place';
 import { InMemoryShopIdentityStore } from './lib/shop-identity';
@@ -42,15 +46,19 @@ import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
 import { resolveMediaDir } from './lib/video';
 import {
   resolveFreePaymentsConfig,
+  resolveFondUsername,
   resolveLnurlServerConfig,
+  resolvePayoutSigner,
   resolveShopPaymentConfig,
 } from './lib/config';
+import { resolveRecoveryShareRequiredFrom } from './lib/funding';
 import { OrchestraClient } from './lib/orchestra';
 import { ShopPayments } from './lib/shop-payment';
 import { InMemoryShopPaymentStore, PostgresShopPaymentStore } from './lib/shop-payment-store';
 import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
 import { startSparkInvoiceWorker } from './lib/spark-worker';
 import { startPosPaidWorker } from './lib/pos-paid-worker';
+import { startFondPaidWorker } from './lib/fond-paid-worker';
 import { resolveFxSpotUrl, startFxSpotWorker } from './lib/fx-spot';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
@@ -227,10 +235,15 @@ if (import.meta.main) {
   const shopIdentities = shopIdentityStore ?? new InMemoryShopIdentityStore(forumMessages);
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
   const freePayments = resolveFreePaymentsConfig(process.env);
+  const payoutSigner = resolvePayoutSigner(process.env);
   const sparkInvoiceStore =
     lnurlServer !== undefined && freePayments !== null
       ? (boot.sparkInvoiceStore ?? new InMemorySparkInvoiceStore())
       : undefined;
+  const appGiftStore = giftStore ?? new InMemoryGiftStore();
+  const appConversationStore = conversationStore ?? new InMemoryConversationStore();
+  const appFundingStore = fundingStore ?? new InMemoryFundingStore();
+  const appInvoiceStore = new InMemoryInvoiceStore();
   const shopConfig = resolveShopPaymentConfig(process.env);
   const shopPayments =
     lnurlServer === undefined
@@ -267,11 +280,12 @@ if (import.meta.main) {
     fxSpotStore,
     pushStore,
     posStore,
+    invoiceStore: appInvoiceStore,
     env: process.env,
     ...(boot.loginGateStore === undefined ? {} : { loginGateStore: boot.loginGateStore }),
     messageStore: forumMessages,
     shopIdentityStore: shopIdentities,
-    ...(giftStore === undefined ? {} : { giftStore }),
+    giftStore: appGiftStore,
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(boot.translationStore === undefined ? {} : { translationStore: boot.translationStore }),
     ...(boot.conversationTranslationStore === undefined
@@ -291,10 +305,10 @@ if (import.meta.main) {
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
     ...(walletStore === undefined ? {} : { walletStore }),
     ...(memberEventStore === undefined ? {} : { memberEventStore }),
-    ...(conversationStore === undefined ? {} : { conversationStore }),
+    conversationStore: appConversationStore,
     ...(notificationStore === undefined ? {} : { notificationStore }),
     ...(trustStore === undefined ? {} : { trustStore }),
-    ...(fundingStore === undefined ? {} : { fundingStore }),
+    fundingStore: appFundingStore,
     rosterStore,
     fondPayoutStore,
     ...(boot.listDbChange === undefined ? {} : { listDbChange: boot.listDbChange }),
@@ -391,6 +405,30 @@ if (import.meta.main) {
       now: Date.now,
       ...(shopPayments === undefined ? {} : { shop: shopPayments }),
     });
+    if (payoutSigner === 'fond') {
+      startFondPaidWorker({
+        store: fondPayoutStore,
+        lnurlServer,
+        ...(freePayments === null ? {} : { operatorUrl: freePayments.operatorUrl }),
+        fetchImpl: globalThis.fetch,
+        now: Date.now,
+        fondUsername: resolveFondUsername(process.env),
+        actions: {
+          store: appInvoiceStore,
+          authStore,
+          messageStore: forumMessages,
+          now: Date.now,
+          fetchImpl: globalThis.fetch,
+          lnurlServer,
+          conversationStore: appConversationStore,
+          fundingStore: appFundingStore,
+          recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
+          gifts: appGiftStore,
+          giftStore: appGiftStore,
+          ...(giftRecorder === undefined ? {} : { giftRecorder }),
+        },
+      });
+    }
   }
 }
 /* v8 ignore stop */

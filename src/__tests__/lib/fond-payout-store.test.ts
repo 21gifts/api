@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
   FOND_CLAIM_LEASE_MS,
+  FOND_OVERDUE_MS,
   FOND_PAYOUT_SCHEMA_SQL,
   InMemoryFondPayoutStore,
   PostgresFondPayoutStore,
@@ -51,6 +52,8 @@ describe('FOND_PAYOUT_SCHEMA_SQL', () => {
     expect(all).toContain('amount_msat bigint');
     expect(all).toContain('claimed_at timestamptz NULL');
     expect(all).toContain('ADD COLUMN IF NOT EXISTS claimed_at timestamptz NULL');
+    expect(all).toContain('spark_invoice text');
+    expect(all).toContain('ADD COLUMN IF NOT EXISTS spark_invoice text NULL');
     expect(all).toContain(
       'ALTER TABLE fond_payout DROP CONSTRAINT IF EXISTS fond_payout_status_check',
     );
@@ -117,6 +120,7 @@ describe('InMemoryFondPayoutStore', () => {
         invoiceId: 'inv-0',
         paymentHash: 'aa'.repeat(32),
         bolt11: 'lnbc0',
+        sparkInvoice: null,
         amountMsat: 1_000_000,
       }),
     ).toBeUndefined();
@@ -132,6 +136,7 @@ describe('InMemoryFondPayoutStore', () => {
       invoiceId: 'inv-1',
       paymentHash: 'aa'.repeat(32),
       bolt11: 'lnbc1',
+      sparkInvoice: 'spark1one',
       amountMsat: 1_000_000,
     });
     expect(invoiced).toMatchObject({
@@ -139,6 +144,7 @@ describe('InMemoryFondPayoutStore', () => {
       invoiceId: 'inv-1',
       paymentHash: 'aa'.repeat(32),
       bolt11: 'lnbc1',
+      sparkInvoice: 'spark1one',
       amountMsat: 1_000_000,
     });
     expect(await store.markPaid(id)).toBeUndefined();
@@ -181,6 +187,7 @@ describe('InMemoryFondPayoutStore', () => {
       invoiceId: 'inv-a',
       paymentHash: 'aa'.repeat(32),
       bolt11: 'lnbc1',
+      sparkInvoice: null,
       amountMsat: 1_000_000,
     });
     await store.claimSettlement('a');
@@ -191,6 +198,7 @@ describe('InMemoryFondPayoutStore', () => {
       invoiceId: 'inv-s',
       paymentHash: 'bb'.repeat(32),
       bolt11: 'lnbc2',
+      sparkInvoice: null,
       amountMsat: 1_000_000,
     });
     await store.claimSettlement('settling');
@@ -238,10 +246,11 @@ describe('InMemoryFondPayoutStore', () => {
     expect(await store.restoreStaleSettling('missing', new Date(NOW))).toBeUndefined();
   });
 
-  it('re-claims only a stale issuing row and reports the lease constant', async () => {
+  it('re-claims a stale issuing row and reports both time windows', async () => {
     let clock = NOW;
     const store = new InMemoryFondPayoutStore(() => clock);
     expect(FOND_CLAIM_LEASE_MS).toBe(120_000);
+    expect(FOND_OVERDUE_MS).toBe(15 * 60_000);
     await store.enqueue(enqueue());
     await store.claimForInvoice(enqueue().id, '2026-11-09');
     expect(await store.claimStaleIssuing(enqueue().id, new Date(NOW))).toBeUndefined();
@@ -263,6 +272,7 @@ describe('InMemoryFondPayoutStore', () => {
       invoiceId: 'inv',
       paymentHash: 'aa'.repeat(32),
       bolt11: 'lnbc1',
+      sparkInvoice: null,
       amountMsat: 1_000_000,
     });
     expect((await store.get(id))?.claimedAt).toBeNull();
@@ -296,6 +306,7 @@ describe('InMemoryFondPayoutStore', () => {
       invoiceId: 'inv',
       paymentHash: 'aa'.repeat(32),
       bolt11: 'lnbc1',
+      sparkInvoice: null,
       amountMsat: 1_000_000,
     });
     await store.claimSettlement(id);
@@ -370,6 +381,7 @@ describe('PostgresFondPayoutStore', () => {
           invoice_id: null,
           payment_hash: null,
           bolt11: null,
+          spark_invoice: null,
           amount_msat: null,
           claimed_at: null,
           created_at: new Date(NOW),
@@ -394,6 +406,7 @@ describe('PostgresFondPayoutStore', () => {
       invoiceId: null,
       paymentHash: null,
       bolt11: null,
+      sparkInvoice: null,
       amountMsat: null,
       claimedAt: null,
       createdAt: new Date(NOW),
@@ -419,6 +432,7 @@ describe('PostgresFondPayoutStore', () => {
           invoice_id: 'i',
           payment_hash: 'h',
           bolt11: 'b',
+          spark_invoice: 'spark1one',
           amount_msat: '1000000',
           claimed_at: new Date(NOW),
           created_at: NOW,
@@ -431,6 +445,7 @@ describe('PostgresFondPayoutStore', () => {
     const row = await store.get('row');
     expect(row?.utcDay).toBe('2026-11-09');
     expect(row?.claimedAt).toEqual(new Date(NOW));
+    expect(row?.sparkInvoice).toBe('spark1one');
     expect(await store.get('missing')).toBeUndefined();
   });
 
@@ -467,6 +482,7 @@ describe('PostgresFondPayoutStore', () => {
           invoice_id: null,
           payment_hash: null,
           bolt11: null,
+          spark_invoice: null,
           amount_msat: null,
           claimed_at: claimedAt,
           created_at: NOW,
@@ -497,6 +513,7 @@ describe('PostgresFondPayoutStore', () => {
       invoice_id: 'i',
       payment_hash: 'h',
       bolt11: 'b',
+      spark_invoice: null,
       amount_msat: '1000000',
       claimed_at: claimedAt,
       created_at: NOW,
@@ -552,6 +569,7 @@ describe('PostgresFondPayoutStore', () => {
       invoice_id: 'i',
       payment_hash: 'h',
       bolt11: 'b',
+      spark_invoice: null,
       amount_msat: 1_000_000,
       claimed_at: null,
       created_at: NOW,
@@ -582,12 +600,14 @@ describe('PostgresFondPayoutStore', () => {
         invoiceId: 'i',
         paymentHash: 'h',
         bolt11: 'b',
+        sparkInvoice: 'spark1one',
         amountMsat: 1_000_000,
       }),
     ).toMatchObject({ status: 'invoiced' });
     expect(sql.queries[1]?.text).toContain("WHERE id = $1 AND status = 'issuing'");
     expect(sql.queries[1]?.text).toContain('claimed_at = NULL');
-    expect(sql.queries[1]?.params).toEqual(['row', 'i', 'h', 'b', 1_000_000]);
+    expect(sql.queries[1]?.text).toContain('spark_invoice = $5, amount_msat = $6');
+    expect(sql.queries[1]?.params).toEqual(['row', 'i', 'h', 'b', 'spark1one', 1_000_000]);
     expect(await store.markFailed('row', 'Passkey required')).toMatchObject({
       status: 'invoiced',
     });
@@ -620,6 +640,7 @@ describe('PostgresFondPayoutStore', () => {
         invoiceId: 'i',
         paymentHash: 'h',
         bolt11: 'b',
+        sparkInvoice: null,
         amountMsat: 1_000_000,
       }),
     ).toBeUndefined();
@@ -635,5 +656,50 @@ describe('PostgresFondPayoutStore', () => {
     expect(sql.queries[15]?.text).toContain("status = 'settling' AND claimed_at < $2");
     expect(await store.restoreStaleSettling('row', new Date(NOW))).toBeUndefined();
     expect(sql.queries[16]?.text).toContain("status = 'settling' AND claimed_at < $2");
+  });
+
+  it('stores a null Spark invoice when setInvoiced omits it', async () => {
+    const memory = new InMemoryFondPayoutStore(() => NOW);
+    await memory.enqueue(enqueue());
+    await memory.claimForInvoice(enqueue().id, '2026-11-09');
+    expect(
+      await memory.setInvoiced(enqueue().id, {
+        invoiceId: 'i',
+        paymentHash: 'h',
+        bolt11: 'b',
+        amountMsat: 1_000_000,
+      }),
+    ).toMatchObject({ sparkInvoice: null });
+
+    const sql = new MockSql();
+    const driver = {
+      id: 'row',
+      utc_day: '2026-11-09',
+      kind: 'daily',
+      address: 'ada@example.com',
+      amount_usd: '1.00',
+      comment: 'thanks',
+      message_id: null,
+      group_message_id: null,
+      status: 'invoiced',
+      failure: null,
+      invoice_id: 'i',
+      payment_hash: 'h',
+      bolt11: 'b',
+      spark_invoice: null,
+      amount_msat: 1_000_000,
+      claimed_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    sql.queryResults = [[driver]];
+    const postgres = new PostgresFondPayoutStore(sql);
+    await postgres.setInvoiced('row', {
+      invoiceId: 'i',
+      paymentHash: 'h',
+      bolt11: 'b',
+      amountMsat: 1_000_000,
+    });
+    expect(sql.queries[0]?.params).toEqual(['row', 'i', 'h', 'b', null, 1_000_000]);
   });
 });

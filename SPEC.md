@@ -360,19 +360,20 @@ memory otherwise (a memory boot always starts from `LOGINS_OPEN_DEFAULT`).
 
 ## Role hierarchy
 
-Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2, `initiator`
-2, `founder` 3. Initiator has the same rank as moderator; founder stays
-strictly above. A higher rank can always do and see everything a lower rank
-can; equal ranks can do the same things. Every route that names a role names
-the **minimum** role: "Bearer (moderator+)" means that rank or higher,
-"Bearer (verified+)" means that rank or higher. Permission text names the
-minimum rank only. Do not write "moderator or initiator" or „Moderator oder
-Initiator“. Permission checks use `roleAtLeast` (`src/lib/auth/roles.ts`); an
-equality test on the caller's role is a defect. The single named exception is `canEditDailyPayoutRoster`: initiator and moderator share rank 2, so `roleAtLeast` cannot exclude moderators; true only for initiator and founder. Checks on the _subject_ of an
-action (for example "only a verified member can be proposed as moderator") are
-state rules, not permissions, and stay exact. A subject already at the
-moderator rank is `sameRoleRank(role, 'moderator')`, which does not include
-founder. Initiator is not created by
+Roles have explicit ranks: `basis` 0, `verified` 1, `moderator` 2, `fond` 3,
+`initiator` 4, `founder` 5. A higher rank can always do and see everything a
+lower rank can; equal ranks can do the same things. Every route that names a
+role names the **minimum** role: "Bearer (moderator+)" means that rank or
+higher, "Bearer (verified+)" means that rank or higher. Permission text names
+the minimum rank only. Do not write "moderator or initiator" or „Moderator
+oder Initiator“. Permission checks use `roleAtLeast`
+(`src/lib/auth/roles.ts`), including the daily payout roster
+(`canEditDailyPayoutRoster`: minimum `initiator`); an equality test on the
+caller's role is a defect. Checks on the _subject_ of an action (for example
+"only a verified member can be proposed as moderator") are state rules, not
+permissions, and stay exact. A subject already at the moderator rank is
+`sameRoleRank(role, 'moderator')`, which does not include founder. Initiator
+is not created by
 propose, confirm, or appoint. Only the boot UPDATE and operator
 `PATCH /debug/accounts/:id` set it.
 
@@ -4402,7 +4403,10 @@ receipt (`platform` when the other side is the platform account); `shop` for a
 point-of-sale charge; then, for another account of this deployment found by
 own-host Lightning address or Spark key, `platform` (platform account), `shop`
 (live `#21GiftsShop` note), or `member`; otherwise `onchain`,
-`outside_lightning`, or `unknown`.
+`outside_lightning`, or `unknown`. An `unknown` row without counterparty is
+filled from the other side of the same transfer (same `payment_id`, opposite
+`direction`, another account), see Pairing by transfer id under
+`POST /me/wallet/report`.
 
 A payment between two members is reported by both wallets: the payer's row has
 `direction` `out`, the payee's row has `direction` `in`, and their `payment_id`
@@ -4410,7 +4414,10 @@ values can differ, so `GET /debug/db` returns two rows for one payment. When the
 apps reported it, the two rows share `payment_hash` (Lightning) or `invoice`
 (Spark invoice). A total over all members must keep one row per payment, for
 example by deduplicating on `payment_hash` or `invoice`; summing every row counts
-such a payment twice.
+such a payment twice. An internal Spark transfer has the same `payment_id` on both
+rows; pairing fills a side reported without details with a category and the
+other account as counterparty, leaves the other row as stored, and both rows still
+count when summing.
 
 ### `GET /debug/accounts`
 
@@ -5742,7 +5749,29 @@ A later report never turns a resolved category (steps 1–4) back into a
 fallback one (step 5): a re-send with fewer details keeps the stored category
 and counterparty.
 
-**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. A merge deletes a source payment row whose id the surviving account already has, clears a counterparty that is one of the two merged accounts, then moves the rest.
+**Pairing by transfer id.** A wallet can report an internal Spark transfer
+without any detail (`invoice`, `description`, `paymentHash`, and `destination`
+all null), for example the sender's side of a reaction. Both wallets report the
+same transfer under the same payment id, so after every stored payment the api
+pairs the two sides: when exactly two rows hold that payment id, of opposite
+`direction` on two different accounts, and one of them is `unknown` without a
+counterparty while the other is not `unknown`, the unresolved row takes:
+
+- `counterpartyAccountId`: the account of the other row;
+- `category`: `platform` when that account is the platform account; else
+  `gift` when the other row is a `gift`; else `shop` when the other row is a
+  shop's own point-of-sale receipt (`shop` without a counterparty); else the
+  account named as in step 4 (`shop` for a live `#21GiftsShop` note,
+  otherwise `member`).
+
+This works in either order: a categorized row arriving after the unresolved
+one fills the earlier row. A row whose own fields resolved a category or a
+counterparty is never changed by pairing, and a payment id held by more than
+two rows or by two rows of the same direction is not paired. A paired row moves
+`updated_at` (never backwards) but not `last_observed_at`. Like any resolved
+category, a later re-send without details keeps it.
+
+**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, clears a counterparty that is one of the two merged accounts, then moves the rest.
 
 **Response** `200` `{ "acknowledgedIds": ["sdk-payment-id"] }` — every stored
 payment id, once each (a later duplicate in the same report wins).
@@ -8609,7 +8638,7 @@ Bearer session required. `:id` and `:messageId` are UUIDs. Body is only
 hit on `conversation_message_translation` for that text returns
 `{ "translatedText", "cached": true }` with no upstream call. Access matches
 `GET /conversations/:id` (`moderator_group` only for a moderator-group
-member; initiator has the same rank as moderator).
+member; initiator is above moderator and qualifies).
 
 Missing or invalid bearer → **401** `{ "error": "Unauthorized" }`.
 Non-uuid `:id` or `:messageId`, missing thread, no access, missing message,

@@ -95,7 +95,12 @@ import {
   PostgresSparkInvoiceStore,
   type SparkInvoiceStore,
 } from '@/lib/spark-invoice-store';
-import { migrateWalletSchema, PostgresWalletStore, type WalletStore } from '@/lib/wallet-store';
+import {
+  migrateWalletSchema,
+  PostgresWalletStore,
+  repairWalletPaymentPairs,
+  type WalletStore,
+} from '@/lib/wallet-store';
 import {
   migrateLoginGateSchema,
   PostgresLoginGateStore,
@@ -492,6 +497,8 @@ export async function openBootStores(
     linked: rosterLink.linked,
     unlinked: rosterLink.unlinked,
   });
+  const pairedPayments = await repairWalletPaymentPairs(sqlClient, new Date());
+  logEvent('wallet_payment.pairs_repaired', { repaired: pairedPayments });
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);

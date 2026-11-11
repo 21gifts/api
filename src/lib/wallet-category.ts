@@ -48,6 +48,41 @@ export interface WalletCategoryDeps {
   lnurlServer?: LnurlServerConfig;
 }
 
+/** How an account appears as the other side of a payment (classification step 4). */
+export type WalletAccountKind = 'platform' | 'shop' | 'member';
+
+/** Account ids that hold a live assigned `#21GiftsShop` note. */
+async function liveShopAccountIds(messages: WalletCategoryDeps['messages']): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const note of await messages.listLiveAssignedShops()) {
+    if (note.accountId !== '' && textHasHashtagToken(note.text, '21GiftsShop')) {
+      ids.add(note.accountId);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Name an account the way the classifier names a resolved counterparty: `platform` for the
+ * platform account, `shop` for an account with a live assigned `#21GiftsShop` note, otherwise
+ * `member`.
+ *
+ * @param deps - Account and message lookups.
+ * @param accountId - Account on the other side of a payment.
+ * @returns The account kind; a missing account counts as `member`.
+ * @throws Propagates lookup failures.
+ */
+export async function walletAccountKind(
+  deps: Pick<WalletCategoryDeps, 'authStore' | 'messages'>,
+  accountId: string,
+): Promise<WalletAccountKind> {
+  const account = await deps.authStore.getAccount(accountId);
+  if (account?.isPlatform === true) {
+    return 'platform';
+  }
+  return (await liveShopAccountIds(deps.messages)).has(accountId) ? 'shop' : 'member';
+}
+
 /** Category and optional known account on the other side of a payment. */
 export interface WalletPaymentClass {
   /** Server-derived payment category. */
@@ -73,15 +108,7 @@ export function walletPaymentClassifier(
   let shopAccounts: Promise<Set<string>> | undefined;
 
   const shops = (): Promise<Set<string>> => {
-    shopAccounts ??= deps.messages.listLiveAssignedShops().then((notes) => {
-      const ids = new Set<string>();
-      for (const note of notes) {
-        if (note.accountId !== '' && textHasHashtagToken(note.text, '21GiftsShop')) {
-          ids.add(note.accountId);
-        }
-      }
-      return ids;
-    });
+    shopAccounts ??= liveShopAccountIds(deps.messages);
     return shopAccounts;
   };
 
