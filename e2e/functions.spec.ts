@@ -8,22 +8,23 @@ async function memberSession(
 ): Promise<{ authorization: string; id: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eFnTrust${stamp.slice(0, 8)}`;
+  // Eight digits of Date.now() stay equal for ~100s, so the display name is shared.
+  // The handle keeps the full millisecond time; at most the last random hex digit is cut at 32.
+  const username = `e2e-fn-trust-${stamp}`.slice(0, 32);
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
     data: {
-      accounts: [
-        {
-          name,
-          username: `e2e-fn-trust-${stamp}`.slice(0, 32),
-        },
-      ],
+      accounts: [{ name, username }],
     },
   });
   expect(provision.status()).toBe(200);
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const row = accounts.find((item) => item.name === name);
+  const accounts = (
+    (await listed.json()) as {
+      accounts: Array<{ id: string; name: string; username: string | null }>;
+    }
+  ).accounts;
+  const row = accounts.find((item) => item.username === username);
   expect(row).toBeDefined();
   const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
   expect(session.status()).toBe(200);
