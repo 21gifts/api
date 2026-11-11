@@ -178,18 +178,18 @@ write trust edges; `POST /debug/trust-edges` backfills stored edges and
 `DELETE /debug/trust-edges` removes the latest stored `(subjectId, kind)`
 row (`createdAt` desc, then `id` desc), both without changing `role`.
 
-| Role               | Capabilities                                                                                                                                                                                                            |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Basis              | Log in, maintain a profile, receive gifts (default). No forum tag. Pays 1 sat to 21.gifts before posting or replying, except a free first top-level post and a reply on their own note.                                 |
-| Verified           | Everything Basis can, plus a forum tag: a moderator physically met this person. Not a verified wallet. May post and reply without a Bitcoin payment.                                                                    |
-| Moderator          | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag.                        |
-| Fond               | Everything Moderator can (rank 3). The configured Fond account (`FOND_USERNAME`, not the platform account) can sign Fond payouts from its own wallet when `PAYOUT_SIGNER=fond` (`canSignFondPayouts`, at least `fond`). |
-| Software Developer | Everything Moderator can, including the closed Moderators group and every moderator permission. No moderator-group payout. Cannot edit the daily payout roster. Forum tag.                                              |
-| Initiator          | Rank 5, above the software developer, fond and moderator. Can edit the daily payout roster. Forum tag.                                                                                                                  |
-| Founder            | Everything Initiator can, plus appointing moderators directly. Forum tag.                                                                                                                                               |
+| Role               | Capabilities                                                                                                                                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Basis              | Log in, maintain a profile, receive gifts (default). No forum tag. Pays 1 sat to 21.gifts before posting or replying, except a free first top-level post and a reply on their own note.                                            |
+| Verified           | Everything Basis can, plus a forum tag: a moderator physically met this person. Not a verified wallet. May post and reply without a Bitcoin payment.                                                                               |
+| Moderator          | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag.                                   |
+| Fond               | Everything Moderator can (rank 3). The configured Fond account (`FOND_USERNAME`, not the platform account) can sign Fond payouts from its own wallet when `PAYOUT_SIGNER=fond` (`canSignFondPayouts`, at least `fond`). Forum tag. |
+| Software Developer | Everything Moderator can, including the closed Moderators group and every moderator permission. No moderator-group payout. Cannot edit the daily payout roster. Forum tag.                                                         |
+| Initiator          | Rank 5, above the software developer, fond and moderator. Can edit the daily payout roster. Forum tag.                                                                                                                             |
+| Founder            | Everything Initiator can, plus appointing moderators directly. Forum tag.                                                                                                                                                          |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
-its own (see below). The forum shows a tag only for Verified, Moderator,
+its own (see below). The forum shows a tag only for Verified, Moderator, Fond,
 Software Developer, Initiator, and Founder.
 
 ### Login: passkey only
