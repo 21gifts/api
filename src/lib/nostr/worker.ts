@@ -267,19 +267,19 @@ function skippedDirectMessagesFor(
   return existing;
 }
 
-/** Remember a skipped direct message, evicting the oldest entry past the cap. */
+/**
+ * Remember a skipped direct message. A full cache keeps its entries and does
+ * not take new keys, so the remembered ones stay hits on every later pass.
+ */
 function rememberSkippedDirectMessage(
   cache: Map<string, SkippedDirectMessage>,
   key: string,
   entry: SkippedDirectMessage,
 ): void {
-  cache.delete(key);
-  cache.set(key, entry);
-  if (cache.size > INBOUND_DM_SKIP_CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    /* v8 ignore next -- a non-empty map always has a first key */
-    if (oldest !== undefined) cache.delete(oldest);
+  if (!cache.has(key) && cache.size >= INBOUND_DM_SKIP_CACHE_MAX) {
+    return;
   }
+  cache.set(key, entry);
 }
 
 /** Retain external reply event ids currently being processed per message store. */
@@ -2135,7 +2135,8 @@ type DirectMessageAcquisition = { pubkey: string; atMs: number };
  * decrypt. A gift wrap's sender is known only after the unwrap; a skipped
  * wrap's sender (or `null` when it holds nothing to store) is remembered per
  * conversation store, without plaintext, so later passes in the window decide
- * it without a second unwrap.
+ * it without a second unwrap. A missing account secret is not remembered
+ * (nothing was decrypted), and a full memory takes no new entries.
  *
  * @param deps - Worker collaborators.
  * @param urls - Zap relay URLs (space + public list).
@@ -2245,10 +2246,12 @@ async function indexInboundDirectMessages(
               continue;
             }
           }
+          let decrypted = false;
           const plain = await withAccountSecret(
             deps,
             recipient.id,
             (secret): { senderPubkey: string; text: string; createdAt: number } | null => {
+              decrypted = true;
               if (event.kind === 1059) {
                 return unwrapNip17(signed, secret);
               }
@@ -2265,7 +2268,9 @@ async function indexInboundDirectMessages(
             },
           );
           if (plain === null) {
-            remember(null);
+            if (decrypted) {
+              remember(null);
+            }
             continue;
           }
           const text = normalizeForumText(plain.text, MESSAGE_INBOUND_REPLY_MAX_LENGTH);

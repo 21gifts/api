@@ -9580,17 +9580,26 @@ describe('inbound direct-message admission', () => {
     expect(ctx.decrypts()).toBe(1);
   });
 
-  it('caps the remembered skips and evicts the oldest first', async () => {
+  it('retries a message whose account secret is missing on the next pass', async () => {
     const ctx = await setup();
-    let lookups = 0;
-    ctx.auth.getNostrSecret = async () => {
-      lookups += 1;
-      return undefined;
-    };
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-no-secret', new Date(0));
+    const getSecret = ctx.auth.getNostrSecret.bind(ctx.auth);
+    ctx.auth.getNostrSecret = async () => undefined;
+    ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'once the key is back'))];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    ctx.auth.getNostrSecret = getSecret;
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['once the key is back']);
+  });
+
+  it('caps the remembered skips and keeps the remembered ones as hits', async () => {
+    const ctx = await setup();
     const events = Array.from({ length: 10_001 }, (_, index): NostrEventFrame => ({
       id: index.toString(16).padStart(64, '0'),
-      pubkey: ctx.recipient,
-      kind: 4,
+      pubkey: 'zz',
+      kind: 1059,
       tags: [['p', ctx.recipient]],
       content: 'unreadable',
       created_at: 1_699_999_000,
@@ -9598,9 +9607,10 @@ describe('inbound direct-message admission', () => {
     }));
     ctx.querier.events = events;
     await tick(ctx);
-    expect(lookups).toBe(10_001);
-    ctx.querier.events = [events[0]!, events[10_000]!];
+    expect(ctx.decrypts()).toBe(10_001);
     await tick(ctx);
-    expect(lookups).toBe(10_002);
-  });
+    expect(ctx.decrypts()).toBe(10_002);
+    await tick(ctx);
+    expect(ctx.decrypts()).toBe(10_003);
+  }, 30_000);
 });

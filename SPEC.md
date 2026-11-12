@@ -7032,7 +7032,10 @@ it was taken. A kind:4 sender is the envelope author, so it is decided before
 the decrypt; a gift wrap's sender is known only after the unwrap, and the
 worker keeps the sender of a skipped wrap (never its text) for the query
 window, so later passes decide it again without a second unwrap. A skipped
-wrap is stored on a later pass once its sender becomes a known contact.
+wrap is stored on a later pass once its sender becomes a known contact. A
+message whose account secret is missing is not remembered and is tried again
+on the next pass. The memory holds at most 10 000 entries per conversation
+store; when full it takes no new ones, so the remembered ones stay hits.
 
 Known limitation: if the payer's wallet publishes no kind:9735 receipt, the
 external zapper gains no website visibility. Operator manual settlement
