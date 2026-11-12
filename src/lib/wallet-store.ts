@@ -31,7 +31,7 @@ export interface WalletBalanceSnapshot {
 export interface WalletPaymentRecord extends ReportedWalletPayment, WalletPaymentClass {
   /** Reporting account id. */
   accountId: string;
-  /** USD fee frozen when a positive completed fee is first priced, or null. */
+  /** USD fee frozen from a quote within five minutes of `paidAt`, or null. */
   feeUsd: string | null;
   /** Observation instant of the report that first stored this account/payment id. */
   firstSeenAt: Date;

@@ -4408,7 +4408,9 @@ two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
 - `wallet_payment`: one row per member and wallet payment id, key
   `(account_id, payment_id)`. `direction` (`in` / `out`, seen from
   `account_id`), `status` (`pending` / `completed` / `failed`), `amount_sats`,
-  `fee_sats`, `paid_at` (payment time the app reported), `method` (reported, lower-cased,
+  `fee_sats`, `fee_usd` (the USD spot of the payment moment, from a quote at
+  most five minutes from `paid_at`, otherwise `null`), `paid_at` (payment time
+  the app reported), `method` (reported, lower-cased,
   e.g. `lightning`, `spark`, `onchain`), `payment_hash`, `invoice` (BOLT11 or
   Spark invoice), `destination`, `description`, `lnurl_comment` (each `null`
   when not reported or screened out), `category`, `counterparty_account_id`
@@ -5815,6 +5817,14 @@ reporting account itself never counts as the counterparty):
 A later report never turns a resolved category (steps 1–4) back into a
 fallback one (step 5): a re-send with fewer details keeps the stored category
 and counterparty.
+
+**Fee figure.** A completed payment with a positive `feeSats` stores `fee_usd`
+only from the USD spot of the payment moment: the stored quote's `asOf` must be
+at most five minutes before or after `paidAt`, the refresh interval of the spot
+worker. The exact integer conversion rounds half-up to USD cents. Without
+`paidAt` the payment is invalid; without a usable quote in that window the
+figure is `null`, and a later spot never fills it. The upsert keeps the first
+non-null value with `COALESCE(wallet_payment.fee_usd, EXCLUDED.fee_usd)`.
 
 **Pairing by transfer id.** A wallet can report an internal Spark transfer
 without any detail (`invoice`, `description`, `paymentHash`, and `destination`

@@ -1737,7 +1737,22 @@ describe('GET /fond/payments', () => {
     ['canonical mismatch', Buffer.from('{}', 'utf8').toString('base64url') + '='],
     ['not JSON', Buffer.from('{', 'utf8').toString('base64url')],
     ['array', Buffer.from('[]', 'utf8').toString('base64url')],
+    ['null', Buffer.from('null', 'utf8').toString('base64url')],
+    ['scalar', Buffer.from('1', 'utf8').toString('base64url')],
     ['wrong keys', Buffer.from('{"a":"b"}', 'utf8').toString('base64url')],
+    [
+      'extra key',
+      Buffer.from(
+        JSON.stringify({ paidAt: PAID_A.toISOString(), id: 'a'.repeat(16), extra: true }),
+        'utf8',
+      ).toString('base64url'),
+    ],
+    [
+      'missing paidAt key',
+      Buffer.from(JSON.stringify({ id: 'a'.repeat(16), extra: true }), 'utf8').toString(
+        'base64url',
+      ),
+    ],
     [
       'missing key',
       Buffer.from(JSON.stringify({ paidAt: PAID_A.toISOString(), extra: 'x' }), 'utf8').toString(
@@ -1752,6 +1767,19 @@ describe('GET /fond/payments', () => {
       'non-ISO time',
       Buffer.from(
         JSON.stringify({ paidAt: '2026-11-11T13:31:01.000X', id: 'a'.repeat(16) }),
+        'utf8',
+      ).toString('base64url'),
+    ],
+    [
+      'short time',
+      Buffer.from(JSON.stringify({ paidAt: '2026-11-11', id: 'a'.repeat(16) }), 'utf8').toString(
+        'base64url',
+      ),
+    ],
+    [
+      'non-canonical ISO time',
+      Buffer.from(
+        JSON.stringify({ paidAt: '2026-11-11t13:31:01.000z', id: 'a'.repeat(16) }),
         'utf8',
       ).toString('base64url'),
     ],

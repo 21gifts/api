@@ -5,6 +5,7 @@ import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
 import type { LnurlServerConfig } from '@/lib/config';
+import { FX_SPOT_REFRESH_MS } from '@/lib/fx-spot';
 import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { IP_RATE_WINDOW_MS, IpRateLimiter } from '@/lib/ip-rate-limit';
 import { logEvent } from '@/lib/log';
@@ -35,7 +36,7 @@ export interface WalletReportRouteDeps {
   messages: MessageStore;
   /** Point-of-sale charge lookup. */
   posStore: PosStore;
-  /** Latest BTC/USD spot used once to freeze a completed payment fee. */
+  /** Latest BTC/USD spot used once when it belongs to the completed payment moment. */
   fxSpotStore?: FxSpotStore;
   /** Self-hosted receiving-address configuration, when enabled. */
   lnurlServer?: LnurlServerConfig;
@@ -45,11 +46,17 @@ export interface WalletReportRouteDeps {
   limiter?: IpRateLimiter;
 }
 
-/** Freeze one completed positive fee at the current USD spot without failing ingestion. */
+/**
+ * Maximum distance between a payment and its quote, matching the spot worker's five-minute refresh.
+ */
+const FEE_SPOT_PAYMENT_WINDOW_MS = FX_SPOT_REFRESH_MS;
+
+/** Freeze one completed positive fee at the USD spot of its payment moment. */
 async function frozenFeeUsd(
   spot: FxSpotStore | undefined,
   status: WalletPaymentRecord['status'],
   feeSats: number,
+  paidAt: Date,
 ): Promise<string | null> {
   if (spot === undefined || status !== 'completed' || feeSats <= 0) {
     return null;
@@ -57,7 +64,15 @@ async function frozenFeeUsd(
   try {
     const quote = await spot.latest();
     const usd = quote?.rates.USD;
-    return usd === undefined ? null : usdCentsToString(satsToUsdCents(feeSats, usd));
+    const quoteMs = quote === null ? Number.NaN : Date.parse(quote.asOf);
+    if (
+      usd === undefined ||
+      !Number.isFinite(quoteMs) ||
+      Math.abs(quoteMs - paidAt.getTime()) > FEE_SPOT_PAYMENT_WINDOW_MS
+    ) {
+      return null;
+    }
+    return usdCentsToString(satsToUsdCents(feeSats, usd));
   } catch {
     return null;
   }
@@ -129,7 +144,12 @@ export function walletReportRoutes(deps: WalletReportRouteDeps): Hono {
             payments.slice(start, start + WALLET_REPORT_CONCURRENCY).map(async (payment) => ({
               ...payment,
               ...(await classify(payment)),
-              feeUsd: await frozenFeeUsd(deps.fxSpotStore, payment.status, payment.feeSats),
+              feeUsd: await frozenFeeUsd(
+                deps.fxSpotStore,
+                payment.status,
+                payment.feeSats,
+                payment.paidAt,
+              ),
               accountId: account.id,
               firstSeenAt: new Date(seenAt.getTime()),
               updatedAt: new Date(seenAt.getTime()),

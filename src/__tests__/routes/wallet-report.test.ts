@@ -180,7 +180,7 @@ describe('POST /me/wallet/report', () => {
     ]);
   });
 
-  it('freezes a completed positive fee in USD with exact half-up cents', async () => {
+  it('freezes a completed positive fee from the USD spot of the payment moment', async () => {
     const fxSpotStore = new InMemoryFxSpotStore({
       asOf: new Date(START).toISOString(),
       source: 'test',
@@ -195,6 +195,49 @@ describe('POST /me/wallet/report', () => {
     expect(response.status).toBe(200);
     expect(latest).toHaveBeenCalledTimes(1);
     expect((await walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBe('0.04');
+  });
+
+  it.each([
+    ['older', START - 5 * 60_000 - 1],
+    ['newer', START + 5 * 60_000 + 1],
+  ])('leaves fee USD null when the quote is %s than the payment window', async (_name, asOf) => {
+    const fxSpotStore = new InMemoryFxSpotStore({
+      asOf: new Date(asOf).toISOString(),
+      source: 'test',
+      rates: { USD: '100000' },
+    });
+    const { app, walletStore } = await mount({ fxSpotStore });
+    const response = await post(
+      app,
+      body({
+        payments: [
+          reported({
+            status: 'completed',
+            feeSats: 40,
+            timestamp: new Date(START).toISOString(),
+          }),
+        ],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect((await walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
+  });
+
+  it('does not read a spot or store a fee for a payment without paidAt', async () => {
+    const fxSpotStore = new InMemoryFxSpotStore({
+      asOf: new Date(START).toISOString(),
+      source: 'test',
+      rates: { USD: '100000' },
+    });
+    const latest = vi.spyOn(fxSpotStore, 'latest');
+    const { app, walletStore } = await mount({ fxSpotStore });
+    const payment = reported({ status: 'completed', feeSats: 40 });
+    delete payment['timestamp'];
+    const response = await post(app, body({ payments: [payment] }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ acknowledgedIds: [] });
+    expect(latest).not.toHaveBeenCalled();
+    expect(await walletStore.listPayments(ACCOUNT, 10)).toEqual([]);
   });
 
   it('leaves fee USD null for zero, pending, missing, and unreadable spots', async () => {
@@ -241,6 +284,23 @@ describe('POST /me/wallet/report', () => {
         .status,
     ).toBe(200);
     expect((await noUsd.walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
+
+    const invalidTime = await mount({
+      fxSpotStore: new InMemoryFxSpotStore({
+        asOf: 'not-an-instant',
+        source: 'test',
+        rates: { USD: '100000' },
+      }),
+    });
+    expect(
+      (
+        await post(
+          invalidTime.app,
+          body({ payments: [reported({ status: 'completed', feeSats: 40 })] }),
+        )
+      ).status,
+    ).toBe(200);
+    expect((await invalidTime.walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
 
     class FailingSpotStore extends InMemoryFxSpotStore {
       override latest(): Promise<null> {
