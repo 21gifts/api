@@ -327,6 +327,50 @@ every pull request it bundles already passed the check on `staging`. This check 
 not replace the author's own judgement about whether a change affects the
 database.
 
+### Wallet data (hard requirement)
+
+21.gifts has two separate things, and this rule keeps them apart.
+
+- **The 21.gifts applications are public.** Every feature of the app (the
+  forum and its notes, gifts, hearts, credit requests and their repayments,
+  shops, and every other 21.gifts activity) is public. Anyone can see every
+  activity and every transaction that belongs to it.
+- **The wallet is not an application.** The wallet is the member's in-app
+  Bitcoin wallet for sending, receiving, and holding bitcoin. It is private to
+  the public and completely visible to 21.gifts. Both halves are binding. A
+  change that breaks either half is rejected. [CONCEPT.md](CONCEPT.md), Core
+  Principle 9, states the same rule.
+
+The wallet rule in detail:
+
+- **Private to the public.** No wallet data of an individual member may be
+  readable outside 21.gifts: not the balance, the payment history, an amount, a
+  fee, a payment time, a counterparty, an invoice, or a Spark, Lightning, or
+  on-chain address of the wallet. This covers public routes, responses to
+  other members, NOSTR events, logs, error reports, and public block
+  explorers. The wallet keeps the Breez SDK Spark private mode on, so a public
+  Spark explorer shows none of its transfers. A payment that belongs to a
+  21.gifts activity (for example a gift to a note or a credit repayment) is
+  public as part of that activity. That does not make any other wallet data
+  public. `GET /wallets/stats` publishes totals over all wallets that never
+  name or single out one account.
+- **Completely visible to 21.gifts.** Every wallet event **must** be stored in
+  this api's database: every payment in either direction and of every method
+  (Spark, Lightning, on-chain, token), every status it passes through
+  (`pending`, `completed`, `failed`), with amount, fee, time, method,
+  counterparty, and invoice or destination, and every balance sync. Nothing a
+  wallet does may be missing, filtered, sampled, aggregated away, or kept only
+  in the browser. A wallet event that reaches no table is a defect. A change
+  that drops a field, a status, or a method from storage is a defect.
+- **Who reads it.** The admin team (role at least `software_developer`:
+  software developer, initiator, founder) and operator debug access
+  (`DEBUG_TOKEN`, `DEBUG_READ_TOKEN`) **must** be able to read every stored
+  wallet record of every member. A member reads only their own wallet data. No
+  other role and no other member reads it.
+- **Never key material.** Completeness never includes secrets: the recovery
+  phrase, seed, PRF output, preimages, and any private or spending key are
+  never collected, stored, or logged.
+
 ### Tests
 
 - One `*.test.ts` per source file, under `src/__tests__/` mirroring the source tree
