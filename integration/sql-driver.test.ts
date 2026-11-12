@@ -3538,6 +3538,50 @@ describe('PostgresWalletStore', () => {
           status: 'pending',
           counterpartyAccountId: senderA,
         },
+        // M3: failed outgoing senderB is not a sender; completed senderA on the same id is.
+        // Three `member` rows, so pairing (exactly two rows, one of them unresolved) does not run.
+        { ...row, paymentId: `${prefix}-failed-sender`, accountId: senderA },
+        {
+          ...row,
+          paymentId: `${prefix}-failed-sender`,
+          accountId: senderB,
+          status: 'failed',
+        },
+        {
+          ...row,
+          paymentId: `${prefix}-failed-sender`,
+          accountId: receiver,
+          direction: 'in',
+        },
+        // M4: own failed `in` yields no counterparty, even beside a completed sender.
+        // Two `member` rows, so pairing does not fill a counterparty or change status.
+        { ...row, paymentId: `${prefix}-failed-own`, accountId: senderA },
+        {
+          ...row,
+          paymentId: `${prefix}-failed-own`,
+          accountId: receiver,
+          direction: 'in',
+          status: 'failed',
+        },
+        // M5: the caller's own failed outgoing row yields no counterparty.
+        // One row, so pairing cannot replace the stored counterparty.
+        {
+          ...row,
+          paymentId: `${prefix}-out-failed`,
+          accountId: receiver,
+          status: 'failed',
+          counterpartyAccountId: senderA,
+        },
+        // M6: own `in` counterparty senderB is not a sender; only completed out senderA is.
+        // Two `member` rows, so pairing does not replace the stored counterparty.
+        { ...row, paymentId: `${prefix}-in-counterparty`, accountId: senderA },
+        {
+          ...row,
+          paymentId: `${prefix}-in-counterparty`,
+          accountId: receiver,
+          direction: 'in',
+          counterpartyAccountId: senderB,
+        },
       ]);
       const found = await store.findPaymentCounterparties(receiver, [
         ...[
@@ -3548,17 +3592,24 @@ describe('PostgresWalletStore', () => {
           'pending-sender',
           'self-only',
           'no-own',
+          'failed-sender',
+          'failed-own',
+          'in-counterparty',
         ].map((id) => ({ id: `${prefix}-${id}`, direction: 'in' as const })),
-        ...['out', 'null', 'self', 'out-pending'].map((id) => ({
+        ...['out', 'null', 'self', 'out-pending', 'out-failed'].map((id) => ({
           id: `${prefix}-${id}`,
           direction: 'out' as const,
         })),
         { id: 'invalid\u0000text', direction: 'in' },
       ]);
-      expect(found.size).toBe(3);
+      expect(found.size).toBe(5);
       expect(found.get(`${prefix}-shared`)).toEqual([senderA]);
       expect(found.get(`${prefix}-ambiguous`)).toEqual([senderA, senderB].sort());
       expect(found.get(`${prefix}-out`)).toEqual([senderA]);
+      expect(found.get(`${prefix}-failed-sender`)).toEqual([senderA]);
+      expect(found.get(`${prefix}-failed-own`)).toBeUndefined();
+      expect(found.get(`${prefix}-out-failed`)).toBeUndefined();
+      expect(found.get(`${prefix}-in-counterparty`)).toEqual([senderA]);
     } finally {
       await closeIfPossible(sql);
     }
