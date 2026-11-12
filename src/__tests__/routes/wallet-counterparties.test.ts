@@ -52,9 +52,10 @@ describe('POST /me/wallet/counterparties', () => {
     ['direction is missing', { payments: [{ id: 'a', invoice: 'x' }] }],
     ['direction is invalid', { payments: [{ id: 'a', direction: 'other', invoice: 'x' }] }],
     ['id is empty', { payments: [{ id: '', direction: 'in', invoice: 'x' }] }],
+    ['id is only whitespace', { payments: [{ id: '   ', direction: 'in', invoice: 'x' }] }],
     [
-      'id is longer than 128 characters',
-      { payments: [{ id: 'a'.repeat(129), direction: 'in', invoice: 'x' }] },
+      'id is longer than 256 characters after trim',
+      { payments: [{ id: ` ${'a'.repeat(257)} `, direction: 'in', invoice: 'x' }] },
     ],
   ])('rejects invalid input when %s', async (_name, body) => {
     const { auth, wallet } = await setup();
@@ -68,13 +69,13 @@ describe('POST /me/wallet/counterparties', () => {
     expect(await response.json()).toEqual({ error: 'Invalid counterparty lookup' });
   });
 
-  it('rejects an actual 8193-byte body and the 61st lookup', async () => {
+  it('rejects an actual 16385-byte body and the 61st lookup', async () => {
     const { auth, wallet } = await setup();
     const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
     const oversized = await app.request('/me/wallet/counterparties', {
       method: 'POST',
       headers,
-      body: 'x'.repeat(8193),
+      body: 'x'.repeat(16385),
     });
     expect(oversized.status).toBe(413);
     const limited = walletCounterpartyRoutes({
@@ -93,6 +94,51 @@ describe('POST /me/wallet/counterparties', () => {
     expect((await limited.request('/me/wallet/counterparties', request)).status).toBe(429);
   });
 
+  it('finds one trimmed id of 256 characters and drops the duplicate', async () => {
+    const { auth } = await setup();
+    const id = 'p'.repeat(256);
+    const lookup = vi.fn().mockResolvedValue(new Map([[id, [sender]]]));
+    const app = walletCounterpartyRoutes({
+      authStore: auth,
+      walletStore: { findPaymentCounterparties: lookup },
+      now: () => now,
+    });
+    const response = await app.request('/me/wallet/counterparties', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        payments: [
+          { id: `  ${id}  `, direction: 'in' },
+          { id: ` ${id}`, direction: 'out' },
+          { id, direction: 'out' },
+        ],
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      counterparties: [{ id, accountId: sender, username: 'sender' }],
+    });
+    expect(lookup.mock.calls[0]?.[1]).toEqual([{ id, direction: 'in' }]);
+  });
+
+  it('accepts 32 ids of 256 characters within 16384 bytes', async () => {
+    const { auth, wallet } = await setup();
+    const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
+    const payments = Array.from({ length: 32 }, (_, index) => ({
+      id: `${index}`.padStart(256, 'a'),
+      direction: 'in' as const,
+    }));
+    const body = JSON.stringify({ payments });
+    expect(body.length).toBeLessThan(16384);
+    const response = await app.request('/me/wallet/counterparties', {
+      method: 'POST',
+      headers,
+      body,
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ counterparties: [] });
+  });
+
   it('authenticates, validates input, caps the body and rate limits', async () => {
     const { auth, wallet } = await setup();
     const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
@@ -107,7 +153,8 @@ describe('POST /me/wallet/counterparties', () => {
         null,
         {},
         { id: '', direction: 'in', invoice: 'x' },
-        { id: 'a'.repeat(129), direction: 'in', invoice: 'x' },
+        { id: '   ', direction: 'in', invoice: 'x' },
+        { id: ` ${'a'.repeat(257)} `, direction: 'in', invoice: 'x' },
         { id: 'a' },
       ].map((item) => JSON.stringify({ payments: [item] })),
     ]) {
@@ -119,7 +166,7 @@ describe('POST /me/wallet/counterparties', () => {
       (
         await app.request('/me/wallet/counterparties', {
           method: 'POST',
-          headers: { ...headers, 'content-length': '8193' },
+          headers: { ...headers, 'content-length': '16385' },
           body: '{}',
         })
       ).status,

@@ -4580,7 +4580,7 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: readCappedText
 
-- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), `POST /me/events` (64 KiB), `POST /me/wallet/hearts`, `POST /me/wallet/counterparties` (8192 bytes), and `POST /webhooks/lnurl` (64 KiB).
+- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), `POST /me/events` (64 KiB), `POST /me/wallet/hearts` (8192 bytes), `POST /me/wallet/counterparties` (16384 bytes), and `POST /webhooks/lnurl` (64 KiB).
 - **Inputs:** The incoming `Request` and the largest accepted body in bytes.
 - **Returns / side effects:** The decoded text, `''` when the request has no body, or `null` when the body is larger than the cap (`lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, `walletCounterpartyRoutes`, and `memberEventRoutes` answer 413 `{ error: 'Request body is too large' }`; `webhookRoutes` answers 200 `ignored`, because the LNURL server retries every non-2xx answer without end). Never logs the body.
 - **Used by:** `lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, `walletCounterpartyRoutes`, `memberEventRoutes`, `webhookRoutes`.
@@ -4725,12 +4725,12 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: walletCounterpartyRoutes
 
-- **Purpose:** Serve `POST /me/wallet/counterparties`: authenticate a bearer session (401), rate limit per account to 60 per minute (429), cap the request body at 8192 bytes (413), and validate 1–32 payment ids and directions (400). The caller must have reported the payment with that direction as completed. For `in`, find other accounts that reported the same id as a completed outgoing payment; for `out`, return the non-null, non-self counterparty of the caller's payment. A missing, ambiguous, platform or username-less account is omitted.
+- **Purpose:** Serve `POST /me/wallet/counterparties`: authenticate a bearer session (401), rate limit per account to 60 per minute (429), cap the request body at 16384 bytes (413), and validate 1–32 payment ids and directions (400). Each id is trimmed, as in the wallet report, and must then be 1–256 characters. The caller must have reported the payment with that direction as completed. For `in`, find other accounts that reported the same id as a completed outgoing payment; for `out`, return the non-null, non-self counterparty of the caller's payment. A missing, ambiguous, platform or username-less account is omitted.
 - **Inputs:** Auth store, wallet store, clock and optional per-account limiter.
 - **Returns / side effects:** 200 `{ counterparties }`; 401 `{ error: 'Unauthorized' }`, 429 `{ error: 'Too many requests' }`, 413 `{ error: 'Request body is too large' }`, 400 `{ error: 'Invalid counterparty lookup' }`, or 503 `{ error: 'Counterparty lookup is unavailable' }`. Store failures log `wallet_counterparties.lookup.failed` with only `accountId`; invoices, hashes and usernames are never logged.
 - **Used by:** `createApp`.
 
-Extra fields in a request entry are ignored; duplicate ids keep the first entry.
+Extra fields in a request entry are ignored. Duplicate ids are compared after trim and the first entry is kept. The returned id is the trimmed value.
 
 ## Function: walletHeartRoutes
 

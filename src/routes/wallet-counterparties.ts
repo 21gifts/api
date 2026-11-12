@@ -25,6 +25,9 @@ type Key = {
   direction: 'in' | 'out';
 };
 
+/** Largest accepted counterparty lookup body, in bytes. */
+const COUNTERPARTY_LOOKUP_BODY_LIMIT_BYTES = 16384;
+
 function parsePayments(body: unknown): Key[] | null {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
   const payments = (body as { payments?: unknown }).payments;
@@ -34,11 +37,13 @@ function parsePayments(body: unknown): Key[] | null {
   for (const item of payments) {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
     const { id, direction } = item as { id?: unknown; direction?: unknown };
-    if (typeof id !== 'string' || id.length === 0 || id.length > 128) return null;
+    if (typeof id !== 'string') return null;
+    const paymentId = id.trim();
+    if (paymentId.length < 1 || paymentId.length > 256) return null;
     if (direction !== 'in' && direction !== 'out') return null;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    keys.push({ id, direction });
+    if (seen.has(paymentId)) continue;
+    seen.add(paymentId);
+    keys.push({ id: paymentId, direction });
   }
   return keys;
 }
@@ -56,7 +61,7 @@ export function walletCounterpartyRoutes(deps: WalletCounterpartyRouteDeps): Hon
     const account = token === null ? null : await resolveSession(deps.authStore, nowMs, token);
     if (account === null) return c.json({ error: 'Unauthorized' }, 401);
     if (!limiter.allow(account.id, nowMs)) return c.json({ error: 'Too many requests' }, 429);
-    const text = await readCappedText(c.req.raw, 8192);
+    const text = await readCappedText(c.req.raw, COUNTERPARTY_LOOKUP_BODY_LIMIT_BYTES);
     if (text === null) return c.json({ error: 'Request body is too large' }, 413);
     let body: unknown;
     try {
