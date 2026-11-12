@@ -49,17 +49,17 @@ brew install oven-sh/bun/bun
 
 ### Branches
 
-| Branch    | Purpose                            | Deploy target |
-| --------- | ---------------------------------- | ------------- |
-| `develop` | Default branch, active development | DEV           |
-| `staging` | Experimental testing               | staging       |
-| `main`    | Production releases                | PRD           |
+| Branch    | Purpose                                                          | Deploy target |
+| --------- | ---------------------------------------------------------------- | ------------- |
+| `develop` | Default branch, active development                               | DEV           |
+| `staging` | Experimental testing (branch currently absent, no pull requests) | staging       |
+| `main`    | Production releases                                              | PRD           |
 
 - Changes go through a **feature branch + PR**; the bullet below on feature pull requests sets its base
 - `main` is protected — updates flow via an auto-generated Release PR (`develop → main`)
-- **Hard requirement:** `staging` is the environment for experimental testing. It publishes `21gifts/api:staging`. A change that is good there is released to `develop` first (`Release: staging -> develop`). `main` receives changes only from `develop` (`Release: develop -> main`). `staging` is never released directly to `main`. An open release pull request is left unchanged. The staging release is not opened when the three-dot diff against `develop` has no file changes.
-- Feature pull requests target `develop`, never `main`. A feature pull request whose change depends on commits that are on `staging` but not yet in `develop` targets `staging` instead; once those commits are in `develop`, it is retargeted to `develop`, then closed and reopened so CI runs against the new base. Developers rebase `staging` onto `develop` regularly, because pull requests that land on `develop` do not update `staging`. Before such a rebase, every feature pull request with base `staging` is merged, closed, or retargeted to `develop`.
-- Never force-push, never amend published commits, except publishing a rebase of `staging` onto `develop` with `git push --force-with-lease` to `staging` only, and only when no feature pull request with base `staging` is open.
+- **Hard requirement:** `staging` is the environment for experimental testing. It publishes `21gifts/api:staging`. No pull request targets `staging` at present. Opening pull requests against `staging` again (and how experimental changes reach it) is a product-owner decision that updates this section first. When the `staging` branch exists, its changes reach `develop` only through `Release: staging -> develop`. `main` receives changes only from `develop` (`Release: develop -> main`). `staging` is never released directly to `main`. An open release pull request is left unchanged. The staging release is not opened when the three-dot diff against `develop` has no file changes.
+- Feature pull requests target `develop`, never `main` or `staging`.
+- Never force-push, never amend published commits, except publishing a rebase of `staging` onto `develop` with `git push --force-with-lease` to `staging` only, and only when the `staging` branch exists.
 
 ### Commit messages
 
