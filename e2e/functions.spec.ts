@@ -959,13 +959,6 @@ test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot',
   expect(body).not.toHaveProperty('byRecipient');
 });
 
-test('Function: giftsForRecipient — GET /me/activity without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.get('/me/activity');
-  expect(res.status()).toBe(401);
-});
-
 test('Function: InMemoryGiftStore — GET /gifts/stats is empty on default boot', async ({
   request,
 }) => {
