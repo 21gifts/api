@@ -16,6 +16,7 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
@@ -38,6 +39,8 @@ function listedPostHasMedia(
 
 /** Collaborators the daily-instruction route needs. */
 export interface SpendInstructionRouteDeps {
+  /** Server-verified wallet transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** `SPEND_API_TOKEN` (blank/undefined → 503). */
   spendApiToken: string | undefined;
   /**
@@ -159,6 +162,7 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
           account,
           nowMs,
           deps.recoveryShareRequiredFrom ?? null,
+          deps.walletTransfers,
         );
         eligible = payout.eligible;
         grantStatus = effectiveStatus(payout.grant, nowMs);

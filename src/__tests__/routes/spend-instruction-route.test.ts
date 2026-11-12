@@ -17,6 +17,7 @@ import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { createApp } from '@/server';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 const TOKEN = 'spend-secret-token';
 const ADDRESS = 'alice@example.test';
@@ -65,6 +66,23 @@ function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
   ]);
 }
 
+function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
+  return {
+    listWallets: async () => [],
+    syncState: async () => ({
+      newestCreatedAt: null,
+      oldestPendingCreatedAt: null,
+      pendingWithoutCreatedAt: false,
+    }),
+    upsertTransfer: async () => ({
+      inserted: false,
+      updated: false,
+      shopPaymentBecameCompleted: false,
+    }),
+    hasShopPayment: async () => shopPayment,
+  };
+}
+
 function fakeStore(get?: DailyRosterStore['get']): DailyRosterStore {
   const fallback = new InMemoryDailyRosterStore(PAYING_ROSTER);
   return {
@@ -96,6 +114,7 @@ function createSpendApp(deps: Parameters<typeof createApp>[0] = {}): ReturnType<
     spendApiToken: TOKEN,
     rosterStore: fakeStore(),
     fundingStore: admittedStore(),
+    walletTransferStore: fakeWalletTransferStore(),
     now: () => NOW_MS,
     env: { ...process.env, ...LNURL_ENV },
     ...deps,
@@ -364,6 +383,21 @@ describe('POST /spend/daily-instruction', () => {
       authStore,
       messageStore: await liveMediaPostStore(),
       fundingStore: new InMemoryFundingStore(),
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
+  });
+
+  it('returns not_eligible when an admitted member has no recent verified shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+      walletTransferStore: fakeWalletTransferStore(false),
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),

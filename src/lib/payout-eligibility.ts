@@ -11,8 +11,9 @@
  */
 
 import type { Account, AuthStore } from '@/lib/auth/store';
-import { eligibleToday, recoveryShareRequired, type FundingGrant } from '@/lib/funding';
+import { eligibleToday, recoveryShareRequired, utcDayKey, type FundingGrant } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 /**
  * Load the grant and decide whether the account may be paid today.
@@ -28,6 +29,8 @@ import type { FundingStore } from '@/lib/funding-store';
  * @param nowMs - Epoch milliseconds (UTC day).
  * @param recoveryShareRequiredFrom - First UTC day the share is required, or
  *   `null` when it is not required yet.
+ * @param walletTransfers - Server-verified transfer store. Production callers
+ *   pass it; omitted legacy callers retain their pre-viewer behavior.
  * @returns The stored grant (for `effectiveStatus`) and {@link eligibleToday}
  *   with the share fact.
  * @throws Whatever either store throws.
@@ -38,16 +41,45 @@ export async function loadPayoutEligibility(
   account: Pick<Account, 'id' | 'role'>,
   nowMs: number,
   recoveryShareRequiredFrom: string | null,
-): Promise<{ grant: FundingGrant | undefined; eligible: boolean }> {
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>,
+): Promise<{
+  grant: FundingGrant | undefined;
+  eligible: boolean;
+  reason?: 'no_shop_payment';
+}> {
   const grant = await fundingStore.getByAccountId(account.id);
   const shareDecides =
     recoveryShareRequired(nowMs, recoveryShareRequiredFrom) &&
-    eligibleToday(account.role, grant, nowMs, true, recoveryShareRequiredFrom);
+    eligibleToday(account.role, grant, nowMs, true, recoveryShareRequiredFrom, true);
   const shareStored = shareDecides
     ? await auth.hasRecoveryShareForVerifiedWallet(account.id)
     : false;
+  const otherwiseEligible = eligibleToday(
+    account.role,
+    grant,
+    nowMs,
+    shareStored,
+    recoveryShareRequiredFrom,
+    true,
+  );
+  let shopPaymentRecent = true;
+  if (otherwiseEligible && walletTransfers !== undefined) {
+    shopPaymentRecent = await walletTransfers.hasShopPayment(
+      account.id,
+      utcDayKey(nowMs - 86_400_000),
+      utcDayKey(nowMs),
+    );
+  }
   return {
     grant,
-    eligible: eligibleToday(account.role, grant, nowMs, shareStored, recoveryShareRequiredFrom),
+    eligible: eligibleToday(
+      account.role,
+      grant,
+      nowMs,
+      shareStored,
+      recoveryShareRequiredFrom,
+      shopPaymentRecent,
+    ),
+    ...(otherwiseEligible && !shopPaymentRecent ? { reason: 'no_shop_payment' as const } : {}),
   };
 }

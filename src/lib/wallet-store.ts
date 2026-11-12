@@ -19,6 +19,8 @@ export interface WalletBalanceSnapshot {
   id: string;
   /** Reporting account id. */
   accountId: string;
+  /** Spark identity key whose owned balance was observed, or null for a legacy app report. */
+  walletPubkey?: string | null;
   /** Balance in whole sats. */
   balanceSats: number;
   /** Client-reported sync instant. */
@@ -114,7 +116,7 @@ export interface WalletStore {
   ): Promise<WalletPaymentRecord[]>;
 }
 
-/** Idempotent DDL for wallet balance snapshots and reported payments. */
+/** Idempotent DDL for wallet balance snapshots, reported payments, and observed transfers. */
 export const WALLET_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS wallet_balance_snapshot (
   id uuid PRIMARY KEY,
@@ -123,6 +125,9 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   synced_at timestamptz NOT NULL,
   received_at timestamptz NOT NULL
 )`,
+  `ALTER TABLE wallet_balance_snapshot ADD COLUMN IF NOT EXISTS wallet_pubkey text`,
+  `ALTER TABLE wallet_balance_snapshot DROP CONSTRAINT IF EXISTS wallet_balance_snapshot_wallet_pubkey_chk`,
+  `ALTER TABLE wallet_balance_snapshot ADD CONSTRAINT wallet_balance_snapshot_wallet_pubkey_chk CHECK (wallet_pubkey IS NULL OR wallet_pubkey ~ '^0[23][0-9a-f]{64}$')`,
   `CREATE INDEX IF NOT EXISTS wallet_balance_snapshot_account_received_idx ON wallet_balance_snapshot (account_id, received_at DESC, id DESC)`,
   `CREATE TABLE IF NOT EXISTS wallet_payment (
   account_id uuid NOT NULL REFERENCES account (id),
@@ -148,6 +153,27 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC)`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)`,
+  `CREATE TABLE IF NOT EXISTS wallet_transfer (
+  account_id uuid NOT NULL REFERENCES account (id),
+  wallet_pubkey text NOT NULL CHECK (wallet_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  transfer_id text NOT NULL CHECK (transfer_id <> ''),
+  direction text NOT NULL CHECK (direction IN ('in', 'out')),
+  type text NOT NULL CHECK (type IN ('preimage_swap', 'cooperative_exit', 'transfer', 'utxo_swap', 'primary_swap_v3', 'counter_swap_v3', 'swap', 'counter_swap', 'unrecognized')),
+  status text NOT NULL CHECK (status IN ('pending', 'completed', 'expired', 'returned')),
+  amount_sats bigint NOT NULL CHECK (amount_sats >= 0),
+  counterparty_pubkey text NOT NULL CHECK (counterparty_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  counterparty_account_id uuid REFERENCES account (id),
+  spark_invoice text,
+  transfer_created_at timestamptz,
+  transfer_updated_at timestamptz,
+  first_seen_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, transfer_id)
+)`,
+  `CREATE INDEX IF NOT EXISTS wallet_transfer_wallet_created_idx ON wallet_transfer (account_id, wallet_pubkey, transfer_created_at DESC, transfer_id)`,
+  `CREATE INDEX IF NOT EXISTS wallet_transfer_pending_idx ON wallet_transfer (account_id, wallet_pubkey, transfer_created_at) WHERE status = 'pending'`,
+  `CREATE INDEX IF NOT EXISTS wallet_transfer_shop_payment_idx ON wallet_transfer (account_id, COALESCE(transfer_updated_at, transfer_created_at)) WHERE direction = 'out' AND status = 'completed' AND type = 'transfer' AND counterparty_account_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS wallet_transfer_counterparty_idx ON wallet_transfer (counterparty_account_id) WHERE counterparty_account_id IS NOT NULL`,
 ];
 
 /**
@@ -452,6 +478,7 @@ function isLaterBalance(candidate: WalletBalanceSnapshot, current: WalletBalance
 interface WalletBalanceSqlRow {
   id: string;
   account_id: string;
+  wallet_pubkey: string | null;
   balance_sats: number | string | bigint;
   synced_at: Date | string;
   received_at: Date | string;
@@ -491,6 +518,7 @@ function mapBalance(row: WalletBalanceSqlRow): WalletBalanceSnapshot {
   return {
     id: row.id,
     accountId: row.account_id,
+    walletPubkey: row.wallet_pubkey,
     balanceSats: Number(row.balance_sats),
     syncedAt: sqlDate(row.synced_at),
     receivedAt: sqlDate(row.received_at),
@@ -563,7 +591,7 @@ const PAIRED_CATEGORY = `CASE
     SELECT 1 FROM message AS m
     WHERE m.parent_id IS NULL AND m.deleted_at IS NULL
       AND m.shop_account_id = s.account_id
-      AND m.text ~* '#21GiftsShop(?![A-Za-z0-9_])'
+      AND m.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
   ) THEN 'shop'
   ELSE 'member'
 END`;
@@ -632,11 +660,12 @@ export class PostgresWalletStore implements WalletStore {
    */
   async recordBalance(snapshot: WalletBalanceSnapshot): Promise<void> {
     await this.sql.execute(
-      `INSERT INTO wallet_balance_snapshot (id, account_id, balance_sats, synced_at, received_at)
-VALUES ($1,$2,$3,$4,$5)`,
+      `INSERT INTO wallet_balance_snapshot (id, account_id, wallet_pubkey, balance_sats, synced_at, received_at)
+VALUES ($1,$2,$3,$4,$5,$6)`,
       [
         snapshot.id,
         snapshot.accountId,
+        snapshot.walletPubkey ?? null,
         snapshot.balanceSats,
         snapshot.syncedAt,
         snapshot.receivedAt,
@@ -725,7 +754,7 @@ WHERE EXCLUDED.last_observed_at >= ${OBSERVED_WATERMARK}
    */
   async latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined> {
     const rows = await this.sql.query<WalletBalanceSqlRow>(
-      `SELECT id, account_id, balance_sats, synced_at, received_at
+      `SELECT id, account_id, wallet_pubkey, balance_sats, synced_at, received_at
 FROM wallet_balance_snapshot
 WHERE account_id = $1
 ORDER BY received_at DESC, id DESC
@@ -748,7 +777,7 @@ LIMIT 1`,
   async dailyBalances(): Promise<WalletBalanceSnapshot[]> {
     const rows = await this.sql.query<WalletBalanceSqlRow>(
       `SELECT DISTINCT ON (account_id, ((received_at AT TIME ZONE 'UTC')::date))
-id, account_id, balance_sats, synced_at, received_at
+id, account_id, wallet_pubkey, balance_sats, synced_at, received_at
 FROM wallet_balance_snapshot
 ORDER BY account_id, ((received_at AT TIME ZONE 'UTC')::date), received_at DESC, id DESC`,
     );

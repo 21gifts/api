@@ -16,6 +16,7 @@ import {
 } from '@/lib/funding';
 import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
 import { pingTodayMedia } from '@/lib/funding-ping';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
 import { isOperatorBearer } from '@/lib/debug-token';
@@ -62,6 +63,8 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /** Collaborators the funding routes need. */
 export interface FundingRouteDeps {
+  /** Server-verified transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Shared auth persistence port. */
   authStore: AuthStore;
   /** Funding-grant persistence port. */

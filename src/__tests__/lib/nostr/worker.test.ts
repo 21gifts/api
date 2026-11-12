@@ -183,6 +183,32 @@ async function inboundTick(
 }
 
 describe('runNostrWorkerTick', () => {
+  it('forwards wallet transfers to receipt ingest', async () => {
+    const { auth, messages } = await seed();
+    const walletTransfers = {} as NonNullable<NostrWorkerDeps['walletTransfers']>;
+    const indexOpenZapReceipts = vi.spyOn(zapIndexForWorkerTest, 'indexOpenZapReceipts');
+
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+          walletTransfers,
+        }),
+      );
+
+      expect(indexOpenZapReceipts).toHaveBeenCalledWith(
+        expect.objectContaining({ walletTransfers }),
+      );
+    } finally {
+      indexOpenZapReceipts.mockRestore();
+    }
+  });
+
   it('re-signs pending kind:1 events that lack t=bitcoin', async () => {
     const { auth, messages } = await seed();
     await messages.updateSignedEvent('m1', 'ab'.repeat(32), {
@@ -6823,6 +6849,25 @@ describe('startNostrWorker', () => {
     );
   });
 
+  it('runs zap ingest without the optional wallet transfer store', async () => {
+    const { auth, messages } = await seed();
+    const querier = new RecordingQuerier();
+    const workerDeps = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      querier,
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    delete workerDeps.walletTransfers;
+
+    await runNostrWorkerTick(workerDeps);
+
+    expect(querier.calls.length).toBeGreaterThan(0);
+  });
+
   it('starts ingest immediately and waits for settle before the next pass', async () => {
     vi.useFakeTimers();
     const { auth, messages } = await seed();
@@ -9163,3 +9208,4 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
     });
   });
 });
+import * as zapIndexForWorkerTest from '@/lib/nostr/zap-index';

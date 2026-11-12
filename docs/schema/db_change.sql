@@ -1,6 +1,7 @@
 -- Append-only row-change log. AFTER INSERT/UPDATE/DELETE triggers on every
 -- public table (except db_change) write redacted before/after JSON. Secret
--- columns token, challenge, nostr_nsec_ciphertext, nonce, view_key, endpoint,
+-- columns token, challenge, nostr_nsec_ciphertext, viewer_mnemonic_ciphertext,
+-- nonce, view_key, endpoint,
 -- p256dh, auth, delivered_endpoints, skip_endpoints, session_token,
 -- recovery_share_ciphertext, and ciphertext (held_share_box) are stored as
 -- SHA-256 hex; other columns including
@@ -41,7 +42,7 @@ BEGIN
   IF j IS NULL THEN
     RETURN NULL;
   END IF;
-  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce', 'view_key', 'endpoint', 'p256dh', 'auth', 'delivered_endpoints', 'skip_endpoints', 'session_token', 'recovery_share_ciphertext', 'ciphertext']
+  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'viewer_mnemonic_ciphertext', 'nonce', 'view_key', 'endpoint', 'p256dh', 'auth', 'delivered_endpoints', 'skip_endpoints', 'session_token', 'recovery_share_ciphertext', 'ciphertext']
   LOOP
     IF outj ? k AND jsonb_typeof(outj -> k) IS DISTINCT FROM 'null' THEN
       outj := jsonb_set(

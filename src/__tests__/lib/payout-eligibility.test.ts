@@ -60,6 +60,54 @@ async function load(
 }
 
 describe('loadPayoutEligibility', () => {
+  it('lazily reads the recent shop payment and returns its refusal reason', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => false);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: false, reason: 'no_shop_payment' });
+    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-30', '2026-10-01');
+  });
+
+  it('does not read shop transfers when the grant already refuses', async () => {
+    const s = stores(undefined, true);
+    const hasShopPayment = vi.fn(async () => true);
+    const result = await loadPayoutEligibility(
+      s.fundingStore,
+      s.auth,
+      { id: 'acc', role: 'verified' },
+      GATE_MS,
+      GATE_DAY,
+      { hasShopPayment },
+    );
+    expect(result.eligible).toBe(false);
+    expect(hasShopPayment).not.toHaveBeenCalled();
+  });
+
+  it('keeps an otherwise eligible member eligible after a recent shop payment', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: true });
+    expect(hasShopPayment).toHaveBeenCalledOnce();
+  });
   it('reads the share for an admitted member on a gated day and needs it', async () => {
     const admitted = grant();
     expect(await load('verified', admitted, true, GATE_MS)).toEqual({

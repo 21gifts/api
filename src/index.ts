@@ -68,6 +68,7 @@ import { startMemberSparkInvoicePrune, startSparkInvoiceWorker } from './lib/spa
 import { startPosPaidWorker } from './lib/pos-paid-worker';
 import { startFondPaidWorker } from './lib/fond-paid-worker';
 import { resolveFxSpotUrl, startFxSpotWorker } from './lib/fx-spot';
+import { startWalletTransferWorker } from './lib/wallet-transfer-worker';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -206,6 +207,9 @@ if (import.meta.main) {
     apiLogStore,
     diagnosticStore,
     walletStore,
+    walletTransferStore,
+    sparkViewer,
+    walletViewerPublicKey,
     memberEventStore,
     trustStore,
     fundingStore,
@@ -314,6 +318,8 @@ if (import.meta.main) {
     ...(apiLogStore === undefined ? {} : { apiLogStore }),
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
     ...(walletStore === undefined ? {} : { walletStore }),
+    ...(walletTransferStore === undefined ? {} : { walletTransferStore }),
+    walletViewerPublicKey,
     ...(memberEventStore === undefined ? {} : { memberEventStore }),
     conversationStore,
     notificationStore,
@@ -360,6 +366,25 @@ if (import.meta.main) {
     url: resolveFxSpotUrl(process.env),
     now: Date.now,
   });
+  const walletTransferWorker =
+    walletTransferStore === undefined || walletStore === undefined || sparkViewer === undefined
+      ? undefined
+      : startWalletTransferWorker({
+          viewer: sparkViewer,
+          transfers: walletTransferStore,
+          balances: walletStore,
+          auth: authStore,
+          funding: appFundingStore,
+          ping: {
+            ...(spendPing === undefined ? {} : { spendPing }),
+            ...(lnurlServer === undefined ? {} : { lnurlServer }),
+            messageStore: forumMessages,
+            authStore,
+            recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
+            walletTransfers: walletTransferStore,
+          },
+          now: Date.now,
+        });
   // Always started: ticks send nothing without VAPID, but the hourly sweep
   // still drops subscriptions whose session ended and old outbox rows.
   startPushWorker({ store: pushStore, sender, now: Date.now, authStore }, PUSH_WORKER_INTERVAL_MS);
@@ -377,6 +402,7 @@ if (import.meta.main) {
     ...(boot.notificationStore === undefined ? {} : { notificationStore: boot.notificationStore }),
     ...(spendPing === undefined ? {} : { spendPing }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
+    ...(walletTransferStore === undefined ? {} : { walletTransfers: walletTransferStore }),
     fiatRates,
     ...(lnurlServer === undefined ? {} : { lnurlServer }),
   };
@@ -450,6 +476,7 @@ if (import.meta.main) {
           lnurlServer,
           conversationStore,
           fundingStore: appFundingStore,
+          ...(walletTransferStore === undefined ? {} : { walletTransfers: walletTransferStore }),
           recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
           gifts: appGiftStore,
           giftStore: appGiftStore,
@@ -463,6 +490,7 @@ if (import.meta.main) {
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.once(signal, () => {
       nostrWorker?.stop();
+      walletTransferWorker?.stop();
       relayPool.close();
       process.kill(process.pid, signal);
     });

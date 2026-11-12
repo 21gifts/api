@@ -294,8 +294,8 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
  * living-room post still gate issue). From that UTC day, true iff
  * {@link inGrantProgramToday} and, once
  * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
- * rejected, withdrawn, and missing grants are then false, and so is a grant
- * without a required share.
+ * rejected, and missing grants are then false, and so is a grant without a
+ * required share or without a completed shop payment today or yesterday.
  *
  * @param role - Live account role.
  * @param grant - Stored grant, or `undefined` when no row.
@@ -304,6 +304,8 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
  *   the account's current verified wallet
  *   (`AuthStore.hasRecoveryShareForVerifiedWallet`).
  * @param recoveryShareRequiredFrom - Result of {@link resolveRecoveryShareRequiredFrom}.
+ * @param shopPaymentRecent - Whether a server-verified shop payment exists on
+ *   the current UTC day or the day before.
  * @returns `true` when money paths may proceed today.
  */
 export function eligibleToday(
@@ -312,6 +314,7 @@ export function eligibleToday(
   nowMs: number,
   recoveryShareStored: boolean,
   recoveryShareRequiredFrom: string | null,
+  shopPaymentRecent: boolean = true,
 ): boolean {
   if (role === 'basis') {
     return false;
@@ -321,7 +324,8 @@ export function eligibleToday(
   }
   return (
     inGrantProgramToday(grant, nowMs) &&
-    (recoveryShareStored || !recoveryShareRequired(nowMs, recoveryShareRequiredFrom))
+    (recoveryShareStored || !recoveryShareRequired(nowMs, recoveryShareRequiredFrom)) &&
+    shopPaymentRecent
   );
 }
 

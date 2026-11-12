@@ -116,6 +116,8 @@ import {
   PostgresShopIdentityStore,
   type ShopIdentityStore,
 } from '@/lib/shop-identity';
+import { ensureSparkViewer, migrateSparkViewerSchema, type SparkViewer } from '@/lib/spark-viewer';
+import { PostgresWalletTransferStore, type WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 /** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
@@ -242,6 +244,12 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   walletStore: WalletStore | undefined;
+  /** Durable server-verified Spark transfer store, or undefined on memory boots. */
+  walletTransferStore: WalletTransferStore | undefined;
+  /** Read-only Spark viewer, ephemeral on memory boots. */
+  sparkViewer: SparkViewer | undefined;
+  /** Public identity key wallets grant to the deployment viewer. */
+  walletViewerPublicKey: string | null;
   /**
    * Postgres-backed member interaction-log events, or `undefined` when no
    * SQL client was opened so `createApp` keeps the empty in-memory default.
@@ -363,13 +371,15 @@ export interface BootFxOptions {
  * `daily_roster.accounts_linked` with `linked` and `unlinked`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
- * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`, then
+ * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`,
+ * `migrateSparkViewerSchema`,
  * `migrateMemberEventSchema`, then `migrateLoginGateSchema`, then `migrateDbChangeSchema`, so
  * `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet tables, `member_event`,
  * `app_setting`, and `login_allowlist` are migrated between `account_image`
  * and `db_change` and `trg_db_change` attaches to `api_log`,
  * `account_image`, `diagnostic_event`, `spark_invoice` / `member_spark_invoice`,
- * `wallet_balance_snapshot`, `wallet_payment`, `member_event`,
+ * `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`,
+ * `spark_viewer_key`, `member_event`,
  * `app_setting`, and `login_allowlist`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
@@ -403,6 +413,12 @@ export async function openBootStores(
     transactions,
   );
   if (sqlClient === undefined) {
+    let memoryViewer: Awaited<ReturnType<typeof ensureSparkViewer>> | undefined;
+    try {
+      memoryViewer = await ensureSparkViewer(undefined, undefined);
+    } catch {
+      logEvent('spark_viewer.unavailable');
+    }
     return {
       authStore,
       giftStore: undefined,
@@ -433,6 +449,9 @@ export async function openBootStores(
       bannerStore: undefined,
       sparkInvoiceStore: undefined,
       walletStore: undefined,
+      walletTransferStore: undefined,
+      sparkViewer: memoryViewer?.viewer,
+      walletViewerPublicKey: memoryViewer?.publicKey ?? null,
       memberEventStore: undefined,
       loginGateStore: undefined,
     };
@@ -469,6 +488,7 @@ export async function openBootStores(
   await migrateDiagnosticSchema(sqlClient);
   await migrateSparkInvoiceSchema(sqlClient);
   await migrateWalletSchema(sqlClient);
+  await migrateSparkViewerSchema(sqlClient);
   await migrateMemberEventSchema(sqlClient);
   await migrateLoginGateSchema(sqlClient);
   const logSql = fx?.logSql ?? sqlClient;
@@ -489,6 +509,7 @@ export async function openBootStores(
       });
   });
   await migrateDbChangeSchema(sqlClient);
+  const sparkViewerKey = await ensureSparkViewer(sqlClient, nostrKek);
   await repairGiftKind(sqlClient);
   const rosterLnurlServer =
     fx?.lnurlServer === undefined ? resolveLnurlServerConfig(process.env) : fx.lnurlServer;
@@ -697,6 +718,9 @@ export async function openBootStores(
     bannerStore: new PostgresBannerStore(sqlClient),
     sparkInvoiceStore: new PostgresSparkInvoiceStore(sqlClient),
     walletStore: new PostgresWalletStore(sqlClient),
+    walletTransferStore: new PostgresWalletTransferStore(sqlClient),
+    sparkViewer: sparkViewerKey.viewer,
+    walletViewerPublicKey: sparkViewerKey.publicKey,
     memberEventStore: new PostgresMemberEventStore(sqlClient),
     loginGateStore: new PostgresLoginGateStore(sqlClient),
   };

@@ -36,11 +36,13 @@ class MockSql implements SqlClient {
 
 const T1 = new Date('2026-10-01T00:00:00.000Z');
 const T2 = new Date('2026-10-02T00:00:00.000Z');
+const VIEWER_KEY = `02${'a'.repeat(64)}`;
 
 function balance(extra: Partial<WalletBalanceSnapshot> = {}): WalletBalanceSnapshot {
   return {
     id: 'a',
     accountId: 'account',
+    walletPubkey: null,
     balanceSats: 21,
     syncedAt: T1,
     receivedAt: T1,
@@ -73,21 +75,36 @@ function payment(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord 
 
 describe('wallet schema', () => {
   it('contains the exact idempotent tables, migration order, and mirrored documentation', async () => {
-    expect(WALLET_SCHEMA_SQL).toHaveLength(7);
+    expect(WALLET_SCHEMA_SQL).toHaveLength(15);
     expect(WALLET_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/);
-    expect(WALLET_SCHEMA_SQL[1]).toMatch(/received_at DESC, id DESC/);
-    expect(WALLET_SCHEMA_SQL[2]).toMatch(/PRIMARY KEY \(account_id, payment_id\)/);
-    expect(WALLET_SCHEMA_SQL[2]).toContain("'outside_lightning'");
+    expect(WALLET_SCHEMA_SQL[1]).toBe(
+      'ALTER TABLE wallet_balance_snapshot ADD COLUMN IF NOT EXISTS wallet_pubkey text',
+    );
+    expect(WALLET_SCHEMA_SQL[2]).toBe(
+      'ALTER TABLE wallet_balance_snapshot DROP CONSTRAINT IF EXISTS wallet_balance_snapshot_wallet_pubkey_chk',
+    );
     expect(WALLET_SCHEMA_SQL[3]).toBe(
+      "ALTER TABLE wallet_balance_snapshot ADD CONSTRAINT wallet_balance_snapshot_wallet_pubkey_chk CHECK (wallet_pubkey IS NULL OR wallet_pubkey ~ '^0[23][0-9a-f]{64}$')",
+    );
+    expect(WALLET_SCHEMA_SQL[4]).toMatch(/received_at DESC, id DESC/);
+    expect(WALLET_SCHEMA_SQL[5]).toMatch(/PRIMARY KEY \(account_id, payment_id\)/);
+    expect(WALLET_SCHEMA_SQL[5]).toContain("'outside_lightning'");
+    expect(WALLET_SCHEMA_SQL[6]).toBe(
       'ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS invoice text',
     );
-    expect(WALLET_SCHEMA_SQL[4]).toBe(
+    expect(WALLET_SCHEMA_SQL[7]).toBe(
       'ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz',
     );
-    expect(WALLET_SCHEMA_SQL[5]).toMatch(/paid_at DESC, payment_id DESC/);
-    expect(WALLET_SCHEMA_SQL[6]).toBe(
+    expect(WALLET_SCHEMA_SQL[8]).toMatch(/paid_at DESC, payment_id DESC/);
+    expect(WALLET_SCHEMA_SQL[9]).toBe(
       'CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)',
     );
+    expect(WALLET_SCHEMA_SQL[10]).toMatch(/CREATE TABLE IF NOT EXISTS wallet_transfer/);
+    expect(WALLET_SCHEMA_SQL[10]).toMatch(/PRIMARY KEY \(account_id, transfer_id\)/);
+    expect(WALLET_SCHEMA_SQL[11]).toMatch(/wallet_transfer_wallet_created_idx/);
+    expect(WALLET_SCHEMA_SQL[12]).toMatch(/wallet_transfer_pending_idx/);
+    expect(WALLET_SCHEMA_SQL[13]).toMatch(/wallet_transfer_shop_payment_idx/);
+    expect(WALLET_SCHEMA_SQL[14]).toMatch(/wallet_transfer_counterparty_idx/);
     const documented = readFileSync(join(process.cwd(), 'docs/schema/wallet.sql'), 'utf8');
     for (const statement of WALLET_SCHEMA_SQL) {
       expect(documented).toContain(statement);
@@ -564,7 +581,7 @@ describe('repairWalletPaymentPairs', () => {
     expect(text).toContain('s.account_id <> t.account_id');
     expect(text).toContain('WHERE c.payment_id = t.payment_id) = 2');
     expect(text).toContain('last_observed_at = COALESCE(t.last_observed_at, t.updated_at)');
-    expect(text).toContain("m.text ~* '#21GiftsShop(?![A-Za-z0-9_])'");
+    expect(text).toContain("m.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'");
     sql.rows = [];
     expect(await repairWalletPaymentPairs(sql, T2)).toBe(0);
   });
@@ -593,7 +610,7 @@ describe('PostgresWalletStore', () => {
     await store.upsertPayments([payment({ paymentId: 'a' }), payment({ paymentId: 'b' })]);
     expect(sql.executes[0]).toEqual({
       text: expect.stringContaining('INSERT INTO wallet_balance_snapshot'),
-      params: ['a', 'account', 21, T1, T1],
+      params: ['a', 'account', null, 21, T1, T1],
     });
     expect(sql.executes).toHaveLength(5);
     // The two payments run concurrently: both upserts, then the pairing of each payment id.
@@ -635,6 +652,8 @@ describe('PostgresWalletStore', () => {
       T1,
       T1,
     ]);
+    await store.recordBalance(balance({ id: 'viewer', walletPubkey: VIEWER_KEY }));
+    expect(sql.executes.at(-1)?.params).toEqual(['viewer', 'account', VIEWER_KEY, 21, T1, T1]);
   });
 
   it('maps latest balance Date/string timestamps and bigint values, including empty results', async () => {
@@ -643,13 +662,16 @@ describe('PostgresWalletStore', () => {
       {
         id: 'a',
         account_id: 'account',
+        wallet_pubkey: VIEWER_KEY,
         balance_sats: 21n,
         synced_at: T1,
         received_at: T2.toISOString(),
       },
     ];
     const store = new PostgresWalletStore(sql);
-    await expect(store.latestBalance('account')).resolves.toEqual(balance({ receivedAt: T2 }));
+    await expect(store.latestBalance('account')).resolves.toEqual(
+      balance({ walletPubkey: VIEWER_KEY, receivedAt: T2 }),
+    );
     expect(sql.queries[0]?.text).toContain('ORDER BY received_at DESC, id DESC');
     expect(sql.queries[0]?.params).toEqual(['account']);
     sql.rows = [];
@@ -662,6 +684,7 @@ describe('PostgresWalletStore', () => {
       {
         id: 'a',
         account_id: 'account',
+        wallet_pubkey: null,
         balance_sats: 21n,
         synced_at: T1,
         received_at: T2.toISOString(),

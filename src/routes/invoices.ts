@@ -30,6 +30,7 @@ import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import { ownerFundingStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import { welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
 import {
@@ -56,6 +57,8 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /** Collaborators the invoice routes need. */
 export interface InvoiceRouteDeps {
+  /** Server-verified wallet transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** `SPEND_API_TOKEN` (blank/undefined → 503). */
   spendApiToken: string | undefined;
   /** Issued-invoice store. */
@@ -350,6 +353,8 @@ async function accountHasPosted(
 
 /** Collaborators of the extracted issue and proof actions. */
 export interface GiftActionDeps {
+  /** Server-verified wallet transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Issued-invoice store. */
   store: InvoiceStore;
   /** Auth store for receiving address, passkey, platform, and recovery lookups. */
@@ -788,6 +793,9 @@ async function issueGiftInvoiceLocked(
     account,
     deps.now(),
     deps.recoveryShareRequiredFrom ?? null,
+    input.comment === 'Welcome' && input.groupMessageId === undefined
+      ? undefined
+      : deps.walletTransfers,
   );
   if (!eligible) {
     logEvent('invoice.funding_required', { address });
@@ -1057,6 +1065,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         account,
         nowMs,
         deps.recoveryShareRequiredFrom ?? null,
+        deps.walletTransfers,
       );
       return c.json({ eligible, status: ownerFundingStatus(grant, nowMs) }, 200);
     })

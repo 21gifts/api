@@ -98,6 +98,8 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `wallet_balance_snapshot` | `account_id`              | `id`      |
 | `wallet_payment`          | `account_id`              | `id`      |
 | `wallet_payment`          | `counterparty_account_id` | `id`      |
+| `wallet_transfer`         | `account_id`              | `id`      |
+| `wallet_transfer`         | `counterparty_account_id` | `id`      |
 
 ## Relations
 
@@ -140,4 +142,6 @@ erDiagram
     "wallet_balance_snapshot" }o..|| "account" : "account_id"
     "wallet_payment" }o--|| "account" : "account_id"
     "wallet_payment" }o..o| "account" : "counterparty_account_id"
+    "wallet_transfer" }o--|| "account" : "account_id"
+    "wallet_transfer" }o..o| "account" : "counterparty_account_id"
 ```

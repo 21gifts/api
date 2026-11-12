@@ -29,6 +29,7 @@ import {
   allInternal,
   walletLnurlFetch,
 } from '@/__tests__/helpers/wallet-lnurl';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -53,9 +54,27 @@ function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
   ]);
 }
 
+function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
+  return {
+    listWallets: async () => [],
+    syncState: async () => ({
+      newestCreatedAt: null,
+      oldestPendingCreatedAt: null,
+      pendingWithoutCreatedAt: false,
+    }),
+    upsertTransfer: async () => ({
+      inserted: false,
+      updated: false,
+      shopPaymentBecameCompleted: false,
+    }),
+    hasShopPayment: async () => shopPayment,
+  };
+}
+
 function createApp(deps: Parameters<typeof createAppRaw>[0] = {}): ReturnType<typeof createAppRaw> {
   return createAppRaw({
     fundingStore: admittedStore(),
+    walletTransferStore: fakeWalletTransferStore(),
     env: { ...process.env, ...LNURL_ENV },
     ...deps,
   });
@@ -4519,29 +4538,37 @@ describe('GET /invoices/eligible', () => {
     expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
   });
 
-  it('reports a withdrawn grant as not eligible with status none', async () => {
+  it('returns eligible false when an admitted member has no recent verified shop payment', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const fundingStore = new InMemoryFundingStore([
-      {
-        accountId: 'acc-alice',
-        status: 'withdrawn',
-        appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
-        decidedAt: GATE_MS - 1,
-        decidedBy: 'acc-alice',
-        trialUtcDate: null,
-        admittedAt: null,
-        note: null,
-      },
-    ]);
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
-      fundingStore,
+      walletTransferStore: fakeWalletTransferStore(false),
       now: () => GATE_MS,
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+  });
+
+  it('refuses invoice issue when an admitted member has no recent verified shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('returns eligible false when there is no grant', async () => {

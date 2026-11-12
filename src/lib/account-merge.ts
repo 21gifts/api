@@ -229,6 +229,9 @@ function quoteIdentifier(identifier: string): string {
  * loan schedule and converted to canonical parts. A schedule that cannot be
  * reconstructed refuses the merge without writes. Parts from both identities
  * are then moved without changing their immutable part indexes.
+ * Viewer-sourced `wallet_transfer` rows follow `wallet_payment`: duplicate
+ * transfer ids on the survivor are collapsed, self-counterparties are cleared,
+ * and every remaining history row moves to the surviving account.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -1060,9 +1063,23 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          )`,
       accountParams,
     );
+    await tx.query(
+      `DELETE FROM wallet_transfer AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM wallet_transfer AS dst
+           WHERE dst.account_id = $2 AND dst.transfer_id = src.transfer_id
+         )`,
+      accountParams,
+    );
     // A payment between the two accounts would point at its own account after the merge.
     await tx.query(
       `UPDATE wallet_payment SET counterparty_account_id = NULL
+       WHERE account_id IN ($1, $2) AND counterparty_account_id IN ($1, $2)`,
+      accountParams,
+    );
+    await tx.query(
+      `UPDATE wallet_transfer SET counterparty_account_id = NULL
        WHERE account_id IN ($1, $2) AND counterparty_account_id IN ($1, $2)`,
       accountParams,
     );

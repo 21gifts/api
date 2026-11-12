@@ -5146,3 +5146,47 @@ test('Function: canSignFondPayouts — default boot serves HTTP', async ({ reque
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
+
+test('Function: migrateSparkViewerSchema — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: ensureSparkViewer — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: InMemoryWalletTransferStore — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: PostgresWalletTransferStore — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: runWalletTransferTick — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: startWalletTransferWorker — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: latestTodayMediaPostId — GET /me exposes the server payout fact', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  expect(await me.json()).toHaveProperty('grantPayoutToday');
+});
+
+test('Function: loadFundingPayoutToday — GET /me exposes one payout explanation', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  expect(await me.json()).toMatchObject({
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
+});

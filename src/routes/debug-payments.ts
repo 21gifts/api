@@ -15,6 +15,7 @@ import { receivingAddress } from '@/lib/receiving-address';
 import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import type { GiftStore } from '@/lib/gift-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { TrustStore } from '@/lib/trust-store';
@@ -30,6 +31,8 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /** Collaborators the debug payment routes need. */
 export interface DebugPaymentsRouteDeps {
+  /** Server-verified wallet transfers for replay and manual payout eligibility. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Forum persistence port. */
   store: MessageStore;
   /** Shared account persistence for payer attribution and notifications. */
@@ -171,8 +174,8 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  *   day (202 `{ messageId, status: 'accepted' }` or 200
  *   `{ messageId, status: 'skipped', reason }`); with `{ from, to, dryRun? }`,
  *   replay every payout trigger of that window through `replayPayoutWindow`
- *   (200 `{ from, to, dryRun, events, totals }`); and `GET` / `PUT
- *   /welcome-sweep` (the sweep switch and the accounts the sweep would ping
+ *   (200 `{ from, to, dryRun, events, totals }`); and `GET /welcome-sweep` /
+ *   `PUT /welcome-sweep` (the sweep switch and the accounts the sweep would ping
  *   now, without pinging). Never returns the Lightning address.
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
@@ -224,6 +227,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
             : { notificationStore: deps.notificationStore }),
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
           ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
+          ...(deps.walletTransfers === undefined ? {} : { walletTransfers: deps.walletTransfers }),
           ...(deps.recoveryShareRequiredFrom === undefined
             ? {}
             : { recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom }),
@@ -293,6 +297,9 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
               messages: deps.store,
               conversations: deps.conversationStore,
               funding: deps.fundingStore ?? new InMemoryFundingStore(),
+              ...(deps.walletTransfers === undefined
+                ? {}
+                : { walletTransfers: deps.walletTransfers }),
               recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom ?? null,
               trust: deps.trustStore,
               gifts: deps.giftStore,
@@ -366,6 +373,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
           account,
           deps.now(),
           deps.recoveryShareRequiredFrom ?? null,
+          deps.walletTransfers,
         );
       } catch {
         logEvent('debug.spend_ping.failed', { messageId });

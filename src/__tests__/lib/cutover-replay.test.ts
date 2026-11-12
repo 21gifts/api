@@ -192,6 +192,25 @@ function account(
 }
 
 describe('replayPayoutWindow', () => {
+  it('reports no_shop_payment when the shop payment rule blocks a payout', async () => {
+    const h = await harness({ grants: [admitted(ADA)] });
+    h.deps.walletTransfers = { hasShopPayment: vi.fn(async () => false) };
+    await h.member(ADA, 'ada', 'moderator');
+    await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
+
+    const result = await h.run();
+
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        eventId: id(1),
+        status: 'skipped',
+        reason: 'not_eligible',
+        detail: 'no_shop_payment',
+      }),
+    ]);
+    expect(h.spend.pingOnDay).not.toHaveBeenCalled();
+  });
+
   it('pays a post before 00:00 once on its own day and still pays a post after 00:00 on the new day', async () => {
     const h = await harness({ grants: [admitted(ADA)] });
     await h.member(ADA, 'ada', 'moderator');

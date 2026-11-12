@@ -18,6 +18,7 @@ import type { WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -53,6 +54,7 @@ function mount(
     now?: () => number;
     giftStore?: InMemoryGiftStore;
     welcomeSweep?: WelcomeSweepSwitch;
+    walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -72,6 +74,7 @@ function mount(
       giftStore: extra.giftStore ?? new InMemoryGiftStore(),
       lnurlServer: LNURL_SERVER,
       welcomeSweep: extra.welcomeSweep ?? { enabled: false },
+      ...(extra.walletTransfers === undefined ? {} : { walletTransfers: extra.walletTransfers }),
     }),
   );
 }
@@ -1467,6 +1470,7 @@ describe('debugPaymentsRoutes', () => {
         fundingStore: deps.fundingStore,
         recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
+        walletTransfers: { hasShopPayment: async () => true },
       });
       return app.request('/debug/spend-ping', {
         method: 'POST',
@@ -1555,6 +1559,7 @@ describe('debugPaymentsRoutes', () => {
         fundingStore,
         recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
+        walletTransfers: { hasShopPayment: async () => true },
       }).request('/debug/invoices/settle', {
         method: 'POST',
         headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -1632,7 +1637,13 @@ describe('debugPaymentsRoutes', () => {
     it('replays every event of the window onto its own day', async () => {
       const { store, auth, fundingStore } = await seeded();
       const spendPing = spendPingMock();
-      const app = mount(store, 'secret', { spendPing, auth, fundingStore, now: WINDOW_NOW });
+      const app = mount(store, 'secret', {
+        spendPing,
+        auth,
+        fundingStore,
+        now: WINDOW_NOW,
+        walletTransfers: { hasShopPayment: async () => true },
+      });
       const res = await post(app, WINDOW);
       expect(res.status).toBe(200);
       const json = (await res.json()) as Record<string, unknown>;

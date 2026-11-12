@@ -36,6 +36,7 @@ import { PostgresBannerStore } from '@/lib/banner-store';
 import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryFondPayoutStore, PostgresFondPayoutStore } from '@/lib/fond-payout-store';
 import { PostgresWalletStore } from '@/lib/wallet-store';
+import { PostgresWalletTransferStore } from '@/lib/wallet-transfer-store';
 import { PostgresMemberEventStore } from '@/lib/member-event-store';
 import { PostgresShopIdentityStore } from '@/lib/shop-identity';
 
@@ -50,6 +51,20 @@ function unusedClient(): SqlClient {
   };
 }
 
+function withSparkViewerTransaction(client: SqlClient): SqlClient {
+  const transactional: SqlClient = {
+    query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
+      if (text.includes('FROM spark_viewer_key WHERE singleton = true')) {
+        return [] as T[];
+      }
+      return client.query<T>(text, params);
+    },
+    execute: (text, params) => client.execute(text, params),
+    transaction: (run) => run(transactional),
+  };
+  return transactional;
+}
+
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
     .map((call) => call[0])
@@ -58,7 +73,47 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 }
 
 describe('openBootStores', () => {
+  it('rejects SQL boot when the Spark viewer key cannot be ensured', async () => {
+    const viewerFailure = new Error('viewer key unavailable');
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        if (text.toLowerCase().includes('spark_viewer')) {
+          throw viewerFailure;
+        }
+        return [] as T[];
+      },
+      execute: async (text: string) => {
+        if (text.toLowerCase().includes('spark_viewer')) {
+          throw viewerFailure;
+        }
+      },
+    };
+    client.transaction = (run) => run(client);
+
+    await expect(openBootStores('postgres://gifts21@localhost/gifts21', () => client)).rejects.toBe(
+      viewerFailure,
+    );
+  });
+
   let warn: ReturnType<typeof vi.spyOn>;
+
+  it('logs an unavailable Spark viewer and keeps the in-memory boot usable', async () => {
+    const sparkViewer = await import('@/lib/spark-viewer');
+    const ensureSparkViewer = vi
+      .spyOn(sparkViewer, 'ensureSparkViewer')
+      .mockRejectedValueOnce(new Error('unavailable'));
+
+    const result = await openBootStores(
+      undefined,
+      vi.fn(() => unusedClient()),
+    );
+    ensureSparkViewer.mockRestore();
+
+    expect(result.sparkViewer).toBeUndefined();
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'spark_viewer.unavailable' }),
+    );
+  });
 
   beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -101,6 +156,9 @@ describe('openBootStores', () => {
       debugDbStore,
       sparkInvoiceStore,
       walletStore,
+      walletTransferStore,
+      sparkViewer,
+      walletViewerPublicKey,
       memberEventStore,
       nostrKek,
       recoveryShareKek,
@@ -129,6 +187,9 @@ describe('openBootStores', () => {
     expect(debugDbStore).toBeUndefined();
     expect(sparkInvoiceStore).toBeUndefined();
     expect(walletStore).toBeUndefined();
+    expect(walletTransferStore).toBeUndefined();
+    expect(sparkViewer).toBeDefined();
+    expect(walletViewerPublicKey).toMatch(/^0[23][0-9a-f]{64}$/);
     expect(memberEventStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
@@ -163,6 +224,9 @@ describe('openBootStores', () => {
       bannerStore,
       debugDbStore,
       walletStore,
+      walletTransferStore,
+      sparkViewer,
+      walletViewerPublicKey,
       memberEventStore,
     } = await openBootStores('   ', factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
@@ -185,6 +249,9 @@ describe('openBootStores', () => {
     expect(bannerStore).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
     expect(walletStore).toBeUndefined();
+    expect(walletTransferStore).toBeUndefined();
+    expect(sparkViewer).toBeDefined();
+    expect(walletViewerPublicKey).toMatch(/^0[23][0-9a-f]{64}$/);
     expect(memberEventStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
@@ -234,7 +301,7 @@ describe('openBootStores', () => {
         operations.push(`execute:${text}`);
       },
     };
-    const factory = vi.fn(() => client);
+    const factory = vi.fn(() => withSparkViewerTransaction(client));
 
     const {
       authStore,
@@ -261,6 +328,7 @@ describe('openBootStores', () => {
       debugDbStore,
       sparkInvoiceStore,
       walletStore,
+      walletTransferStore,
       memberEventStore,
       recoveryShareKek,
     } = await openBootStores(url, factory, {
@@ -298,6 +366,7 @@ describe('openBootStores', () => {
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
     expect(sparkInvoiceStore).toBeInstanceOf(PostgresSparkInvoiceStore);
     expect(walletStore).toBeInstanceOf(PostgresWalletStore);
+    expect(walletTransferStore).toBeInstanceOf(PostgresWalletTransferStore);
     expect(memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
@@ -352,6 +421,12 @@ describe('openBootStores', () => {
     const walletIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/i.test(q),
     );
+    const walletTransferIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS wallet_transfer/i.test(q),
+    );
+    const sparkViewerIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS spark_viewer_key/i.test(q),
+    );
     const memberEventIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS member_event/i.test(q),
     );
@@ -370,7 +445,12 @@ describe('openBootStores', () => {
     expect(sparkInvoiceIdx).toBeGreaterThanOrEqual(0);
     expect(walletIdx).toBeGreaterThan(sparkInvoiceIdx);
     expect(memberEventIdx).toBeGreaterThan(walletIdx);
+    // migrateWalletSchema owns both wallet_payment and wallet_transfer before the viewer table.
+    expect(walletTransferIdx).toBeGreaterThan(walletIdx);
+    expect(sparkViewerIdx).toBeGreaterThan(walletTransferIdx);
+    expect(memberEventIdx).toBeGreaterThan(sparkViewerIdx);
     expect(dbChangeIdx).toBeGreaterThan(memberEventIdx);
+    expect(dbChangeIdx).toBeGreaterThan(sparkViewerIdx);
     expect(dbChangeIdx).toBeGreaterThan(sparkInvoiceIdx);
     expect(trustIdx).toBeGreaterThanOrEqual(0);
     expect(fundingIdx).toBeGreaterThan(trustIdx);
@@ -465,6 +545,30 @@ describe('openBootStores', () => {
     ]);
   });
 
+  it('provisions the Spark viewer when the Spark operator is not configured', async () => {
+    delete process.env['SPARK_OPERATOR_URL'];
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> =>
+        (text.includes('min(paid_at)') ? [{ min: null, max: null }] : []) as T[],
+      execute: async () => undefined,
+    };
+
+    const stores = await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+      },
+    );
+
+    expect(stores.sparkViewer).toBeDefined();
+    expect(stores.walletViewerPublicKey).toMatch(/^0[23][0-9a-f]{64}$/);
+  });
+
   it('logs gifts.fx.boot_fill.failed and still returns stores when fill throws', async () => {
     const diagnosticInserts: unknown[] = [];
     const legacyQueries: string[] = [];
@@ -556,10 +660,14 @@ describe('openBootStores', () => {
       debugDbStore,
       walletStore,
       memberEventStore,
-    } = await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
-      fetchImpl: async () => new Response('[]', { status: 200 }),
-      candlesUrl: 'https://example.test/candles',
-    });
+    } = await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+      },
+    );
     expect(authStore).toBeInstanceOf(PostgresAuthStore);
     expect(giftStore).toBeInstanceOf(QueryGiftStore);
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
@@ -641,10 +749,14 @@ describe('openBootStores', () => {
         }
       },
     };
-    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
-      fetchImpl: async () => new Response('[]', { status: 200 }),
-      candlesUrl: 'https://example.test/candles',
-    });
+    await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+      },
+    );
     await Promise.resolve();
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.fx.boot_fill.failed')).toBe(true);
     expect(parsedEvents(warn).some((e) => e['event'] === 'diagnostic.write.failed')).toBe(true);
@@ -669,7 +781,7 @@ describe('openBootStores', () => {
     });
     const stores = await openBootStores(
       'postgres://gifts21@localhost/gifts21',
-      () => client('primary'),
+      () => withSparkViewerTransaction(client('primary')),
       {
         fetchImpl: async () => new Response('[]', { status: 200 }),
         candlesUrl: 'https://example.test/candles',
@@ -718,13 +830,17 @@ describe('openBootStores', () => {
       execute: async () => undefined,
     };
 
-    const stores = await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
-      fetchImpl: async () => new Response('[]', { status: 200 }),
-      candlesUrl: 'https://example.test/candles',
-      frankfurterUrl: 'https://example.test/frankfurter',
-      nostrQuerier: new RecordingQuerier(),
-      zapRelayUrls: ['wss://relay.example'],
-    });
+    const stores = await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+      },
+    );
 
     expect(stores.messageStore).toBeInstanceOf(PostgresMessageStore);
     expect(stores.shopIdentityStore).toBeInstanceOf(PostgresShopIdentityStore);
@@ -771,7 +887,7 @@ describe('openBootStores', () => {
     };
     const stores = await openBootStores(
       'postgres://gifts21@localhost/gifts21',
-      () => client,
+      () => withSparkViewerTransaction(client),
       {
         fetchImpl: async () => new Response('[]', { status: 200 }),
         candlesUrl: 'https://example.test/candles',
@@ -805,7 +921,7 @@ describe('openBootStores', () => {
     };
     const stores = await openBootStores(
       'postgres://gifts21@localhost/gifts21',
-      () => client,
+      () => withSparkViewerTransaction(client),
       {
         fetchImpl: async () => new Response('[]', { status: 200 }),
         candlesUrl: 'https://example.test/candles',
@@ -888,18 +1004,22 @@ describe('openBootStores', () => {
       },
     };
 
-    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
-      fetchImpl: async () => new Response('[]', { status: 200 }),
-      candlesUrl: 'https://example.test/candles',
-      frankfurterUrl: 'https://example.test/frankfurter',
-      nostrQuerier: new RecordingQuerier(),
-      zapRelayUrls: ['wss://relay.example'],
-      lnurlServer: {
-        baseUrl: 'http://lnurl.internal',
-        publicBaseUrl: 'https://21.gifts',
-        host: '21.Gifts',
+    await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+        lnurlServer: {
+          baseUrl: 'http://lnurl.internal',
+          publicBaseUrl: 'https://21.gifts',
+          host: '21.Gifts',
+        },
       },
-    });
+    );
 
     const rosterIdx = operations.findIndex((o) =>
       /CREATE TABLE IF NOT EXISTS daily_roster_entry/i.test(o.text),
@@ -943,13 +1063,17 @@ describe('openBootStores', () => {
       },
     };
 
-    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
-      fetchImpl: async () => new Response('[]', { status: 200 }),
-      candlesUrl: 'https://example.test/candles',
-      frankfurterUrl: 'https://example.test/frankfurter',
-      nostrQuerier: new RecordingQuerier(),
-      zapRelayUrls: ['wss://relay.example'],
-    });
+    await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+      },
+    );
 
     const lastTriggerIdx = operations.reduce(
       (last, text, i) => (text.includes('trg_db_change') ? i : last),
@@ -982,14 +1106,18 @@ describe('openBootStores', () => {
       execute: async () => undefined,
     };
 
-    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
-      fetchImpl: async () => new Response('[]', { status: 200 }),
-      candlesUrl: 'https://example.test/candles',
-      frankfurterUrl: 'https://example.test/frankfurter',
-      nostrQuerier: new RecordingQuerier(),
-      zapRelayUrls: ['wss://relay.example'],
-      lnurlServer: null,
-    });
+    await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+        lnurlServer: null,
+      },
+    );
 
     expect(queries.filter((q) => q.text === DAILY_ROSTER_ACCOUNT_LINK_SQL)).toEqual([
       { text: DAILY_ROSTER_ACCOUNT_LINK_SQL, params: [null] },
@@ -1032,7 +1160,7 @@ describe('openBootStores', () => {
     };
     const { btcUsdRates, fiatRates, giftStore, giftRecorder } = await openBootStores(
       'postgres://gifts21@localhost/gifts21',
-      () => client,
+      () => withSparkViewerTransaction(client),
     );
     expect(giftStore).toBeInstanceOf(QueryGiftStore);
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);

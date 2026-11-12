@@ -242,6 +242,28 @@ describe('pingTodayMedia', () => {
     expect(events().map((e) => e['event'])).toEqual(['funding.daily_ping.failed']);
   });
 
+  it('logs no_shop_payment before reading media when the verified payment is missing', async () => {
+    const { authStore, account } = await member({ share: true });
+    const messageStore = new InMemoryMessageStore();
+    const latest = vi.spyOn(messageStore, 'latestLiveTopLevelMediaId');
+    const ping = vi.fn(async () => undefined);
+    await pingTodayMedia(
+      {
+        ...deps(authStore, messageStore, ping),
+        walletTransfers: { hasShopPayment: async () => false },
+      },
+      account,
+      GATE_MS,
+      'admitted',
+      true,
+    );
+    expect(latest).not.toHaveBeenCalled();
+    expect(ping).not.toHaveBeenCalled();
+    expect(events()).toEqual([
+      expect.objectContaining({ event: 'spend.ping.skipped', reason: 'no_shop_payment' }),
+    ]);
+  });
+
   describe('recovery share', () => {
     it('skips a member without a share on a gated day when the share is required', async () => {
       const { authStore, account } = await member();

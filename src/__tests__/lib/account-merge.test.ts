@@ -1121,6 +1121,13 @@ describe('mergeAccounts', () => {
     expect(walletCollision).toBeLessThan(catalog);
     expect(queries[walletCollision]?.params).toEqual([FROM, INTO]);
     expect(queries[walletCollision]?.text).toContain('dst.payment_id = src.payment_id');
+    const transferCollision = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM wallet_transfer AS src'),
+    );
+    expect(transferCollision).toBeGreaterThan(walletCollision);
+    expect(transferCollision).toBeLessThan(catalog);
+    expect(queries[transferCollision]?.params).toEqual([FROM, INTO]);
+    expect(queries[transferCollision]?.text).toContain('dst.transfer_id = src.transfer_id');
     const walletSelfCounterparty = queries.findIndex((query) =>
       query.text.includes('SET counterparty_account_id = NULL'),
     );
@@ -1128,6 +1135,12 @@ describe('mergeAccounts', () => {
     expect(walletSelfCounterparty).toBeLessThan(catalog);
     expect(queries[walletSelfCounterparty]?.params).toEqual([FROM, INTO]);
     expect(queries[walletSelfCounterparty]?.text).toContain('counterparty_account_id IN ($1, $2)');
+    const transferSelfCounterparty = queries.findIndex((query) =>
+      query.text.includes('UPDATE wallet_transfer SET counterparty_account_id = NULL'),
+    );
+    expect(transferSelfCounterparty).toBeGreaterThan(walletSelfCounterparty);
+    expect(transferSelfCounterparty).toBeLessThan(catalog);
+    expect(queries[transferSelfCounterparty]?.params).toEqual([FROM, INTO]);
     expect(queries.some((query) => query.text.includes('DELETE FROM auth_session'))).toBe(true);
     expect(queries).toContainEqual({
       text: 'UPDATE "public"."passkey_credential" SET "account_id" = $1 WHERE "account_id" = $2',

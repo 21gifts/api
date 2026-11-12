@@ -4097,6 +4097,7 @@ describe('PostgresDebugDbStore member data tables', () => {
         tables.find((table) => table.name === name)?.rowCount ?? -1;
       expect(count('wallet_balance_snapshot')).toBeGreaterThanOrEqual(1);
       expect(count('wallet_payment')).toBeGreaterThanOrEqual(paymentIds.length);
+      expect(count('wallet_transfer')).toBeGreaterThanOrEqual(0);
       expect(count('member_event')).toBeGreaterThanOrEqual(1);
 
       const seen: string[] = [];

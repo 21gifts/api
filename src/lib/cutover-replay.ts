@@ -16,6 +16,7 @@ import type { GiftStore } from '@/lib/gift-store';
 import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageListRow, MessageStore } from '@/lib/message-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { TrustStore } from '@/lib/trust-store';
@@ -75,6 +76,8 @@ export interface ReplayResult {
 
 /** Collaborators of {@link replayPayoutWindow}. */
 export interface ReplayDeps {
+  /** Server-verified transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   auth: AuthStore;
   messages: MessageStore;
   conversations: ConversationStore;
@@ -266,9 +269,13 @@ function notEligibleDetail(
   eligible: boolean,
   nowMs: number,
   recoveryShareRequiredFrom: string | null,
+  shopReason: 'no_shop_payment' | null,
 ): string | null {
   if (eligible) {
     return null;
+  }
+  if (shopReason !== null) {
+    return shopReason;
   }
   if (
     account.role !== 'basis' &&
@@ -398,12 +405,13 @@ export async function replayPayoutWindow(
       skip('no_wallet', 'no_verified_wallet');
       continue;
     }
-    const { grant, eligible } = await loadPayoutEligibility(
+    const { grant, eligible, reason } = await loadPayoutEligibility(
       deps.funding,
       deps.auth,
       account,
       nowMs,
       deps.recoveryShareRequiredFrom,
+      deps.walletTransfers,
     );
     const ineligible = notEligibleDetail(
       account,
@@ -411,6 +419,7 @@ export async function replayPayoutWindow(
       eligible,
       nowMs,
       deps.recoveryShareRequiredFrom,
+      reason ?? null,
     );
     if (ineligible !== null) {
       skip('not_eligible', ineligible);

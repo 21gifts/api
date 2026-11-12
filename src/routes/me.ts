@@ -3,7 +3,9 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { serializeOwnerAccountWithPosts, type OwnerAccountResponse } from '@/lib/auth/account-json';
+import { InMemoryWalletTransferStore, type WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { loadFundingPayoutToday, type FundingPayoutToday } from '@/lib/funding-payout-today';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { encryptRecoveryShare, RECOVERY_SHARE_TEXT } from '@/lib/auth/recovery-share';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
@@ -13,8 +15,9 @@ import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { HEART_SATS_MAX, SESSION_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
+import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
-import { effectiveStatus, eligibleToday, recoveryShareRequired } from '@/lib/funding';
+import { effectiveStatus, eligibleToday, recoveryShareRequired, utcDayKey } from '@/lib/funding';
 import { pingTodayMedia } from '@/lib/funding-ping';
 import { normalizeLocation } from '@/lib/location';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -94,6 +97,12 @@ export interface MeRouteDeps {
    * recovery share (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /** Daily payout switch used by the owner-facing payout explanation. */
+  rosterStore?: Pick<DailyRosterStore, 'get'>;
+  /** Server-verified Spark transfers for funding eligibility and owner due status. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+  /** Deployment viewer identity key that the owner wallet grants. */
+  walletViewerPublicKey?: string | null;
   /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
   recoveryShareRequiredFrom?: string | null;
   /**
@@ -339,17 +348,104 @@ const PASSKEY_RENEW_REPORT_ERROR =
   'Expected a JSON body with stage, outcome, errorName, errorCode, httpStatus, and message';
 
 /** Owner JSON including the live funding grant. */
-function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountResponse> {
-  return serializeOwnerAccountWithPosts(
-    account,
-    deps.messages,
-    {
-      store: deps.fundingStore ?? new InMemoryFundingStore(),
-      nowMs: deps.now(),
-      authStore: deps.store,
-    },
-    deps.lnurlServer,
-  );
+type MeOwnerResponse = Omit<OwnerAccountResponse, 'funding'> & {
+  funding:
+    | (NonNullable<OwnerAccountResponse['funding']> & {
+        shopPaymentDue: boolean;
+        payoutToday: FundingPayoutToday | null;
+      })
+    | null;
+  grantPayoutToday: FundingPayoutToday | null;
+  walletViewerPublicKey: string | null;
+};
+
+async function ownerJson(
+  deps: MeRouteDeps,
+  account: Account,
+  knownShopPayment?: boolean,
+): Promise<MeOwnerResponse> {
+  const nowMs = deps.now();
+  let payoutReadFailed = false;
+  let owner: OwnerAccountResponse;
+  try {
+    owner = await serializeOwnerAccountWithPosts(
+      account,
+      deps.messages,
+      {
+        store: deps.fundingStore ?? new InMemoryFundingStore(),
+        nowMs,
+        authStore: deps.store,
+      },
+      deps.lnurlServer,
+    );
+  } catch {
+    // A funding/auth fact used by payoutToday must not take down owner JSON.
+    // Retrying without the funding lookup still propagates a forum-store error.
+    owner = await serializeOwnerAccountWithPosts(
+      account,
+      deps.messages,
+      undefined,
+      deps.lnurlServer,
+    );
+    payoutReadFailed = true;
+  }
+  const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
+  const walletTransfers = deps.walletTransfers ?? new InMemoryWalletTransferStore();
+  const shopPaymentFrom = utcDayKey(nowMs - 86_400_000);
+  const shopPaymentTo = utcDayKey(nowMs);
+  let shopPaymentPromise =
+    knownShopPayment === undefined ? undefined : Promise.resolve(knownShopPayment);
+  const readShopPayment = (): Promise<boolean> => {
+    shopPaymentPromise ??= walletTransfers.hasShopPayment(
+      account.id,
+      shopPaymentFrom,
+      shopPaymentTo,
+    );
+    return shopPaymentPromise;
+  };
+  const cachedWalletTransfers: Pick<WalletTransferStore, 'hasShopPayment'> = {
+    hasShopPayment: () => readShopPayment(),
+  };
+  let payoutToday: FundingPayoutToday | null = null;
+  if (!payoutReadFailed) {
+    try {
+      payoutToday = await loadFundingPayoutToday(
+        {
+          gifts: deps.giftStore ?? new InMemoryGiftStore(),
+          funding: fundingStore,
+          auth: deps.store,
+          transfers: cachedWalletTransfers,
+          messages: deps.messages,
+          roster: deps.rosterStore ?? new InMemoryDailyRosterStore(),
+          recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom ?? null,
+        },
+        account,
+        nowMs,
+      );
+    } catch {
+      payoutReadFailed = true;
+    }
+  }
+  if (payoutReadFailed) {
+    logEvent('funding.payout_today.failed', { accountId: account.id });
+  }
+  const inProgram =
+    owner.funding?.status === 'admitted' ||
+    (owner.funding?.status === 'trial' && owner.funding.trialUtcDate === utcDayKey(nowMs));
+  let shopPaymentDue = inProgram;
+  if (inProgram) {
+    try {
+      shopPaymentDue = !(await readShopPayment());
+    } catch {
+      // Keep the conservative due flag. payoutToday already reports unknown.
+    }
+  }
+  return {
+    ...owner,
+    funding: owner.funding === null ? null : { ...owner.funding, shopPaymentDue, payoutToday },
+    grantPayoutToday: owner.funding === null ? payoutToday : null,
+    walletViewerPublicKey: deps.walletViewerPublicKey ?? null,
+  };
 }
 
 /**
@@ -370,28 +466,44 @@ async function pingAfterShareStored(
   lnurlServer: LnurlServerConfig,
   account: Account,
   nowMs: number,
-): Promise<void> {
+): Promise<boolean | undefined> {
   const spendPing = deps.spendPing;
   const requiredFrom = deps.recoveryShareRequiredFrom ?? null;
   if (spendPing === undefined || !recoveryShareRequired(nowMs, requiredFrom)) {
-    return;
+    return undefined;
   }
   try {
     const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
       account.id,
     );
-    if (!eligibleToday(account.role, grant, nowMs, true, requiredFrom)) {
-      return;
+    const shopPaymentRecent =
+      deps.walletTransfers === undefined
+        ? undefined
+        : await deps.walletTransfers.hasShopPayment(
+            account.id,
+            utcDayKey(nowMs - 86_400_000),
+            utcDayKey(nowMs),
+          );
+    if (!eligibleToday(account.role, grant, nowMs, true, requiredFrom, shopPaymentRecent ?? true)) {
+      return shopPaymentRecent;
     }
     await pingTodayMedia(
-      { spendPing, lnurlServer, messageStore: deps.messages, authStore: deps.store },
+      {
+        spendPing,
+        lnurlServer,
+        messageStore: deps.messages,
+        authStore: deps.store,
+        ...(deps.walletTransfers === undefined ? {} : { walletTransfers: deps.walletTransfers }),
+      },
       account,
       nowMs,
       effectiveStatus(grant, nowMs),
       false,
     );
+    return shopPaymentRecent;
   } catch {
     logEvent('funding.daily_ping.failed', { accountId: account.id });
+    return undefined;
   }
 }
 
@@ -1247,10 +1359,11 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           accountId: current.id,
           replaced: result === 'replaced',
         });
-        if (result === 'stored') {
-          await pingAfterShareStored(deps, lnurlServer, current, nowMs);
-        }
-        return c.json(await ownerJson(deps, current), 200);
+        const shopPaymentRecent =
+          result === 'stored'
+            ? await pingAfterShareStored(deps, lnurlServer, current, nowMs)
+            : undefined;
+        return c.json(await ownerJson(deps, current, shopPaymentRecent), 200);
       } catch (error) {
         logEvent('account.recovery_share.failed', {
           accountId: account.id,

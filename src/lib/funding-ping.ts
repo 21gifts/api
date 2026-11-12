@@ -12,6 +12,7 @@ import type { MessageStore } from '@/lib/message-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { SpendPing } from '@/lib/spend-ping';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 /** Collaborators of {@link pingTodayMedia}. */
 export interface TodayMediaPingDeps {
@@ -25,6 +26,33 @@ export interface TodayMediaPingDeps {
   authStore: Pick<AuthStore, 'hasRecoveryShareForVerifiedWallet'>;
   /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
   recoveryShareRequiredFrom?: string | null;
+  /** Server-verified transfers for the mandatory recent shop payment. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+}
+
+/**
+ * Newest live top-level photo or video by an account when it was posted on
+ * the supplied UTC day.
+ *
+ * @param messages - Forum lookups used by the payout trigger.
+ * @param accountId - Author account id.
+ * @param nowMs - Epoch milliseconds whose UTC day must match.
+ * @returns The post id, or `null` when today's qualifying post is absent.
+ */
+export async function latestTodayMediaPostId(
+  messages: Pick<MessageStore, 'latestLiveTopLevelMediaId' | 'getById'>,
+  accountId: string,
+  nowMs: number,
+): Promise<string | null> {
+  const id = await messages.latestLiveTopLevelMediaId(accountId);
+  if (id === null) {
+    return null;
+  }
+  const row = await messages.getById(id);
+  if (row === undefined || utcDayKey(row.createdAt.getTime()) !== utcDayKey(nowMs)) {
+    return null;
+  }
+  return id;
 }
 
 /**
@@ -59,22 +87,26 @@ export async function pingTodayMedia(
   }
   try {
     if (
+      deps.walletTransfers !== undefined &&
+      !(await deps.walletTransfers.hasShopPayment(
+        account.id,
+        utcDayKey(nowMs - 86_400_000),
+        utcDayKey(nowMs),
+      ))
+    ) {
+      logEvent('spend.ping.skipped', { reason: 'no_shop_payment' });
+      return;
+    }
+    if (
       requireShare &&
       recoveryShareRequired(nowMs, deps.recoveryShareRequiredFrom ?? null) &&
       !(await deps.authStore.hasRecoveryShareForVerifiedWallet(account.id))
     ) {
-      logEvent('spend.ping.skipped', { address, reason: 'not_eligible' });
+      logEvent('spend.ping.skipped', { reason: 'not_eligible' });
       return;
     }
-    const id = await deps.messageStore.latestLiveTopLevelMediaId(account.id);
+    const id = await latestTodayMediaPostId(deps.messageStore, account.id, nowMs);
     if (id === null) {
-      return;
-    }
-    const row = await deps.messageStore.getById(id);
-    if (row === undefined) {
-      return;
-    }
-    if (utcDayKey(row.createdAt.getTime()) !== utcDayKey(nowMs)) {
       return;
     }
     await deps.spendPing.ping(address, id, 'daily', grantStatus);
