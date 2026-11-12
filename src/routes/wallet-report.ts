@@ -47,7 +47,9 @@ export interface WalletReportRouteDeps {
 }
 
 /**
- * Maximum distance between a payment and its quote, matching the spot worker's five-minute refresh.
+ * The fee figure is fixed once, when the payment row is first stored, from the spot that was live
+ * at the payment moment (a quote from at most five minutes before `paidAt`, never after); otherwise
+ * it stays null for good and the app shows the current spot.
  */
 const FEE_SPOT_PAYMENT_WINDOW_MS = FX_SPOT_REFRESH_MS;
 
@@ -65,10 +67,12 @@ async function frozenFeeUsd(
     const quote = await spot.latest();
     const usd = quote?.rates.USD;
     const quoteMs = quote === null ? Number.NaN : Date.parse(quote.asOf);
+    const paidAtMs = paidAt.getTime();
     if (
       usd === undefined ||
       !Number.isFinite(quoteMs) ||
-      Math.abs(quoteMs - paidAt.getTime()) > FEE_SPOT_PAYMENT_WINDOW_MS
+      quoteMs > paidAtMs ||
+      paidAtMs - quoteMs > FEE_SPOT_PAYMENT_WINDOW_MS
     ) {
       return null;
     }

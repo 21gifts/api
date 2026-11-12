@@ -203,6 +203,11 @@ through `GET /fond/payments`: only the public id, direction, amounts, payment
 time, and stored figures are returned, and the other side is named only for a
 direct member transfer. Every other account's `wallet_payment` rows, and all
 `wallet_balance_snapshot` and `member_event` rows, remain operator-only.
+The stored USD wallet-fee figure is fixed only when its payment row is first
+inserted, from a quote that was live at the payment moment (at or before
+`paidAt`, at most five minutes old). A later quote is never used, and an
+initially missing figure remains missing forever; the app shows the current
+spot without committing it to the payment.
 
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below). The forum shows a tag only for Verified, Moderator, Fond,

@@ -3721,7 +3721,7 @@ describe('PostgresWalletStore pairing by payment id', () => {
       ...extra,
     });
 
-  test('migrates nullable fee_usd and keeps the first frozen value on conflict', async () => {
+  test('migrates nullable fee_usd and keeps its first-insert value on conflict', async () => {
     const { client, sql, store, newAccount } = await setup();
     try {
       const [column] = await client.query<{ data_type: string; is_nullable: string }>(
@@ -3732,16 +3732,25 @@ describe('PostgresWalletStore pairing by payment id', () => {
       expect(column).toEqual({ data_type: 'text', is_nullable: 'YES' });
 
       const accountId = await newAccount();
-      const paymentId = `fee-${crypto.randomUUID()}`;
-      await store.upsertPayments([bare(accountId, paymentId, { feeSats: 40, feeUsd: '0.04' })]);
+      const figureId = `fee-${crypto.randomUUID()}`;
+      const nullId = `fee-${crypto.randomUUID()}`;
+      await store.upsertPayments([bare(accountId, figureId, { feeSats: 40, feeUsd: '0.04' })]);
       await store.upsertPayments([
-        bare(accountId, paymentId, { feeSats: 40, feeUsd: '0.08', updatedAt: at(1) }),
+        bare(accountId, figureId, { feeSats: 40, feeUsd: '0.08', updatedAt: at(1) }),
       ]);
-      const [stored] = await client.query<{ fee_usd: string | null }>(
-        `SELECT fee_usd FROM wallet_payment WHERE account_id = $1 AND payment_id = $2`,
-        [accountId, paymentId],
+      await store.upsertPayments([bare(accountId, nullId, { feeSats: 40, feeUsd: null })]);
+      await store.upsertPayments([
+        bare(accountId, nullId, { feeSats: 40, feeUsd: '0.04', updatedAt: at(1) }),
+      ]);
+      const stored = await client.query<{ payment_id: string; fee_usd: string | null }>(
+        `SELECT payment_id, fee_usd FROM wallet_payment
+         WHERE account_id = $1 AND payment_id IN ($2, $3)`,
+        [accountId, figureId, nullId],
       );
-      expect(stored?.fee_usd).toBe('0.04');
+      expect(Object.fromEntries(stored.map((row) => [row.payment_id, row.fee_usd]))).toEqual({
+        [figureId]: '0.04',
+        [nullId]: null,
+      });
     } finally {
       await closeIfPossible(sql);
     }

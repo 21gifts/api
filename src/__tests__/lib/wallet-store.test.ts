@@ -236,7 +236,7 @@ describe('InMemoryWalletStore', () => {
     expect((await store.listPayments('account', 1))[0]?.updatedAt).toEqual(T2);
   });
 
-  it('keeps the first non-null frozen fee USD', async () => {
+  it('keeps the fee USD from the first insert when it is a figure', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([payment({ feeUsd: '0.04' })]);
     await store.upsertPayments([payment({ feeUsd: '0.08', updatedAt: T2 })]);
@@ -246,13 +246,14 @@ describe('InMemoryWalletStore', () => {
     });
   });
 
-  it('fills a null frozen fee USD once and keeps the first filled value', async () => {
+  it('keeps the fee USD from the first insert when it is null', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([payment({ status: 'completed', feeUsd: null })]);
-    await store.upsertPayments([payment({ status: 'completed', feeUsd: '0.04' })]);
-    expect((await store.listPayments('account', 1))[0]?.feeUsd).toBe('0.04');
-    await store.upsertPayments([payment({ status: 'completed', feeUsd: '0.08' })]);
-    expect((await store.listPayments('account', 1))[0]?.feeUsd).toBe('0.04');
+    await store.upsertPayments([payment({ status: 'completed', feeUsd: '0.04', updatedAt: T2 })]);
+    expect((await store.listPayments('account', 1))[0]).toMatchObject({
+      feeUsd: null,
+      updatedAt: T1,
+    });
   });
 
   it('never turns a resolved category back into a fallback one, but upgrades and switches resolved ones', async () => {
@@ -703,8 +704,9 @@ describe('PostgresWalletStore', () => {
     expect(pairing[0]?.text).toContain('WHERE t.payment_id = $2 AND s.payment_id = t.payment_id');
     expect(sql.executes[1]?.text).toContain('ON CONFLICT (account_id, payment_id) DO UPDATE');
     expect(sql.executes[1]?.text).toContain('COALESCE(EXCLUDED.invoice, wallet_payment.invoice)');
-    expect(sql.executes[1]?.text).toContain(
-      'fee_usd = COALESCE(wallet_payment.fee_usd, EXCLUDED.fee_usd)',
+    expect(sql.executes[1]?.text).toContain('fee_usd = wallet_payment.fee_usd');
+    expect(sql.executes[1]?.text).not.toContain(
+      'COALESCE(wallet_payment.fee_usd, EXCLUDED.fee_usd)',
     );
     expect(sql.executes[1]?.text).toContain('IS DISTINCT FROM');
     expect(sql.executes[1]?.text).toContain(

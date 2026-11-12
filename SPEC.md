@@ -182,6 +182,8 @@ Public base URLs used in examples:
 | POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)                                               | Staff: second, independent confirmation → `moderator`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/trust/reject-moderator`                            | Bearer (moderator+)                                               | Staff: reject an open proposal (subject stays verified)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST   | `/trust/appoint-moderator`                           | Bearer (founder)                                                  | Founder: appoint a moderator directly                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| GET    | `/fond/summary`                                      | none                                                              | Public Fond totals when `PAYOUT_SIGNER=fond`; otherwise 404                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| GET    | `/fond/payments`                                     | none                                                              | Public completed Fond payments with keyed ids, stored figures, and an opaque keyed cursor when `PAYOUT_SIGNER=fond`; otherwise 404                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/funding/apply`                                     | Bearer                                                            | Open to verified and above: 400 About me / photo / location, 409 already pending, trial, or admitted, 200 pending, 503. Basis 403.                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/funding/applications`                              | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff pending grant queue                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/funding/applications/:accountId`                   | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff grant review                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -4408,9 +4410,10 @@ two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
 - `wallet_payment`: one row per member and wallet payment id, key
   `(account_id, payment_id)`. `direction` (`in` / `out`, seen from
   `account_id`), `status` (`pending` / `completed` / `failed`), `amount_sats`,
-  `fee_sats`, `fee_usd` (the USD spot of the payment moment, from a quote at
-  most five minutes from `paid_at`, otherwise `null`), `paid_at` (payment time
-  the app reported), `method` (reported, lower-cased,
+  `fee_sats`, `fee_usd` (fixed only on first insert from the USD spot live at
+  the payment moment, using a quote at most five minutes before `paid_at` and
+  never after; otherwise `null` forever), `paid_at` (payment time the app
+  reported), `method` (reported, lower-cased,
   e.g. `lightning`, `spark`, `onchain`), `payment_hash`, `invoice` (BOLT11 or
   Spark invoice), `destination`, `description`, `lnurl_comment` (each `null`
   when not reported or screened out), `category`, `counterparty_account_id`
@@ -5819,12 +5822,14 @@ fallback one (step 5): a re-send with fewer details keeps the stored category
 and counterparty.
 
 **Fee figure.** A completed payment with a positive `feeSats` stores `fee_usd`
-only from the USD spot of the payment moment: the stored quote's `asOf` must be
-at most five minutes before or after `paidAt`, the refresh interval of the spot
-worker. The exact integer conversion rounds half-up to USD cents. Without
-`paidAt` the payment is invalid; without a usable quote in that window the
-figure is `null`, and a later spot never fills it. The upsert keeps the first
-non-null value with `COALESCE(wallet_payment.fee_usd, EXCLUDED.fee_usd)`.
+only on the payment row's first insert and only from the USD spot that was live
+at the payment moment: the stored quote's `asOf` must be at or before `paidAt`
+and no more than five minutes old, the refresh interval of the spot worker. A
+quote after `paidAt` is never used. The exact integer conversion rounds half-up
+to USD cents. Without `paidAt` the payment is invalid; without a usable quote in
+that window the figure is `null`. Every conflict keeps the stored value,
+including null, so a later report or spot never fills or replaces it. When it
+is null, the app shows the current spot without storing it on the payment.
 
 **Pairing by transfer id.** A wallet can report an internal Spark transfer
 without any detail (`invoice`, `description`, `paymentHash`, and `destination`

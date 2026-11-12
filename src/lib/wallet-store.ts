@@ -31,7 +31,7 @@ export interface WalletBalanceSnapshot {
 export interface WalletPaymentRecord extends ReportedWalletPayment, WalletPaymentClass {
   /** Reporting account id. */
   accountId: string;
-  /** USD fee frozen from a quote within five minutes of `paidAt`, or null. */
+  /** USD fee fixed on first insert from the spot live at `paidAt`, or null forever. */
   feeUsd: string | null;
   /** Observation instant of the report that first stored this account/payment id. */
   firstSeenAt: Date;
@@ -75,9 +75,9 @@ export interface WalletStore {
   recordBalance(snapshot: WalletBalanceSnapshot): Promise<void>;
 
   /**
-   * Upsert payment rows, preserving first-seen time, non-null details, and the first non-null
-   * frozen fee. Rows for the same payment are applied in the given order; distinct payments
-   * may be written concurrently.
+   * Upsert payment rows, preserving first-seen time, non-null details, and the fee from the first
+   * insert, including null. Rows for the same payment are applied in the given order; distinct
+   * payments may be written concurrently.
    * After each row, the two sides of an internal transfer are paired by payment id: when the
    * payment id is held by exactly two rows of opposite direction on different accounts, a row
    * whose own fields resolved nothing (`unknown`, no counterparty) takes its category from the
@@ -256,10 +256,6 @@ function updatePayment(existing: WalletPaymentRecord, row: WalletPaymentRecord):
       changed = true;
       Object.assign(existing, { [field]: next });
     }
-  }
-  if (existing.feeUsd === null && row.feeUsd !== null) {
-    changed = true;
-    existing.feeUsd = row.feeUsd;
   }
   // A later report with less detail never turns a resolved category back into a fallback one.
   const keepClass =
@@ -556,15 +552,15 @@ const UPSERT_CONCURRENCY = 8;
 /** A later row with only a fallback category keeps the stored resolved category and counterparty. */
 const KEEP_RESOLVED_CATEGORY = `(EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown'))`;
 
-/** Whether the incoming row changes any stored value (after coalescing details and keeping resolved categories). */
+/** Whether the incoming row changes a mutable value after detail and category preservation. */
 const PAYMENT_VALUES_CHANGE = `(wallet_payment.direction, wallet_payment.status, wallet_payment.amount_sats,
-       wallet_payment.fee_sats, wallet_payment.fee_usd, wallet_payment.paid_at, wallet_payment.method,
+       wallet_payment.fee_sats, wallet_payment.paid_at, wallet_payment.method,
        wallet_payment.payment_hash, wallet_payment.invoice, wallet_payment.destination,
        wallet_payment.description, wallet_payment.lnurl_comment, wallet_payment.category,
        wallet_payment.counterparty_account_id)
 IS DISTINCT FROM
       (EXCLUDED.direction, EXCLUDED.status, EXCLUDED.amount_sats,
-       EXCLUDED.fee_sats, COALESCE(wallet_payment.fee_usd, EXCLUDED.fee_usd), EXCLUDED.paid_at, EXCLUDED.method,
+       EXCLUDED.fee_sats, EXCLUDED.paid_at, EXCLUDED.method,
        COALESCE(EXCLUDED.payment_hash, wallet_payment.payment_hash),
        COALESCE(EXCLUDED.invoice, wallet_payment.invoice),
        COALESCE(EXCLUDED.destination, wallet_payment.destination),
@@ -709,7 +705,7 @@ direction = EXCLUDED.direction,
 status = EXCLUDED.status,
 amount_sats = EXCLUDED.amount_sats,
 fee_sats = EXCLUDED.fee_sats,
-fee_usd = COALESCE(wallet_payment.fee_usd, EXCLUDED.fee_usd),
+fee_usd = wallet_payment.fee_usd,
 paid_at = EXCLUDED.paid_at,
 method = EXCLUDED.method,
 payment_hash = COALESCE(EXCLUDED.payment_hash, wallet_payment.payment_hash),

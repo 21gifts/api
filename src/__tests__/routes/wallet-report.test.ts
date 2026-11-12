@@ -180,9 +180,12 @@ describe('POST /me/wallet/report', () => {
     ]);
   });
 
-  it('freezes a completed positive fee from the USD spot of the payment moment', async () => {
+  it.each([
+    ['at', START],
+    ['just before', START - 1],
+  ])('freezes a completed positive fee from the spot %s paidAt', async (_name, asOf) => {
     const fxSpotStore = new InMemoryFxSpotStore({
-      asOf: new Date(START).toISOString(),
+      asOf: new Date(asOf).toISOString(),
       source: 'test',
       rates: { USD: '100000' },
     });
@@ -190,7 +193,15 @@ describe('POST /me/wallet/report', () => {
     const { app, walletStore } = await mount({ fxSpotStore });
     const response = await post(
       app,
-      body({ payments: [reported({ status: 'completed', feeSats: 40 })] }),
+      body({
+        payments: [
+          reported({
+            status: 'completed',
+            feeSats: 40,
+            timestamp: new Date(START).toISOString(),
+          }),
+        ],
+      }),
     );
     expect(response.status).toBe(200);
     expect(latest).toHaveBeenCalledTimes(1);
@@ -199,8 +210,8 @@ describe('POST /me/wallet/report', () => {
 
   it.each([
     ['older', START - 5 * 60_000 - 1],
-    ['newer', START + 5 * 60_000 + 1],
-  ])('leaves fee USD null when the quote is %s than the payment window', async (_name, asOf) => {
+    ['after', START + 1],
+  ])('leaves fee USD null when the quote is %s than the live payment spot', async (_name, asOf) => {
     const fxSpotStore = new InMemoryFxSpotStore({
       asOf: new Date(asOf).toISOString(),
       source: 'test',
@@ -329,12 +340,42 @@ describe('POST /me/wallet/report', () => {
     let now = START;
     const walletStore = new InMemoryWalletStore();
     const { app } = await mount({ fxSpotStore, walletStore, now: () => now });
-    const completed = reported({ status: 'completed', feeSats: 40 });
+    const completed = reported({
+      status: 'completed',
+      feeSats: 40,
+      timestamp: new Date(START).toISOString(),
+    });
     expect((await post(app, body({ payments: [completed] }))).status).toBe(200);
     usd = '200000';
     now += 1_000;
     expect((await post(app, body({ payments: [completed] }))).status).toBe(200);
     expect((await walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBe('0.04');
+  });
+
+  it('never fills an initially null fee from a later report', async () => {
+    let asOf = START + 1;
+    const fxSpotStore: FxSpotStore = {
+      latest: () =>
+        Promise.resolve({
+          asOf: new Date(asOf).toISOString(),
+          source: 'test',
+          rates: { USD: '100000' },
+        }),
+      save: () => Promise.resolve(),
+    };
+    let now = START;
+    const walletStore = new InMemoryWalletStore();
+    const { app } = await mount({ fxSpotStore, walletStore, now: () => now });
+    const completed = reported({
+      status: 'completed',
+      feeSats: 40,
+      timestamp: new Date(START).toISOString(),
+    });
+    expect((await post(app, body({ payments: [completed] }))).status).toBe(200);
+    asOf = START;
+    now += 1_000;
+    expect((await post(app, body({ payments: [completed] }))).status).toBe(200);
+    expect((await walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
   });
 
   it('idempotently changes pending to completed while keeping firstSeenAt', async () => {

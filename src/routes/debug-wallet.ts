@@ -114,7 +114,7 @@ interface DebugWalletPayment {
   amountSats: number;
   /** Wallet fee in whole sats. */
   feeSats: number;
-  /** USD fee frozen from a quote within five minutes of the payment time, or null. */
+  /** USD fee fixed on first insert from a quote at or shortly before the payment time, or null. */
   feeUsd: string | null;
   /** Paid instant as ISO-8601. */
   paidAt: string;
