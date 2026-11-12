@@ -1417,6 +1417,7 @@ describe('POST /notifications/:id/read', () => {
       note({ id: ID_B, parentId: theirs }),
       note({ id: ID_E, type: 'zap', parentId: 'missing-note', text: '21' }),
       note({ id: ID_F, type: 'moderator_appointed', parentId: 'acc', replyId: 'acc' }),
+      note({ id: ID_READ, parentId: 'missing-note' }),
     ]);
     const app = mount(await seeded(), store, messages);
     const personal = async (id: string): Promise<unknown> => {
@@ -1431,6 +1432,7 @@ describe('POST /notifications/:id/read', () => {
     expect(await personal(ID_B)).toBe(false);
     expect(await personal(ID_E)).toBe(false);
     expect(await personal(ID_F)).toBe(true);
+    expect(await personal(ID_READ)).toBe(false);
   });
 
   it('keeps 200 with personal false and logs when the parent lookup throws', async () => {

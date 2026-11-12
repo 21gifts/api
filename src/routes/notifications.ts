@@ -381,7 +381,7 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
             parentById: new Map(parent === undefined ? [] : [[row.parentId, parent]]),
           }).has(row.id);
         } catch {
-          // The row is already stamped; an unreadable parent counts as missing.
+          // The row is already stamped; a failed lookup answers personal false for every type.
           logEvent('notifications.read.personal_failed');
         }
         return c.json(serializeNotification(row, personal), 200);

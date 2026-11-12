@@ -3013,8 +3013,12 @@ describe('level active keeps personal events', () => {
 
     it(`fans a zero-amount zap on the recipient's own note out at active on an ${thread} thread`, async () => {
       const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribe(pushStore, 'author');
+      await subscribe(pushStore, 'bystander');
       await notifyZap({
         notifications,
+        pushStore,
         auth: { listAccounts: accounts('active') },
         note: message({ id: 'note-1', accountId: 'author', parentId: null, sats }),
         receiptId: ZAP_RECEIPT_ID,
@@ -3024,6 +3028,9 @@ describe('level active keeps personal events', () => {
       });
       expect(await notifications.listByRecipient('author', 10)).toHaveLength(1);
       expect(await notifications.listByRecipient('bystander', 10)).toHaveLength(sats > 0 ? 1 : 0);
+      const outboxAccounts = (await pushStore.listAllOutbox(10)).map((row) => row.accountId);
+      expect(outboxAccounts.filter((id) => id === 'author')).toHaveLength(1);
+      expect(outboxAccounts.filter((id) => id === 'bystander')).toHaveLength(sats > 0 ? 1 : 0);
     });
 
     it(`keeps stored personal rows at active and non-personal rows only when active, ${thread} thread`, () => {
