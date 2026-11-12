@@ -1830,6 +1830,56 @@ describe('repayment from the in-app wallet', () => {
     expect(await response.json()).toMatchObject({ collectedSats: 26 });
   });
 
+  it('treats an empty frozen fiat snapshot as zero debt on every loan route', async () => {
+    const { app, messages } = await loanSetup({
+      fundedAt: null,
+      goalCurrency: 'USD',
+      goalAmount: null,
+      rate: true,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await messages.updateZapReceiptGift(`r-${WALLET_GIVER}`, { payerAccountId: null });
+
+    const close = await post(app, `/messages/${CREDIT}/repayment/close`);
+    expect(close.status).toBe(200);
+    expect(await close.json()).toMatchObject({ collectedSats: 21, collectedAmount: '0.00' });
+    expect((await messages.getById(CREDIT))?.goalDebtFrozen).toBe(true);
+
+    const status = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({ givers: [], repayments: [], unassignedSats: 21 });
+
+    const prepay = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0.01' }),
+    });
+    expect(prepay.status).toBe(400);
+    expect(await prepay.json()).toEqual({ error: 'Nothing is due' });
+
+    const listed = await loans(app);
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toMatchObject({ loans: [] });
+  });
+
+  it('rechecks the loan author under the close lock', async () => {
+    const { app, messages } = await readyCredit({ fundedAt: null });
+    const row = await messages.getById(CREDIT);
+    const getById = vi
+      .spyOn(messages, 'getById')
+      .mockResolvedValueOnce(row)
+      .mockResolvedValue({ ...(row as NonNullable<typeof row>), accountId: 'survivor' });
+
+    const response = await app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+
+    expect(response.status).toBe(404);
+    getById.mockRestore();
+    expect((await messages.getById(CREDIT))?.goalClosedAt).toBeNull();
+  });
+
   it('refuses a gift on a closed credit and mints nothing', async () => {
     const { app, messages } = await readyCredit({ fundedAt: null });
     const closed = await app.request(`/messages/${CREDIT}/repayment/close`, {
@@ -2248,7 +2298,7 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
-  it('returns the close-route authorization, storage, and debt errors', async () => {
+  it('returns the close-route authorization, storage, and funded debt errors', async () => {
     const rules = await readyCredit({ fundedAt: null, rules: false });
     const forbidden = await rules.app.request(`/messages/${CREDIT}/repayment/close`, {
       method: 'POST',
@@ -2276,6 +2326,18 @@ describe('repayment from the in-app wallet', () => {
     });
     expect(notFound.status).toBe(404);
 
+    const vanishedAfterClose = await readyCredit({ fundedAt: null });
+    const beforeClose = await vanishedAfterClose.messages.getById(CREDIT);
+    vi.spyOn(vanishedAfterClose.messages, 'getById')
+      .mockResolvedValueOnce(beforeClose)
+      .mockResolvedValueOnce(beforeClose)
+      .mockResolvedValueOnce(undefined);
+    const vanishedAfterWrite = await vanishedAfterClose.app.request(
+      `/messages/${CREDIT}/repayment/close`,
+      { method: 'POST', headers: { authorization: 'Bearer acc' } },
+    );
+    expect(vanishedAfterWrite.status).toBe(404);
+
     const unavailable = await readyCredit({
       fundedAt: null,
       goalCurrency: 'USD',
@@ -2287,8 +2349,8 @@ describe('repayment from the in-app wallet', () => {
       method: 'POST',
       headers: { authorization: 'Bearer acc' },
     });
-    expect(noDebt.status).toBe(503);
-    expect(await noDebt.json()).toEqual({ error: 'Ask amount is unavailable' });
+    expect(noDebt.status).toBe(200);
+    expect(await noDebt.json()).toMatchObject({ collectedAmount: '0.00' });
     expect((await unavailable.messages.getById(CREDIT))?.goalClosedAt).toBeInstanceOf(Date);
 
     const fundedUnavailable = await readyCredit({
@@ -2308,6 +2370,36 @@ describe('repayment from the in-app wallet', () => {
     expect(refusedBeforeClose.status).toBe(503);
     expect(await refusedBeforeClose.json()).toEqual({ error: 'Ask amount is unavailable' });
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 when the locked post-close fiat debt is unavailable', async () => {
+    const { app, messages } = await readyCredit({
+      fundedAt: null,
+      goalCurrency: 'USD',
+      goalAmount: '0.21',
+      rate: true,
+    });
+    const availablePayers = await messages.listCreditPayers(CREDIT);
+    vi.spyOn(messages, 'listCreditPayers')
+      .mockResolvedValueOnce(availablePayers)
+      .mockResolvedValueOnce([
+        {
+          accountId: GIVER,
+          sats: 21,
+          usd: null,
+          chf: null,
+          eur: null,
+          php: null,
+        },
+      ]);
+
+    const response = await app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Ask amount is unavailable' });
   });
 
   it('returns the prepay request, close, pricing, and empty-plan errors', async () => {
@@ -2357,6 +2449,22 @@ describe('repayment from the in-app wallet', () => {
       body: JSON.stringify({ amount: '1' }),
     });
     expect(vanished.status).toBe(404);
+
+    const collectingGoneAfterClose = await loanSetup({ fundedAt: null });
+    const collectingRow = await collectingGoneAfterClose.messages.getById(CREDIT);
+    vi.spyOn(collectingGoneAfterClose.messages, 'getById')
+      .mockResolvedValueOnce(collectingRow)
+      .mockResolvedValueOnce(collectingRow)
+      .mockResolvedValueOnce(undefined);
+    const goneAfterClose = await collectingGoneAfterClose.app.request(
+      `/messages/${CREDIT}/repayment/prepay`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '1' }),
+      },
+    );
+    expect(goneAfterClose.status).toBe(404);
 
     const malformedDebt = await loanSetup({
       goalCurrency: 'USD',
@@ -2602,7 +2710,7 @@ describe('repayment from the in-app wallet', () => {
       }),
     );
     const staleLegacyResponse = await post(staleLegacy.app, `/messages/${CREDIT}/repayment/due`);
-    expect(staleLegacyResponse.status).toBe(409);
+    expect(staleLegacyResponse.status).toBe(200);
 
     const stalePaid = await loanSetup({
       termDays: 1,
@@ -2834,6 +2942,111 @@ describe('repayment from the in-app wallet', () => {
       expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(2);
       expect(fetched).toEqual([]);
     });
+  });
+
+  it('recomputes every repayment allocation after a giver merge wins the message lock', async () => {
+    await withNip57(async () => {
+      for (const kind of ['single', 'due', 'prepay'] as const) {
+        const { app, messages, clock } = await loanSetup({
+          termDays: 1,
+          givers: [
+            { id: WALLET_GIVER, sats: 60, wallet: true },
+            { id: NO_WALLET, sats: 40, wallet: true },
+          ],
+        });
+        await messages.closeCredit(CREDIT, new Date(clock.now));
+        const withMessageLock = messages.withMessageLock.bind(messages);
+        let merged = false;
+        vi.spyOn(messages, 'withMessageLock').mockImplementation((messageId, run) =>
+          withMessageLock(messageId, async (locked) => {
+            if (!merged) {
+              merged = true;
+              await locked.updateZapReceiptGift(`r-${WALLET_GIVER}`, {
+                payerAccountId: NO_WALLET,
+              });
+            }
+            return run(locked);
+          }),
+        );
+
+        const response =
+          kind === 'prepay'
+            ? await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+                method: 'POST',
+                headers: {
+                  authorization: `Bearer ${AUTHOR}`,
+                  'content-type': 'application/json',
+                },
+                body: JSON.stringify({ amount: '100' }),
+              })
+            : await post(app, `/messages/${CREDIT}/repayment${kind === 'due' ? '/due' : ''}`);
+
+        expect(response.status).toBe(200);
+        expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toEqual([
+          expect.objectContaining({ authorAccountId: NO_WALLET, amountSats: 100 }),
+        ]);
+      }
+    });
+  });
+
+  it('rechecks the current author before every locked repayment reservation', async () => {
+    await withNip57(async () => {
+      for (const kind of ['single', 'due', 'prepay'] as const) {
+        const { app, messages, clock, fetched } = await loanSetup({
+          termDays: 1,
+          givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+        });
+        await messages.closeCredit(CREDIT, new Date(clock.now));
+        const row = await messages.getById(CREDIT);
+        vi.spyOn(messages, 'getById')
+          .mockResolvedValueOnce(row)
+          .mockResolvedValue({ ...(row as NonNullable<typeof row>), accountId: 'survivor' });
+
+        const response =
+          kind === 'prepay'
+            ? await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+                method: 'POST',
+                headers: {
+                  authorization: `Bearer ${AUTHOR}`,
+                  'content-type': 'application/json',
+                },
+                body: JSON.stringify({ amount: '21' }),
+              })
+            : await post(app, `/messages/${CREDIT}/repayment${kind === 'due' ? '/due' : ''}`);
+
+        expect(response.status).toBe(404);
+        expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toEqual([]);
+        expect(fetched).toEqual([]);
+      }
+    });
+  });
+
+  it('rechecks every live repayable field under the reservation lock', async () => {
+    for (const patch of [
+      { deletedAt: new Date(1) },
+      { goalRepayable: null },
+      { goalTermDays: null },
+      { goalFundedAt: null },
+    ]) {
+      const { app, messages, clock, fetched } = await loanSetup({
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+      });
+      await messages.closeCredit(CREDIT, new Date(clock.now));
+      const row = await messages.getById(CREDIT);
+      vi.spyOn(messages, 'getById')
+        .mockResolvedValueOnce(row)
+        .mockResolvedValue({
+          ...(row as NonNullable<typeof row>),
+          ...patch,
+        } as NonNullable<typeof row>);
+
+      const response = await post(app, `/messages/${CREDIT}/repayment`);
+
+      expect(response.status).toBe(404);
+      expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toEqual([]);
+      expect(fetched).toEqual([]);
+    }
   });
 
   it('rechecks legacy, duplicate, and excessive settlements while billing', async () => {

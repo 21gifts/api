@@ -1448,7 +1448,8 @@ export interface MessageStore {
    * `goal_debt_frozen`. Later calls change nothing and return stored values.
    *
    * @param messageId - Credit note.
-   * @param at - Close instant.
+   * @param at - Close instant for deterministic stores; Postgres chooses
+   *   `clock_timestamp()` inside the locked transaction.
    * @param alreadyLocked - True only from a `withMessageLock` callback.
    * @returns The stored timestamps, or `undefined` when no repayable row has that id.
    */
@@ -8822,28 +8823,29 @@ export class PostgresMessageStore implements MessageStore {
 
   async closeCredit(
     messageId: string,
-    at: Date,
+    _at: Date,
     alreadyLocked = false,
   ): Promise<{ fundedAt: Date; closedAt: Date } | undefined> {
     if (alreadyLocked) {
-      return this.#closeCreditUnlocked(messageId, at);
+      return this.#closeCreditUnlocked(messageId);
     }
     return this.withMessageLock(messageId, (locked) =>
-      (locked as PostgresMessageStore).#closeCreditUnlocked(messageId, at),
+      (locked as PostgresMessageStore).#closeCreditUnlocked(messageId),
     );
   }
 
   async #closeCreditUnlocked(
     messageId: string,
-    at: Date,
   ): Promise<{ fundedAt: Date; closedAt: Date } | undefined> {
     const locked = await this.#sql.query<{
       goal_funded_at: Date | string | null;
+      goal_closed_at: Date | string | null;
       goal_currency: string | null;
+      close_at: Date | string;
     }>(
-      `SELECT goal_funded_at, goal_currency
+      `SELECT goal_funded_at, goal_closed_at, goal_currency, clock_timestamp() AS close_at
        FROM message
-       WHERE id = $1
+       WHERE id = $1::uuid
          AND goal_repayable IS TRUE
          AND goal_term_days IS NOT NULL
        FOR UPDATE`,
@@ -8853,12 +8855,14 @@ export class PostgresMessageStore implements MessageStore {
     if (current === undefined) {
       return undefined;
     }
+    const closeAtValue = current.goal_closed_at ?? current.close_at;
+    const closeAt = closeAtValue instanceof Date ? closeAtValue : new Date(closeAtValue);
     const currency = current.goal_currency;
     if (
       current.goal_funded_at === null &&
       (currency === 'USD' || currency === 'CHF' || currency === 'EUR' || currency === 'PHP')
     ) {
-      const preview = await this.previewCreditPayerSnapshot(messageId, currency, at);
+      const preview = await this.previewCreditPayerSnapshot(messageId, currency, closeAt);
       for (const payer of preview) {
         await this.#sql.execute(
           `INSERT INTO message_credit_payer_snapshot (message_id, account_id, currency, units)
@@ -8873,16 +8877,16 @@ export class PostgresMessageStore implements MessageStore {
       goal_closed_at: Date | string;
     }>(
       `UPDATE message
-       SET goal_funded_at = COALESCE(goal_funded_at, $2),
-           goal_closed_at = COALESCE(goal_closed_at, $2),
+       SET goal_funded_at = COALESCE(goal_funded_at, $2::timestamptz),
+           goal_closed_at = COALESCE(goal_closed_at, $2::timestamptz),
            goal_debt_frozen = goal_debt_frozen OR (
              goal_funded_at IS NULL AND goal_currency IN ('USD','CHF','EUR','PHP')
            )
-       WHERE id = $1
+       WHERE id = $1::uuid
          AND goal_repayable IS TRUE
          AND goal_term_days IS NOT NULL
        RETURNING goal_funded_at, goal_closed_at`,
-      [messageId, at],
+      [messageId, closeAt],
     );
     const row = rows[0];
     if (row === undefined) {

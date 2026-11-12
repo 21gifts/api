@@ -11572,8 +11572,16 @@ describe('PostgresMessageStore', () => {
 
   it('marks debt frozen only for an early fiat close', async () => {
     const sql = new MockSql();
+    const databaseNow = new Date('2026-11-11T12:00:00.000Z');
     sql.queryQueue = [
-      [{ goal_funded_at: null, goal_currency: 'BTC' }],
+      [
+        {
+          goal_funded_at: null,
+          goal_closed_at: null,
+          goal_currency: 'BTC',
+          close_at: databaseNow,
+        },
+      ],
       [
         {
           goal_funded_at: new Date('2026-11-11T12:00:00.000Z'),
@@ -14111,7 +14119,7 @@ describe('shop identity on message rows', () => {
     expect(foreignSql.executes).toHaveLength(1);
   });
 
-  it('covers Postgres close misses, fiat snapshots, and timestamp mapping', async () => {
+  it('uses one database timestamp for Postgres close preview, update, and response', async () => {
     const missing = new MockSql();
     missing.queryQueue = [[]];
     expect(
@@ -14119,8 +14127,16 @@ describe('shop identity on message rows', () => {
     ).toBeUndefined();
 
     const fiat = new MockSql();
+    const databaseCloseAt = new Date('2026-11-11T12:00:00.000Z');
     fiat.queryQueue = [
-      [{ goal_funded_at: null, goal_currency: 'CHF' }],
+      [
+        {
+          goal_funded_at: null,
+          goal_closed_at: null,
+          goal_currency: 'CHF',
+          close_at: databaseCloseAt,
+        },
+      ],
       [
         {
           account_id: 'giver',
@@ -14144,17 +14160,61 @@ describe('shop identity on message rows', () => {
       closedAt: new Date('2026-11-11T12:00:00.000Z'),
     });
     expect(fiat.executes[0]?.params).toEqual(['credit', 'giver', 'CHF', '123']);
+    expect(fiat.queries[1]?.params).toEqual(['credit', false, databaseCloseAt]);
+    expect(fiat.queries[2]?.params).toEqual(['credit', databaseCloseAt]);
+    expect(fiat.queries[0]?.text).toContain('clock_timestamp() AS close_at');
+
+    const existingCloseAt = '2026-11-10T08:00:00.000Z';
+    const alreadyClosed = new MockSql();
+    alreadyClosed.queryQueue = [
+      [
+        {
+          goal_funded_at: new Date(existingCloseAt),
+          goal_closed_at: existingCloseAt,
+          goal_currency: 'BTC',
+          close_at: new Date('2026-11-12T08:00:00.000Z'),
+        },
+      ],
+      [
+        {
+          goal_funded_at: existingCloseAt,
+          goal_closed_at: existingCloseAt,
+        },
+      ],
+    ];
+    expect(
+      await new PostgresMessageStore(alreadyClosed).closeCredit('credit', new Date(0), true),
+    ).toEqual({ fundedAt: new Date(existingCloseAt), closedAt: new Date(existingCloseAt) });
+    expect(alreadyClosed.queries[1]?.params).toEqual(['credit', new Date(existingCloseAt)]);
 
     const raced = new MockSql();
-    raced.queryQueue = [[{ goal_funded_at: new Date(1), goal_currency: 'BTC' }], []];
+    raced.queryQueue = [
+      [
+        {
+          goal_funded_at: new Date(1),
+          goal_closed_at: null,
+          goal_currency: 'BTC',
+          close_at: new Date(2),
+        },
+      ],
+      [],
+    ];
     expect(
       await new PostgresMessageStore(raced).closeCredit('credit', new Date(2)),
     ).toBeUndefined();
 
     for (const currency of ['USD', 'EUR', 'PHP'] as const) {
       const sql = new MockSql();
+      const closeAt = new Date(3);
       sql.queryQueue = [
-        [{ goal_funded_at: null, goal_currency: currency }],
+        [
+          {
+            goal_funded_at: null,
+            goal_closed_at: null,
+            goal_currency: currency,
+            close_at: closeAt,
+          },
+        ],
         [],
         [
           {

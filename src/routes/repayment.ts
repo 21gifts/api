@@ -74,7 +74,8 @@ function repaymentLimiterOf(deps: RepaymentDeps): InvoiceRateLimiter {
 
 /**
  * Debt of one credit. Sats with no account are weight only when a fiat
- * snapshot is missing, and that weight is not repaid.
+ * snapshot is missing, and that weight is not repaid. Frozen fiat debt comes
+ * only from its snapshot; an empty snapshot owes nothing.
  *
  * @param deps - Store.
  * @param row - Credit note.
@@ -90,13 +91,21 @@ async function creditOwed(
 }> {
   const payers = await deps.store.listCreditPayers(row.id);
   const unassignedSats = await deps.store.sumUnassignedCreditSats(row.id);
+  const debtPayers =
+    row.goalDebtFrozen && isFiatCredit(row)
+      ? payers
+      : [...payers, { accountId: '', sats: unassignedSats }];
   return {
     payers,
     unassignedSats,
-    owed: payerDebtUnits(row.goalCurrency, row.goalAmount, [
-      ...payers,
-      { accountId: '', sats: unassignedSats },
-    ]),
+    owed:
+      row.goalDebtFrozen && isFiatCredit(row) && debtPayers.length === 0
+        ? []
+        : payerDebtUnits(
+            row.goalCurrency,
+            row.goalDebtFrozen && isFiatCredit(row) ? null : row.goalAmount,
+            debtPayers,
+          ),
   };
 }
 
@@ -531,6 +540,31 @@ async function readableCredit(deps: RepaymentDeps, c: Context): Promise<Response
   return row;
 }
 
+/** Re-read and authorize a credit after its message lock has been acquired. */
+async function lockedCredit(
+  store: MessageStore,
+  opened: { account: Account; row: MessageRow },
+  allowCollecting = false,
+): Promise<MessageRow | undefined> {
+  const row = await store.getById(opened.row.id);
+  if (
+    row === undefined ||
+    row.deletedAt !== null ||
+    row.goalRepayable !== true ||
+    row.goalTermDays === null ||
+    /* v8 ignore next -- copyRow stores null, never undefined */
+    row.goalTermDays === undefined ||
+    (!allowCollecting &&
+      (row.goalFundedAt === null ||
+        /* v8 ignore next -- copyRow stores null, never undefined */
+        row.goalFundedAt === undefined)) ||
+    row.accountId !== opened.account.id
+  ) {
+    return undefined;
+  }
+  return row;
+}
+
 /** A bill for one share, or the error the pay route answers. */
 type RepaymentBill =
   | { ok: true; pr: string; amountSats: number; sparkInvoice: string | null }
@@ -540,35 +574,7 @@ type RepaymentBill =
       body: { error: string; code?: typeof CANNOT_RECEIVE };
     };
 
-/**
- * Bill for one share at the giver's receiving address: the open, still
- * payable bill for that share when there is one, else a new zap request,
- * BOLT11, stored invoice row, and Spark invoice.
- *
- * @param deps - Store, auth, LNURL fetch, and the optional LNURL server and Spark store.
- * @param opened - Author, credit, and clock.
- * @param share - Day, giver, full units, and billed sats.
- * @param mayMint - Asked only before a new bill is minted; false is a 429.
- * @returns The bill, or the error.
- */
-async function repaymentBill(
-  deps: RepaymentDeps,
-  opened: { account: Account; row: MessageRow; nowMs: number },
-  share: {
-    dayIndex: number;
-    accountId: string;
-    shareUnits: bigint;
-    sats: number;
-    description: string;
-  },
-  mayMint: () => boolean,
-): Promise<RepaymentBill> {
-  return deps.store.withMessageLock(opened.row.id, (locked) =>
-    repaymentBillLocked({ ...deps, store: locked }, opened, share, mayMint),
-  );
-}
-
-/** Mint or reuse a bill while the store's giver-day lock is held. */
+/** Mint or reuse a bill while the common message lock is held. */
 async function repaymentBillLocked(
   deps: RepaymentDeps,
   opened: { account: Account; row: MessageRow; nowMs: number },
@@ -847,22 +853,34 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   if (!payGate.ok) {
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
   }
-  const next = await nextShare(deps, opened.row, opened.nowMs);
-  if (next.error !== null) {
-    return c.json({ error: next.error }, next.status);
-  }
-  if (next.share === null) {
-    return next.waiting
-      ? c.json({ error: 'A giver has no Lightning address', code: CANNOT_RECEIVE }, 400)
-      : c.json({ error: 'Nothing is due' }, 400);
-  }
-  const bill = await repaymentBill(deps, opened, next.share, () =>
-    repaymentLimiterOf(deps).allow(opened.account.id, opened.nowMs),
-  );
-  if (!bill.ok) {
-    return billError(c, bill);
-  }
-  return c.json({ pr: bill.pr, amountSats: bill.amountSats, sparkInvoice: bill.sparkInvoice }, 200);
+  return deps.store.withMessageLock(opened.row.id, async (locked) => {
+    const row = await lockedCredit(locked, opened);
+    if (row === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    opened.row = row;
+    opened.nowMs = deps.now();
+    const lockedDeps = { ...deps, store: locked };
+    const next = await nextShare(lockedDeps, row, opened.nowMs);
+    if (next.error !== null) {
+      return c.json({ error: next.error }, next.status);
+    }
+    if (next.share === null) {
+      return next.waiting
+        ? c.json({ error: 'A giver has no Lightning address', code: CANNOT_RECEIVE }, 400)
+        : c.json({ error: 'Nothing is due' }, 400);
+    }
+    const bill = await repaymentBillLocked(lockedDeps, opened, next.share, () =>
+      repaymentLimiterOf(deps).allow(opened.account.id, opened.nowMs),
+    );
+    if (!bill.ok) {
+      return billError(c, bill);
+    }
+    return c.json(
+      { pr: bill.pr, amountSats: bill.amountSats, sparkInvoice: bill.sparkInvoice },
+      200,
+    );
+  });
 }
 
 /** The open bill or unpaid remainder that a due route may bill for one share. */
@@ -910,6 +928,23 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
   if (!payGate.ok) {
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
   }
+  return deps.store.withMessageLock(opened.row.id, async (locked) => {
+    const row = await lockedCredit(locked, opened);
+    if (row === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    opened.row = row;
+    opened.nowMs = deps.now();
+    return repaymentDueBillsLocked({ ...deps, store: locked }, c, opened);
+  });
+}
+
+/** Plan and reserve all due bills while the common message lock is held. */
+async function repaymentDueBillsLocked(
+  deps: RepaymentDeps,
+  c: Context,
+  opened: { account: Account; row: MessageRow; nowMs: number },
+): Promise<Response> {
   const plan = await duePlan(deps, opened.row, opened.nowMs);
   if (plan === 'unavailable') {
     return c.json({ error: 'Ask amount is unavailable' }, 503);
@@ -976,7 +1011,7 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
       amountSats: sats,
       amount: fiat ? formatCents(part.units) : null,
     };
-    const bill = await repaymentBill(
+    const bill = await repaymentBillLocked(
       deps,
       opened,
       {
@@ -1137,7 +1172,7 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
   }
   return deps.store.withMessageLock(opened.row.id, async (locked) => {
-    const row = await locked.getById(opened.row.id);
+    const row = await lockedCredit(locked, opened, true);
     if (row === undefined) {
       return c.json({ error: 'Not found' }, 404);
     }
@@ -1150,16 +1185,20 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
     if (closed === undefined) {
       return c.json({ error: 'Not found' }, 404);
     }
+    const closedRow = await lockedCredit(locked, opened);
+    if (closedRow === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
     // An early fiat close freezes collected gift-time cents (including missing
     // snapshots as zero), so its final debt comes from the same locked state.
     const { payers, unassignedSats, owed } =
       row.goalFundedAt === null && isFiatCredit(row)
-        ? await creditOwed(lockedDeps, row)
+        ? await creditOwed(lockedDeps, closedRow)
         : beforeClose;
     if (owed === 'unavailable') {
       return c.json({ error: 'Ask amount is unavailable' }, 503);
     }
-    const fiat = isFiatCredit(row);
+    const fiat = isFiatCredit(closedRow);
     const collectedUnits = owed.reduce((sum, payer) => sum + payer.units, 0n);
     return c.json(
       {
@@ -1229,15 +1268,34 @@ export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<
   if (parsed === null) {
     return c.json({ error: INVALID_AMOUNT_BODY, code: 'invalid_amount' }, 400);
   }
+  return deps.store.withMessageLock(opened.row.id, async (locked) => {
+    const row = await lockedCredit(locked, opened, true);
+    if (row === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    opened.row = row;
+    opened.nowMs = deps.now();
+    return repaymentPrepayLocked({ ...deps, store: locked }, c, opened, parsed);
+  });
+}
+
+/** Close when needed, then plan and reserve a prepayment under one message lock. */
+async function repaymentPrepayLocked(
+  deps: RepaymentDeps,
+  c: Context,
+  opened: { account: Account; row: MessageRow; nowMs: number },
+  parsed: PrepayAmount,
+): Promise<Response> {
   if (opened.row.goalClosedAt === null) {
-    const closedRow = await deps.store.withMessageLock(opened.row.id, async (locked) => {
-      const closed = await locked.closeCredit(opened.row.id, new Date(deps.now()), true);
-      return closed === undefined ? undefined : locked.getById(opened.row.id);
-    });
+    const closed = await deps.store.closeCredit(opened.row.id, new Date(deps.now()), true);
+    if (closed === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    const closedRow = await lockedCredit(deps.store, opened);
     if (closedRow === undefined) {
       return c.json({ error: 'Not found' }, 404);
     }
-    opened.row = closedRow as MessageRow;
+    opened.row = closedRow;
   }
   const plan = await prepayPlan(
     deps,
@@ -1356,7 +1414,7 @@ export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<
         amountSats: sats,
         amount: plan.fiat ? formatCents(part.units) : null,
       };
-      const bill = await repaymentBill(
+      const bill = await repaymentBillLocked(
         deps,
         opened,
         {
