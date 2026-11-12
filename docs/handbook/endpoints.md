@@ -585,6 +585,13 @@ debug list.
 - **Used by:** The public statistics page.
 - **Auth:** Public. No session or token. The response never exposes account ids, per-account balances, or any other per-account value.
 
+## Endpoint: GET /wallets/usage
+
+- **Purpose:** Public aggregate of in-app wallet use since the production release `2026-11-09T11:17:00.000Z`. The body is `releasedAt`, `asOf` (newest counted payment, or null), `totals`, gap-free `days` from the release's UTC day through today, non-empty `flows`, seven `amountBuckets`, 24 `hours`, a `forum` series from 28 days before release, and a `shopCharges` series from 14 days before release. Payments are completed `wallet_payment` groups. A purpose is the first match of fund payout, fund deposit (payee fund, payer not outside), forum gift (`gift` or `platform`, including a 1-sat platform zap), shop purchase, member transfer, deposit or withdrawal (`outside_lightning` or `onchain`), otherwise other. A shop that receives a fund payout counts as `fund_payout`. `totals` reports count, volume, fees, median (even count rounds down), average (`Math.round`), distinct member and fund wallets, the top-five non-null payer share to four decimals, hearts on or after release, and shop charges paid on or after release. The response is aggregates only.
+- **Errors:** 503 `{ "error": "Wallet usage is unavailable" }` when a read or a sat total throws (`wallets.usage.failed`). A total that is not a safe integer throws instead of returning a rounded number. No counted payment is 200 with zeros, `asOf: null`, and gap-free zero days. `GET /wallets/stats` is unchanged.
+- **Used by:** The public statistics page `/stats/wallet`.
+- **Auth:** Public. No session or token. `Cache-Control: public, max-age=60` on 200 only. The body never contains an account id, username, name, payment id, payment hash, invoice, Lightning address, or node key.
+
 ## Endpoint: GET /fx/spot
 
 - **Purpose:** Public current price of 1 BTC in USD, CHF, EUR, and PHP, independent of gifts: `{ asOf, source, rates }` where `asOf` is the ISO fetch time, `source` is `coinbase-exchange-rates`, and `rates` holds fiat per 1 BTC as decimal text at provider precision. A currency without a usable quote is omitted from `rates`. The background worker refreshes the stored quote every 5 minutes from one Coinbase response (`BTC_FIAT_SPOT_URL`); the request never calls the provider. A failed fetch keeps the last good quote and its `asOf` (Postgres `btc_fiat_spot` survives a restart). Does not change `GET /gifts/stats`.

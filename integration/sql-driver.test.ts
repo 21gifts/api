@@ -67,6 +67,8 @@ import {
   repairWalletPaymentPairs,
   type WalletPaymentRecord,
 } from '@/lib/wallet-store';
+import { PostgresWalletUsageStore } from '@/lib/wallet-usage-store';
+import type { WalletUsagePaymentRow } from '@/lib/wallet-usage';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
 import type { OrchestraClient } from '@/lib/orchestra';
@@ -8089,6 +8091,562 @@ describe('shop identity on Postgres', () => {
       expect(await ctx.messages.getByIds([])).toEqual([]);
     } finally {
       await ctx.cleanup();
+    }
+  });
+});
+
+describe('PostgresWalletUsageStore', () => {
+  test('merges completed payments and reads forum invoices and shop charges', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const ids: string[] = [];
+    const payoutIds: string[] = [];
+    let previousPlatform: string | undefined;
+    let platformId: string | undefined;
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migratePosSchema(client);
+      await migrateFondPayoutSchema(client);
+      await migrateWalletSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const previous = await client.query<{ id: string }>(
+        `SELECT id FROM account WHERE is_platform LIMIT 1`,
+      );
+      const previousRow = previous[0];
+      if (previousRow !== undefined) {
+        previousPlatform = previousRow.id;
+      }
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const create = async (role: 'basis' | 'fond', isPlatform: boolean): Promise<string> => {
+        const id = crypto.randomUUID();
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role,
+          name: null,
+          username: `usage_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+          ...(isPlatform ? { isPlatform: true } : {}),
+        });
+        ids.push(id);
+        return id;
+      };
+      const memberA = await create('basis', false);
+      const memberB = await create('basis', false);
+      const shop = await create('basis', false);
+      const fund = await create('fond', false);
+      platformId = await create('fond', true);
+
+      const since = new Date(Date.UTC(2400, 0, 1 + Math.floor(Math.random() * 300), 12, 0, 0));
+      const at = (minutes: number): Date => new Date(since.getTime() + minutes * 60_000);
+      const bolt11 = `usage-bolt-${crypto.randomUUID()}`;
+      const sparkInvoice = `usage-spark-${crypto.randomUUID()}`;
+      const owedInvoice = `usage-owed-${crypto.randomUUID()}`;
+
+      const insertPayment = async (row: {
+        accountId: string;
+        paymentId: string;
+        direction: 'in' | 'out';
+        status: string;
+        amountSats: number;
+        feeSats: number;
+        paidAt: Date;
+        category: string;
+        counterpartyAccountId: string | null;
+        invoice: string | null;
+      }): Promise<void> => {
+        await client.execute(
+          `INSERT INTO wallet_payment (
+             account_id, payment_id, direction, status, amount_sats, fee_sats, paid_at,
+             method, payment_hash, invoice, destination, description, lnurl_comment,
+             category, counterparty_account_id, first_seen_at, updated_at
+           ) VALUES (
+             $1,$2,$3,$4,$5,$6,$7,'lightning',NULL,$8,NULL,NULL,NULL,$9,$10,$7,$7
+           )`,
+          [
+            row.accountId,
+            row.paymentId,
+            row.direction,
+            row.status,
+            row.amountSats,
+            row.feeSats,
+            row.paidAt,
+            row.invoice,
+            row.category,
+            row.counterpartyAccountId,
+          ],
+        );
+      };
+      const insertPayout = async (
+        status: string,
+        bolt: string | null,
+        spark: string | null,
+      ): Promise<void> => {
+        const id = crypto.randomUUID();
+        payoutIds.push(id);
+        await client.execute(
+          `INSERT INTO fond_payout (
+             id, utc_day, kind, address, amount_usd, comment, status, bolt11, spark_invoice
+           ) VALUES ($1, '2400-01-01', 'welcome', $2, '1.00', 'usage', $3, $4, $5)`,
+          [id, `usage-${id}`, status, bolt, spark],
+        );
+      };
+
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-g1',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 100,
+        feeSats: 200,
+        paidAt: at(120),
+        category: 'unknown',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: 'usage-g1',
+        direction: 'in',
+        status: 'completed',
+        amountSats: 150,
+        feeSats: 10,
+        paidAt: at(180),
+        category: 'shop',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-g2',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 40,
+        feeSats: 1,
+        paidAt: at(240),
+        category: 'gift',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: 'usage-g2',
+        direction: 'in',
+        status: 'completed',
+        amountSats: 40,
+        feeSats: 0,
+        paidAt: at(250),
+        category: 'member',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-g3',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 12321,
+        feeSats: 0,
+        paidAt: at(300),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: fund,
+        paymentId: 'usage-g4',
+        direction: 'in',
+        status: 'completed',
+        amountSats: 293955,
+        feeSats: 0,
+        paidAt: at(360),
+        category: 'outside_lightning',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-g5',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 69089,
+        feeSats: 210,
+        paidAt: at(420),
+        category: 'outside_lightning',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayout('paid', bolt11, null);
+      await insertPayment({
+        accountId: fund,
+        paymentId: 'usage-g6',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 1000,
+        feeSats: 0,
+        paidAt: at(480),
+        category: 'shop',
+        counterpartyAccountId: null,
+        invoice: bolt11,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: 'usage-g6',
+        direction: 'in',
+        status: 'completed',
+        amountSats: 1000,
+        feeSats: 0,
+        paidAt: at(490),
+        category: 'shop',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayout('paid', null, sparkInvoice);
+      await insertPayment({
+        accountId: fund,
+        paymentId: 'usage-g7',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 500,
+        feeSats: 0,
+        paidAt: at(540),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        invoice: sparkInvoice,
+      });
+      await insertPayout('owed', owedInvoice, null);
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-g8',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 7,
+        feeSats: 0,
+        paidAt: at(600),
+        category: 'gift',
+        counterpartyAccountId: null,
+        invoice: owedInvoice,
+      });
+      await insertPayment({
+        accountId: platformId,
+        paymentId: 'usage-g9',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 1,
+        feeSats: 0,
+        paidAt: at(660),
+        category: 'platform',
+        counterpartyAccountId: memberB,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-pending',
+        direction: 'out',
+        status: 'pending',
+        amountSats: 111,
+        feeSats: 0,
+        paidAt: at(30),
+        category: 'member',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-before',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 222,
+        feeSats: 0,
+        paidAt: at(-1),
+        category: 'member',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-straddle',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 333,
+        feeSats: 0,
+        paidAt: at(-1440),
+        category: 'unknown',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: 'usage-straddle',
+        direction: 'in',
+        status: 'completed',
+        amountSats: 333,
+        feeSats: 0,
+        paidAt: at(1440),
+        category: 'member',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-unknown',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 9,
+        feeSats: 0,
+        paidAt: at(720),
+        category: 'unknown',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: 'usage-unknown',
+        direction: 'in',
+        status: 'completed',
+        amountSats: 9,
+        feeSats: 0,
+        paidAt: at(730),
+        category: 'unknown',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: 'usage-onchain',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 15,
+        feeSats: 0,
+        paidAt: at(780),
+        category: 'onchain',
+        counterpartyAccountId: null,
+        invoice: null,
+      });
+
+      const forumHeartAt = at(30);
+      const forumGiftAt = at(40);
+      const forumErrorAt = at(50);
+      const forumOldAt = at(-1440);
+      const insertForum = async (
+        createdAt: Date,
+        amountSats: number,
+        result: string,
+        heart: boolean,
+      ): Promise<void> => {
+        await client.execute(
+          `INSERT INTO message_invoice (
+             id, created_at, message_id, payer_account_id, author_account_id,
+             amount_sats, result, http_status, heart
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,200,$8)`,
+          [
+            crypto.randomUUID(),
+            createdAt,
+            crypto.randomUUID(),
+            memberA,
+            memberB,
+            amountSats,
+            result,
+            heart,
+          ],
+        );
+      };
+      await insertForum(forumHeartAt, 21, 'ok', true);
+      await insertForum(forumGiftAt, 5, 'ok', false);
+      await insertForum(forumErrorAt, 77, 'error', true);
+      await insertForum(forumOldAt, 88, 'ok', true);
+
+      const shopPaidAt = at(15);
+      const shopPendingAt = at(25);
+      const shopOldAt = at(-60);
+      const insertCharge = async (
+        accountId: string,
+        createdAt: Date,
+        status: string,
+      ): Promise<void> => {
+        await client.execute(
+          `INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at)
+           VALUES ($1,$2,21,$3,$4,$5)`,
+          [crypto.randomUUID(), accountId, status, createdAt, at(2000)],
+        );
+      };
+      await insertCharge(memberA, shopPaidAt, 'paid');
+      await insertCharge(memberB, shopPendingAt, 'pending');
+      await insertCharge(fund, shopOldAt, 'paid');
+
+      const store = new PostgresWalletUsageStore(client);
+      const payments = await store.payments(since.getTime());
+      const ours = payments.filter((row) => {
+        const payer = row.payerAccountId;
+        const payee = row.payeeAccountId;
+        return (payer !== null && ids.includes(payer)) || (payee !== null && ids.includes(payee));
+      });
+      const byAmount = (amount: number): WalletUsagePaymentRow => {
+        const found = ours.find((row) => row.amountSats === amount);
+        if (found === undefined) {
+          throw new Error(`missing payment amount ${amount}`);
+        }
+        return found;
+      };
+      expect(
+        ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
+      ).toEqual([1, 7, 9, 15, 40, 150, 500, 1000, 12321, 69089, 293955]);
+
+      const grouped = byAmount(150);
+      expect(grouped).toMatchObject({
+        feeSats: 210,
+        category: 'shop',
+        payerAccountId: memberA,
+        payeeAccountId: shop,
+        payerParty: 'members',
+        payeeParty: 'members',
+        isFundPayout: false,
+      });
+      expect(grouped.paidAt.toISOString()).toBe(at(120).toISOString());
+
+      const gift = byAmount(40);
+      expect(gift.category).toBe('gift');
+      expect(gift.feeSats).toBe(1);
+      expect(gift.payerAccountId).toBe(memberA);
+      expect(gift.payeeAccountId).toBe(memberB);
+      expect(gift.paidAt.toISOString()).toBe(at(240).toISOString());
+
+      const transfer = byAmount(12321);
+      expect(transfer).toMatchObject({
+        category: 'member',
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+        payerParty: 'members',
+        payeeParty: 'members',
+        isFundPayout: false,
+      });
+
+      const outsideFund = byAmount(293955);
+      expect(outsideFund).toMatchObject({
+        category: 'outside_lightning',
+        payerAccountId: null,
+        payeeAccountId: fund,
+        payerParty: 'outside',
+        payeeParty: 'fund',
+        isFundPayout: false,
+      });
+
+      const withdrawal = byAmount(69089);
+      expect(withdrawal).toMatchObject({
+        feeSats: 210,
+        category: 'outside_lightning',
+        payerAccountId: memberA,
+        payeeAccountId: null,
+        payerParty: 'members',
+        payeeParty: 'outside',
+        isFundPayout: false,
+      });
+
+      const boltPayout = byAmount(1000);
+      expect(boltPayout).toMatchObject({
+        category: 'shop',
+        payerAccountId: fund,
+        payeeAccountId: shop,
+        payerParty: 'fund',
+        payeeParty: 'members',
+        isFundPayout: true,
+      });
+      expect(boltPayout.paidAt.toISOString()).toBe(at(480).toISOString());
+
+      const sparkPayout = byAmount(500);
+      expect(sparkPayout).toMatchObject({
+        payerAccountId: fund,
+        payeeAccountId: memberB,
+        payerParty: 'fund',
+        payeeParty: 'members',
+        isFundPayout: true,
+      });
+
+      expect(byAmount(7).isFundPayout).toBe(false);
+      expect(byAmount(7).category).toBe('gift');
+
+      const platformPayment = byAmount(1);
+      expect(platformPayment).toMatchObject({
+        payerAccountId: platformId,
+        payeeAccountId: memberB,
+        payerParty: 'platform',
+        payeeParty: 'members',
+        category: 'platform',
+        isFundPayout: false,
+      });
+
+      expect(byAmount(9).category).toBe('unknown');
+      expect(byAmount(15).category).toBe('onchain');
+
+      const forum = await store.forumInvoices(since.getTime());
+      const forumAt = (createdAt: Date) =>
+        forum.find((row) => row.createdAt.getTime() === createdAt.getTime());
+      expect(forumAt(forumHeartAt)).toEqual({
+        createdAt: forumHeartAt,
+        amountSats: 21,
+        heart: true,
+      });
+      expect(forumAt(forumGiftAt)).toEqual({
+        createdAt: forumGiftAt,
+        amountSats: 5,
+        heart: false,
+      });
+      expect(forumAt(forumErrorAt)).toBeUndefined();
+      expect(forumAt(forumOldAt)).toBeUndefined();
+
+      const charges = await store.shopCharges(since.getTime());
+      const chargeAt = (createdAt: Date) =>
+        charges.find((row) => row.createdAt.getTime() === createdAt.getTime());
+      expect(chargeAt(shopPaidAt)?.status).toBe('paid');
+      expect(chargeAt(shopPendingAt)?.status).toBe('pending');
+      expect(chargeAt(shopOldAt)).toBeUndefined();
+    } finally {
+      if (ids.length > 0) {
+        const idList = postgresTextArrayLiteral(ids);
+        await client.execute(
+          `DELETE FROM wallet_payment
+           WHERE account_id = ANY($1::uuid[]) OR counterparty_account_id = ANY($1::uuid[])`,
+          [idList],
+        );
+        await client.execute(`DELETE FROM pos_charge WHERE account_id = ANY($1::uuid[])`, [
+          idList,
+        ]);
+        await client.execute(
+          `DELETE FROM message_invoice
+           WHERE payer_account_id = ANY($1::uuid[]) OR author_account_id = ANY($1::uuid[])`,
+          [idList],
+        );
+      }
+      if (payoutIds.length > 0) {
+        await client.execute(`DELETE FROM fond_payout WHERE id = ANY($1::uuid[])`, [
+          postgresTextArrayLiteral(payoutIds),
+        ]);
+      }
+      if (platformId !== undefined) {
+        await client.execute(`UPDATE account SET is_platform = false WHERE id = $1`, [
+          platformId,
+        ]);
+      }
+      if (previousPlatform !== undefined && previousPlatform !== platformId) {
+        await client.execute(`UPDATE account SET is_platform = true WHERE id = $1`, [
+          previousPlatform,
+        ]);
+      }
+      if (ids.length > 0) {
+        await client.execute(`DELETE FROM account WHERE id = ANY($1::uuid[])`, [
+          postgresTextArrayLiteral(ids),
+        ]);
+      }
+      await closeIfPossible(sql);
     }
   });
 });

@@ -1,0 +1,273 @@
+import { describe, expect, it } from 'vitest';
+import type { SqlClient } from '@/lib/auth/sql';
+import type {
+  WalletUsageChargeRow,
+  WalletUsageForumRow,
+  WalletUsagePaymentRow,
+} from '@/lib/wallet-usage';
+import { InMemoryWalletUsageStore, PostgresWalletUsageStore } from '@/lib/wallet-usage-store';
+
+const AT = new Date('2026-11-11T12:00:00.000Z');
+const BEFORE = new Date(AT.getTime() - 1);
+const AFTER = new Date(AT.getTime() + 1);
+
+function payment(paidAt: Date, amountSats = 1): WalletUsagePaymentRow {
+  return {
+    paidAt,
+    amountSats,
+    feeSats: 0,
+    category: 'member',
+    payerAccountId: 'payer',
+    payeeAccountId: 'payee',
+    payerParty: 'members',
+    payeeParty: 'members',
+    isFundPayout: false,
+  };
+}
+
+class MockSql implements SqlClient {
+  queries: Array<{ text: string; params: readonly unknown[] }> = [];
+  rows: unknown[] = [];
+  error: Error | undefined;
+
+  query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+    this.queries.push({ text, params });
+    if (this.error !== undefined) {
+      return Promise.reject(this.error);
+    }
+    return Promise.resolve(this.rows as T[]);
+  }
+
+  execute(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+describe('InMemoryWalletUsageStore', () => {
+  it('returns empty lists when it is constructed without a seed', async () => {
+    const store = new InMemoryWalletUsageStore();
+    await expect(store.payments(0)).resolves.toEqual([]);
+    await expect(store.forumInvoices(0)).resolves.toEqual([]);
+    await expect(store.shopCharges(0)).resolves.toEqual([]);
+  });
+
+  it('keeps rows on or after the bound and returns copies', async () => {
+    const payments = [payment(BEFORE, 1), payment(AT, 2), payment(AFTER, 3)];
+    const forum: WalletUsageForumRow[] = [
+      { createdAt: BEFORE, amountSats: 1, heart: false },
+      { createdAt: AT, amountSats: 2, heart: true },
+    ];
+    const charges: WalletUsageChargeRow[] = [
+      { createdAt: BEFORE, status: 'pending' },
+      { createdAt: AT, status: 'paid' },
+    ];
+    const store = new InMemoryWalletUsageStore({
+      payments,
+      forumInvoices: forum,
+      shopCharges: charges,
+    });
+    payments.push(payment(AFTER, 9));
+    const first = await store.payments(AT.getTime());
+    expect(first.map((row) => row.amountSats)).toEqual([2, 3]);
+    const firstPaid = first[0];
+    if (firstPaid === undefined) {
+      throw new Error('expected the boundary payment');
+    }
+    firstPaid.paidAt.setTime(0);
+    firstPaid.amountSats = 0;
+    const again = await store.payments(AT.getTime());
+    expect(again.map((row) => [row.amountSats, row.paidAt.toISOString()])).toEqual([
+      [2, AT.toISOString()],
+      [3, AFTER.toISOString()],
+    ]);
+    const forumRows = await store.forumInvoices(AT.getTime());
+    expect(forumRows).toEqual([{ createdAt: AT, amountSats: 2, heart: true }]);
+    const forumRow = forumRows[0];
+    if (forumRow === undefined) {
+      throw new Error('expected the boundary forum row');
+    }
+    forumRow.createdAt.setTime(0);
+    expect((await store.forumInvoices(AT.getTime()))[0]?.createdAt.toISOString()).toBe(
+      AT.toISOString(),
+    );
+    const chargesOut = await store.shopCharges(AT.getTime());
+    expect(chargesOut).toEqual([{ createdAt: AT, status: 'paid' }]);
+    const charge = chargesOut[0];
+    if (charge === undefined) {
+      throw new Error('expected the boundary charge');
+    }
+    charge.createdAt.setTime(0);
+    expect((await store.shopCharges(AT.getTime()))[0]?.createdAt.toISOString()).toBe(
+      AT.toISOString(),
+    );
+  });
+});
+
+describe('PostgresWalletUsageStore', () => {
+  it('does not query when it is constructed', () => {
+    const sql = new MockSql();
+    new PostgresWalletUsageStore(sql);
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('reads each series with one parameterized statement', async () => {
+    const sql = new MockSql();
+    const store = new PostgresWalletUsageStore(sql);
+    sql.rows = [];
+    await expect(store.payments(AT.getTime())).resolves.toEqual([]);
+    await expect(store.forumInvoices(AT.getTime())).resolves.toEqual([]);
+    await expect(store.shopCharges(AT.getTime())).resolves.toEqual([]);
+    expect(sql.queries).toHaveLength(3);
+    const payments = sql.queries[0];
+    const forum = sql.queries[1];
+    const charges = sql.queries[2];
+    if (payments === undefined || forum === undefined || charges === undefined) {
+      throw new Error('expected three queries');
+    }
+    expect(payments.params).toEqual([AT]);
+    expect(forum.params).toEqual([AT]);
+    expect(charges.params).toEqual([AT]);
+    expect(payments.text).toContain("status = 'completed'");
+    expect(payments.text).toContain('min(paid_at)');
+    expect(payments.text).toContain('max(amount_sats)');
+    expect(payments.text).toContain('sum(coalesce(fee_sats, 0))');
+    expect(payments.text).toContain("direction = 'out'");
+    expect(payments.text).toContain("direction = 'in'");
+    expect(payments.text).toContain('counterparty_account_id');
+    expect(payments.text).toContain("category <> 'unknown'");
+    expect(payments.text).toContain('fond_payout');
+    expect(payments.text).toContain("fond_payout.status = 'paid'");
+    expect(payments.text).toContain('fond_payout.bolt11');
+    expect(payments.text).toContain('fond_payout.spark_invoice');
+    expect(payments.text).toContain('payer.is_platform');
+    expect(payments.text).toContain("payer.role = 'fond'");
+    expect(payments.text).toContain('payee.is_platform');
+    expect(payments.text).toContain("payee.role = 'fond'");
+    expect(payments.text).toContain('HAVING min(paid_at) >= $1');
+    expect(forum.text).toContain('message_invoice');
+    expect(forum.text).toContain("result = 'ok'");
+    expect(forum.text).toContain('COALESCE(heart, false)');
+    expect(forum.text).toContain('created_at >= $1');
+    expect(charges.text).toContain('pos_charge');
+    expect(charges.text).toContain('created_at');
+    expect(charges.text).toContain('status');
+    expect(charges.text).toContain('created_at >= $1');
+  });
+
+  it('maps merged rows and treats a null heart as false', async () => {
+    const sql = new MockSql();
+    const store = new PostgresWalletUsageStore(sql);
+    sql.rows = [
+      {
+        paid_at: AT,
+        amount_sats: 10n,
+        fee_sats: '2',
+        category: 'gift',
+        payer_account_id: null,
+        payee_account_id: 'payee',
+        payer_party: 'outside',
+        payee_party: 'members',
+        is_fund_payout: false,
+      },
+      {
+        paid_at: '2026-11-12T00:00:00.000Z',
+        amount_sats: 3,
+        fee_sats: 0,
+        category: 'shop',
+        payer_account_id: 'payer',
+        payee_account_id: null,
+        payer_party: 'fund',
+        payee_party: 'platform',
+        is_fund_payout: true,
+      },
+    ];
+    const rows = await store.payments(0);
+    expect(rows[0]).toEqual({
+      paidAt: AT,
+      amountSats: 10,
+      feeSats: 2,
+      category: 'gift',
+      payerAccountId: null,
+      payeeAccountId: 'payee',
+      payerParty: 'outside',
+      payeeParty: 'members',
+      isFundPayout: false,
+    });
+    expect(rows[1]?.payerParty).toBe('fund');
+    expect(rows[1]?.payeeParty).toBe('platform');
+    expect(rows[1]?.paidAt.toISOString()).toBe('2026-11-12T00:00:00.000Z');
+    const returned = rows[0];
+    if (returned === undefined) {
+      throw new Error('expected a mapped payment');
+    }
+    returned.paidAt.setTime(0);
+    sql.rows = [
+      { created_at: AT, amount_sats: 5, heart: true },
+      { created_at: '2026-11-10T00:00:00.000Z', amount_sats: '6', heart: null },
+      { created_at: AT, amount_sats: 7n, heart: false },
+    ];
+    await expect(store.forumInvoices(0)).resolves.toEqual([
+      { createdAt: AT, amountSats: 5, heart: true },
+      { createdAt: new Date('2026-11-10T00:00:00.000Z'), amountSats: 6, heart: false },
+      { createdAt: AT, amountSats: 7, heart: false },
+    ]);
+    sql.rows = [{ created_at: '2026-11-12T01:00:00.000Z', status: 'paid' }];
+    await expect(store.shopCharges(0)).resolves.toEqual([
+      { createdAt: new Date('2026-11-12T01:00:00.000Z'), status: 'paid' },
+    ]);
+  });
+
+  it('rejects rows the driver did not shape as usage data', async () => {
+    const sql = new MockSql();
+    const store = new PostgresWalletUsageStore(sql);
+    const base = {
+      paid_at: AT,
+      amount_sats: 1,
+      fee_sats: 0,
+      category: 'member',
+      payer_account_id: 'payer',
+      payee_account_id: 'payee',
+      payer_party: 'members',
+      payee_party: 'members',
+      is_fund_payout: false,
+    };
+    const rejects = async (row: unknown, message: string): Promise<void> => {
+      sql.rows = [row];
+      try {
+        await store.payments(0);
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe(message);
+        return;
+      }
+      throw new Error(`expected payments to throw: ${message}`);
+    };
+    await rejects({ ...base, is_fund_payout: null }, 'wallet usage fund payout flag is invalid');
+    await rejects({ ...base, paid_at: 'not-a-date' }, 'wallet usage time is invalid');
+    await rejects({ ...base, paid_at: new Date('not-a-date') }, 'wallet usage time is invalid');
+    await rejects({ ...base, amount_sats: null }, 'wallet usage sats are missing');
+    await rejects({ ...base, fee_sats: null }, 'wallet usage sats are missing');
+    await rejects({ ...base, amount_sats: 1.5 }, 'wallet usage sats are not a safe integer');
+    await rejects({ ...base, amount_sats: -1 }, 'wallet usage sats are not a safe integer');
+    await rejects(
+      { ...base, amount_sats: BigInt(Number.MAX_SAFE_INTEGER) + 1n },
+      'wallet usage sats are not a safe integer',
+    );
+    await rejects({ ...base, category: 4 }, 'wallet usage category is invalid');
+    await rejects({ ...base, payer_account_id: 4 }, 'wallet usage account id is invalid');
+    await rejects({ ...base, payer_party: 'shop' }, 'wallet usage party is invalid');
+    sql.rows = [{ created_at: 'not-a-date', amount_sats: 1, heart: false }];
+    await expect(store.forumInvoices(0)).rejects.toThrow('wallet usage time is invalid');
+    sql.rows = [{ created_at: AT, status: 4 }];
+    await expect(store.shopCharges(0)).rejects.toThrow('wallet usage charge status is invalid');
+  });
+
+  it('propagates a query failure', async () => {
+    const sql = new MockSql();
+    sql.error = new Error('down');
+    const store = new PostgresWalletUsageStore(sql);
+    await expect(store.payments(0)).rejects.toThrow('down');
+    await expect(store.forumInvoices(0)).rejects.toThrow('down');
+    await expect(store.shopCharges(0)).rejects.toThrow('down');
+  });
+});

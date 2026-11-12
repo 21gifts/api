@@ -123,7 +123,7 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `PostgresContactStore`, `migrateContactSchema`,
 `PostgresPosStore`, `migratePosSchema`, `paymentHashLockKey`,
 `PostgresShopPaymentStore`, `migrateShopPaymentSchema`,
-`PostgresWalletStore`, `migrateWalletSchema`, `repairWalletPaymentPairs`,
+`PostgresWalletStore`, `PostgresWalletUsageStore`, `migrateWalletSchema`, `repairWalletPaymentPairs`,
 `PostgresMemberEventStore`, `migrateMemberEventSchema`,
 `PostgresLoginGateStore`, `migrateLoginGateSchema`,
 `PostgresTrustStore`, `migrateTrustSchema`,

@@ -8117,6 +8117,41 @@ balance query throws or a current or daily sat total is not a safe integer. A
 total above `Number.MAX_SAFE_INTEGER` throws instead of returning a rounded
 JSON number. The failure logs `wallets.stats.failed`.
 
+### `GET /wallets/usage`
+
+Public, read-only aggregate of how the in-app wallet has been used since its
+production release `2026-11-09T11:17:00.000Z`. No auth. The numbers are computed
+on each request from completed wallet payments, successful forum invoices, and
+point-of-sale charges. The body contains only aggregates: no account id,
+username, name, payment id, payment hash, invoice, Lightning address, or node
+key. `GET /wallets/stats` is unchanged.
+
+A completed payment is one `payment_id` whose earliest `paid_at` is on or after
+the release. Its amount is the greatest `amount_sats` and its fee is the sum of
+`fee_sats`. The payer is the outgoing account, or outside when there is no
+outgoing row. The payee is the incoming account, otherwise the outgoing row's
+counterparty, otherwise outside. An account with `is_platform` is `platform`;
+role `fond` is `fund`; every other account, including a shop, is `members`.
+
+Purpose, first match: a paid `fond_payout` whose `bolt11` or `spark_invoice`
+equals any row invoice is `fund_payout` (including a payout to a shop); a fund
+payee whose payer is not outside is `fund_deposit`; category `gift` or
+`platform` is `forum_gift`; `shop` is `shop_purchase`; `member` is `transfer`;
+`outside_lightning` or `onchain` is `deposit` when the payer is outside and
+`withdrawal` otherwise; anything else is `other`.
+
+`days` has every UTC day from the release day through today, and every purpose
+key. `flows` keeps only directions that occurred and is sorted by day, from,
+to, and purpose. `forum` starts 28 days before release (`gifts` are hearts that
+are false). `shopCharges` starts 14 days before release. A heart and a paid
+shop charge increment the release totals only when their own timestamp is on or
+after the release instant. A row after the current UTC day is ignored. 200
+sends `Cache-Control: public, max-age=60`.
+
+**Response** `503`: `{ "error": "Wallet usage is unavailable" }` when a read
+fails or a sat total is not a safe integer. The failure logs
+`wallets.usage.failed` and does not send the cache header.
+
 ### `GET /links/:code`
 
 Public. No Bearer. `:code` is lowercased and not trimmed. Anything other than
