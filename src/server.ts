@@ -776,7 +776,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       walletStore,
       messages: messageStore,
       posStore,
-      fxSpotStore,
       now,
       ...receivingDeps,
     }),

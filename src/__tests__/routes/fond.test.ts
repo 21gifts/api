@@ -83,7 +83,6 @@ function walletPayment(partial: Partial<WalletPaymentRecord> = {}): WalletPaymen
     status: 'completed',
     amountSats: 21,
     feeSats: 0,
-    feeUsd: null,
     paidAt: new Date(NOW),
     method: 'spark',
     paymentHash: null,
@@ -1163,7 +1162,6 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_A.toISOString(),
           counterparty: { accountId: ALICE, username: 'alice', name: 'Alice' },
           storedFiat: null,
-          storedFee: null,
         },
         {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
@@ -1173,7 +1171,6 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_B.toISOString(),
           counterparty: null,
           storedFiat: null,
-          storedFee: null,
         },
         {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
@@ -1183,7 +1180,6 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_C.toISOString(),
           counterparty: null,
           storedFiat: null,
-          storedFee: null,
         },
         {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
@@ -1193,7 +1189,6 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_D.toISOString(),
           counterparty: null,
           storedFiat: null,
-          storedFee: null,
         },
       ],
       next: null,
@@ -1226,7 +1221,6 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_A.toISOString(),
           counterparty: { accountId: NO_USERNAME, username: null, name: 'No Username' },
           storedFiat: null,
-          storedFee: null,
         },
       ],
       next: null,
@@ -1283,52 +1277,8 @@ describe('GET /fond/payments', () => {
       paidAt: PAID_A.toISOString(),
       counterparty: null,
       storedFiat: { currency: 'USD', amount: '1.25' },
-      storedFee: null,
     });
     expect(body.payments[0]).not.toHaveProperty('paymentHash');
-  });
-
-  it('returns only a valid stored fee for a positive fee without recomputing it', async () => {
-    const { app, walletStore } = await makeApp();
-    await walletStore.upsertPayments([
-      walletPayment({
-        accountId: 'fond-account',
-        paymentId: 'valid-fee',
-        feeSats: 40,
-        feeUsd: '0.04',
-        paidAt: PAID_A,
-      }),
-      walletPayment({
-        accountId: 'fond-account',
-        paymentId: 'zero-fee',
-        feeSats: 0,
-        feeUsd: '1.00',
-        paidAt: PAID_B,
-      }),
-      walletPayment({
-        accountId: 'fond-account',
-        paymentId: 'invalid-fee',
-        feeSats: 1,
-        feeUsd: '01.00',
-        paidAt: PAID_C,
-      }),
-      walletPayment({
-        accountId: 'fond-account',
-        paymentId: 'missing-fee',
-        feeSats: 1,
-        feeUsd: null,
-        paidAt: PAID_D,
-      }),
-    ]);
-    const res = await app.request('/fond/payments');
-    expect(res.status).toBe(200);
-    const response = (await res.json()) as { payments: Array<{ storedFee: unknown }> };
-    expect(response.payments.map((row) => row.storedFee)).toEqual([
-      { currency: 'USD', amount: '0.04' },
-      null,
-      null,
-      null,
-    ]);
   });
 
   it('adds stored USD for Spark-invoice and BOLT11 matches without a wallet hash', async () => {

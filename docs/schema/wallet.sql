@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS wallet_payment (
   status text NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
   amount_sats bigint NOT NULL CHECK (amount_sats >= 0),
   fee_sats bigint NOT NULL CHECK (fee_sats >= 0),
-  fee_usd text,
   paid_at timestamptz NOT NULL,
   method text NOT NULL,
   payment_hash text,
@@ -35,7 +34,6 @@ CREATE TABLE IF NOT EXISTS wallet_payment (
 
 ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS invoice text;
 ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz;
-ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS fee_usd text;
 
 CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC);
 

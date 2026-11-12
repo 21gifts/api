@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { SqlClient } from '@/lib/auth/sql';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { InMemoryFxSpotStore, type FxSpotStore } from '@/lib/fx-spot-store';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryPosStore } from '@/lib/pos-store';
@@ -69,7 +68,6 @@ async function mount(
     posStore?: InMemoryPosStore;
     limiter?: IpRateLimiter;
     auth?: InMemoryAuthStore;
-    fxSpotStore?: FxSpotStore;
   } = {},
 ): Promise<{ app: Hono; walletStore: WalletStore }> {
   const walletStore = options.walletStore ?? new InMemoryWalletStore();
@@ -80,7 +78,6 @@ async function mount(
       walletStore,
       messages: new InMemoryMessageStore(),
       posStore: options.posStore ?? new InMemoryPosStore(),
-      ...(options.fxSpotStore === undefined ? {} : { fxSpotStore: options.fxSpotStore }),
       now: options.now ?? (() => START),
       ...(options.limiter === undefined ? {} : { limiter: options.limiter }),
     }),
@@ -178,204 +175,6 @@ describe('POST /me/wallet/report', () => {
     expect(await walletStore.listPayments(ACCOUNT, 10)).toEqual([
       expect.objectContaining({ paymentId: 'p1', category: 'unknown' }),
     ]);
-  });
-
-  it.each([
-    ['at', START],
-    ['just before', START - 1],
-  ])('freezes a completed positive fee from the spot %s paidAt', async (_name, asOf) => {
-    const fxSpotStore = new InMemoryFxSpotStore({
-      asOf: new Date(asOf).toISOString(),
-      source: 'test',
-      rates: { USD: '100000' },
-    });
-    const latest = vi.spyOn(fxSpotStore, 'latest');
-    const { app, walletStore } = await mount({ fxSpotStore });
-    const response = await post(
-      app,
-      body({
-        payments: [
-          reported({
-            status: 'completed',
-            feeSats: 40,
-            timestamp: new Date(START).toISOString(),
-          }),
-        ],
-      }),
-    );
-    expect(response.status).toBe(200);
-    expect(latest).toHaveBeenCalledTimes(1);
-    expect((await walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBe('0.04');
-  });
-
-  it.each([
-    ['older', START - 5 * 60_000 - 1],
-    ['after', START + 1],
-  ])('leaves fee USD null when the quote is %s than the live payment spot', async (_name, asOf) => {
-    const fxSpotStore = new InMemoryFxSpotStore({
-      asOf: new Date(asOf).toISOString(),
-      source: 'test',
-      rates: { USD: '100000' },
-    });
-    const { app, walletStore } = await mount({ fxSpotStore });
-    const response = await post(
-      app,
-      body({
-        payments: [
-          reported({
-            status: 'completed',
-            feeSats: 40,
-            timestamp: new Date(START).toISOString(),
-          }),
-        ],
-      }),
-    );
-    expect(response.status).toBe(200);
-    expect((await walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
-  });
-
-  it('does not read a spot or store a fee for a payment without paidAt', async () => {
-    const fxSpotStore = new InMemoryFxSpotStore({
-      asOf: new Date(START).toISOString(),
-      source: 'test',
-      rates: { USD: '100000' },
-    });
-    const latest = vi.spyOn(fxSpotStore, 'latest');
-    const { app, walletStore } = await mount({ fxSpotStore });
-    const payment = reported({ status: 'completed', feeSats: 40 });
-    delete payment['timestamp'];
-    const response = await post(app, body({ payments: [payment] }));
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ acknowledgedIds: [] });
-    expect(latest).not.toHaveBeenCalled();
-    expect(await walletStore.listPayments(ACCOUNT, 10)).toEqual([]);
-  });
-
-  it('leaves fee USD null for zero, pending, missing, and unreadable spots', async () => {
-    const spot = new InMemoryFxSpotStore({
-      asOf: new Date(START).toISOString(),
-      source: 'test',
-      rates: { USD: '100000' },
-    });
-    const latest = vi.spyOn(spot, 'latest');
-    const first = await mount({ fxSpotStore: spot });
-    expect(
-      (
-        await post(
-          first.app,
-          body({
-            payments: [
-              reported({ id: 'zero', status: 'completed', feeSats: 0 }),
-              reported({ id: 'pending', status: 'pending', feeSats: 40 }),
-            ],
-          }),
-        )
-      ).status,
-    ).toBe(200);
-    expect(latest).not.toHaveBeenCalled();
-    expect((await first.walletStore.listPayments(ACCOUNT, 10)).map((row) => row.feeUsd)).toEqual([
-      null,
-      null,
-    ]);
-
-    const missing = await mount();
-    expect(
-      (
-        await post(
-          missing.app,
-          body({ payments: [reported({ status: 'completed', feeSats: 40 })] }),
-        )
-      ).status,
-    ).toBe(200);
-    expect((await missing.walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
-
-    const noUsd = await mount({ fxSpotStore: new InMemoryFxSpotStore() });
-    expect(
-      (await post(noUsd.app, body({ payments: [reported({ status: 'completed', feeSats: 40 })] })))
-        .status,
-    ).toBe(200);
-    expect((await noUsd.walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
-
-    const invalidTime = await mount({
-      fxSpotStore: new InMemoryFxSpotStore({
-        asOf: 'not-an-instant',
-        source: 'test',
-        rates: { USD: '100000' },
-      }),
-    });
-    expect(
-      (
-        await post(
-          invalidTime.app,
-          body({ payments: [reported({ status: 'completed', feeSats: 40 })] }),
-        )
-      ).status,
-    ).toBe(200);
-    expect((await invalidTime.walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
-
-    class FailingSpotStore extends InMemoryFxSpotStore {
-      override latest(): Promise<null> {
-        return Promise.reject(new Error('spot down'));
-      }
-    }
-    const failed = await mount({ fxSpotStore: new FailingSpotStore() });
-    expect(
-      (await post(failed.app, body({ payments: [reported({ status: 'completed', feeSats: 40 })] })))
-        .status,
-    ).toBe(200);
-    expect((await failed.walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
-  });
-
-  it('never replaces the first frozen fee on a later report', async () => {
-    let usd = '100000';
-    const fxSpotStore: FxSpotStore = {
-      latest: () =>
-        Promise.resolve({
-          asOf: new Date(START).toISOString(),
-          source: 'test',
-          rates: { USD: usd },
-        }),
-      save: () => Promise.resolve(),
-    };
-    let now = START;
-    const walletStore = new InMemoryWalletStore();
-    const { app } = await mount({ fxSpotStore, walletStore, now: () => now });
-    const completed = reported({
-      status: 'completed',
-      feeSats: 40,
-      timestamp: new Date(START).toISOString(),
-    });
-    expect((await post(app, body({ payments: [completed] }))).status).toBe(200);
-    usd = '200000';
-    now += 1_000;
-    expect((await post(app, body({ payments: [completed] }))).status).toBe(200);
-    expect((await walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBe('0.04');
-  });
-
-  it('never fills an initially null fee from a later report', async () => {
-    let asOf = START + 1;
-    const fxSpotStore: FxSpotStore = {
-      latest: () =>
-        Promise.resolve({
-          asOf: new Date(asOf).toISOString(),
-          source: 'test',
-          rates: { USD: '100000' },
-        }),
-      save: () => Promise.resolve(),
-    };
-    let now = START;
-    const walletStore = new InMemoryWalletStore();
-    const { app } = await mount({ fxSpotStore, walletStore, now: () => now });
-    const completed = reported({
-      status: 'completed',
-      feeSats: 40,
-      timestamp: new Date(START).toISOString(),
-    });
-    expect((await post(app, body({ payments: [completed] }))).status).toBe(200);
-    asOf = START;
-    now += 1_000;
-    expect((await post(app, body({ payments: [completed] }))).status).toBe(200);
-    expect((await walletStore.listPayments(ACCOUNT, 10))[0]?.feeUsd).toBeNull();
   });
 
   it('idempotently changes pending to completed while keeping firstSeenAt', async () => {
@@ -536,7 +335,7 @@ describe('POST /me/wallet/report', () => {
     expect(response.status).toBe(200);
     // Balance snapshot, payment upsert, then the pairing of that payment id.
     expect(sql.executes).toHaveLength(3);
-    expect(sql.executes[1]?.params.slice(12, 14)).toEqual([null, null]);
+    expect(sql.executes[1]?.params.slice(11, 13)).toEqual([null, null]);
     expect(sql.executes[2]?.text).toContain('UPDATE wallet_payment AS t');
     const output = JSON.stringify({
       sql: sql.executes,

@@ -138,7 +138,6 @@ interface FondPaymentListRow {
   paidAt: string;
   counterparty: FondPaymentCounterparty | null;
   storedFiat: FondPaymentStoredFiat | null;
-  storedFee: FondPaymentStoredFiat | null;
 }
 
 /**
@@ -232,9 +231,6 @@ function cursorPayment(
   return rows.find((row) => publicPaymentId(row.paymentId, key) === id) ?? null;
 }
 
-/** Non-negative stored USD decimal with at most two fractional digits. */
-const STORED_USD_RE = /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/;
-
 /**
  * Project a stored payment to the public Fond list row.
  *
@@ -242,7 +238,7 @@ const STORED_USD_RE = /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/;
  * @param counterparties - Known non-platform accounts by id.
  * @param paidUsd - Stored USD amount of each outgoing row's paid payout, by hash or invoice.
  * @param publicIdKey - Server secret used to derive the public id.
- * @returns Only the public id, direction, amounts, time, counterparty, stored fiat, and stored fee.
+ * @returns Only the public id, direction, amounts, time, counterparty, and stored fiat.
  */
 function publicPaymentRow(
   row: WalletPaymentRecord,
@@ -268,10 +264,6 @@ function publicPaymentRow(
     paidAt: row.paidAt.toISOString(),
     counterparty,
     storedFiat: amountUsd === undefined ? null : { currency: 'USD', amount: amountUsd },
-    storedFee:
-      row.feeSats > 0 && row.feeUsd !== null && STORED_USD_RE.test(row.feeUsd)
-        ? { currency: 'USD', amount: row.feeUsd }
-        : null,
   };
 }
 

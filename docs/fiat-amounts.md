@@ -27,13 +27,6 @@ A missing frozen string stays missing. It is JSON `null`. It is not filled from
 the current spot, and it is not filled later from a daily close, a migration,
 or another row. The amount remains without that currency.
 
-A stored wallet fee gets a USD figure only when the payment row is first stored,
-from the USD spot that was live at the payment moment: the quote must be at most
-five minutes before `paidAt`, never after, matching the spot worker's five-minute
-refresh. Without such a quote, or without `paidAt`, the fee figure is `null` and
-stays `null` for good; a later report or spot never fills it. The app then shows
-the current spot without storing it on the payment.
-
 ## A till charge returns the typed figure to the shop and to the payer
 
 The shop operator types the till amount. When that amount is typed in one

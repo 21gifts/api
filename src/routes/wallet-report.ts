@@ -5,12 +5,9 @@ import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
 import type { LnurlServerConfig } from '@/lib/config';
-import { FX_SPOT_REFRESH_MS } from '@/lib/fx-spot';
-import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { IP_RATE_WINDOW_MS, IpRateLimiter } from '@/lib/ip-rate-limit';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
-import { satsToUsdCents, usdCentsToString } from '@/lib/money';
 import type { PosStore } from '@/lib/pos-store';
 import { walletPaymentClassifier } from '@/lib/wallet-category';
 import { parseWalletReport } from '@/lib/wallet-report';
@@ -36,50 +33,12 @@ export interface WalletReportRouteDeps {
   messages: MessageStore;
   /** Point-of-sale charge lookup. */
   posStore: PosStore;
-  /** Latest BTC/USD spot used once when it belongs to the completed payment moment. */
-  fxSpotStore?: FxSpotStore;
   /** Self-hosted receiving-address configuration, when enabled. */
   lnurlServer?: LnurlServerConfig;
   /** Clock returning epoch milliseconds. */
   now: () => number;
   /** Optional injected per-account limiter. */
   limiter?: IpRateLimiter;
-}
-
-/**
- * The fee figure is fixed once, when the payment row is first stored, from the spot that was live
- * at the payment moment (a quote from at most five minutes before `paidAt`, never after); otherwise
- * it stays null for good and the app shows the current spot.
- */
-const FEE_SPOT_PAYMENT_WINDOW_MS = FX_SPOT_REFRESH_MS;
-
-/** Freeze one completed positive fee at the USD spot of its payment moment. */
-async function frozenFeeUsd(
-  spot: FxSpotStore | undefined,
-  status: WalletPaymentRecord['status'],
-  feeSats: number,
-  paidAt: Date,
-): Promise<string | null> {
-  if (spot === undefined || status !== 'completed' || feeSats <= 0) {
-    return null;
-  }
-  try {
-    const quote = await spot.latest();
-    const usd = quote?.rates.USD;
-    const quoteMs = quote === null ? Number.NaN : Date.parse(quote.asOf);
-    const paidAtMs = paidAt.getTime();
-    if (
-      usd === undefined ||
-      !Number.isFinite(quoteMs) ||
-      quoteMs > paidAtMs ||
-      paidAtMs - quoteMs > FEE_SPOT_PAYMENT_WINDOW_MS
-    ) {
-      return null;
-    }
-    return usdCentsToString(satsToUsdCents(feeSats, usd));
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -148,12 +107,6 @@ export function walletReportRoutes(deps: WalletReportRouteDeps): Hono {
             payments.slice(start, start + WALLET_REPORT_CONCURRENCY).map(async (payment) => ({
               ...payment,
               ...(await classify(payment)),
-              feeUsd: await frozenFeeUsd(
-                deps.fxSpotStore,
-                payment.status,
-                payment.feeSats,
-                payment.paidAt,
-              ),
               accountId: account.id,
               firstSeenAt: new Date(seenAt.getTime()),
               updatedAt: new Date(seenAt.getTime()),

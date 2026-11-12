@@ -5,7 +5,7 @@
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
 - Tables: 63
-- Columns: 608
+- Columns: 607
 - Foreign keys: 59
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
@@ -72,4 +72,4 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`trust_edge`](tables/trust_edge.md)                                             | [src/lib/trust-store.ts](../../src/lib/trust-store.ts)                 | 5       | 2            |
 | [`usd_fiat_daily`](tables/usd_fiat_daily.md)                                     | [src/lib/usd-fiat-store.ts](../../src/lib/usd-fiat-store.ts)           | 6       | 0            |
 | [`wallet_balance_snapshot`](tables/wallet_balance_snapshot.md)                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 5       | 1            |
-| [`wallet_payment`](tables/wallet_payment.md)                                     | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 19      | 2            |
+| [`wallet_payment`](tables/wallet_payment.md)                                     | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 18      | 2            |

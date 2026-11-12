@@ -31,8 +31,6 @@ export interface WalletBalanceSnapshot {
 export interface WalletPaymentRecord extends ReportedWalletPayment, WalletPaymentClass {
   /** Reporting account id. */
   accountId: string;
-  /** USD fee fixed on first insert from the spot live at `paidAt`, or null forever. */
-  feeUsd: string | null;
   /** Observation instant of the report that first stored this account/payment id. */
   firstSeenAt: Date;
   /** Last server receipt instant that changed a stored value. */
@@ -75,9 +73,8 @@ export interface WalletStore {
   recordBalance(snapshot: WalletBalanceSnapshot): Promise<void>;
 
   /**
-   * Upsert payment rows, preserving first-seen time, non-null details, and the fee from the first
-   * insert, including null. Rows for the same payment are applied in the given order; distinct
-   * payments may be written concurrently.
+   * Upsert payment rows, preserving first-seen time and non-null details. Rows for the same
+   * payment are applied in the given order; distinct payments may be written concurrently.
    * After each row, the two sides of an internal transfer are paired by payment id: when the
    * payment id is held by exactly two rows of opposite direction on different accounts, a row
    * whose own fields resolved nothing (`unknown`, no counterparty) takes its category from the
@@ -144,7 +141,6 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   status text NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
   amount_sats bigint NOT NULL CHECK (amount_sats >= 0),
   fee_sats bigint NOT NULL CHECK (fee_sats >= 0),
-  fee_usd text,
   paid_at timestamptz NOT NULL,
   method text NOT NULL,
   payment_hash text,
@@ -160,7 +156,6 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
 )`,
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS invoice text`,
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz`,
-  `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS fee_usd text`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC)`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)`,
 ];
@@ -485,7 +480,6 @@ interface WalletPaymentSqlRow {
   status: string;
   amount_sats: number | string | bigint;
   fee_sats: number | string | bigint;
-  fee_usd: string | null;
   paid_at: Date | string;
   method: string;
   payment_hash: string | null;
@@ -527,7 +521,6 @@ function mapPayment(row: WalletPaymentSqlRow): WalletPaymentRecord {
     status: row.status as WalletPaymentStatus,
     amountSats: Number(row.amount_sats),
     feeSats: Number(row.fee_sats),
-    feeUsd: row.fee_usd,
     paidAt: sqlDate(row.paid_at),
     method: row.method,
     paymentHash: row.payment_hash,
@@ -542,8 +535,8 @@ function mapPayment(row: WalletPaymentSqlRow): WalletPaymentRecord {
   };
 }
 
-const PAYMENT_COLUMNS = `account_id, payment_id, direction, status, amount_sats, fee_sats, fee_usd,
-paid_at, method, payment_hash, invoice, destination, description, lnurl_comment, category,
+const PAYMENT_COLUMNS = `account_id, payment_id, direction, status, amount_sats, fee_sats, paid_at,
+method, payment_hash, invoice, destination, description, lnurl_comment, category,
 counterparty_account_id, first_seen_at, updated_at`;
 
 /** Payments written at the same time by one `upsertPayments` call. */
@@ -699,13 +692,12 @@ VALUES ($1,$2,$3,$4,$5)`,
   private async upsertPayment(row: WalletPaymentRecord): Promise<void> {
     await this.sql.execute(
       `INSERT INTO wallet_payment (${PAYMENT_COLUMNS}, last_observed_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
 ON CONFLICT (account_id, payment_id) DO UPDATE SET
 direction = EXCLUDED.direction,
 status = EXCLUDED.status,
 amount_sats = EXCLUDED.amount_sats,
 fee_sats = EXCLUDED.fee_sats,
-fee_usd = wallet_payment.fee_usd,
 paid_at = EXCLUDED.paid_at,
 method = EXCLUDED.method,
 payment_hash = COALESCE(EXCLUDED.payment_hash, wallet_payment.payment_hash),
@@ -726,7 +718,6 @@ WHERE EXCLUDED.last_observed_at >= ${OBSERVED_WATERMARK}
         row.status,
         row.amountSats,
         row.feeSats,
-        row.feeUsd,
         row.paidAt,
         row.method,
         row.paymentHash,

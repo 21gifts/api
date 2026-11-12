@@ -14,7 +14,6 @@ Source: [src/lib/wallet-store.ts](../../../src/lib/wallet-store.ts)
 | `status`                  | ENUM                    | `text`                     | No       | –       | –                            |
 | `amount_sats`             | Integer                 | `bigint`                   | No       | –       | –                            |
 | `fee_sats`                | Integer                 | `bigint`                   | No       | –       | –                            |
-| `fee_usd`                 | Free text               | `text`                     | Yes      | –       | –                            |
 | `paid_at`                 | Date/time               | `timestamp with time zone` | No       | –       | –                            |
 | `method`                  | Free text               | `text`                     | No       | –       | –                            |
 | `payment_hash`            | Free text               | `text`                     | Yes      | –       | –                            |
