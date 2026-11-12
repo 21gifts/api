@@ -1320,12 +1320,14 @@ export interface MessageStore {
    * @param messageId - Credit note.
    * @param currency - Fiat goal currency.
    * @param through - Inclusive receipt boundary; omitted means all current receipts.
-   * @returns One row per named payer, including zero units when every gift lacks a snapshot.
+   * @param includeUnassigned - Include one aggregate row for receipts without a member payer.
+   * @returns One row per payer, using an empty account id for the optional unassigned aggregate.
    */
   previewCreditPayerSnapshot(
     messageId: string,
     currency: 'USD' | 'CHF' | 'EUR' | 'PHP',
     through?: Date,
+    includeUnassigned?: boolean,
   ): Promise<CreditPayerSnapshotPreview[]>;
 
   /**
@@ -1856,6 +1858,8 @@ export type ZapReceiptSettlement = {
   payerAccountId?: string;
   /** Normalised payer comment used by the later gift-reply write. */
   comment?: string;
+  /** Keep this attributed receipt out of the gift-reply retry queue. */
+  suppressGiftReply?: boolean;
 } & (
   | { ingest?: undefined; recordIngest?: undefined }
   | {
@@ -2034,9 +2038,9 @@ export interface RepaymentPartRow {
   paidAt?: Date;
 }
 
-/** Exact gift-time fiat units collected from one named credit payer. */
+/** Exact gift-time fiat units collected from one credit payer group. */
 interface CreditPayerSnapshotPreview {
-  /** Giver account id. */
+  /** Giver account id, or empty for an included unassigned aggregate. */
   accountId: string;
   /** Sats contributed by that giver before the preview boundary. */
   sats: number;
@@ -2046,7 +2050,7 @@ interface CreditPayerSnapshotPreview {
 
 /** Raw canonical payer totals selected from the oldest indexed ingest per receipt. */
 interface CreditPayerQueryRow {
-  account_id: string;
+  account_id: string | null;
   sats: string | number;
   usd: string | null;
   chf: string | null;
@@ -2845,6 +2849,8 @@ interface MemoryZapReceipt {
   zapRequestId: string | null;
   giftReplyId: string | null;
   comment: string;
+  /** Whether payer attribution must not enqueue a gift-reply retry. */
+  suppressGiftReply: boolean;
   /** When the receipt was stored. */
   recordedAt: Date;
   /** Gift-time fiat snapshot supplied with the receipt. */
@@ -4523,13 +4529,14 @@ export class InMemoryMessageStore implements MessageStore {
     messageId: string,
     currency: 'USD' | 'CHF' | 'EUR' | 'PHP',
     through?: Date,
+    includeUnassigned = false,
   ): Promise<CreditPayerSnapshotPreview[]> {
     const totals = new Map<string, { sats: number; units: bigint }>();
     const boundary = through?.getTime();
     for (const [eventId, receipt] of this.#receipts) {
       if (
         receipt.messageId !== messageId ||
-        receipt.payerAccountId === null ||
+        (receipt.payerAccountId === null && !includeUnassigned) ||
         (boundary !== undefined && receipt.recordedAt.getTime() > boundary)
       ) {
         continue;
@@ -4552,10 +4559,11 @@ export class InMemoryMessageStore implements MessageStore {
                 ? receipt.fiat?.php
                 : ingest.amountPhp;
       const units = amount === null || amount === undefined ? null : fiatAmountToCents(amount);
-      const current = totals.get(receipt.payerAccountId) ?? { sats: 0, units: 0n };
+      const accountId = receipt.payerAccountId ?? '';
+      const current = totals.get(accountId) ?? { sats: 0, units: 0n };
       current.sats += receipt.sats;
       current.units += units ?? 0n;
-      totals.set(receipt.payerAccountId, current);
+      totals.set(accountId, current);
     }
     return Promise.resolve(
       [...totals.entries()].map(([accountId, total]) => ({ accountId, ...total })),
@@ -4979,6 +4987,7 @@ export class InMemoryMessageStore implements MessageStore {
       zapRequestId: null,
       giftReplyId: null,
       comment: settlement?.comment ?? '',
+      suppressGiftReply: settlement?.suppressGiftReply === true,
       recordedAt: at,
       fiat: delta === null ? null : { ...delta },
     });
@@ -5554,6 +5563,7 @@ export class InMemoryMessageStore implements MessageStore {
     const rows: ZapReceiptGiftRow[] = [];
     for (const [receiptEventId, receipt] of this.#receipts) {
       if (
+        receipt.suppressGiftReply ||
         (receipt.payerAccountId === null && receipt.payerPubkey === null) ||
         receipt.giftReplyId !== null
       ) {
@@ -8436,7 +8446,7 @@ export class PostgresMessageStore implements MessageStore {
             : null
           : storedAmountFromCents(BigInt(row.snapshot_units));
       return {
-        accountId: row.account_id,
+        accountId: row.account_id as string,
         sats: Number(row.sats),
         usd: snapshotCurrency === 'USD' ? frozen : row.usd,
         chf: snapshotCurrency === 'CHF' ? frozen : row.chf,
@@ -8449,6 +8459,7 @@ export class PostgresMessageStore implements MessageStore {
   #creditPayerRows(
     messageId: string,
     through: Date | null | undefined,
+    includeUnassigned = false,
   ): Promise<CreditPayerQueryRow[]> {
     const useFundedBoundary = through === undefined;
     return this.#sql.query<CreditPayerQueryRow>(
@@ -8472,7 +8483,8 @@ export class PostgresMessageStore implements MessageStore {
          LIMIT 1
        ) i ON true
        JOIN message m ON m.id = r.message_id
-       WHERE r.message_id = $1::uuid AND r.payer_account_id IS NOT NULL
+       WHERE r.message_id = $1::uuid
+         AND ($4::boolean OR r.payer_account_id IS NOT NULL)
          AND (
            (
              $2::boolean
@@ -8498,7 +8510,7 @@ export class PostgresMessageStore implements MessageStore {
        LEFT JOIN message_credit_payer_snapshot s
         ON s.message_id = $1::uuid AND s.account_id = p.account_id
        ORDER BY p.account_id`,
-      [messageId, useFundedBoundary, through ?? null],
+      [messageId, useFundedBoundary, through ?? null, includeUnassigned],
     );
   }
 
@@ -8506,8 +8518,9 @@ export class PostgresMessageStore implements MessageStore {
     messageId: string,
     currency: 'USD' | 'CHF' | 'EUR' | 'PHP',
     through?: Date,
+    includeUnassigned = false,
   ): Promise<CreditPayerSnapshotPreview[]> {
-    const rows = await this.#creditPayerRows(messageId, through ?? null);
+    const rows = await this.#creditPayerRows(messageId, through ?? null, includeUnassigned);
     return rows.map((row) => {
       const amount =
         currency === 'USD'
@@ -8518,7 +8531,7 @@ export class PostgresMessageStore implements MessageStore {
               ? row.eur
               : row.php;
       return {
-        accountId: row.account_id,
+        accountId: row.account_id ?? '',
         sats: Number(row.sats),
         units: amount === null ? 0n : (fiatAmountToCents(amount) ?? 0n),
       };
@@ -9904,8 +9917,16 @@ export class PostgresMessageStore implements MessageStore {
        ) i ON true
        WHERE gift_reply_id IS NULL
          AND (payer_account_id IS NOT NULL OR payer_pubkey IS NOT NULL)
+         AND NOT EXISTS (
+           SELECT 1
+           FROM nostr_zap_payment p
+           JOIN message_invoice invoice ON lower(invoice.payment_hash) = p.payment_hash
+           WHERE p.receipt_event_id = r.event_id
+             AND invoice.result = 'ok'
+             AND invoice.heart IS TRUE
+         )
        ORDER BY event_id ASC
-       LIMIT $1`,
+       LIMIT $1::integer`,
       [limit],
     );
     return rows.map((row) => ({

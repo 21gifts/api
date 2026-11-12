@@ -11497,11 +11497,35 @@ describe('PostgresMessageStore', () => {
         { accountId: 'giver-invalid', sats: 100, units: 0n },
       ]);
     }
-    expect(sql.queries[0]?.params).toEqual(['credit', false, through]);
+    expect(sql.queries[0]?.params).toEqual(['credit', false, through, false]);
     expect(sql.queries[0]?.text).toContain('GROUP BY r.payer_account_id');
     expect(sql.queries[0]?.text).toContain('ORDER BY created_at ASC, id ASC');
     expect(sql.queries[0]?.text).not.toContain('ORDER BY created_at DESC');
     expect(sql.queries[0]?.text).not.toContain('goal_amount');
+
+    const anonymousSql = new MockSql();
+    anonymousSql.nextRows = [
+      {
+        account_id: null,
+        sats: '4',
+        usd: '0.04',
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ];
+    expect(
+      await new PostgresMessageStore(anonymousSql).previewCreditPayerSnapshot(
+        'credit',
+        'USD',
+        through,
+        true,
+      ),
+    ).toEqual([{ accountId: '', sats: 4, units: 4n }]);
+    expect(anonymousSql.queries[0]?.params).toEqual(['credit', false, through, true]);
+    expect(anonymousSql.queries[0]?.text).toContain(
+      '$4::boolean OR r.payer_account_id IS NOT NULL',
+    );
   });
 
   it('ignores a gift that arrives after the credit has filled', async () => {
@@ -12405,6 +12429,8 @@ describe('PostgresMessageStore', () => {
     );
     expect(sql.executes[2]?.params).toEqual(['r1', '85'.repeat(32)]);
     const listed = await store.listZapReceiptsAwaitingGiftReply(10);
+    expect(sql.queries[0]?.text).toContain('JOIN message_invoice invoice');
+    expect(sql.queries[0]?.text).toContain('invoice.heart IS TRUE');
     expect(listed).toEqual([
       {
         receiptEventId: 'r1',
@@ -13768,6 +13794,38 @@ describe('shop identity on message rows', () => {
         { accountId: 'giver', sats: 10, units: 100n },
       ]);
     }
+
+    await preview.recordZapReceipt('anonymous-preview', 'preview', 5, {
+      usd: '9.99',
+      chf: null,
+      eur: null,
+      php: null,
+    });
+    for (const [id, createdAt, amount] of [
+      ['anonymous-new', new Date(4), '0.90'],
+      ['anonymous-old', new Date(3), '0.50'],
+    ] as const) {
+      await preview.recordZapIngest({
+        id,
+        createdAt,
+        receiptId: 'anonymous-preview',
+        noteEventId: null,
+        messageId: 'preview',
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 5,
+        amountUsd: amount,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+        receiptPubkey: null,
+        receipt: {},
+      });
+    }
+    expect(await preview.previewCreditPayerSnapshot('preview', 'USD', undefined, true)).toEqual([
+      { accountId: 'giver', sats: 10, units: 100n },
+      { accountId: '', sats: 5, units: 50n },
+    ]);
   });
 
   it('covers in-memory repayment conflict, duplicate, missing-note, and close guards', async () => {
@@ -13952,7 +14010,7 @@ describe('shop identity on message rows', () => {
     expect(await store.previewCreditPayerSnapshot('credit', 'PHP')).toEqual([
       { accountId: 'giver', sats: 5, units: 6n },
     ]);
-    expect(sql.queries[1]?.params).toEqual(['credit', false, null]);
+    expect(sql.queries[1]?.params).toEqual(['credit', false, null, false]);
   });
 
   it('lists and writes Postgres repayment parts, including idempotent fallbacks', async () => {
@@ -14240,7 +14298,7 @@ describe('shop identity on message rows', () => {
       closedAt: new Date('2026-11-11T12:00:00.000Z'),
     });
     expect(fiat.executes[0]?.params).toEqual(['credit', 'giver', 'CHF', '123']);
-    expect(fiat.queries[1]?.params).toEqual(['credit', false, databaseCloseAt]);
+    expect(fiat.queries[1]?.params).toEqual(['credit', false, databaseCloseAt, false]);
     expect(fiat.queries[2]?.params).toEqual(['credit', databaseCloseAt]);
     expect(fiat.queries[0]?.text).toContain('clock_timestamp() AS close_at');
 

@@ -1256,17 +1256,21 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
     // Debt stays bounded at funding. The close receipt is also immutable: an
     // idempotent call sees only receipts recorded through the first close.
     const fiat = isFiatCredit(closedRow);
+    const includeUnassignedFiat = fiat && !closedRow.goalDebtFrozen;
     const collectedPayers = await locked.previewCreditPayerSnapshot(
       closedRow.id,
       fiat ? (closedRow.goalCurrency as GoalFiatCode) : 'USD',
       closed.closedAt,
+      includeUnassignedFiat,
     );
     const collectedUnits = closedRow.goalDebtFrozen
       ? owed.reduce((sum, payer) => sum + payer.units, 0n)
       : collectedPayers.reduce((sum, payer) => sum + payer.units, 0n);
     const collectedSats =
       collectedPayers.reduce((sum, payer) => sum + payer.sats, 0) +
-      (await locked.sumUnassignedCreditSats(closedRow.id, true, closed.closedAt));
+      (includeUnassignedFiat
+        ? 0
+        : await locked.sumUnassignedCreditSats(closedRow.id, true, closed.closedAt));
     return c.json(
       {
         fundedAt: closed.fundedAt.toISOString(),

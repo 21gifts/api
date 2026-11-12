@@ -86,6 +86,7 @@ async function seedStore(args: {
   lightningAddress?: string | null;
   messageId?: string;
   createAccount?: boolean;
+  repayable?: boolean;
 }): Promise<string> {
   const messageId = args.messageId ?? `m-${args.accountId}`;
   if (args.createAccount !== false) {
@@ -117,6 +118,7 @@ async function seedStore(args: {
     hasPhoto: false,
     ...unsignedNostrDefaults(),
     eventId: args.eventId === undefined ? NOTE_EVENT_ID : args.eventId,
+    ...(args.repayable === true ? { goalSats: 100, goalRepayable: true, goalTermDays: 1 } : {}),
   });
   return messageId;
 }
@@ -9420,7 +9422,7 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toHaveLength(1);
   });
 
-  it('credits a heart receipt, skips gift-reply and living-room notifyZap, and notifies the author', async () => {
+  it('credits a heart receipt to repayable debt, skips gift-reply and notifyZap, and notifies the author', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const parentId = await seedStore({
@@ -9429,6 +9431,7 @@ describe('indexOpenZapReceipts', () => {
       accountId: 'acc-heart-parent',
       lightningAddress: 'zap-heart-parent@example.com',
       messageId: 'm-heart-parent',
+      repayable: true,
     });
     await auth.createAccount({
       id: 'payer-heart',
@@ -9496,7 +9499,18 @@ describe('indexOpenZapReceipts', () => {
       notificationStore: notifications,
     });
     expect((await store.getById(parentId))?.sats).toBe(21);
+    expect(await store.listCreditPayers(parentId)).toEqual([
+      {
+        accountId: 'payer-heart',
+        sats: 21,
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
     expect(await store.listReplies(parentId)).toHaveLength(0);
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
     const forAuthor = await notifications.listByRecipient('acc-heart-parent', 10);
     expect(forAuthor).toHaveLength(1);
     expect(forAuthor[0]?.type).toBe('heart');
@@ -9665,7 +9679,7 @@ describe('indexOpenZapReceipts', () => {
     expect(forAuthor[0]?.type).toBe('heart');
   });
 
-  it('returns before a gift-reply when a later heart lookup succeeds after a thrown lookup', async () => {
+  it('returns before a gift-reply when the retry heart lookup succeeds', async () => {
     class HeartLookupStore extends InMemoryMessageStore {
       armed = false;
       lookups = 0;
@@ -9742,17 +9756,111 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     };
     await ingest(ingestArgs);
+    await store.updateZapReceiptGift('r-heart-lookup', { payerAccountId: null });
     store.armed = true;
     store.lookups = 0;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     await ingest(ingestArgs);
     const events = loggedEvents(warn);
     warn.mockRestore();
-    expect(store.lookups).toBeGreaterThanOrEqual(3);
+    expect(store.lookups).toBe(3);
     expect(await store.listReplies(parentId)).toHaveLength(0);
     expect((await store.getById(parentId))?.sats).toBe(1);
     expect(await store.listIndexedZapIngests()).toHaveLength(1);
     expect(events.some((event) => event['event'] === 'nostr.zap.rejected')).toBe(false);
+  });
+
+  it('returns before resolving a gift-reply when the later heart lookup succeeds', async () => {
+    class LaterHeartLookupStore extends InMemoryMessageStore {
+      armed = false;
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.armed && this.lookups === 2) {
+          return Promise.resolve(undefined);
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new LaterHeartLookupStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-later-heart-lookup',
+      lightningAddress: 'zap-later-heart-lookup@example.com',
+      messageId: 'm-later-heart-lookup',
+    });
+    await auth.createAccount({
+      id: 'payer-later-heart-lookup',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-later-heart-lookup'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-later-heart-lookup',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-later-heart-lookup',
+      authorAccountId: 'acc-later-heart-lookup',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-later-heart-lookup',
+      paymentHash: 'c2'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-later-heart-lookup',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-later-heart-lookup'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'c2'.repeat(32), amountMsat: 1000 });
+    const ingestArgs = {
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    };
+    await ingest(ingestArgs);
+    await store.updateZapReceiptGift('r-later-heart-lookup', { payerAccountId: null });
+    store.armed = true;
+    store.lookups = 0;
+    await ingest(ingestArgs);
+    expect(store.lookups).toBe(3);
+    expect(await store.getZapReceiptGift('r-later-heart-lookup')).toMatchObject({
+      payerAccountId: null,
+      payerPubkey: null,
+      zapRequestId: null,
+      giftReplyId: null,
+    });
+    expect(await store.listReplies(parentId)).toHaveLength(0);
+    expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listIndexedZapIngests()).toHaveLength(1);
   });
 
   it('notifies a heart when the notice lookup rejects once and the retry resolves the stored heart invoice', async () => {

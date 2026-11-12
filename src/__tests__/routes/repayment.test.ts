@@ -1896,7 +1896,7 @@ describe('repayment from the in-app wallet', () => {
     expect(await response.json()).toMatchObject({ collectedSats: 26 });
   });
 
-  it('reports gifts received after natural funding without changing the debt boundary', async () => {
+  it('reports named and anonymous fiat received through close after natural funding', async () => {
     const { app, messages } = await readyCredit({ goalCurrency: 'USD', rate: true });
     await messages.recordZapReceipt('r-after-funding', CREDIT, 5, {
       usd: '0.05',
@@ -1905,6 +1905,12 @@ describe('repayment from the in-app wallet', () => {
       php: null,
     });
     await messages.updateZapReceiptGift('r-after-funding', { payerAccountId: GIVER });
+    await messages.recordZapReceipt('r-anonymous-after-funding', CREDIT, 4, {
+      usd: '0.04',
+      chf: null,
+      eur: null,
+      php: null,
+    });
     vi.spyOn(messages, 'listCreditPayers').mockResolvedValue([
       {
         accountId: GIVER,
@@ -1922,7 +1928,15 @@ describe('repayment from the in-app wallet', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ collectedSats: 26, collectedAmount: '0.26' });
+    const body = await response.json();
+    expect(body).toMatchObject({ collectedSats: 30, collectedAmount: '0.30' });
+
+    const repeated = await app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toEqual(body);
   });
 
   it('treats an empty frozen fiat snapshot as zero debt on every loan route', async () => {

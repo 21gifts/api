@@ -325,7 +325,7 @@ describe('mergeAccounts', () => {
     expect(converted?.text).toContain('$4::bigint, $5::bigint, $6::timestamptz');
     expect(canonicalPayers?.text).toContain('ORDER BY created_at ASC, id ASC');
     expect(canonicalPayers?.text).not.toContain('ORDER BY created_at DESC');
-    expect(canonicalPayers?.params).toEqual([messageId, true, null]);
+    expect(canonicalPayers?.params).toEqual([messageId, true, null, false]);
     expect(deleted?.params).toEqual([messageId, 0, FROM]);
     expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
   });

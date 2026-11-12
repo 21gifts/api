@@ -890,6 +890,8 @@ export async function indexZapReceipt(args: {
   payerAccountId?: string;
   /** Normalised member comment stored with the payer attribution. */
   payerComment?: string;
+  /** Keep an attributed receipt out of the gift-reply retry queue. */
+  suppressGiftReply?: boolean;
   /**
    * Amounts already stored for this payment. When set, including all nulls,
    * that snapshot is stored. When omitted, no snapshot is stored.
@@ -971,6 +973,7 @@ export async function indexZapReceipt(args: {
   const receiptSettlement = {
     ...(args.payerAccountId === undefined ? {} : { payerAccountId: args.payerAccountId }),
     ...(args.payerComment === undefined ? {} : { comment: args.payerComment }),
+    ...(args.suppressGiftReply === true ? { suppressGiftReply: true } : {}),
     ingest: indexedIngest,
     recordIngest: (row: ZapIngestRow) => args.store.recordZapIngest(row),
   };
@@ -1822,9 +1825,11 @@ async function ingestOneReceipt(
     resolvedPayer = undefined;
   }
   const payerAccountId =
-    resolvedPayer?.kind === 'account' && resolvedPayer.heart !== true
-      ? resolvedPayer.payer.id
-      : undefined;
+    heart && invoice !== undefined
+      ? invoice.payerAccountId
+      : resolvedPayer?.kind === 'account' && resolvedPayer.heart !== true
+        ? resolvedPayer.payer.id
+        : undefined;
   const payerComment =
     resolvedPayer?.kind === 'account' && resolvedPayer.heart !== true
       ? resolvedPayer.text
@@ -1844,6 +1849,7 @@ async function ingestOneReceipt(
     fiat: forumDelta,
     ...(payerAccountId === undefined ? {} : { payerAccountId }),
     ...(payerComment === undefined ? {} : { payerComment }),
+    suppressGiftReply: heart,
   });
   if (!indexed && (await args.store.zapPaymentReceiptId(decoded.paymentHash)) !== event.id) {
     return;
@@ -2139,18 +2145,24 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
   if (noExternalGiftReplyReceiptsFor(args.store).has(event.id)) {
     return;
   }
-  try {
-    const taggedPr = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
-    const pr = typeof taggedPr === 'string' ? taggedPr : '';
-    const decoded = pr === '' ? null : decodeBolt11(pr);
-    if (decoded !== null) {
-      const heartInvoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
-      if (heartInvoice?.heart === true) {
-        return;
+  const taggedPr = event.tags.find((tag) => tag[0] === 'bolt11')?.[1];
+  const pr = typeof taggedPr === 'string' ? taggedPr : '';
+  const decoded = pr === '' ? null : decodeBolt11(pr);
+  if (decoded !== null) {
+    let heartInvoice: MessageInvoiceAttempt | undefined;
+    try {
+      heartInvoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+    } catch {
+      // A retained payer must not bypass a later successful heart lookup.
+      try {
+        heartInvoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
+      } catch {
+        heartInvoice = undefined;
       }
     }
-  } catch {
-    // A thrown lookup is not a heart; the gift-reply path continues.
+    if (heartInvoice?.heart === true) {
+      return;
+    }
   }
   try {
     const receipt = await args.store.getZapReceiptGift(event.id);
