@@ -845,6 +845,41 @@ describe('buildAccountActivity', () => {
     }
   });
 
+  it('omits an identified receipt with a missing fiat snapshot after early close', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 1_000,
+        goalCurrency: 'USD',
+        goalAmount: '10.00',
+        goalTermDays: 1,
+      });
+      await messages.recordZapReceipt('r-missing', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-missing', { payerAccountId: 'acc' });
+      await messages.closeCredit('loan', new Date('2026-06-01T12:01:00.000Z'));
+
+      expect(await activity({ messages })).toEqual(EMPTY);
+      expect(
+        await activity({
+          acc: account({ id: 'author', username: 'bob' }),
+          messages,
+        }),
+      ).toEqual(EMPTY);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('lowers both balances after a repayment and leaves the outstanding fiat null', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));

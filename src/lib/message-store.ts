@@ -4625,6 +4625,13 @@ export class InMemoryMessageStore implements MessageStore {
       if (!owed && !credit) {
         continue;
       }
+      const payerSnapshot = this.#creditPayerSnapshots.get(receipt.messageId);
+      if (
+        message.goalDebtFrozen === true &&
+        (payerSnapshot?.unitsByAccount.get(receipt.payerAccountId) ?? 0n) <= 0n
+      ) {
+        continue;
+      }
       const ingest = this.#oldestIndexedIngest(eventId, receipt.messageId);
       out.push({
         at: new Date(receipt.recordedAt.getTime()),
@@ -8600,8 +8607,8 @@ export class PostgresMessageStore implements MessageStore {
     }>(
       `SELECT COALESCE(r.recorded_at, m.goal_funded_at, m.created_at) AS at,
               r.sats AS sats,
-              (m.account_id = $1) AS owed,
-              (r.payer_account_id = $1) AS credit,
+              (m.account_id = $1::uuid) AS owed,
+              (r.payer_account_id = $1::uuid) AS credit,
               'grant' AS kind,
               i.fiat_usd::text AS amount_usd,
               i.fiat_chf::text AS amount_chf,
@@ -8620,17 +8627,27 @@ export class PostgresMessageStore implements MessageStore {
        ) i ON true
        WHERE m.goal_repayable IS TRUE
          AND r.payer_account_id IS NOT NULL
-         AND (m.account_id = $1 OR r.payer_account_id = $1)
+         AND (m.account_id = $1::uuid OR r.payer_account_id = $1::uuid)
          AND (
            m.goal_funded_at IS NULL
            OR r.recorded_at IS NULL
            OR r.recorded_at <= m.goal_funded_at
          )
+         AND (
+           m.goal_debt_frozen IS NOT TRUE
+           OR EXISTS (
+             SELECT 1
+             FROM message_credit_payer_snapshot snapshot
+             WHERE snapshot.message_id = r.message_id
+               AND snapshot.account_id = r.payer_account_id
+               AND snapshot.units > 0
+           )
+         )
        UNION ALL
        SELECT p.paid_at AS at,
               p.due_sats AS sats,
-              (m.account_id = $1) AS owed,
-              (p.recipient_account_id = $1) AS credit,
+              (m.account_id = $1::uuid) AS owed,
+              (p.recipient_account_id = $1::uuid) AS credit,
               'repayment' AS kind,
               NULL::text AS amount_usd,
               NULL::text AS amount_chf,
@@ -8638,7 +8655,7 @@ export class PostgresMessageStore implements MessageStore {
               NULL::text AS amount_php
        FROM message_repayment p
        JOIN message m ON m.id = p.message_id
-       WHERE (m.account_id = $1 OR p.recipient_account_id = $1)
+       WHERE (m.account_id = $1::uuid OR p.recipient_account_id = $1::uuid)
          AND NOT EXISTS (
            SELECT 1
            FROM message_repayment_part part
@@ -8649,8 +8666,8 @@ export class PostgresMessageStore implements MessageStore {
        UNION ALL
        SELECT part.paid_at AS at,
               part.sats AS sats,
-              (m.account_id = $1) AS owed,
-              (part.recipient_account_id = $1) AS credit,
+              (m.account_id = $1::uuid) AS owed,
+              (part.recipient_account_id = $1::uuid) AS credit,
               'repayment' AS kind,
               NULL::text AS amount_usd,
               NULL::text AS amount_chf,
@@ -8658,7 +8675,7 @@ export class PostgresMessageStore implements MessageStore {
               NULL::text AS amount_php
        FROM message_repayment_part part
        JOIN message m ON m.id = part.message_id
-       WHERE m.account_id = $1 OR part.recipient_account_id = $1`,
+       WHERE m.account_id = $1::uuid OR part.recipient_account_id = $1::uuid`,
       [accountId],
     );
     return rows.map((row) => ({

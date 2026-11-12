@@ -11591,6 +11591,7 @@ describe('PostgresMessageStore', () => {
       expect(await store.listCreditPayers(id)).toEqual([
         { accountId: 'giver', sats: 10, usd: expected, chf: null, eur: null, php: null },
       ]);
+      expect(await store.listLoanLedger('giver')).toHaveLength(expected === '0.00' ? 0 : 1);
     }
   });
 
@@ -11672,6 +11673,7 @@ describe('PostgresMessageStore', () => {
     expect(await store.listCreditPayers('late-payer-close')).toEqual([
       { accountId: 'giver', sats: 100, usd: '0.00', chf: null, eur: null, php: null },
     ]);
+    expect(await store.listLoanLedger('giver')).toEqual([]);
   });
 
   it('marks debt frozen only for an early fiat close', async () => {
@@ -12227,6 +12229,10 @@ describe('PostgresMessageStore', () => {
     expect(text).toMatch(/goal_funded_at IS NULL/);
     expect(text).toMatch(/recorded_at <= m.goal_funded_at/);
     expect(text).not.toMatch(/recorded_at <= COALESCE\(m.goal_closed_at/);
+    expect(text).toMatch(/goal_debt_frozen IS NOT TRUE/);
+    expect(text).toMatch(/message_credit_payer_snapshot snapshot/);
+    expect(text).toMatch(/snapshot\.units > 0/);
+    expect(text.match(/\$1(?!::uuid)/g)).toBeNull();
     expect(text).toMatch(/NOT EXISTS[\s\S]*message_repayment_part/);
     expect(text).toMatch(/message_repayment/);
     expect(text).toMatch(/due_sats/);
