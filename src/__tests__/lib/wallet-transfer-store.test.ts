@@ -81,6 +81,22 @@ describe('InMemoryWalletTransferStore', () => {
     });
   });
 
+  it('treats counterparties as non-shops when no shop predicate is provided', async () => {
+    const store = new InMemoryWalletTransferStore({
+      accountForPubkey: async (pubkey) => (pubkey === MEMBER ? 'member-account' : null),
+    });
+    await expect(
+      store.upsertTransfer(
+        row({
+          status: 'completed',
+          counterpartyPubkey: MEMBER,
+          transferUpdatedAt: new Date('2026-11-12T09:00:00.000Z'),
+        }),
+      ),
+    ).resolves.toEqual({ inserted: true, updated: false, shopPaymentBecameCompleted: false });
+    await expect(store.hasShopPayment('account', '2026-11-12', '2026-11-12')).resolves.toBe(false);
+  });
+
   it('covers default resolvers and excludes non-shop transfer shapes and days', async () => {
     const defaults = new InMemoryWalletTransferStore();
     await expect(defaults.listWallets()).resolves.toEqual([]);
