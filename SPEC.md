@@ -8818,7 +8818,7 @@ the 1000, and not necessarily the page length). A generic row whose
 matching mention is outside the 1000-row scan stays. Member JSON never
 includes recipient or actor account ids. Each
 item `type` is `"forum_post"`, `"forum_reply"`, `"forum_mention"`, `"zap"`,
-`"moderator_appointed"`, or `"moderator_proposal"`.
+`"heart"`, `"moderator_appointed"`, or `"moderator_proposal"`.
 
 Each item carries a required boolean `personal`: true exactly when level
 `mentions` would keep that row (`notificationsMatchingLevel` at
