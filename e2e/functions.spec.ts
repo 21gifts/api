@@ -2677,6 +2677,11 @@ test('Function: zapReceiptIngest — free in-app payments are off on the default
 test('Function: indexZapReceipt — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: ZapIngestRecordError — default boot cannot inject an atomic zap ingest write failure', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: normalizeSignedEvent — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

@@ -61,6 +61,7 @@ interface FakeDatabaseOptions {
     goal_currency: string | null;
     goal_amount: string | null;
     goal_term_days: number | null;
+    goal_debt_frozen?: boolean;
   }[];
   /** Original credit payers used to reconstruct each legacy share. */
   repaymentPayers?: readonly {
@@ -70,10 +71,16 @@ interface FakeDatabaseOptions {
     chf: string | null;
     eur: string | null;
     php: string | null;
+    debt_frozen?: boolean;
+    goal_currency?: string | null;
+    snapshot_currency?: string | null;
+    snapshot_units?: string | number | null;
   }[];
+  /** Anonymous sats returned when legacy debt reconstruction asks for them. */
+  unassignedRepaymentSats?: number;
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
-  /** Successful, unpaid repayment invoices on a credit both identities funded. */
+  /** Successful, unpaid repayment invoices on affected source-funded credits. */
   openRepaymentInvoices?: readonly { created_at: Date; pr: string }[];
 }
 
@@ -100,7 +107,7 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
             return (options.repaymentPayers ?? []) as T[];
           }
           if (text.includes('payer_account_id IS NULL') && text.includes('SUM(r.sats)')) {
-            return [{ sats: 0 }] as T[];
+            return [{ sats: options.unassignedRepaymentSats ?? 0 }] as T[];
           }
           if (text.includes('FROM message AS credit') && text.includes('source_gift')) {
             return (options.repaymentConflicts ?? []) as T[];
@@ -321,6 +328,52 @@ describe('mergeAccounts', () => {
     expect(canonicalPayers?.params).toEqual([messageId, true, null]);
     expect(deleted?.params).toEqual([messageId, 0, FROM]);
     expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
+  });
+
+  it('reconstructs frozen fiat legacy debt from named snapshots without anonymous sats', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const { db, queries } = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 4000,
+          paid_at: paidAt,
+          goal_currency: 'USD',
+          goal_amount: '9.99',
+          goal_term_days: 1,
+          goal_debt_frozen: true,
+        },
+      ],
+      repaymentPayers: [
+        {
+          account_id: FROM,
+          sats: 40,
+          usd: null,
+          chf: null,
+          eur: null,
+          php: null,
+          debt_frozen: true,
+          goal_currency: 'USD',
+          snapshot_currency: 'USD',
+          snapshot_units: 40,
+        },
+      ],
+      unassignedRepaymentSats: 60,
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+    const converted = queries.find(
+      (query) =>
+        query.text.includes('INSERT INTO message_repayment_part') && query.params[0] === messageId,
+    );
+    expect(converted?.params).toEqual([messageId, 0, FROM, '40', 4000, paidAt]);
+    expect(queries.some((query) => query.text.includes('payer_account_id IS NULL'))).toBe(false);
   });
 
   it('refuses a merge without writes when legacy loan units cannot be reconstructed', async () => {

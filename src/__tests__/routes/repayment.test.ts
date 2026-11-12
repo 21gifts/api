@@ -1809,6 +1809,50 @@ describe('repayment from the in-app wallet', () => {
     expect(noAuth.status).toBe(401);
   });
 
+  it('keeps the close receipt fixed when an existing gift invoice settles later', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(now()));
+    try {
+      const { app, messages } = await readyCredit({
+        fundedAt: null,
+        goalCurrency: 'USD',
+        goalAmount: '2.10',
+        rate: true,
+      });
+      await messages.recordInvoiceAttempt({
+        ...openPartAttempt(7, 7n, 21n, new Date(now() - 1_000)),
+        payerAccountId: GIVER,
+        authorAccountId: AUTHOR,
+        description: null,
+      });
+      const first = await app.request(`/messages/${CREDIT}/repayment/close`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc' },
+      });
+      expect(first.status).toBe(200);
+      const closed = await first.json();
+
+      vi.setSystemTime(new Date(now() + 86_400_000));
+      await messages.recordZapReceipt('late-named-gift', CREDIT, 5, {
+        usd: '0.05',
+        chf: null,
+        eur: null,
+        php: null,
+      });
+      await messages.updateZapReceiptGift('late-named-gift', { payerAccountId: GIVER });
+      await messages.recordZapReceipt('late-anonymous-gift', CREDIT, 2, null);
+
+      const again = await app.request(`/messages/${CREDIT}/repayment/close`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc' },
+      });
+      expect(again.status).toBe(200);
+      expect(await again.json()).toEqual(closed);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('takes the message lock before collecting the close response snapshot', async () => {
     const { app, messages } = await readyCredit({ fundedAt: null });
     const withMessageLock = messages.withMessageLock.bind(messages);
@@ -2089,8 +2133,10 @@ describe('repayment from the in-app wallet', () => {
       expect(status.status).toBe(200);
       const body = (await status.json()) as {
         repayments: { dayIndex: number; paidSats: number; dueSats: number; status: string }[];
+        next: { sats: number };
       };
       expect(body.repayments[0]).toMatchObject({ paidSats: 5, dueSats: 5, status: 'due' });
+      expect(body.next.sats).toBe(5);
       const due = await app.request(`/messages/${CREDIT}/repayment/due`, {
         method: 'POST',
         headers: { authorization: 'Bearer acc' },
@@ -2104,6 +2150,33 @@ describe('repayment from the in-app wallet', () => {
         )?.description,
       ).toBe(repaymentPartDescription(0, GIVER, 1, 5n, 10n));
     });
+  });
+
+  it('shows the whole unpaid remainder in next.sats after a partial settlement', async () => {
+    const { app, messages } = await readyCredit({ termDays: 2 });
+    await messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      partIndex: 0,
+      units: 5n,
+      sats: 5,
+      shareUnits: 10n,
+      paidAt: new Date(now()),
+    });
+    await messages.recordInvoiceAttempt({
+      ...openPartAttempt(2, 2n, 10n, new Date(now())),
+      payerAccountId: 'acc',
+      authorAccountId: GIVER,
+      description: repaymentPartDescription(0, GIVER, 1, 2n, 10n),
+    });
+
+    const body = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as {
+      repayments: { dueSats: number }[];
+      next: { sats: number };
+    };
+    expect(body.repayments[0]?.dueSats).toBe(5);
+    expect(body.next.sats).toBe(5);
   });
 
   it('blocks a new part while a legacy full-share bill is still payable', async () => {

@@ -432,6 +432,7 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
   let daysDue = 0;
   let daysPaid = 0;
   let next: { dayIndex: number; sats: number; recipientAccountId: string } | null = null;
+  let price: Awaited<ReturnType<typeof sharePricer>> | null = null;
   if (fundedAt !== null) {
     const share = await nextShare(deps, row, nowMs);
     if (share.error !== null) {
@@ -439,16 +440,21 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
     }
     daysDue = share.daysDue;
     daysPaid = share.daysPaid;
-    next =
-      share.share === null
-        ? null
-        : {
-            dayIndex: share.share.dayIndex,
-            sats: share.share.sats,
-            recipientAccountId: share.share.accountId,
-          };
+    price = lines.some((line) => line.status === 'due') ? await sharePricer(deps, row) : null;
+    if (share.share !== null) {
+      const nextShareState = share.share;
+      const nextLine = lines.find(
+        (line) =>
+          line.dayIndex === nextShareState.dayIndex && line.accountId === nextShareState.accountId,
+      ) as (typeof lines)[number];
+      const unpaidSats = (price as (units: bigint) => number)(nextLine.units - nextLine.paidUnits);
+      next = {
+        dayIndex: nextShareState.dayIndex,
+        sats: unpaidSats,
+        recipientAccountId: nextShareState.accountId,
+      };
+    }
   }
-  const price = lines.some((line) => line.status === 'due') ? await sharePricer(deps, row) : null;
   const waits = (line: (typeof lines)[number]): boolean =>
     line.status === 'due' && !(names.get(line.accountId) as { canReceive: boolean }).canReceive;
   return c.json(
@@ -1198,17 +1204,18 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
     if (owed === 'unavailable') {
       return c.json({ error: 'Ask amount is unavailable' }, 503);
     }
-    // Debt stays bounded at funding, but the close receipt reports every gift
-    // visible in the current locked receipt snapshot, including later gifts.
+    // Debt stays bounded at funding. The close receipt is also immutable: an
+    // idempotent call sees only receipts recorded through the first close.
     const fiat = isFiatCredit(closedRow);
     const collectedPayers = await locked.previewCreditPayerSnapshot(
       closedRow.id,
       fiat ? (closedRow.goalCurrency as GoalFiatCode) : 'USD',
+      closed.closedAt,
     );
     const collectedUnits = collectedPayers.reduce((sum, payer) => sum + payer.units, 0n);
     const collectedSats =
       collectedPayers.reduce((sum, payer) => sum + payer.sats, 0) +
-      (await locked.sumUnassignedCreditSats(closedRow.id, true));
+      (await locked.sumUnassignedCreditSats(closedRow.id, true, closed.closedAt));
     return c.json(
       {
         fundedAt: closed.fundedAt.toISOString(),

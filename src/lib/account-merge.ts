@@ -1,6 +1,6 @@
 import type { SqlClient } from '@/lib/auth/sql';
 import { invoiceStillOpen } from '@/lib/bolt11';
-import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
+import { fiatAmountToCents, payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import { PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
@@ -64,6 +64,7 @@ interface LegacyRepaymentRow {
   goal_currency: string | null;
   goal_amount: string | null;
   goal_term_days: number | string | null;
+  goal_debt_frozen: boolean;
 }
 
 interface OpenRepaymentInvoiceRow {
@@ -72,6 +73,12 @@ interface OpenRepaymentInvoiceRow {
 }
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
+const FROZEN_FIAT_FIELDS = {
+  USD: 'usd',
+  CHF: 'chf',
+  EUR: 'eur',
+  PHP: 'php',
+} as const;
 
 /** Quote a catalog identifier after the strict public-schema allowlist check. */
 function quoteIdentifier(identifier: string): string {
@@ -109,11 +116,11 @@ function quoteIdentifier(identifier: string): string {
  * Frozen credit snapshots are combined by message. Before either identity is
  * moved, the merge refuses without writes when both identities gave to one
  * credit with a settled repayment, or when a still-payable repayment invoice
- * names the source as its recipient. Otherwise, legacy full-share repayments
- * are reconstructed from the original loan schedule and converted to
- * canonical parts. A schedule that cannot be reconstructed refuses the merge
- * without writes. Parts from both identities are then moved and reindexed
- * without losing units or sats.
+ * embeds either identity on an affected source-funded credit. Otherwise,
+ * legacy full-share repayments are reconstructed from the original loan
+ * schedule and converted to canonical parts. A schedule that cannot be
+ * reconstructed refuses the merge without writes. Parts from both identities
+ * are then moved and reindexed without losing units or sats.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -241,7 +248,7 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          AND EXISTS (
            SELECT 1 FROM nostr_zap_receipt AS source_gift
            WHERE source_gift.message_id = credit.id
-             AND source_gift.payer_account_id = $1
+             AND source_gift.payer_account_id = $1::uuid
              AND (
                credit.goal_funded_at IS NULL
                OR source_gift.recorded_at IS NULL
@@ -251,7 +258,7 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          AND EXISTS (
            SELECT 1 FROM nostr_zap_receipt AS survivor_gift
            WHERE survivor_gift.message_id = credit.id
-             AND survivor_gift.payer_account_id = $2
+             AND survivor_gift.payer_account_id = $2::uuid
              AND (
                credit.goal_funded_at IS NULL
                OR survivor_gift.recorded_at IS NULL
@@ -288,7 +295,7 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          AND EXISTS (
            SELECT 1 FROM nostr_zap_receipt AS source_gift
            WHERE source_gift.message_id = credit.id
-             AND source_gift.payer_account_id = $1
+             AND source_gift.payer_account_id = $1::uuid
              AND (
                credit.goal_funded_at IS NULL
                OR source_gift.recorded_at IS NULL
@@ -322,10 +329,11 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       `SELECT legacy.message_id, legacy.day_index, legacy.recipient_account_id,
               legacy.due_sats, legacy.paid_at, message.goal_currency,
               COALESCE(NULLIF(message.goal_amount_text, ''), message.goal_amount::text) AS goal_amount,
-              message.goal_term_days
+              message.goal_term_days, message.goal_debt_frozen
        FROM message_repayment AS legacy
        JOIN message ON message.id = legacy.message_id
-       WHERE legacy.recipient_account_id = $1 OR legacy.recipient_account_id = $2
+       WHERE legacy.recipient_account_id = $1::uuid
+          OR legacy.recipient_account_id = $2::uuid
        ORDER BY legacy.message_id, legacy.day_index, legacy.recipient_account_id
        FOR UPDATE OF legacy, message`,
       accountParams,
@@ -334,15 +342,29 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     const repaymentStore = new PostgresMessageStore(tx as SqlClient);
     for (const legacy of legacyRepayments) {
       const payers = await repaymentStore.listCreditPayers(legacy.message_id);
-      payers.push({
-        accountId: '',
-        sats: await repaymentStore.sumUnassignedCreditSats(legacy.message_id),
-        usd: null,
-        chf: null,
-        eur: null,
-        php: null,
-      });
-      const owed = payerDebtUnits(legacy.goal_currency, legacy.goal_amount, payers);
+      const frozenField =
+        legacy.goal_debt_frozen === true &&
+        legacy.goal_currency !== null &&
+        legacy.goal_currency in FROZEN_FIAT_FIELDS
+          ? FROZEN_FIAT_FIELDS[legacy.goal_currency as keyof typeof FROZEN_FIAT_FIELDS]
+          : undefined;
+      if (frozenField === undefined) {
+        payers.push({
+          accountId: '',
+          sats: await repaymentStore.sumUnassignedCreditSats(legacy.message_id),
+          usd: null,
+          chf: null,
+          eur: null,
+          php: null,
+        });
+      }
+      const owed =
+        frozenField === undefined
+          ? payerDebtUnits(legacy.goal_currency, legacy.goal_amount, payers)
+          : payers.map((payer) => ({
+              accountId: payer.accountId,
+              units: fiatAmountToCents(payer[frozenField] as string) as bigint,
+            }));
       if (owed === 'unavailable') {
         return { ok: false, error: 'repayment_unavailable' };
       }

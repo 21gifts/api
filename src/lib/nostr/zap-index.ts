@@ -16,7 +16,12 @@ import {
   unsignedNostrDefaults,
   type MessageRow,
 } from '@/lib/message';
-import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
+import {
+  ZapIngestRecordError,
+  type MessageInvoiceAttempt,
+  type MessageStore,
+  type ZapIngestRow,
+} from '@/lib/message-store';
 import type { FiatAmounts } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
@@ -702,19 +707,13 @@ export async function settleInvoiceManually(args: {
           now: args.now,
           ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
         });
-  const stored = await args.store.withMessageLock(message.id, async (lockedStore) => {
-    if (!(await lockedStore.claimZapPayment(paymentHash, receiptId, claimedAt))) {
-      return false;
-    }
-    if (resumed) {
-      return true;
-    }
-    return lockedStore.recordZapReceipt(receiptId, message.id, invoice.amountSats, delta, true);
-  });
-  if (!stored) {
-    return { ok: false, reason: 'duplicate' };
+  let payer: Account | undefined;
+  try {
+    payer = await args.auth.getAccount(invoice.payerAccountId);
+  } catch {
+    payer = undefined;
+    logEvent('nostr.zap.gift_reply.failed', { receiptId });
   }
-
   const tags: string[][] = [];
   if (typeof message.eventId === 'string' && message.eventId !== '') {
     tags.push(['e', message.eventId]);
@@ -749,17 +748,30 @@ export async function settleInvoiceManually(args: {
     }),
     delta,
   );
-  await args.store.recordZapIngest(ingest);
+  const stored = await args.store.withMessageLock(message.id, async (lockedStore) => {
+    if (!(await lockedStore.claimZapPayment(paymentHash, receiptId, claimedAt))) {
+      return false;
+    }
+    if (resumed) {
+      await lockedStore.updateZapReceiptGift(receiptId, {
+        payerAccountId: invoice.payerAccountId,
+        comment: commentFromZapRequest(invoice.zapRequest),
+      });
+      await lockedStore.recordZapIngest(ingest);
+      return true;
+    }
+    return lockedStore.recordZapReceipt(receiptId, message.id, invoice.amountSats, delta, true, {
+      payerAccountId: invoice.payerAccountId,
+      comment: commentFromZapRequest(invoice.zapRequest),
+      ingest,
+      recordIngest: (row) => args.store.recordZapIngest(row),
+    });
+  });
+  if (!stored) {
+    return { ok: false, reason: 'duplicate' };
+  }
   decisionsFor(args.store).set(receiptId, decisionKey(ingest.outcome, ingest.reason));
   logEvent('nostr.zap.settled_manually', { messageId: message.id, sats: invoice.amountSats });
-
-  let payer: Account | undefined;
-  try {
-    payer = await args.auth.getAccount(invoice.payerAccountId);
-  } catch {
-    payer = undefined;
-    logEvent('nostr.zap.gift_reply.failed', { receiptId });
-  }
   if (!hidden && message.accountId !== null && invoice.heart === true) {
     try {
       await notifyHeart({
@@ -851,8 +863,9 @@ export async function settleInvoiceManually(args: {
  * @param receipt - Kind 9735.
  * @param providerPubkey - LNURL `nostrPubkey` hex.
  * @param amountSats - Whole sats from the paid invoice.
- * When `paymentHash` is supplied, its claim and the message credit are written
- * under one per-message lock, with that advisory lock acquired first.
+ * When `paymentHash` is supplied, its claim, payer attribution, indexed fiat,
+ * and message credit are written under one per-message lock, with that
+ * advisory lock acquired first.
  *
  * @returns Whether sats were added.
  */
@@ -873,6 +886,10 @@ export async function indexZapReceipt(args: {
   now?: () => number;
   /** Payment hash claimed under the same message lock as the receipt credit. */
   paymentHash?: string;
+  /** Known member payer stored with the receipt credit. */
+  payerAccountId?: string;
+  /** Normalised member comment stored with the payer attribution. */
+  payerComment?: string;
   /**
    * Amounts already stored for this payment. When set, including all nulls,
    * that snapshot is stored. When omitted, no snapshot is stored.
@@ -938,31 +955,61 @@ export async function indexZapReceipt(args: {
           ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
         });
   const paymentHash = args.paymentHash;
+  const indexedIngest = applyIngestFiat(
+    zapIngestRow({
+      receiptId: args.receipt.id,
+      noteEventId,
+      messageId: args.messageId,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: args.amountSats,
+      receiptPubkey: args.receipt.pubkey,
+      receipt,
+    }),
+    delta,
+  );
+  const receiptSettlement = {
+    ...(args.payerAccountId === undefined ? {} : { payerAccountId: args.payerAccountId }),
+    ...(args.payerComment === undefined ? {} : { comment: args.payerComment }),
+    ingest: indexedIngest,
+    recordIngest: (row: ZapIngestRow) => args.store.recordZapIngest(row),
+  };
   let settlement: 'added' | 'duplicate' | 'settled';
-  if (paymentHash === undefined) {
-    settlement = (await args.store.recordZapReceipt(
-      args.receipt.id,
-      args.messageId,
-      args.amountSats,
-      delta,
-    ))
-      ? 'added'
-      : 'duplicate';
-  } else {
-    settlement = await args.store.withMessageLock(args.messageId, async (lockedStore) => {
-      if (!(await lockedStore.claimZapPayment(paymentHash, args.receipt.id, new Date(now())))) {
-        return 'settled';
-      }
-      return (await lockedStore.recordZapReceipt(
+  try {
+    if (paymentHash === undefined) {
+      settlement = (await args.store.recordZapReceipt(
         args.receipt.id,
         args.messageId,
         args.amountSats,
         delta,
-        true,
+        false,
+        receiptSettlement,
       ))
         ? 'added'
         : 'duplicate';
-    });
+    } else {
+      settlement = await args.store.withMessageLock(args.messageId, async (lockedStore) => {
+        if (!(await lockedStore.claimZapPayment(paymentHash, args.receipt.id, new Date(now())))) {
+          return 'settled';
+        }
+        return (await lockedStore.recordZapReceipt(
+          args.receipt.id,
+          args.messageId,
+          args.amountSats,
+          delta,
+          true,
+          receiptSettlement,
+        ))
+          ? 'added'
+          : 'duplicate';
+      });
+    }
+  } catch (error: unknown) {
+    if (!(error instanceof ZapIngestRecordError)) {
+      throw error;
+    }
+    logEvent('nostr.zap.ingest.record_failed');
+    return false;
   }
   if (settlement !== 'added') {
     if (settlement === 'settled') {
@@ -984,21 +1031,9 @@ export async function indexZapReceipt(args: {
     return false;
   }
   logEvent('nostr.zap.indexed', { messageId: args.messageId, sats: args.amountSats });
-  await persistZapIngest(
-    args.store,
-    applyIngestFiat(
-      zapIngestRow({
-        receiptId: args.receipt.id,
-        noteEventId,
-        messageId: args.messageId,
-        outcome: 'indexed',
-        reason: null,
-        amountSats: args.amountSats,
-        receiptPubkey: args.receipt.pubkey,
-        receipt,
-      }),
-      delta,
-    ),
+  decisionsFor(args.store).set(
+    args.receipt.id,
+    decisionKey(indexedIngest.outcome, indexedIngest.reason),
   );
   return true;
 }
@@ -1767,6 +1802,33 @@ async function ingestOneReceipt(
           now: args.now,
           ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
         });
+  let resolvedPayer: Awaited<ReturnType<typeof resolveZapPayer>>;
+  if ((await args.store.getZapReceiptGift(event.id)) === undefined) {
+    try {
+      resolvedPayer = await resolveZapPayer({
+        store: args.store,
+        auth: args.auth,
+        bolt11: pr,
+        paymentHash: decoded.paymentHash,
+        tags: event.tags,
+        descriptionHash: inspectBolt11(pr)?.descriptionHash ?? null,
+        amountMsat: decoded.amountMsat,
+        noteEventId,
+      });
+    } catch {
+      resolvedPayer = undefined;
+    }
+  } else {
+    resolvedPayer = undefined;
+  }
+  const payerAccountId =
+    resolvedPayer?.kind === 'account' && resolvedPayer.heart !== true
+      ? resolvedPayer.payer.id
+      : undefined;
+  const payerComment =
+    resolvedPayer?.kind === 'account' && resolvedPayer.heart !== true
+      ? resolvedPayer.text
+      : undefined;
   const indexed = await indexZapReceipt({
     store: args.store,
     messageId: row.id,
@@ -1780,27 +1842,14 @@ async function ingestOneReceipt(
     paymentHash: decoded.paymentHash,
     ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
     fiat: forumDelta,
+    ...(payerAccountId === undefined ? {} : { payerAccountId }),
+    ...(payerComment === undefined ? {} : { payerComment }),
   });
   if (!indexed && (await args.store.zapPaymentReceiptId(decoded.paymentHash)) !== event.id) {
     return;
   }
   if (indexed && row.accountId !== null) {
-    let payer: Account | undefined;
-    try {
-      const resolved = await resolveZapPayer({
-        store: args.store,
-        auth: args.auth,
-        bolt11: pr,
-        paymentHash: decoded.paymentHash,
-        tags: event.tags,
-        descriptionHash: inspectBolt11(pr)?.descriptionHash ?? null,
-        amountMsat: decoded.amountMsat,
-        noteEventId,
-      });
-      payer = resolved?.kind === 'account' ? resolved.payer : undefined;
-    } catch {
-      payer = undefined;
-    }
+    const payer = resolvedPayer?.kind === 'account' ? resolvedPayer.payer : undefined;
     if (heart && invoice !== undefined) {
       try {
         await notifyHeart({
@@ -2190,7 +2239,7 @@ async function tryEnsureGiftReply(event: NostrEventFrame, args: GiftReplyDeps): 
  * @param args - Store, auth, bolt11, payment hash, receipt tags, the
  *   invoice description hash, the invoice amount in millisats, and the zapped
  *   note's event id (the last three bind a 9734 request to this receipt).
- * @returns `kind: 'account'` with the member payer and comment,
+ * @returns `kind: 'account'` with the member payer, comment, and heart flag,
  *   `kind: 'external'` with the verified request pubkey, request id and
  *   comment, or `undefined` when unknown.
  */
@@ -2204,7 +2253,7 @@ async function resolveZapPayer(args: {
   amountMsat: number | null;
   noteEventId: string;
 }): Promise<
-  | { kind: 'account'; payer: Account; text: string }
+  | { kind: 'account'; payer: Account; text: string; heart: boolean }
   | { kind: 'external'; pubkey: string; requestId: string; text: string }
   | undefined
 > {
@@ -2216,13 +2265,13 @@ async function resolveZapPayer(args: {
     if (payer === undefined) {
       return undefined;
     }
-    return { kind: 'account', payer, text };
+    return { kind: 'account', payer, text, heart: invoice.heart === true };
   }
   const parsed = parseVerifiedZapRequest(args.tags);
   if (parsed !== null) {
     const payer = await args.auth.getAccountByPubkey(parsed.pubkey);
     if (payer !== undefined) {
-      return { kind: 'account', payer, text: parsed.content };
+      return { kind: 'account', payer, text: parsed.content, heart: false };
     }
     const external = verifiedExternalZapRequest({
       tags: args.tags,

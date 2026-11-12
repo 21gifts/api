@@ -4774,9 +4774,10 @@ Under those locks and before any write, the merge is refused when both
 identities gave to the same repayable credit and that credit has any settled
 legacy repayment or repayment part. Combining the giver shares could otherwise
 change their rounded day slices and make paid debt due again. It is also refused
-while a successful, unpaid, unexpired `repay:` or `repayp:` invoice on that
-shared credit names either identity as its recipient, because combining their
-shares can make either open reservation disagree with the merged schedule.
+while a successful, unpaid, unexpired `repay:` or `repayp:` invoice embeds
+either identity on any affected source-funded credit. The survivor need not
+have given to that credit: the open reservation cannot be repointed after the
+source identity is merged.
 
 An invalid body is **400**
 `{ "error": "Expected a JSON body with \"from\" and \"into\"" }`

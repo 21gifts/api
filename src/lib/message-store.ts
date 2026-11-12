@@ -1328,9 +1328,14 @@ export interface MessageStore {
    *
    * @param messageId - Forum note.
    * @param includeAfterFunding - Include receipts after the natural funding boundary.
+   * @param through - Inclusive receipt boundary; omitted means no close boundary.
    * @returns Those sats. They are not part of the repayment plan.
    */
-  sumUnassignedCreditSats(messageId: string, includeAfterFunding?: boolean): Promise<number>;
+  sumUnassignedCreditSats(
+    messageId: string,
+    includeAfterFunding?: boolean,
+    through?: Date,
+  ): Promise<number>;
 
   /**
    * Repayment shares already paid on one credit.
@@ -1493,6 +1498,7 @@ export interface MessageStore {
    * @param messageId - Forum row to credit.
    * @param sats - Whole sats to add.
    * @param alreadyLocked - True only from a `withMessageLock` callback.
+   * @param settlement - Payer and indexed fiat persisted with the receipt.
    * @returns `true` when the receipt was new and sats were added; `false` on
    *   duplicate receipt id (no second add).
    */
@@ -1502,6 +1508,7 @@ export interface MessageStore {
     sats: number,
     delta: FiatAmounts | null,
     alreadyLocked?: boolean,
+    settlement?: ZapReceiptSettlement,
   ): Promise<boolean>;
 
   /** Append one POST /messages/:id/invoice attempt (success or failure). */
@@ -1825,6 +1832,30 @@ export type ZapReceiptGiftPatch = {
   /** Normalised zap comment to reuse on retry. */
   comment?: string;
 };
+
+/** Failure of the indexed ingest row within an atomic receipt write. */
+export class ZapIngestRecordError extends Error {
+  constructor(error: unknown) {
+    super(String(error).replace(/^Error: /, ''));
+    this.name = 'ZapIngestRecordError';
+  }
+}
+
+/** Receipt metadata that must become visible with its credit. */
+export type ZapReceiptSettlement = {
+  /** Known 21.gifts payer account. */
+  payerAccountId?: string;
+  /** Normalised payer comment used by the later gift-reply write. */
+  comment?: string;
+} & (
+  | { ingest?: undefined; recordIngest?: undefined }
+  | {
+      /** Indexed per-receipt fiat snapshot. */
+      ingest: ZapIngestRow;
+      /** In-memory write bound to the caller's store adapter. PostgreSQL writes in SQL. */
+      recordIngest: (row: ZapIngestRow) => Promise<void>;
+    }
+);
 
 /** Stored zap receipt including gift-reply link state. */
 export interface ZapReceiptGiftState {
@@ -4522,14 +4553,20 @@ export class InMemoryMessageStore implements MessageStore {
     );
   }
 
-  sumUnassignedCreditSats(messageId: string, includeAfterFunding = false): Promise<number> {
+  sumUnassignedCreditSats(
+    messageId: string,
+    includeAfterFunding = false,
+    through?: Date,
+  ): Promise<number> {
     const freezeAt = this.#creditFreezeAt.get(messageId) ?? null;
+    const boundary = through?.getTime();
     let sats = 0;
     for (const receipt of this.#receipts.values()) {
       if (
         receipt.messageId === messageId &&
         receipt.payerAccountId === null &&
-        (includeAfterFunding || receiptCountsTowardCredit(receipt.recordedAt, freezeAt))
+        (includeAfterFunding || receiptCountsTowardCredit(receipt.recordedAt, freezeAt)) &&
+        (boundary === undefined || receipt.recordedAt.getTime() <= boundary)
       ) {
         sats += receipt.sats;
       }
@@ -4893,12 +4930,13 @@ export class InMemoryMessageStore implements MessageStore {
     sats: number,
     delta: FiatAmounts | null,
     alreadyLocked = false,
+    settlement?: ZapReceiptSettlement,
   ): Promise<boolean> {
     if (alreadyLocked) {
-      return this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta);
+      return this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta, settlement);
     }
     return this.withMessageLock(messageId, () =>
-      this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta),
+      this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta, settlement),
     );
   }
 
@@ -4907,9 +4945,17 @@ export class InMemoryMessageStore implements MessageStore {
     messageId: string,
     sats: number,
     delta: FiatAmounts | null,
+    settlement?: ZapReceiptSettlement,
   ): Promise<boolean> {
     if (this.#receipts.has(receiptEventId)) {
       return false;
+    }
+    if (settlement?.ingest !== undefined) {
+      try {
+        await settlement.recordIngest(settlement.ingest);
+      } catch (error: unknown) {
+        throw new ZapIngestRecordError(error);
+      }
     }
     const at = new Date();
     const before = this.#rows.find((row) => row.id === messageId);
@@ -4918,11 +4964,11 @@ export class InMemoryMessageStore implements MessageStore {
     this.#receipts.set(receiptEventId, {
       messageId,
       sats,
-      payerAccountId: null,
+      payerAccountId: settlement?.payerAccountId ?? null,
       payerPubkey: null,
       zapRequestId: null,
       giftReplyId: null,
-      comment: '',
+      comment: settlement?.comment ?? '',
       recordedAt: at,
       fiat: delta === null ? null : { ...delta },
     });
@@ -8416,7 +8462,7 @@ export class PostgresMessageStore implements MessageStore {
          LIMIT 1
        ) i ON true
        JOIN message m ON m.id = r.message_id
-       WHERE r.message_id = $1 AND r.payer_account_id IS NOT NULL
+       WHERE r.message_id = $1::uuid AND r.payer_account_id IS NOT NULL
          AND (
            (
              $2::boolean
@@ -8440,7 +8486,7 @@ export class PostgresMessageStore implements MessageStore {
        SELECT p.*, s.currency AS snapshot_currency, s.units AS snapshot_units
        FROM payers p
        LEFT JOIN message_credit_payer_snapshot s
-         ON s.message_id = $1 AND s.account_id = p.account_id
+        ON s.message_id = $1::uuid AND s.account_id = p.account_id
        ORDER BY p.account_id`,
       [messageId, useFundedBoundary, through ?? null],
     );
@@ -8469,7 +8515,11 @@ export class PostgresMessageStore implements MessageStore {
     });
   }
 
-  async sumUnassignedCreditSats(messageId: string, includeAfterFunding = false): Promise<number> {
+  async sumUnassignedCreditSats(
+    messageId: string,
+    includeAfterFunding = false,
+    through?: Date,
+  ): Promise<number> {
     const rows = await this.#sql.query<{ sats: string | number | null }>(
       `SELECT COALESCE(SUM(r.sats), 0)::bigint AS sats
        FROM nostr_zap_receipt r
@@ -8480,8 +8530,13 @@ export class PostgresMessageStore implements MessageStore {
            OR m.goal_funded_at IS NULL
            OR r.recorded_at IS NULL
            OR r.recorded_at <= m.goal_funded_at
+         )
+         AND (
+           $3::timestamptz IS NULL
+           OR r.recorded_at IS NULL
+           OR r.recorded_at <= $3::timestamptz
          )`,
-      [messageId, includeAfterFunding],
+      [messageId, includeAfterFunding, through ?? null],
     );
     return Number(rows[0]?.sats ?? 0);
   }
@@ -8952,9 +9007,10 @@ export class PostgresMessageStore implements MessageStore {
     sats: number,
     delta: FiatAmounts | null,
     alreadyLocked = false,
+    settlement?: ZapReceiptSettlement,
   ): Promise<boolean> {
     if (alreadyLocked) {
-      return this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta);
+      return this.#recordZapReceiptUnlocked(receiptEventId, messageId, sats, delta, settlement);
     }
     return this.withMessageLock(messageId, (locked) =>
       (locked as PostgresMessageStore).#recordZapReceiptUnlocked(
@@ -8962,6 +9018,7 @@ export class PostgresMessageStore implements MessageStore {
         messageId,
         sats,
         delta,
+        settlement,
       ),
     );
   }
@@ -8971,15 +9028,53 @@ export class PostgresMessageStore implements MessageStore {
     messageId: string,
     sats: number,
     delta: FiatAmounts | null,
+    settlement?: ZapReceiptSettlement,
   ): Promise<boolean> {
-    const inserted = await this.#sql.query<{ event_id: string }>(
-      `WITH settled_at AS (
+    const ingest = settlement?.ingest;
+    const ingestParams: readonly unknown[] =
+      ingest === undefined
+        ? [null, null, null, null, null, null, null, null, null, null, null, null, null, null]
+        : [
+            ingest.id,
+            ingest.createdAt,
+            ingest.receiptId,
+            ingest.noteEventId,
+            ingest.messageId,
+            ingest.outcome,
+            ingest.reason,
+            ingest.amountSats,
+            ingest.receiptPubkey,
+            ingest.receipt,
+            ingest.amountUsd,
+            ingest.amountChf,
+            ingest.amountEur,
+            ingest.amountPhp,
+          ];
+    let inserted: { event_id: string }[];
+    try {
+      inserted = await this.#sql.query<{ event_id: string }>(
+        `WITH settled_at AS (
          SELECT clock_timestamp() AS at
        ), inserted AS (
-         INSERT INTO nostr_zap_receipt (event_id, message_id, sats, recorded_at)
-         SELECT $1, $2, $3, settled_at.at FROM settled_at
+         INSERT INTO nostr_zap_receipt (
+           event_id, message_id, sats, recorded_at, payer_account_id, comment
+         )
+         SELECT $1::text, $2::uuid, $3::bigint, settled_at.at,
+                $8::uuid, COALESCE($9::text, '')
+         FROM settled_at
          ON CONFLICT (event_id) DO NOTHING
          RETURNING event_id, message_id, sats
+       ), ingest AS (
+         INSERT INTO nostr_zap_ingest (
+           id, created_at, receipt_id, note_event_id, message_id,
+           outcome, reason, amount_sats, receipt_pubkey, receipt,
+           fiat_usd, fiat_chf, fiat_eur, fiat_php
+         )
+         SELECT $10::uuid, $11::timestamptz, $12::text, $13::text, $14::uuid,
+                $15::text, $16::text, $17::bigint, $18::text, $19::jsonb,
+                $20::numeric, $21::numeric, $22::numeric, $23::numeric
+         FROM inserted
+         WHERE $10::uuid IS NOT NULL
        )
        UPDATE message
        SET sats = CASE
@@ -9058,16 +9153,25 @@ export class PostgresMessageStore implements MessageStore {
        FROM inserted
        WHERE message.id = inserted.message_id
        RETURNING inserted.event_id`,
-      [
-        receiptEventId,
-        messageId,
-        sats,
-        delta?.usd ?? null,
-        delta?.chf ?? null,
-        delta?.eur ?? null,
-        delta?.php ?? null,
-      ],
-    );
+        [
+          receiptEventId,
+          messageId,
+          sats,
+          delta?.usd ?? null,
+          delta?.chf ?? null,
+          delta?.eur ?? null,
+          delta?.php ?? null,
+          settlement?.payerAccountId ?? null,
+          settlement?.comment ?? null,
+          ...ingestParams,
+        ],
+      );
+    } catch (error: unknown) {
+      if (ingest === undefined) {
+        throw error;
+      }
+      throw new ZapIngestRecordError(error);
+    }
     return inserted[0] !== undefined;
   }
 

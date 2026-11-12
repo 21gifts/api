@@ -13,6 +13,7 @@ import {
   MESSAGE_SCHEMA_SQL,
   migrateMessageSchema,
   PostgresMessageStore,
+  ZapIngestRecordError,
   type MessageInvoiceAttempt,
   type ZapIngestRow,
 } from '@/lib/message-store';
@@ -9632,7 +9633,7 @@ describe('PostgresMessageStore', () => {
         php: null,
       }),
     ).toBe(true);
-    expect(sql.queries[1]?.params.slice(3)).toEqual(['1.00', null, '0.90', null]);
+    expect(sql.queries[1]?.params.slice(3, 7)).toEqual(['1.00', null, '0.90', null]);
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_receipt/);
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT/);
     expect(sql.queries[0]?.text).toMatch(/message\.sats \+ inserted\.sats/);
@@ -10770,11 +10771,13 @@ describe('PostgresMessageStore', () => {
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(4);
-    expect(await postgres.sumUnassignedCreditSats('m1', true)).toBe(6);
+    const through = new Date('2026-11-12T12:00:00.000Z');
+    expect(await postgres.sumUnassignedCreditSats('m1', true, through)).toBe(6);
     expect(sql.queries[0]?.text).toMatch(/payer_account_id IS NULL/);
     expect(sql.queries[3]?.text).toContain('r.message_id = $1::uuid');
     expect(sql.queries[3]?.text).toContain('$2::boolean');
-    expect(sql.queries[3]?.params).toEqual(['m1', true]);
+    expect(sql.queries[3]?.text).toContain('$3::timestamptz');
+    expect(sql.queries[3]?.params).toEqual(['m1', true, through]);
   });
 
   it('stores partial repayment parts and rejects a part above the remainder', async () => {
@@ -11113,6 +11116,74 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries).toHaveLength(1);
     expect(sql.queries[0]?.text).toContain('SELECT clock_timestamp() AS at');
     expect(sql.queries[0]?.text).not.toContain('pg_advisory_xact_lock');
+  });
+
+  it('stores payer attribution and indexed fiat in the locked receipt statement', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [[{ event_id: 'r-atomic' }]];
+    const ingest: ZapIngestRow = {
+      id: '11111111-1111-4111-8111-111111111111',
+      createdAt: new Date('2026-11-12T12:00:00.000Z'),
+      receiptId: 'r-atomic',
+      noteEventId: 'note',
+      messageId: '22222222-2222-4222-8222-222222222222',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      receiptPubkey: 'aa'.repeat(32),
+      receipt: { id: 'r-atomic' },
+      amountUsd: '0.21',
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    };
+
+    await expect(
+      new PostgresMessageStore(sql).recordZapReceipt(
+        'r-atomic',
+        '22222222-2222-4222-8222-222222222222',
+        21,
+        { usd: '0.21', chf: null, eur: null, php: null },
+        true,
+        {
+          payerAccountId: '33333333-3333-4333-8333-333333333333',
+          comment: 'Thanks',
+          ingest,
+          recordIngest: () => Promise.resolve(),
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(sql.queries[0]?.text).toContain('payer_account_id, comment');
+    expect(sql.queries[0]?.text).toContain('INSERT INTO nostr_zap_ingest');
+    expect(sql.queries[0]?.text).toContain('$10::uuid');
+    expect(sql.queries[0]?.params).toContain('33333333-3333-4333-8333-333333333333');
+    expect(sql.queries[0]?.params).toContain(ingest.id);
+  });
+
+  it('distinguishes an atomic ingest query failure from a plain receipt failure', async () => {
+    const sql = new MockSql();
+    const failure = new Error('receipt query failed');
+    sql.queryError = failure;
+    const store = new PostgresMessageStore(sql);
+
+    await expect(store.recordZapReceipt('plain', 'm1', 1, null, true)).rejects.toBe(failure);
+    await expect(
+      store.recordZapReceipt('atomic', 'm1', 1, null, true, {
+        ingest: {
+          id: '11111111-1111-4111-8111-111111111111',
+          createdAt: new Date('2026-11-12T12:00:00.000Z'),
+          receiptId: 'atomic',
+          noteEventId: 'note',
+          messageId: '22222222-2222-4222-8222-222222222222',
+          outcome: 'indexed',
+          reason: null,
+          amountSats: 1,
+          receiptPubkey: null,
+          receipt: { id: 'atomic' },
+        },
+        recordIngest: () => Promise.resolve(),
+      }),
+    ).rejects.toBeInstanceOf(ZapIngestRecordError);
   });
 
   it('lists stored repayments and records a share once', async () => {
