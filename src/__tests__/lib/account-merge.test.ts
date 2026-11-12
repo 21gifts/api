@@ -259,6 +259,20 @@ describe('mergeAccounts', () => {
     expect(queries[normalized]?.params).toEqual([INTO]);
   });
 
+  it('locks repayable messages authored by either identity before account rows', async () => {
+    const { db, queries } = fakeDatabase();
+
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+
+    const messageLocks = queries.findIndex((query) => query.text.includes('pg_advisory_xact_lock'));
+    const accountLocks = queries.findIndex(
+      (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
+    );
+    expect(queries[messageLocks]?.text).toContain('SELECT id AS message_id FROM message');
+    expect(queries[messageLocks]?.text).toContain('account_id = $1::uuid OR account_id = $2::uuid');
+    expect(messageLocks).toBeLessThan(accountLocks);
+  });
+
   it('uses oldest ingests to convert a legacy fiat share before merging', async () => {
     const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const paidAt = new Date('2026-11-11T12:00:00.000Z');
@@ -386,7 +400,7 @@ describe('mergeAccounts', () => {
     ).toBe(false);
   });
 
-  it('refuses without writes while the survivor has a payable invoice on their shared credit', async () => {
+  it('refuses a payable source invoice when only the source funded the credit', async () => {
     const { db, queries } = fakeDatabase({
       openRepaymentInvoices: [{ created_at: new Date(), pr: 'lnbc-open-repayment' }],
     });
@@ -398,7 +412,7 @@ describe('mergeAccounts', () => {
     const open = queries.find((query) => query.text.includes('FROM message_invoice AS invoice'));
     expect(open?.params).toEqual([FROM, INTO]);
     expect(open?.text).toContain('source_gift.payer_account_id = $1');
-    expect(open?.text).toContain('survivor_gift.payer_account_id = $2');
+    expect(open?.text).not.toContain('survivor_gift');
     expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $1::text");
     expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $1::text || ':%'");
     expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $2::text");

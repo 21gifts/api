@@ -2867,9 +2867,9 @@ Store throw → **Response** `503`:
 }
 ```
 
-`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503. Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503. Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding both `repay:` full-share and `repayp:` partial repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
 
-`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither; a repayment subtracts `due_sats`; balances are not clamped; a grant carries the oldest indexed ingest line of that receipt on the same note (the amount fixed when it was paid; a later ingest does not replace it) as USD/CHF/EUR/PHP and a repayment carries none, so each loan-series fiat field is the signed sum of the stored grant amounts for that currency, all missing on a day stays JSON null and does not clear the cumulative, and no rate book is read; loans stay out of `donatedSats` and `receivedSats`.
+`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither. A repayment movement is either a legacy full-share `message_repayment.due_sats` when that share has no canonical parts, or the exact `message_repayment_part.sats` for each settled part; the part source suppresses a duplicate legacy row for the same share. Balances are not clamped; a grant carries the oldest indexed ingest line of that receipt on the same note (the amount fixed when it was paid; a later ingest does not replace it) as USD/CHF/EUR/PHP and a repayment carries none, so each loan-series fiat field is the signed sum of the stored grant amounts for that currency, all missing on a day stays JSON null and does not clear the cumulative, and no rate book is read; loans stay out of `donatedSats` and `receivedSats`.
 
 ### `GET /me/loans`
 
@@ -5349,11 +5349,19 @@ Success → **Response** `200` (never includes the note or preimage):
 }
 ```
 
-The route claims the payment hash, credits the message once, and directly
+Under the advisory message lock and one transaction, the route makes the
+payment-hash claim visible together with its settlement. A
+`repay:<day>:<accountId>` invoice writes a legacy full-share
+`message_repayment`; a
+`repayp:<day>:<accountId>:<partIndex>:<units>:<shareUnits>` invoice writes the
+exact canonical `message_repayment_part`; neither credits the ask. Any other
+invoice credits the message receipt once. A repayment-row conflict leaves no
+new claim. After this atomic claim/repayment-or-credit boundary, the route
 persists an indexed synthetic kind:9735 ingest with `manual=debug-settle` and
 the note (plus `preimage` only when it was supplied and verified). On a member
-note it then fans out `notifyZap` and inserts the payer gift-reply from the
-original zap request. On the official platform profile note it skips
+note a non-repayment settlement then fans out `notifyZap` and inserts the payer
+gift-reply from the original zap request. On the official platform profile
+note it skips
 `notifyZap` and treats the zap comment as a compose post/reply (`sats` 0)
 gated by `forum.post` only (`DEBUG_TOKEN` settle does not pass `postLimiter`
 or `replyLimiter`; limiter denial applies to worker ingest that shares the
@@ -5390,9 +5398,8 @@ Failures:
 - store failure, including the direct ingest write, or a thrown note-author lookup → `503 { "error": "Messages are unavailable" }`
 
 `DEBUG_TOKEN` unset/blank returns 503; a missing or bad Bearer returns 401.
-The payment-hash claim and credit are not one transaction, but the claim
-table's primary key serialises competing receipt ids and remains as the
-payment's tombstone.
+The direct ingest write and post-credit effects are outside the locked atomic
+boundary and are retryable. The claim remains the payment's tombstone.
 
 ### `GET /debug/zap-ingests`
 

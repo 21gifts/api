@@ -1327,9 +1327,10 @@ export interface MessageStore {
    * Sats on this note whose zap has no 21.gifts payer account.
    *
    * @param messageId - Forum note.
+   * @param includeAfterFunding - Include receipts after the natural funding boundary.
    * @returns Those sats. They are not part of the repayment plan.
    */
-  sumUnassignedCreditSats(messageId: string): Promise<number>;
+  sumUnassignedCreditSats(messageId: string, includeAfterFunding?: boolean): Promise<number>;
 
   /**
    * Repayment shares already paid on one credit.
@@ -4521,14 +4522,14 @@ export class InMemoryMessageStore implements MessageStore {
     );
   }
 
-  sumUnassignedCreditSats(messageId: string): Promise<number> {
+  sumUnassignedCreditSats(messageId: string, includeAfterFunding = false): Promise<number> {
     const freezeAt = this.#creditFreezeAt.get(messageId) ?? null;
     let sats = 0;
     for (const receipt of this.#receipts.values()) {
       if (
         receipt.messageId === messageId &&
         receipt.payerAccountId === null &&
-        receiptCountsTowardCredit(receipt.recordedAt, freezeAt)
+        (includeAfterFunding || receiptCountsTowardCredit(receipt.recordedAt, freezeAt))
       ) {
         sats += receipt.sats;
       }
@@ -8468,18 +8469,19 @@ export class PostgresMessageStore implements MessageStore {
     });
   }
 
-  async sumUnassignedCreditSats(messageId: string): Promise<number> {
+  async sumUnassignedCreditSats(messageId: string, includeAfterFunding = false): Promise<number> {
     const rows = await this.#sql.query<{ sats: string | number | null }>(
       `SELECT COALESCE(SUM(r.sats), 0)::bigint AS sats
        FROM nostr_zap_receipt r
        JOIN message m ON m.id = r.message_id
-       WHERE r.message_id = $1 AND r.payer_account_id IS NULL
+       WHERE r.message_id = $1::uuid AND r.payer_account_id IS NULL
          AND (
-           m.goal_funded_at IS NULL
+           $2::boolean
+           OR m.goal_funded_at IS NULL
            OR r.recorded_at IS NULL
            OR r.recorded_at <= m.goal_funded_at
          )`,
-      [messageId],
+      [messageId, includeAfterFunding],
     );
     return Number(rows[0]?.sats ?? 0);
   }

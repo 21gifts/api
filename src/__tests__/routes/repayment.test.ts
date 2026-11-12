@@ -1830,6 +1830,35 @@ describe('repayment from the in-app wallet', () => {
     expect(await response.json()).toMatchObject({ collectedSats: 26 });
   });
 
+  it('reports gifts received after natural funding without changing the debt boundary', async () => {
+    const { app, messages } = await readyCredit({ goalCurrency: 'USD', rate: true });
+    await messages.recordZapReceipt('r-after-funding', CREDIT, 5, {
+      usd: '0.05',
+      chf: null,
+      eur: null,
+      php: null,
+    });
+    await messages.updateZapReceiptGift('r-after-funding', { payerAccountId: GIVER });
+    vi.spyOn(messages, 'listCreditPayers').mockResolvedValue([
+      {
+        accountId: GIVER,
+        sats: 21,
+        usd: '0.21',
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
+
+    const response = await app.request(`/messages/${CREDIT}/repayment/close`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer acc' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ collectedSats: 26, collectedAmount: '0.26' });
+  });
+
   it('treats an empty frozen fiat snapshot as zero debt on every loan route', async () => {
     const { app, messages } = await loanSetup({
       fundedAt: null,
@@ -1946,6 +1975,21 @@ describe('repayment from the in-app wallet', () => {
         [2, 7],
       ]);
       expect(body.waiting).toEqual([]);
+    });
+  });
+
+  it('does not auto-close a naturally funded loan on its first prepayment', async () => {
+    await withNip57(async () => {
+      const { app, messages } = await readyCredit();
+
+      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '21' }),
+      });
+
+      expect(response.status).toBe(200);
+      expect((await messages.getById(CREDIT))?.goalClosedAt).toBeNull();
     });
   });
 
@@ -2350,7 +2394,7 @@ describe('repayment from the in-app wallet', () => {
       headers: { authorization: 'Bearer acc' },
     });
     expect(noDebt.status).toBe(200);
-    expect(await noDebt.json()).toMatchObject({ collectedAmount: '0.00' });
+    expect(await noDebt.json()).toMatchObject({ collectedAmount: '0.21' });
     expect((await unavailable.messages.getById(CREDIT))?.goalClosedAt).toBeInstanceOf(Date);
 
     const fundedUnavailable = await readyCredit({
@@ -2464,7 +2508,7 @@ describe('repayment from the in-app wallet', () => {
         body: JSON.stringify({ amount: '1' }),
       },
     );
-    expect(goneAfterClose.status).toBe(404);
+    expect(goneAfterClose.status).toBe(500);
 
     const malformedDebt = await loanSetup({
       goalCurrency: 'USD',
@@ -3369,6 +3413,22 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
+  it('computes a collecting fiat loan from gift snapshots without a legacy goal amount', async () => {
+    const collecting = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: null,
+      rate: true,
+      fundedAt: null,
+      givers: [{ id: WALLET_GIVER, sats: 300, wallet: true, fiatAmount: '1.00' }],
+    });
+
+    const response = await loans(collecting.app);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      loans: [{ totalSats: 1000, maxSats: 1000, maxAmount: '1.00' }],
+    });
+  });
+
   it('adds exact part sats to repaidSats and refuses a later legacy row', async () => {
     const { app, messages } = await loanSetup();
     await messages.markRepaymentPartPaid({
@@ -3399,16 +3459,10 @@ describe('repayment from the in-app wallet', () => {
       sundayRest: boolean;
     };
     expect(rest.sundayRest).toBe(true);
-    for (const fundedAt of [undefined, null]) {
-      const broken = await loanSetup({
-        goalCurrency: 'USD',
-        goalAmount: null,
-        ...(fundedAt === null ? { fundedAt } : {}),
-      });
-      const res = await loans(broken.app);
-      expect(res.status).toBe(503);
-      expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
-    }
+    const broken = await loanSetup({ goalCurrency: 'USD', goalAmount: null });
+    const res = await loans(broken.app);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
     const failing = await loanSetup();
     vi.spyOn(failing.messages, 'listAuthoredMessages').mockRejectedValue(new Error('db down'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);

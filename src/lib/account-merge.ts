@@ -157,6 +157,10 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          JOIN message ON message.id = receipt.message_id
          WHERE message.goal_repayable IS TRUE
            AND (receipt.payer_account_id = $1 OR receipt.payer_account_id = $2)
+         UNION
+         SELECT id AS message_id FROM message
+         WHERE goal_repayable IS TRUE
+           AND (account_id = $1::uuid OR account_id = $2::uuid)
        ) AS affected
        ORDER BY affected.message_id`,
       accountParams,
@@ -271,9 +275,9 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       return { ok: false, error: 'repayment_unavailable' };
     }
     // A repayment description is settlement metadata and embeds its recipient
-    // account id. Combining two givers changes their shared schedule, so keep
-    // every open reservation of either identity immutable until it settles or
-    // expires.
+    // account id. Keep every open reservation that names either identity on a
+    // source-funded credit immutable until it settles or expires, even when
+    // only the source gave.
     const openRepaymentInvoices = await tx.query<OpenRepaymentInvoiceRow>(
       `SELECT invoice.created_at, invoice.pr
        FROM message_invoice AS invoice
@@ -289,16 +293,6 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
                credit.goal_funded_at IS NULL
                OR source_gift.recorded_at IS NULL
                OR source_gift.recorded_at <= credit.goal_funded_at
-             )
-         )
-         AND EXISTS (
-           SELECT 1 FROM nostr_zap_receipt AS survivor_gift
-           WHERE survivor_gift.message_id = credit.id
-             AND survivor_gift.payer_account_id = $2
-             AND (
-               credit.goal_funded_at IS NULL
-               OR survivor_gift.recorded_at IS NULL
-               OR survivor_gift.recorded_at <= credit.goal_funded_at
              )
          )
          AND (

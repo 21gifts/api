@@ -10765,12 +10765,16 @@ describe('PostgresMessageStore', () => {
     expect(await store.sumUnassignedCreditSats('m1')).toBe(5);
     expect(await store.sumUnassignedCreditSats('other')).toBe(0);
     const sql = new MockSql();
-    sql.queryQueue = [[], [{ sats: null }], [{ sats: '4' }]];
+    sql.queryQueue = [[], [{ sats: null }], [{ sats: '4' }], [{ sats: '6' }]];
     const postgres = new PostgresMessageStore(sql);
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(4);
+    expect(await postgres.sumUnassignedCreditSats('m1', true)).toBe(6);
     expect(sql.queries[0]?.text).toMatch(/payer_account_id IS NULL/);
+    expect(sql.queries[3]?.text).toContain('r.message_id = $1::uuid');
+    expect(sql.queries[3]?.text).toContain('$2::boolean');
+    expect(sql.queries[3]?.params).toEqual(['m1', true]);
   });
 
   it('stores partial repayment parts and rejects a part above the remainder', async () => {
@@ -11444,6 +11448,7 @@ describe('PostgresMessageStore', () => {
       { accountId: 'giver', sats: 10, usd: null, chf: null, eur: null, php: null },
     ]);
     expect(await store.sumUnassignedCreditSats('filled')).toBe(0);
+    expect(await store.sumUnassignedCreditSats('filled', true)).toBe(3);
   });
 
   it('keeps an external zap gift recorded after close out of the repayment debt', async () => {

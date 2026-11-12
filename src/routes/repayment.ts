@@ -1191,20 +1191,29 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
     }
     // An early fiat close freezes collected gift-time cents (including missing
     // snapshots as zero), so its final debt comes from the same locked state.
-    const { payers, unassignedSats, owed } =
+    const { owed } =
       row.goalFundedAt === null && isFiatCredit(row)
         ? await creditOwed(lockedDeps, closedRow)
         : beforeClose;
     if (owed === 'unavailable') {
       return c.json({ error: 'Ask amount is unavailable' }, 503);
     }
+    // Debt stays bounded at funding, but the close receipt reports every gift
+    // visible in the current locked receipt snapshot, including later gifts.
     const fiat = isFiatCredit(closedRow);
-    const collectedUnits = owed.reduce((sum, payer) => sum + payer.units, 0n);
+    const collectedPayers = await locked.previewCreditPayerSnapshot(
+      closedRow.id,
+      fiat ? (closedRow.goalCurrency as GoalFiatCode) : 'USD',
+    );
+    const collectedUnits = collectedPayers.reduce((sum, payer) => sum + payer.units, 0n);
+    const collectedSats =
+      collectedPayers.reduce((sum, payer) => sum + payer.sats, 0) +
+      (await locked.sumUnassignedCreditSats(closedRow.id, true));
     return c.json(
       {
         fundedAt: closed.fundedAt.toISOString(),
         closedAt: closed.closedAt.toISOString(),
-        collectedSats: payers.reduce((sum, payer) => sum + payer.sats, 0) + unassignedSats,
+        collectedSats,
         collectedAmount: fiat ? formatCents(collectedUnits) : null,
       },
       200,
@@ -1286,16 +1295,15 @@ async function repaymentPrepayLocked(
   opened: { account: Account; row: MessageRow; nowMs: number },
   parsed: PrepayAmount,
 ): Promise<Response> {
-  if (opened.row.goalClosedAt === null) {
+  if (opened.row.goalFundedAt === null && opened.row.goalClosedAt === null) {
     const closed = await deps.store.closeCredit(opened.row.id, new Date(deps.now()), true);
     if (closed === undefined) {
       return c.json({ error: 'Not found' }, 404);
     }
     const closedRow = await lockedCredit(deps.store, opened);
-    if (closedRow === undefined) {
-      return c.json({ error: 'Not found' }, 404);
-    }
-    opened.row = closedRow;
+    // `closeCredit` succeeded while this message lock is still held, so the
+    // same credit cannot disappear before this locked read completes.
+    opened.row = closedRow!;
   }
   const plan = await prepayPlan(
     deps,
@@ -1733,9 +1741,6 @@ async function loanRow(
     closedAt: row.goalClosedAt instanceof Date ? row.goalClosedAt.toISOString() : null,
   };
   if (fundedAt === null) {
-    if (fiat && typeof row.goalAmount !== 'string') {
-      return 'unavailable';
-    }
     let named: { accountId: string; units: bigint }[];
     if (fiat) {
       named = (
