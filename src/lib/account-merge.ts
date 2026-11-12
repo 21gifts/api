@@ -1,6 +1,12 @@
 import type { SqlClient } from '@/lib/auth/sql';
 import { invoiceStillOpen } from '@/lib/bolt11';
-import { fiatAmountToCents, payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
+import {
+  fiatAmountToCents,
+  parseRepaymentDescription,
+  parseRepaymentPartDescription,
+  payerDebtUnits,
+  repaymentSchedule,
+} from '@/lib/credit-repayment';
 import { PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
@@ -68,9 +74,14 @@ interface LegacyRepaymentRow {
 }
 
 interface OpenRepaymentInvoiceRow {
+  message_id: string;
+  author_account_id: string;
+  amount_sats: number | string;
+  payment_hash: string | null;
+  description: string;
   created_at: Date | string;
   pr: string;
-  claim_only: boolean;
+  payment_claimed: boolean;
 }
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
@@ -118,7 +129,8 @@ function quoteIdentifier(identifier: string): string {
  * moved, the merge refuses without writes when both identities gave to one
  * credit with a settled repayment, when a still-payable repayment invoice
  * embeds either identity on an affected source-funded credit, or when such an
- * invoice has a payment claim but no matching settlement row. Otherwise,
+ * invoice has a payment claim but no exact settlement row (including part
+ * index, units, and sats for a part). Otherwise,
  * legacy full-share repayments are reconstructed from the original loan
  * schedule and converted to canonical parts. A schedule that cannot be
  * reconstructed refuses the merge without writes. Parts from both identities
@@ -293,49 +305,12 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     // recipient also has the described legacy or part row; a claim-only
     // invoice refuses the merge even after the invoice itself expired.
     const openRepaymentInvoices = await tx.query<OpenRepaymentInvoiceRow>(
-      `SELECT invoice.created_at, invoice.pr,
-              invoice.payment_hash IS NOT NULL
-                AND EXISTS (
-                  SELECT 1 FROM nostr_zap_payment AS claimed
-                  WHERE claimed.payment_hash = lower(invoice.payment_hash)
-                )
-                AND NOT (
-                  (
-                    invoice.description LIKE 'repay:%'
-                    AND (
-                      EXISTS (
-                        SELECT 1 FROM message_repayment AS settled
-                        WHERE settled.message_id = invoice.message_id
-                          AND settled.recipient_account_id = invoice.author_account_id
-                          AND invoice.description LIKE
-                            'repay:' || settled.day_index::text || ':%'
-                          AND settled.due_sats = invoice.amount_sats
-                      )
-                      OR EXISTS (
-                        SELECT 1 FROM message_repayment_part AS canonical_legacy
-                        WHERE canonical_legacy.message_id = invoice.message_id
-                          AND canonical_legacy.recipient_account_id = invoice.author_account_id
-                          AND invoice.description LIKE
-                            'repay:' || canonical_legacy.day_index::text || ':%'
-                        GROUP BY canonical_legacy.message_id, canonical_legacy.day_index,
-                                 canonical_legacy.recipient_account_id
-                        HAVING SUM(canonical_legacy.sats) = invoice.amount_sats
-                      )
-                    )
-                  )
-                  OR (
-                    invoice.description LIKE 'repayp:%'
-                    AND EXISTS (
-                      SELECT 1 FROM message_repayment_part AS settled_part
-                      WHERE settled_part.message_id = invoice.message_id
-                        AND settled_part.recipient_account_id = invoice.author_account_id
-                        AND invoice.description LIKE
-                          'repayp:' || settled_part.day_index::text || ':%:%:' ||
-                          settled_part.units::text || ':%'
-                        AND settled_part.sats = invoice.amount_sats
-                    )
-                  )
-                ) AS claim_only
+      `SELECT invoice.message_id, invoice.author_account_id, invoice.amount_sats,
+              invoice.payment_hash, invoice.description, invoice.created_at, invoice.pr,
+              invoice.payment_hash IS NOT NULL AND EXISTS (
+                SELECT 1 FROM nostr_zap_payment AS claimed
+                WHERE claimed.payment_hash = lower(invoice.payment_hash)
+              ) AS payment_claimed
        FROM message_invoice AS invoice
        JOIN message AS credit ON credit.id = invoice.message_id
        WHERE invoice.result = 'ok'
@@ -363,60 +338,42 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
            OR invoice.description LIKE 'repay:%:' || $2::text
            OR invoice.description LIKE 'repayp:%:' || $2::text || ':%'
          )
-         AND (
-           invoice.payment_hash IS NULL
-           OR NOT EXISTS (
-             SELECT 1 FROM nostr_zap_payment AS payment
-             WHERE payment.payment_hash = lower(invoice.payment_hash)
-           )
-           OR NOT (
-             (
-               invoice.description LIKE 'repay:%'
-               AND (
-                 EXISTS (
-                   SELECT 1 FROM message_repayment AS settled
-                   WHERE settled.message_id = invoice.message_id
-                     AND settled.recipient_account_id = invoice.author_account_id
-                     AND invoice.description LIKE 'repay:' || settled.day_index::text || ':%'
-                     AND settled.due_sats = invoice.amount_sats
-                 )
-                 OR EXISTS (
-                   SELECT 1 FROM message_repayment_part AS canonical_legacy
-                   WHERE canonical_legacy.message_id = invoice.message_id
-                     AND canonical_legacy.recipient_account_id = invoice.author_account_id
-                     AND invoice.description LIKE
-                       'repay:' || canonical_legacy.day_index::text || ':%'
-                   GROUP BY canonical_legacy.message_id, canonical_legacy.day_index,
-                            canonical_legacy.recipient_account_id
-                   HAVING SUM(canonical_legacy.sats) = invoice.amount_sats
-                 )
-               )
-             )
-             OR (
-               invoice.description LIKE 'repayp:%'
-               AND EXISTS (
-                 SELECT 1 FROM message_repayment_part AS settled_part
-                 WHERE settled_part.message_id = invoice.message_id
-                   AND settled_part.recipient_account_id = invoice.author_account_id
-                   AND invoice.description LIKE
-                     'repayp:' || settled_part.day_index::text || ':%:%:' ||
-                     settled_part.units::text || ':%'
-                   AND settled_part.sats = invoice.amount_sats
-               )
-             )
-           )
-         )
        ORDER BY invoice.created_at, invoice.id`,
       accountParams,
     );
-    if (
-      openRepaymentInvoices.some(
-        (invoice) =>
-          invoice.claim_only ||
-          invoiceStillOpen(invoice.pr, new Date(invoice.created_at).getTime(), Date.now()),
-      )
-    ) {
-      return { ok: false, error: 'repayment_unavailable' };
+    const repaymentStore = new PostgresMessageStore(tx as SqlClient);
+    for (const invoice of openRepaymentInvoices) {
+      const whole = parseRepaymentDescription(invoice.description);
+      const part = parseRepaymentPartDescription(invoice.description);
+      if (whole === null) {
+        continue;
+      }
+      const claimOnly = await repaymentStore.isClaimOnlyRepaymentInvoice(
+        invoice.payment_hash,
+        part === null
+          ? {
+              kind: 'legacy',
+              messageId: invoice.message_id,
+              dayIndex: whole.dayIndex,
+              recipientAccountId: invoice.author_account_id,
+            }
+          : {
+              kind: 'part',
+              messageId: invoice.message_id,
+              dayIndex: part.dayIndex,
+              recipientAccountId: invoice.author_account_id,
+              partIndex: part.partIndex,
+              units: part.units,
+              sats: Number(invoice.amount_sats),
+            },
+      );
+      if (
+        claimOnly ||
+        (!invoice.payment_claimed &&
+          invoiceStillOpen(invoice.pr, new Date(invoice.created_at).getTime(), Date.now()))
+      ) {
+        return { ok: false, error: 'repayment_unavailable' };
+      }
     }
     const legacyRepayments = await tx.query<LegacyRepaymentRow>(
       `SELECT legacy.message_id, legacy.day_index, legacy.recipient_account_id,
@@ -432,7 +389,6 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     const canonicalLegacy: Array<LegacyRepaymentRow & { units: bigint }> = [];
-    const repaymentStore = new PostgresMessageStore(tx as SqlClient);
     for (const legacy of legacyRepayments) {
       const payers = await repaymentStore.listCreditPayers(legacy.message_id);
       const frozenField =

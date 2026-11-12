@@ -137,7 +137,7 @@ interface ShareState {
   paidUnits: bigint;
   parts: SharePart[];
   openParts: OpenSharePart[];
-  /** A still-payable legacy or oversized bill conflicts with the current remainder. */
+  /** A legacy, oversized, or claim-only bill conflicts with the current remainder. */
   legacyOpen: boolean;
   nextPartIndex: number;
   canReceive: boolean;
@@ -164,6 +164,34 @@ interface DuePlanSnapshot {
   owed: Exclude<Awaited<ReturnType<typeof creditOwed>>['owed'], 'unavailable'>;
   paid: Awaited<ReturnType<MessageStore['listRepayments']>>;
   parts: Awaited<ReturnType<MessageStore['listRepaymentParts']>>;
+}
+
+/** Check one parsed repayment invoice against its exact settlement identity. */
+function isClaimOnlyRepaymentAttempt(
+  store: MessageStore,
+  attempt: MessageInvoiceAttempt,
+  whole: NonNullable<ReturnType<typeof parseRepaymentDescription>>,
+  part: ReturnType<typeof parseRepaymentPartDescription>,
+): Promise<boolean> {
+  return store.isClaimOnlyRepaymentInvoice(
+    attempt.paymentHash,
+    part === null
+      ? {
+          kind: 'legacy',
+          messageId: attempt.messageId,
+          dayIndex: whole.dayIndex,
+          recipientAccountId: attempt.authorAccountId,
+        }
+      : {
+          kind: 'part',
+          messageId: attempt.messageId,
+          dayIndex: part.dayIndex,
+          recipientAccountId: attempt.authorAccountId,
+          partIndex: part.partIndex,
+          units: part.units,
+          sats: attempt.amountSats,
+        },
+  );
 }
 
 /**
@@ -196,7 +224,8 @@ async function receiverMap(
  * Due, unpaid shares of a funded credit, with settled parts and open bills.
  *
  * Open bills never reserve a share twice: they are read from successful
- * invoice attempts by description and kept only while still payable.
+ * invoice attempts by description and kept while still payable. A claimed
+ * invoice without its exact settlement row stays reserved after expiry.
  *
  * @param deps - Store, auth, and the optional LNURL server.
  * @param row - Funded credit note.
@@ -266,11 +295,7 @@ async function duePlan(
     let legacyOpen = false;
     let reserved = settledUnits;
     for (const attempt of invoiceAttempts) {
-      if (
-        attempt.result !== 'ok' ||
-        attempt.pr === null ||
-        !invoiceStillOpen(attempt.pr, attempt.createdAt.getTime(), nowMs)
-      ) {
+      if (attempt.result !== 'ok' || attempt.pr === null) {
         continue;
       }
       const whole = parseRepaymentDescription(attempt.description);
@@ -283,11 +308,18 @@ async function duePlan(
       ) {
         continue;
       }
-      if (
+      const claimOnly = await isClaimOnlyRepaymentAttempt(deps.store, attempt, parsed, part);
+      const claimed =
         attempt.paymentHash !== null &&
-        (await deps.store.zapPaymentReceiptId(attempt.paymentHash)) !== undefined
-      ) {
+        (await deps.store.zapPaymentReceiptId(attempt.paymentHash)) !== undefined;
+      if (claimed && !claimOnly) {
         continue;
+      }
+      if (!claimOnly && !invoiceStillOpen(attempt.pr, attempt.createdAt.getTime(), nowMs)) {
+        continue;
+      }
+      if (claimOnly) {
+        legacyOpen = true;
       }
       if (part === null && settledUnits > 0n) {
         // The old full-share bill is still payable, so it blocks every new
@@ -295,7 +327,11 @@ async function duePlan(
         legacyOpen = true;
         continue;
       }
-      if (part !== null && paidParts.some((paidPart) => paidPart.partIndex === part.partIndex)) {
+      if (
+        part !== null &&
+        paidParts.some((paidPart) => paidPart.partIndex === part.partIndex) &&
+        !claimOnly
+      ) {
         continue;
       }
       const units = part === null ? slice.units : part.units;
@@ -657,6 +693,7 @@ async function repaymentBillLocked(
   const openAttempts: Array<{
     attempt: MessageInvoiceAttempt;
     part: ReturnType<typeof parseRepaymentPartDescription>;
+    claimOnly: boolean;
   }> = [];
   for (const attempt of attempts) {
     const parsed = parseRepaymentDescription(attempt.description);
@@ -665,21 +702,29 @@ async function repaymentBillLocked(
       attempt.pr === null ||
       parsed === null ||
       parsed.dayIndex !== share.dayIndex ||
-      parsed.recipientAccountId !== share.accountId ||
-      !invoiceStillOpen(attempt.pr, attempt.createdAt.getTime(), opened.nowMs)
+      parsed.recipientAccountId !== share.accountId
     ) {
       continue;
     }
-    if (
+    const part = parseRepaymentPartDescription(attempt.description);
+    const claimOnly = await isClaimOnlyRepaymentAttempt(deps.store, attempt, parsed, part);
+    const claimed =
       attempt.paymentHash !== null &&
-      (await deps.store.zapPaymentReceiptId(attempt.paymentHash)) !== undefined
-    ) {
+      (await deps.store.zapPaymentReceiptId(attempt.paymentHash)) !== undefined;
+    if (claimed && !claimOnly) {
+      continue;
+    }
+    if (!claimOnly && !invoiceStillOpen(attempt.pr, attempt.createdAt.getTime(), opened.nowMs)) {
       continue;
     }
     openAttempts.push({
       attempt,
-      part: parseRepaymentPartDescription(attempt.description),
+      part,
+      claimOnly,
     });
+  }
+  if (openAttempts.some((item) => item.claimOnly)) {
+    return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
   }
   const outstanding = openAttempts.find(
     (item) => item.attempt.description === description,

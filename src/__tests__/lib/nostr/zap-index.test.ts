@@ -5545,6 +5545,8 @@ describe('indexOpenZapReceipts', () => {
         base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
       markRepaymentPartPaid: (...args: Parameters<InMemoryMessageStore['markRepaymentPartPaid']>) =>
         base.markRepaymentPartPaid(...args),
+      isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+        base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
       settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
         base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
       closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>
@@ -5850,6 +5852,8 @@ describe('indexOpenZapReceipts', () => {
         markRepaymentPartPaid: (
           ...args: Parameters<InMemoryMessageStore['markRepaymentPartPaid']>
         ) => base.markRepaymentPartPaid(...args),
+        isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+          base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
         settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
           base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
         closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>
@@ -6782,6 +6786,8 @@ describe('indexOpenZapReceipts', () => {
         markRepaymentPartPaid: (
           ...args: Parameters<InMemoryMessageStore['markRepaymentPartPaid']>
         ) => base.markRepaymentPartPaid(...args),
+        isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+          base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
         settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
           base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
         closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>

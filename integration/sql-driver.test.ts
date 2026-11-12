@@ -4395,7 +4395,7 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
 }
 
 describe('Postgres repayment retry after account merge', () => {
-  test('a claim-only retry settles once around a refused merge and survives a later merge', async () => {
+  test('a claim-only retry settles once before its repayment survives a later merge', async () => {
     for (const kind of ['legacy', 'part'] as const) {
       const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
       const authorId = crypto.randomUUID();
@@ -4517,6 +4517,8 @@ describe('Postgres repayment retry after account merge', () => {
           await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
         ).toEqual(expect.objectContaining({ ok: true }));
         const mergedSettlement = { ...settlement, recipientAccountId: intoId };
+        // A legacy row is intentionally canonicalized to a part by the merge,
+        // so only the unchanged exact part identity remains an idempotent retry.
         expect(
           await store.settleRepaymentPayment(
             paymentHash,
@@ -4525,7 +4527,7 @@ describe('Postgres repayment retry after account merge', () => {
             mergedSettlement,
             true,
           ),
-        ).toBe(true);
+        ).toBe(kind === 'part');
 
         const rows = await client.query<{ recipient_account_id: string; n: number }>(
           `SELECT recipient_account_id, count(*)::int AS n

@@ -337,6 +337,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     withMessageLock: async () => boom(),
     withRepaymentLock: async () => boom(),
     markRepaymentPartPaid: boom,
+    isClaimOnlyRepaymentInvoice: boom,
     settleRepaymentPayment: boom,
     closeCredit: boom,
     ...overrides,
@@ -4584,6 +4585,8 @@ describe('POST /messages', () => {
       withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
         base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
       markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+        base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
       settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
         base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
       closeCredit: (messageId, at) => base.closeCredit(messageId, at),
@@ -4746,6 +4749,8 @@ describe('POST /messages', () => {
       withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
         base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
       markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+        base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
       settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
         base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
       closeCredit: (messageId, at) => base.closeCredit(messageId, at),
@@ -6965,6 +6970,8 @@ describe('POST /messages/:id/invoice', () => {
       withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
         base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
       markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+        base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
       settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
         base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
       closeCredit: (messageId, at) => base.closeCredit(messageId, at),

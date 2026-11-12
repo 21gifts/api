@@ -10781,22 +10781,19 @@ describe('PostgresMessageStore', () => {
     expect(await store.sumUnassignedCreditSats('m1')).toBe(5);
     expect(await store.sumUnassignedCreditSats('other')).toBe(0);
     const sql = new MockSql();
-    sql.queryQueue = [[], [{ sats: null }], [{ sats: '4' }], [{ sats: '6' }], [{ sats: '7' }]];
+    sql.queryQueue = [[], [{ sats: null }], [{ sats: '4' }], [{ sats: '7' }]];
     const postgres = new PostgresMessageStore(sql);
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(0);
     expect(await postgres.sumUnassignedCreditSats('m1')).toBe(4);
-    const through = new Date('2026-11-12T12:00:00.000Z');
-    expect(await postgres.sumUnassignedCreditSats('m1', true, through)).toBe(6);
     expect(await postgres.sumUnassignedCreditSats('m1', true, 'closed')).toBe(7);
     expect(sql.queries[0]?.text).toMatch(/payer_account_id IS NULL/);
     expect(sql.queries[3]?.text).toContain('r.message_id = $1::uuid');
     expect(sql.queries[3]?.text).toContain('$2::boolean');
     expect(sql.queries[3]?.text).toContain('$3::boolean');
-    expect(sql.queries[3]?.text).toContain('$4::timestamptz');
-    expect(sql.queries[3]?.params).toEqual(['m1', true, false, through]);
-    expect(sql.queries[4]?.params).toEqual(['m1', true, true, null]);
-    expect(sql.queries[4]?.text).toContain('r.recorded_at <= m.goal_closed_at');
+    expect(sql.queries[3]?.text).not.toContain('$4::timestamptz');
+    expect(sql.queries[3]?.params).toEqual(['m1', true, true]);
+    expect(sql.queries[3]?.text).toContain('r.recorded_at <= m.goal_closed_at');
   });
 
   it('stores partial repayment parts and rejects a part above the remainder', async () => {
@@ -10933,6 +10930,22 @@ describe('PostgresMessageStore', () => {
       },
     ]);
 
+    expect(await memory.claimZapPayment('AH', 'existing-legacy-receipt', paidAt)).toBe(true);
+    expect(
+      await memory.settleRepaymentPayment('AH', 'existing-legacy-receipt', paidAt, {
+        ...legacy,
+        dueSats: 101,
+      }),
+    ).toBe(true);
+    expect(await memory.listRepayments('legacy-share')).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: 'survivor',
+        dueSats: 100,
+        paidAt,
+      },
+    ]);
+
     expect(await memory.claimZapPayment('AC', 'claim-only-receipt', paidAt)).toBe(true);
     expect(
       await memory.settleRepaymentPayment('AC', 'claim-only-receipt', paidAt, {
@@ -10948,6 +10961,14 @@ describe('PostgresMessageStore', () => {
         paidAt,
       },
     ]);
+    expect(
+      await memory.isClaimOnlyRepaymentInvoice('AC', {
+        kind: 'legacy',
+        messageId: 'claim-only-share',
+        dayIndex: 0,
+        recipientAccountId: 'survivor',
+      }),
+    ).toBe(false);
 
     await memory.markRepaymentPartPaid({
       messageId: 'merged-legacy-share',
@@ -10965,7 +10986,7 @@ describe('PostgresMessageStore', () => {
         ...legacy,
         messageId: 'merged-legacy-share',
       }),
-    ).toBe(true);
+    ).toBe(false);
 
     await memory.markRepaymentPartPaid({
       messageId: 'merged-part-share',
@@ -10974,23 +10995,49 @@ describe('PostgresMessageStore', () => {
       partIndex: 0,
       units: 100n,
       sats: 100,
-      shareUnits: 100n,
+      shareUnits: 200n,
       paidAt,
     });
     expect(await memory.claimZapPayment('AE', 'merged-part-receipt', paidAt)).toBe(true);
+    expect(
+      await memory.isClaimOnlyRepaymentInvoice('AE', {
+        kind: 'part',
+        messageId: 'merged-part-share',
+        dayIndex: 0,
+        recipientAccountId: 'survivor',
+        partIndex: 1,
+        units: 100n,
+        sats: 100,
+      }),
+    ).toBe(true);
     expect(
       await memory.settleRepaymentPayment('AE', 'merged-part-receipt', paidAt, {
         kind: 'part',
         messageId: 'merged-part-share',
         dayIndex: 0,
         recipientAccountId: 'survivor',
-        partIndex: 3,
+        partIndex: 1,
         units: 100n,
         sats: 100,
-        shareUnits: 100n,
+        shareUnits: 200n,
         paidAt,
       }),
     ).toBe(true);
+    expect(await memory.listRepaymentParts('merged-part-share')).toEqual([
+      expect.objectContaining({ partIndex: 0, units: 100n, sats: 100 }),
+      expect.objectContaining({ partIndex: 1, units: 100n, sats: 100 }),
+    ]);
+    expect(
+      await memory.isClaimOnlyRepaymentInvoice('AE', {
+        kind: 'part',
+        messageId: 'merged-part-share',
+        dayIndex: 0,
+        recipientAccountId: 'survivor',
+        partIndex: 1,
+        units: 100n,
+        sats: 100,
+      }),
+    ).toBe(false);
 
     await memory.markRepaymentPartPaid({
       messageId: 'part-share',
@@ -14234,6 +14281,42 @@ describe('shop identity on message rows', () => {
     });
   });
 
+  it('checks exact Postgres claim-only identities for legacy and part invoices', async () => {
+    const sql = new MockSql();
+    sql.queryQueue = [[{ claim_only: true }], [{ claim_only: 't' }], [{ claim_only: false }]];
+    const store = new PostgresMessageStore(sql);
+    const legacy = {
+      kind: 'legacy' as const,
+      messageId: '11111111-1111-4111-8111-111111111111',
+      dayIndex: 2,
+      recipientAccountId: '22222222-2222-4222-8222-222222222222',
+    };
+    expect(await store.isClaimOnlyRepaymentInvoice(null, legacy)).toBe(false);
+    expect(await store.isClaimOnlyRepaymentInvoice('AA', legacy)).toBe(true);
+    const part = {
+      kind: 'part' as const,
+      messageId: legacy.messageId,
+      dayIndex: 2,
+      recipientAccountId: legacy.recipientAccountId,
+      partIndex: 3,
+      units: 5n,
+      sats: 7,
+    };
+    expect(await store.isClaimOnlyRepaymentInvoice('BB', part)).toBe(true);
+    expect(await store.isClaimOnlyRepaymentInvoice('CC', part)).toBe(false);
+    expect(sql.queries[0]?.params).toEqual(['aa', legacy.messageId, 2, legacy.recipientAccountId]);
+    expect(sql.queries[1]?.text).toContain('settled.part_index = $5::integer');
+    expect(sql.queries[1]?.params).toEqual([
+      'bb',
+      legacy.messageId,
+      2,
+      legacy.recipientAccountId,
+      3,
+      '5',
+      7,
+    ]);
+  });
+
   it('settles both Postgres repayment forms and leaves a foreign claim untouched', async () => {
     const paidAt = new Date('2026-11-11T12:00:00.000Z');
     const legacySql = new MockSql();
@@ -14394,7 +14477,7 @@ describe('shop identity on message rows', () => {
       [],
       [{ receipt_event_id: 'merged-legacy' }],
       [],
-      [{ matches: true }],
+      [{ claim_only: false }],
     ];
     expect(
       await new PostgresMessageStore(mergedLegacySql).settleRepaymentPayment(
@@ -14411,7 +14494,7 @@ describe('shop identity on message rows', () => {
         },
       ),
     ).toBe(true);
-    expect(mergedLegacySql.queries[3]?.text).toContain('COALESCE(SUM(sats), 0) = $4::bigint');
+    expect(mergedLegacySql.queries[3]?.text).toContain('FROM message_repayment AS settled');
 
     const mergedPartSql = new MockSql();
     mergedPartSql.queryQueue = [
@@ -14419,7 +14502,7 @@ describe('shop identity on message rows', () => {
       [{ receipt_event_id: 'merged-part' }],
       [],
       [],
-      [{ matches: 't' }],
+      [{ claim_only: false }],
     ];
     expect(
       await new PostgresMessageStore(mergedPartSql).settleRepaymentPayment(
@@ -14440,14 +14523,16 @@ describe('shop identity on message rows', () => {
         true,
       ),
     ).toBe(true);
-    expect(mergedPartSql.queries[4]?.text).toContain('AND units = $4::bigint');
+    expect(mergedPartSql.queries[4]?.text).toContain('settled.part_index = $5::integer');
+    expect(mergedPartSql.queries[4]?.text).toContain('settled.units = $6::bigint');
+    expect(mergedPartSql.queries[4]?.text).toContain('settled.sats = $7::bigint');
 
     const existingConflictSql = new MockSql();
     existingConflictSql.queryQueue = [
       [],
       [{ receipt_event_id: 'existing-conflict' }],
       [],
-      [{ matches: false }],
+      [{ claim_only: true }],
     ];
     expect(
       await new PostgresMessageStore(existingConflictSql).settleRepaymentPayment(
@@ -14472,7 +14557,7 @@ describe('shop identity on message rows', () => {
       [{ receipt_event_id: 'existing-part-conflict' }],
       [],
       [{ units: '2', sats: '2', paid_at: paidAt }],
-      [],
+      [{ claim_only: 't' }],
     ];
     expect(
       await new PostgresMessageStore(existingPartConflictSql).settleRepaymentPayment(

@@ -1441,6 +1441,20 @@ export interface MessageStore {
   ): Promise<RepaymentPartRow | undefined>;
 
   /**
+   * Whether a repayment invoice payment hash is claimed without its exact
+   * settlement row. Legacy identity is message, recipient, and day; part
+   * identity additionally includes part index, units, and sats.
+   *
+   * @param paymentHash - Invoice payment hash, or null when no hash was stored.
+   * @param identity - Exact settlement identity described by the invoice.
+   * @returns True only for a present claim with no exact settlement row.
+   */
+  isClaimOnlyRepaymentInvoice(
+    paymentHash: string | null,
+    identity: RepaymentInvoiceIdentity,
+  ): Promise<boolean>;
+
+  /**
    * Claim a payment hash and expose its repayment row under the same message lock.
    *
    * @param paymentHash - Lowercase or mixed-case BOLT11 payment hash.
@@ -1452,7 +1466,7 @@ export interface MessageStore {
    *   conflicts, including a BTC part whose sats differ from its units; a
    *   failed row write removes only a claim inserted by this call. An existing
    *   claim owned by this receipt still verifies or creates its settlement row;
-   *   exact values under a merge-normalized recipient/part index also verify it.
+   *   fallback verification requires the same exact invoice identity.
    */
   settleRepaymentPayment(
     paymentHash: string,
@@ -2092,6 +2106,44 @@ type RepaymentSettlement =
       shareUnits: bigint;
       paidAt: Date;
     };
+
+/** Exact settlement identity described by one repayment invoice. */
+type RepaymentInvoiceIdentity =
+  | {
+      kind: 'legacy';
+      messageId: string;
+      dayIndex: number;
+      recipientAccountId: string;
+    }
+  | {
+      kind: 'part';
+      messageId: string;
+      dayIndex: number;
+      recipientAccountId: string;
+      partIndex: number;
+      units: bigint;
+      sats: number;
+    };
+
+/** Drop write-only settlement fields to compare one invoice with stored rows. */
+function repaymentInvoiceIdentity(settlement: RepaymentSettlement): RepaymentInvoiceIdentity {
+  return settlement.kind === 'legacy'
+    ? {
+        kind: 'legacy',
+        messageId: settlement.messageId,
+        dayIndex: settlement.dayIndex,
+        recipientAccountId: settlement.recipientAccountId,
+      }
+    : {
+        kind: 'part',
+        messageId: settlement.messageId,
+        dayIndex: settlement.dayIndex,
+        recipientAccountId: settlement.recipientAccountId,
+        partIndex: settlement.partIndex,
+        units: settlement.units,
+        sats: settlement.sats,
+      };
+}
 
 /** One paid heart shown in the reactions view of a forum note. */
 export interface HeartSender {
@@ -4583,7 +4635,7 @@ export class InMemoryMessageStore implements MessageStore {
   sumUnassignedCreditSats(
     messageId: string,
     includeAfterFunding = false,
-    through?: Date | 'closed',
+    through?: 'closed',
   ): Promise<number> {
     const freezeAt = this.#creditFreezeAt.get(messageId) ?? null;
     const boundary =
@@ -4843,20 +4895,34 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve({ ...stored, paidAt: new Date(stored.paidAt.getTime()) });
   }
 
-  /** Match a settlement row whose recipient or part index was normalized by an account merge. */
-  #hasMergedRepaymentSettlement(settlement: RepaymentSettlement): boolean {
-    const parts = this.#repaymentParts.filter(
-      (part) =>
-        part.messageId === settlement.messageId &&
-        part.dayIndex === settlement.dayIndex &&
-        part.recipientAccountId === settlement.recipientAccountId,
-    );
-    if (settlement.kind === 'legacy') {
-      return (
-        parts.length > 0 && parts.reduce((sum, part) => sum + part.sats, 0) === settlement.dueSats
+  isClaimOnlyRepaymentInvoice(
+    paymentHash: string | null,
+    identity: RepaymentInvoiceIdentity,
+  ): Promise<boolean> {
+    if (paymentHash === null || !this.#zapPayments.has(paymentHash.toLowerCase())) {
+      return Promise.resolve(false);
+    }
+    if (identity.kind === 'legacy') {
+      return Promise.resolve(
+        !this.#repayments.some(
+          (row) =>
+            row.messageId === identity.messageId &&
+            row.dayIndex === identity.dayIndex &&
+            row.recipientAccountId === identity.recipientAccountId,
+        ),
       );
     }
-    return parts.some((part) => part.units === settlement.units && part.sats === settlement.sats);
+    return Promise.resolve(
+      !this.#repaymentParts.some(
+        (row) =>
+          row.messageId === identity.messageId &&
+          row.dayIndex === identity.dayIndex &&
+          row.recipientAccountId === identity.recipientAccountId &&
+          row.partIndex === identity.partIndex &&
+          row.units === identity.units &&
+          row.sats === identity.sats,
+      ),
+    );
   }
 
   settleRepaymentPayment(
@@ -4881,7 +4947,13 @@ export class InMemoryMessageStore implements MessageStore {
       if (settlement.kind === 'legacy') {
         const stored = await this.#markRepaymentPaidUnlocked(settlement);
         if (!stored) {
-          if (claim === 'existing' && this.#hasMergedRepaymentSettlement(settlement)) {
+          if (
+            claim === 'existing' &&
+            !(await this.isClaimOnlyRepaymentInvoice(
+              paymentHash,
+              repaymentInvoiceIdentity(settlement),
+            ))
+          ) {
             return true;
           }
           if (claim === 'inserted') {
@@ -4896,9 +4968,6 @@ export class InMemoryMessageStore implements MessageStore {
       } else {
         const stored = await this.#markRepaymentPartPaidUnlocked(settlement);
         if (stored === undefined) {
-          if (claim === 'existing' && this.#hasMergedRepaymentSettlement(settlement)) {
-            return true;
-          }
           if (claim === 'inserted') {
             this.#zapPayments.delete(paymentHash.toLowerCase());
           }
@@ -8617,10 +8686,9 @@ export class PostgresMessageStore implements MessageStore {
   async sumUnassignedCreditSats(
     messageId: string,
     includeAfterFunding = false,
-    through?: Date | 'closed',
+    through?: 'closed',
   ): Promise<number> {
     const useClosedBoundary = through === 'closed';
-    const throughTimestamp = through instanceof Date ? through : null;
     const rows = await this.#sql.query<{ sats: string | number | null }>(
       `SELECT COALESCE(SUM(r.sats), 0)::bigint AS sats
        FROM nostr_zap_receipt r
@@ -8640,16 +8708,9 @@ export class PostgresMessageStore implements MessageStore {
                OR r.recorded_at <= m.goal_closed_at
              )
            )
-           OR (
-             NOT $3::boolean
-             AND (
-               $4::timestamptz IS NULL
-               OR r.recorded_at IS NULL
-               OR r.recorded_at <= $4::timestamptz
-             )
-           )
+           OR NOT $3::boolean
          )`,
-      [messageId, includeAfterFunding, useClosedBoundary, throughTimestamp],
+      [messageId, includeAfterFunding, useClosedBoundary],
     );
     return Number(rows[0]?.sats ?? 0);
   }
@@ -8949,42 +9010,57 @@ export class PostgresMessageStore implements MessageStore {
     return { ...row };
   }
 
-  /** Match a settlement row whose recipient or part index was normalized by an account merge. */
-  async #hasMergedRepaymentSettlement(settlement: RepaymentSettlement): Promise<boolean> {
-    if (settlement.kind === 'legacy') {
-      const rows = await this.#sql.query<{ matches: boolean | string }>(
-        `SELECT COUNT(*) > 0 AND COALESCE(SUM(sats), 0) = $4::bigint AS matches
-         FROM message_repayment_part
-         WHERE message_id = $1::uuid
-           AND day_index = $2::integer
-           AND recipient_account_id = $3::uuid`,
+  async isClaimOnlyRepaymentInvoice(
+    paymentHash: string | null,
+    identity: RepaymentInvoiceIdentity,
+  ): Promise<boolean> {
+    if (paymentHash === null) {
+      return false;
+    }
+    if (identity.kind === 'legacy') {
+      const rows = await this.#sql.query<{ claim_only: boolean | string }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM nostr_zap_payment AS claim
+           WHERE claim.payment_hash = $1::text
+         ) AND NOT EXISTS (
+           SELECT 1 FROM message_repayment AS settled
+           WHERE settled.message_id = $2::uuid
+             AND settled.day_index = $3::integer
+             AND settled.recipient_account_id = $4::uuid
+         ) AS claim_only`,
         [
-          settlement.messageId,
-          settlement.dayIndex,
-          settlement.recipientAccountId,
-          settlement.dueSats,
+          paymentHash.toLowerCase(),
+          identity.messageId,
+          identity.dayIndex,
+          identity.recipientAccountId,
         ],
       );
-      return rows[0]?.matches === true || rows[0]?.matches === 't';
+      return rows[0]?.claim_only === true || rows[0]?.claim_only === 't';
     }
-    const rows = await this.#sql.query<{ matches: boolean | string }>(
-      `SELECT true AS matches
-       FROM message_repayment_part
-       WHERE message_id = $1::uuid
-         AND day_index = $2::integer
-         AND recipient_account_id = $3::uuid
-         AND units = $4::bigint
-         AND sats = $5::bigint
-       LIMIT 1`,
+    const rows = await this.#sql.query<{ claim_only: boolean | string }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM nostr_zap_payment AS claim
+         WHERE claim.payment_hash = $1::text
+       ) AND NOT EXISTS (
+         SELECT 1 FROM message_repayment_part AS settled
+         WHERE settled.message_id = $2::uuid
+           AND settled.day_index = $3::integer
+           AND settled.recipient_account_id = $4::uuid
+           AND settled.part_index = $5::integer
+           AND settled.units = $6::bigint
+           AND settled.sats = $7::bigint
+       ) AS claim_only`,
       [
-        settlement.messageId,
-        settlement.dayIndex,
-        settlement.recipientAccountId,
-        settlement.units.toString(),
-        settlement.sats,
+        paymentHash.toLowerCase(),
+        identity.messageId,
+        identity.dayIndex,
+        identity.recipientAccountId,
+        identity.partIndex,
+        identity.units.toString(),
+        identity.sats,
       ],
     );
-    return rows[0]?.matches === true || rows[0]?.matches === 't';
+    return rows[0]?.claim_only === true || rows[0]?.claim_only === 't';
   }
 
   settleRepaymentPayment(
@@ -9010,7 +9086,13 @@ export class PostgresMessageStore implements MessageStore {
       if (settlement.kind === 'legacy') {
         const stored = await store.#markRepaymentPaidUnlocked(settlement);
         if (!stored) {
-          if (claim === 'existing' && (await store.#hasMergedRepaymentSettlement(settlement))) {
+          if (
+            claim === 'existing' &&
+            !(await store.isClaimOnlyRepaymentInvoice(
+              paymentHash,
+              repaymentInvoiceIdentity(settlement),
+            ))
+          ) {
             return true;
           }
           if (claim === 'inserted') {
@@ -9029,7 +9111,13 @@ export class PostgresMessageStore implements MessageStore {
       } else {
         const stored = await store.#markRepaymentPartPaidUnlocked(settlement);
         if (stored === undefined) {
-          if (claim === 'existing' && (await store.#hasMergedRepaymentSettlement(settlement))) {
+          if (
+            claim === 'existing' &&
+            !(await store.isClaimOnlyRepaymentInvoice(
+              paymentHash,
+              repaymentInvoiceIdentity(settlement),
+            ))
+          ) {
             return true;
           }
           if (claim === 'inserted') {

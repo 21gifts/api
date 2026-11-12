@@ -2184,6 +2184,81 @@ describe('repayment from the in-app wallet', () => {
     expect(await messages.listInvoiceAttempts(10)).toHaveLength(1);
   });
 
+  it('ignores unsuccessful and invoice-less attempts in the due plan', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    await messages.recordInvoiceAttempt({
+      ...openPartAttempt(21, 21n, 21n, new Date(clock.now)),
+      result: 'unreachable',
+    });
+    await messages.recordInvoiceAttempt({
+      ...openPartAttempt(21, 21n, 21n, new Date(clock.now)),
+      pr: null,
+    });
+
+    const response = await app.request(`/messages/${CREDIT}/repayment`);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      next: expect.objectContaining({ sats: 21 }),
+    });
+  });
+
+  it('reserves a claimed part until its missing settlement row is repaired', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+    });
+    const paymentHash = 'ab'.repeat(32);
+    const receiptEventId = 'claim-only-part';
+    await messages.recordInvoiceAttempt({
+      ...openPartAttempt(21, 21n, 21n, new Date(clock.now - 30 * 86_400_000)),
+      paymentHash,
+    });
+    await messages.claimZapPayment(paymentHash, receiptEventId, new Date(clock.now));
+
+    const statusBefore = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(statusBefore.status).toBe(200);
+    expect(await statusBefore.json()).toMatchObject({
+      repayments: [expect.objectContaining({ status: 'due' })],
+    });
+    const single = await post(app, `/messages/${CREDIT}/repayment`);
+    const due = await post(app, `/messages/${CREDIT}/repayment/due`);
+    const amount = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${AUTHOR}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ amount: '21' }),
+    });
+    for (const response of [single, due, amount]) {
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'A payment for this share is still open' });
+    }
+    expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(1);
+
+    await expect(
+      messages.settleRepaymentPayment(paymentHash, receiptEventId, new Date(clock.now), {
+        kind: 'part',
+        messageId: CREDIT,
+        dayIndex: 0,
+        recipientAccountId: WALLET_GIVER,
+        partIndex: 0,
+        units: 21n,
+        sats: 21,
+        shareUnits: 21n,
+        paidAt: new Date(clock.now),
+      }),
+    ).resolves.toBe(true);
+    const statusAfter = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(await statusAfter.json()).toMatchObject({
+      repayments: [expect.objectContaining({ status: 'paid' })],
+    });
+  });
+
   it('reuses a prepay Spark invoice and refuses an open bill for an old address', async () => {
     await withNip57(async () => {
       const reused = await loanSetup({

@@ -80,8 +80,19 @@ interface FakeDatabaseOptions {
   unassignedRepaymentSats?: number;
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
-  /** Successful, unpaid repayment invoices on affected source-funded credits. */
-  openRepaymentInvoices?: readonly { created_at: Date; pr: string; claim_only?: boolean }[];
+  /** Successful repayment invoice candidates on affected source-funded credits. */
+  openRepaymentInvoices?: readonly {
+    message_id: string;
+    author_account_id: string;
+    amount_sats: number;
+    payment_hash: string | null;
+    description: string;
+    created_at: Date;
+    pr: string;
+    payment_claimed: boolean;
+  }[];
+  /** Result of the shared exact claim-only lookup for an affected invoice. */
+  claimOnlyRepayment?: boolean;
 }
 
 function fakeDatabase(options: FakeDatabaseOptions = {}): {
@@ -114,6 +125,9 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           }
           if (text.includes('FROM message_invoice AS invoice')) {
             return (options.openRepaymentInvoices ?? []) as T[];
+          }
+          if (text.includes('AS claim_only') && text.includes('nostr_zap_payment AS claim')) {
+            return [{ claim_only: options.claimOnlyRepayment === true }] as T[];
           }
           if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
             return [];
@@ -455,7 +469,18 @@ describe('mergeAccounts', () => {
 
   it('refuses a payable source invoice when only the source funded the credit', async () => {
     const { db, queries } = fakeDatabase({
-      openRepaymentInvoices: [{ created_at: new Date(), pr: 'lnbc-open-repayment' }],
+      openRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          payment_hash: null,
+          description: `repay:0:${INTO}`,
+          created_at: new Date(),
+          pr: 'lnbc-open-repayment',
+          payment_claimed: false,
+        },
+      ],
     });
 
     await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
@@ -470,17 +495,28 @@ describe('mergeAccounts', () => {
     expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $1::text || ':%'");
     expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $2::text");
     expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $2::text || ':%'");
-    expect(open?.text).toContain('FROM nostr_zap_payment AS payment');
+    expect(open?.text).toContain('AS payment_claimed');
     expect(
       queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
     ).toBe(false);
   });
 
-  it('refuses an expired claim-only repayment invoice without writes', async () => {
+  it('refuses an expired claim-only sibling part by its exact part index', async () => {
+    const paymentHash = 'ab'.repeat(32);
     const { db, queries } = fakeDatabase({
       openRepaymentInvoices: [
-        { created_at: new Date(0), pr: 'expired-repayment', claim_only: true },
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          payment_hash: paymentHash,
+          description: `repayp:0:${INTO}:1:100:200`,
+          created_at: new Date(0),
+          pr: 'expired-repayment',
+          payment_claimed: true,
+        },
       ],
+      claimOnlyRepayment: true,
     });
 
     await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
@@ -488,12 +524,62 @@ describe('mergeAccounts', () => {
       error: 'repayment_unavailable',
     });
     const open = queries.find((query) => query.text.includes('FROM message_invoice AS invoice'));
-    expect(open?.text).toContain('AS claim_only');
-    expect(open?.text).toContain('settled.recipient_account_id = invoice.author_account_id');
-    expect(open?.text).toContain('settled_part.recipient_account_id = invoice.author_account_id');
+    expect(open?.text).toContain('AS payment_claimed');
+    const exact = queries.find(
+      (query) =>
+        query.text.includes('AS claim_only') &&
+        query.text.includes('FROM message_repayment_part AS settled'),
+    );
+    expect(exact?.text).toContain('settled.part_index = $5::integer');
+    expect(exact?.params).toEqual([paymentHash, PROFILE, 0, INTO, 1, '100', 100]);
     expect(
       queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
     ).toBe(false);
+  });
+
+  it('allows an expired claimed invoice whose exact part is settled', async () => {
+    const { db } = fakeDatabase({
+      openRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          payment_hash: 'cd'.repeat(32),
+          description: `repayp:0:${INTO}:1:100:200`,
+          created_at: new Date(0),
+          pr: 'expired-settled-repayment',
+          payment_claimed: true,
+        },
+      ],
+      claimOnlyRepayment: false,
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+  });
+
+  it('ignores malformed repayment-like descriptions in the merge scan', async () => {
+    const { db } = fakeDatabase({
+      openRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          payment_hash: null,
+          description: 'repay:not-canonical',
+          created_at: new Date(),
+          pr: 'malformed-repayment',
+          payment_claimed: false,
+        },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
   });
 
   it('moves message.shop_account_id to the surviving account, so a shop stays listed', async () => {
