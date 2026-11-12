@@ -309,6 +309,28 @@ describe('credit repayment', () => {
         amountSats: 21,
         sparkInvoice: null,
       });
+      const emptyBody = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
+        body: '',
+      });
+      expect(emptyBody.status).toBe(200);
+      expect(await emptyBody.json()).toEqual({
+        pr: 'lnbc21n1repay',
+        amountSats: 21,
+        sparkInvoice: null,
+      });
+      const emptyObject = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(emptyObject.status).toBe(200);
+      expect(await emptyObject.json()).toEqual({
+        pr: 'lnbc21n1repay',
+        amountSats: 21,
+        sparkInvoice: null,
+      });
       expect(await messages.listInvoiceAttempts(5)).toHaveLength(1);
     } finally {
       nip57.mockRestore();
@@ -1922,7 +1944,7 @@ describe('repayment from the in-app wallet', () => {
     expect(status.status).toBe(200);
     expect(await status.json()).toMatchObject({ givers: [], repayments: [], unassignedSats: 21 });
 
-    const prepay = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const prepay = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '0.01' }),
@@ -1979,7 +2001,7 @@ describe('repayment from the in-app wallet', () => {
   it('prepays in plan order and refuses more than the remaining max', async () => {
     await withNip57(async () => {
       const { app, messages } = await readyCredit({ termDays: 3 });
-      const tooHigh = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const tooHigh = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '22' }),
@@ -1992,14 +2014,14 @@ describe('repayment from the in-app wallet', () => {
         maxAmount: null,
       });
       expect(await messages.listInvoiceAttempts(10)).toHaveLength(0);
-      const invalid = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const invalid = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '1.5' }),
       });
       expect(invalid.status).toBe(400);
       expect(await invalid.json()).toEqual({ error: 'Invalid amount', code: 'invalid_amount' });
-      const paid = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const paid = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '21' }),
@@ -2022,11 +2044,43 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
+  it('sums fiat maxSats from the separately rounded bills', async () => {
+    const rates = async (): Promise<GoalRateDay> => ({
+      sats: 100_000_000,
+      usd: '300000.00',
+      chf: null,
+      eur: null,
+      php: null,
+    });
+    const { app } = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '0.03',
+      rates,
+      termDays: 3,
+      givers: [{ id: WALLET_GIVER, sats: 3, wallet: true, fiatAmount: '0.03' }],
+    });
+
+    const tooHigh = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0.04' }),
+    });
+    expect(tooHigh.status).toBe(400);
+    expect(await tooHigh.json()).toMatchObject({
+      code: 'amount_too_high',
+      maxSats: 9,
+      maxAmount: '0.03',
+    });
+    expect(await (await loans(app)).json()).toMatchObject({
+      loans: [{ maxSats: 9, maxAmount: '0.03' }],
+    });
+  });
+
   it('does not auto-close a naturally funded loan on its first prepayment', async () => {
     await withNip57(async () => {
       const { app, messages } = await readyCredit();
 
-      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: 'Bearer acc', 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '21' }),
@@ -2044,7 +2098,7 @@ describe('repayment from the in-app wallet', () => {
     });
     await messages.recordInvoiceAttempt(openPartAttempt(10, 10n, 21n, new Date(clock.now)));
 
-    const res = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const res = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '10' }),
@@ -2072,10 +2126,10 @@ describe('repayment from the in-app wallet', () => {
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '21' }),
       };
-      const first = await reused.app.request(`/messages/${CREDIT}/repayment/prepay`, request);
+      const first = await reused.app.request(`/messages/${CREDIT}/repayment`, request);
       const firstBody = (await first.json()) as { bills: Array<{ sparkInvoice: string }> };
       expect(firstBody.bills[0]?.sparkInvoice.startsWith('spark1')).toBe(true);
-      const again = await reused.app.request(`/messages/${CREDIT}/repayment/prepay`, request);
+      const again = await reused.app.request(`/messages/${CREDIT}/repayment`, request);
       expect(await again.json()).toEqual(firstBody);
       expect(await reused.messages.listInvoiceAttempts(10)).toHaveLength(1);
 
@@ -2087,7 +2141,7 @@ describe('repayment from the in-app wallet', () => {
         ...openPartAttempt(10, 10n, 21n, new Date(conflict.clock.now)),
         lightningAddress: 'giver0@old.example',
       });
-      const refused = await conflict.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const refused = await conflict.app.request(`/messages/${CREDIT}/repayment`, {
         ...request,
         body: JSON.stringify({ amount: '10' }),
       });
@@ -2104,7 +2158,7 @@ describe('repayment from the in-app wallet', () => {
     });
     await messages.recordInvoiceAttempt(openPartAttempt(10, 10n, 21n, new Date(clock.now)));
 
-    const res = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const res = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '9' }),
@@ -2266,7 +2320,7 @@ describe('repayment from the in-app wallet', () => {
       });
       const send = (amount: string): Promise<Response> =>
         Promise.resolve(
-          app.request(`/messages/${CREDIT}/repayment/prepay`, {
+          app.request(`/messages/${CREDIT}/repayment`, {
             method: 'POST',
             headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
             body: JSON.stringify({ amount }),
@@ -2291,7 +2345,7 @@ describe('repayment from the in-app wallet', () => {
           { id: NO_WALLET, sats: 10, wallet: true },
         ],
       });
-      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '10' }),
@@ -2318,7 +2372,7 @@ describe('repayment from the in-app wallet', () => {
           { id: NO_WALLET, sats: 10, wallet: true, fiatAmount: '0.10' },
         ],
       });
-      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '0.10' }),
@@ -2345,7 +2399,7 @@ describe('repayment from the in-app wallet', () => {
           { id: NO_WALLET, sats: 20, wallet: true },
         ],
       });
-      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '40' }),
@@ -2392,7 +2446,7 @@ describe('repayment from the in-app wallet', () => {
         ],
       });
 
-      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '121' }),
@@ -2525,13 +2579,22 @@ describe('repayment from the in-app wallet', () => {
       (
         await base.app.request(`/messages/${CREDIT}/repayment/prepay`, {
           method: 'POST',
+          headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ amount: '1' }),
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await base.app.request(`/messages/${CREDIT}/repayment`, {
+          method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ amount: '1' }),
         })
       ).status,
     ).toBe(401);
     for (const body of ['{', '[]', 'null', JSON.stringify('amount')]) {
-      const invalid = await base.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const invalid = await base.app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body,
@@ -2539,7 +2602,7 @@ describe('repayment from the in-app wallet', () => {
       expect(invalid.status).toBe(400);
       expect(await invalid.json()).toEqual({ error: 'Invalid amount', code: 'invalid_amount' });
     }
-    const zero = await base.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const zero = await base.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '0' }),
@@ -2547,7 +2610,7 @@ describe('repayment from the in-app wallet', () => {
     expect(zero.status).toBe(400);
     expect(
       (
-        await base.app.request('/messages/66666666-6666-4666-8666-666666666666/repayment/prepay', {
+        await base.app.request('/messages/66666666-6666-4666-8666-666666666666/repayment', {
           method: 'POST',
           headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
           body: JSON.stringify({ amount: '1' }),
@@ -2556,11 +2619,11 @@ describe('repayment from the in-app wallet', () => {
     ).toBe(404);
 
     const rules = await loanSetup({ rules: false });
-    expect((await post(rules.app, `/messages/${CREDIT}/repayment/prepay`)).status).toBe(409);
+    expect((await post(rules.app, `/messages/${CREDIT}/repayment`)).status).toBe(409);
 
     const collecting = await loanSetup({ fundedAt: null });
     vi.spyOn(collecting.messages, 'closeCredit').mockResolvedValueOnce(undefined);
-    const vanished = await collecting.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const vanished = await collecting.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '1' }),
@@ -2574,7 +2637,7 @@ describe('repayment from the in-app wallet', () => {
       .mockResolvedValueOnce(collectingRow)
       .mockResolvedValueOnce(undefined);
     const goneAfterClose = await collectingGoneAfterClose.app.request(
-      `/messages/${CREDIT}/repayment/prepay`,
+      `/messages/${CREDIT}/repayment`,
       {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
@@ -2588,7 +2651,7 @@ describe('repayment from the in-app wallet', () => {
       goalAmount: null,
       rate: true,
     });
-    const unavailable = await malformedDebt.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const unavailable = await malformedDebt.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '0.01' }),
@@ -2596,7 +2659,7 @@ describe('repayment from the in-app wallet', () => {
     expect(unavailable.status).toBe(503);
 
     const unpriced = await loanSetup({ goalCurrency: 'USD' });
-    const noRate = await unpriced.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const noRate = await unpriced.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '0.01' }),
@@ -2609,7 +2672,7 @@ describe('repayment from the in-app wallet', () => {
         throw new Error('rate unavailable');
       },
     });
-    const failedRate = await brokenRate.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const failedRate = await brokenRate.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '0.01' }),
@@ -2617,7 +2680,7 @@ describe('repayment from the in-app wallet', () => {
     expect(failedRate.status).toBe(503);
 
     for (const amount of [1, '0']) {
-      const invalidFiat = await unpriced.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const invalidFiat = await unpriced.app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount }),
@@ -2629,7 +2692,7 @@ describe('repayment from the in-app wallet', () => {
       termDays: 1,
       givers: [{ id: NO_WALLET, sats: 21, wallet: false }],
     });
-    const nothing = await waiting.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const nothing = await waiting.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '1' }),
@@ -2643,7 +2706,7 @@ describe('repayment from the in-app wallet', () => {
       termDays: REPAYMENT_BILLS_MAX + 1,
       givers: [{ id: WALLET_GIVER, sats: REPAYMENT_BILLS_MAX + 1, wallet: true }],
     });
-    const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const response = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: String(REPAYMENT_BILLS_MAX + 1) }),
@@ -2660,7 +2723,13 @@ describe('repayment from the in-app wallet', () => {
     const fiat = await loanSetup({
       goalCurrency: 'USD',
       goalAmount: '0.61',
-      rate: true,
+      rates: async () => ({
+        sats: 100_000_000,
+        usd: '300000.00',
+        chf: null,
+        eur: null,
+        php: null,
+      }),
       termDays: REPAYMENT_BILLS_MAX + 1,
       givers: [
         {
@@ -2671,7 +2740,7 @@ describe('repayment from the in-app wallet', () => {
         },
       ],
     });
-    const fiatResponse = await fiat.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const fiatResponse = await fiat.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '0.61' }),
@@ -2680,7 +2749,7 @@ describe('repayment from the in-app wallet', () => {
     expect(await fiatResponse.json()).toEqual({
       error: 'Too many shares for one payment',
       code: 'too_many_shares',
-      maxSats: REPAYMENT_BILLS_MAX * 10,
+      maxSats: REPAYMENT_BILLS_MAX * 3,
       maxAmount: '0.60',
     });
     expect(await fiat.messages.listInvoiceAttemptsForMessage(CREDIT)).toEqual([]);
@@ -2705,7 +2774,7 @@ describe('repayment from the in-app wallet', () => {
       ...openPartAttempt(21, 21n, 21n, new Date(legacy.clock.now)),
       description: `repay:0:${WALLET_GIVER}`,
     });
-    const blocked = await legacy.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const blocked = await legacy.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '10' }),
@@ -2719,7 +2788,7 @@ describe('repayment from the in-app wallet', () => {
     await repriced.messages.recordInvoiceAttempt(
       openPartAttempt(20, 10n, 21n, new Date(repriced.clock.now)),
     );
-    const tooLarge = await repriced.app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const tooLarge = await repriced.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '10' }),
@@ -2746,7 +2815,7 @@ describe('repayment from the in-app wallet', () => {
     await messages.recordInvoiceAttempt(openPartAttempt(200, 10n, 100n, new Date(clock.now)));
     rates.usd = '100000.00';
 
-    const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const response = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '0.10' }),
@@ -2776,14 +2845,11 @@ describe('repayment from the in-app wallet', () => {
     await wrongShare.messages.recordInvoiceAttempt(
       openPartAttempt(30, 30n, 99n, new Date(wrongShare.clock.now)),
     );
-    const wrongShareResponse = await wrongShare.app.request(
-      `/messages/${CREDIT}/repayment/prepay`,
-      {
-        method: 'POST',
-        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ amount: '30' }),
-      },
-    );
+    const wrongShareResponse = await wrongShare.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '30' }),
+    });
     expect(wrongShareResponse.status).toBe(409);
 
     const duplicateKey = await loanSetup({
@@ -2803,14 +2869,11 @@ describe('repayment from the in-app wallet', () => {
     await duplicateKey.messages.recordInvoiceAttempt(
       openPartAttempt(20, 20n, 100n, new Date(duplicateKey.clock.now)),
     );
-    const duplicateResponse = await duplicateKey.app.request(
-      `/messages/${CREDIT}/repayment/prepay`,
-      {
-        method: 'POST',
-        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ amount: '10' }),
-      },
-    );
+    const duplicateResponse = await duplicateKey.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '10' }),
+    });
     expect(duplicateResponse.status).toBe(409);
 
     const staleLegacy = await loanSetup({
@@ -2867,14 +2930,11 @@ describe('repayment from the in-app wallet', () => {
         return run(locked);
       }),
     );
-    const overReservedResponse = await overReserved.app.request(
-      `/messages/${CREDIT}/repayment/prepay`,
-      {
-        method: 'POST',
-        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ amount: '60' }),
-      },
-    );
+    const overReservedResponse = await overReserved.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '60' }),
+    });
     expect(overReservedResponse.status).toBe(409);
   });
 
@@ -2885,7 +2945,7 @@ describe('repayment from the in-app wallet', () => {
     });
     await messages.recordInvoiceAttempt(openPartAttempt(5, 10n, 100n, new Date(clock.now)));
 
-    const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const response = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '10' }),
@@ -2976,7 +3036,7 @@ describe('repayment from the in-app wallet', () => {
       vi.spyOn(messages, 'zapPaymentReceiptId')
         .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce('receipt');
-      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '10' }),
@@ -2994,7 +3054,7 @@ describe('repayment from the in-app wallet', () => {
         givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
       });
       await messages.recordInvoiceAttempt(openPartAttempt(10, 10n, 21n, new Date(clock.now)));
-      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '21' }),
@@ -3016,7 +3076,7 @@ describe('repayment from the in-app wallet', () => {
       description: repaymentPartDescription(0, WALLET_GIVER, 1, 20n, 100n),
     });
 
-    const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+    const response = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
       body: JSON.stringify({ amount: '30' }),
@@ -3048,7 +3108,7 @@ describe('repayment from the in-app wallet', () => {
         }),
       );
 
-      const response = await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
         method: 'POST',
         headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
         body: JSON.stringify({ amount: '50' }),
@@ -3088,7 +3148,7 @@ describe('repayment from the in-app wallet', () => {
 
         const response =
           kind === 'prepay'
-            ? await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+            ? await app.request(`/messages/${CREDIT}/repayment`, {
                 method: 'POST',
                 headers: {
                   authorization: `Bearer ${AUTHOR}`,
@@ -3121,7 +3181,7 @@ describe('repayment from the in-app wallet', () => {
 
         const response =
           kind === 'prepay'
-            ? await app.request(`/messages/${CREDIT}/repayment/prepay`, {
+            ? await app.request(`/messages/${CREDIT}/repayment`, {
                 method: 'POST',
                 headers: {
                   authorization: `Bearer ${AUTHOR}`,

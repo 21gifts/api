@@ -1385,7 +1385,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('finishes minting and storing a note gift before a concurrent close completes', async () => {
+  it('locks an uppercase gift body id until mint storage finishes before close', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = new InMemoryMessageStore();
@@ -1441,7 +1441,7 @@ describe('POST /invoices', () => {
         body: JSON.stringify({
           address: ADDRESS,
           amountMsat: 1000,
-          messageId: POST_ID,
+          messageId: POST_ID.toUpperCase(),
         }),
       }),
     );

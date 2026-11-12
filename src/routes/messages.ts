@@ -120,7 +120,6 @@ import {
   repaymentClose,
   repaymentDueBills,
   repaymentInvoice,
-  repaymentPrepay,
   repaymentStatus,
 } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
@@ -3454,7 +3453,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     .post('/:id/repayment', (c) => repaymentInvoice(deps, c))
     .post('/:id/repayment/due', (c) => repaymentDueBills(deps, c))
     .post('/:id/repayment/close', (c) => repaymentClose(deps, c))
-    .post('/:id/repayment/prepay', (c) => repaymentPrepay(deps, c))
     .post('/:id/invoice', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
@@ -3468,6 +3466,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!MESSAGE_ID_RE.test(messageIdParam)) {
         return c.json({ error: 'Not found' }, 404);
       }
+      const messageId = messageIdParam.toLowerCase();
       const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
       const shown = parsed.success ? shownFiatFromBody(parsed.data) : { pinned: false as const };
       const heart = parsed.success && parsed.data.heart === true;
@@ -3475,7 +3474,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
-            messageId: messageIdParam,
+            messageId,
             payerAccountId: account.id,
             heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
@@ -3499,7 +3498,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
-            messageId: messageIdParam,
+            messageId,
             payerAccountId: account.id,
             heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
@@ -3522,7 +3521,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
-            messageId: messageIdParam,
+            messageId,
             payerAccountId: account.id,
             heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
@@ -3541,12 +3540,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
       return deps.store.withMessageLock(messageIdParam, async (lockedStore) => {
-        const row = await lockedStore.getById(messageIdParam);
+        const row = await lockedStore.getById(messageId);
         if (row === undefined || row.deletedAt !== null) {
           await persistInvoiceAttempt(
             lockedStore,
             invoiceAttemptBase({
-              messageId: messageIdParam,
+              messageId,
               payerAccountId: account.id,
               heart,
               authorAccountId: UNKNOWN_ACCOUNT_ID,

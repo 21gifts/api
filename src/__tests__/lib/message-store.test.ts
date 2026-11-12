@@ -11082,16 +11082,20 @@ describe('PostgresMessageStore', () => {
     expect((await memory.getById('m-gift-held'))?.sats).toBe(9);
   });
 
-  it('uses one transaction-scoped Postgres advisory lock per message', async () => {
+  it('uses one lowercase transaction-scoped Postgres advisory lock per UUID message', async () => {
     const sql = new MockSql();
     sql.transaction = async (run) => run(sql);
     const store = new PostgresMessageStore(sql);
-    const result = await store.withRepaymentLock('m1', 2, 'giver', async (locked) =>
-      locked === store ? 'same' : 'transaction',
+    const result = await store.withRepaymentLock(
+      'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      2,
+      'giver',
+      async (locked) => (locked === store ? 'same' : 'transaction'),
     );
     expect(result).toBe('transaction');
     expect(sql.queries[0]?.text).toMatch(/pg_advisory_xact_lock/);
-    expect(sql.queries[0]?.params).toEqual(['message:m1']);
+    expect(sql.queries[0]?.text).toContain('$1::text');
+    expect(sql.queries[0]?.params).toEqual(['message:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']);
   });
 
   it('takes the Postgres message lock before stamping a gift receipt', async () => {

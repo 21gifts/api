@@ -710,8 +710,9 @@ export async function issueGiftInvoice(
 ): Promise<IssueGiftInvoiceResult> {
   const messageId = input.messageId;
   if (messageId !== undefined && MESSAGE_ID_RE.test(messageId)) {
+    const canonicalInput = { ...input, messageId: messageId.toLowerCase() };
     return deps.messageStore.withMessageLock(messageId, (lockedStore) =>
-      issueGiftInvoiceLocked({ ...deps, messageStore: lockedStore }, input),
+      issueGiftInvoiceLocked({ ...deps, messageStore: lockedStore }, canonicalInput),
     );
   }
   return issueGiftInvoiceLocked(deps, input);

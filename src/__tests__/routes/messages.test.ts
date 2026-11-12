@@ -5032,14 +5032,14 @@ describe('POST /messages/:id/invoice', () => {
     expect(await hit()).toBe(429);
   });
 
-  it('stores a direct note-gift invoice before a concurrent close completes', async () => {
+  it('locks an uppercase direct gift id until mint storage finishes before close', async () => {
     const { parseNostrKek } = await import('@/lib/nostr/kek');
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
     const kek = parseNostrKek('11'.repeat(32));
     const authStore = await namedStore('Ada');
     await ensureAccountNostrKey(authStore, 'acc', kek);
     const messageStore = new InMemoryMessageStore();
-    const messageId = '56565656-5656-4656-8656-565656565656';
+    const messageId = 'a6565656-5656-4656-8656-565656565656';
     await messageStore.create({
       id: messageId,
       accountId: 'acc',
@@ -5091,7 +5091,7 @@ describe('POST /messages/:id/invoice', () => {
       }),
     );
     await withNip57True(async () => {
-      const issue = app.request(`/messages/${messageId}/invoice`, {
+      const issue = app.request(`/messages/${messageId.toUpperCase()}/invoice`, {
         method: 'POST',
         headers: { ...AUTH, 'content-type': 'application/json' },
         body: JSON.stringify({ sats: 21 }),

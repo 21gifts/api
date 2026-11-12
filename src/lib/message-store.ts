@@ -103,6 +103,11 @@ const MAX_PUBLISH_ATTEMPTS = 5;
 /** Canonical UUID text, the only shape allowed into a `uuid[]` array literal. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Stable key segment shared by every per-message lock implementation. */
+function messageLockKey(messageId: string): string {
+  return UUID_RE.test(messageId) ? messageId.toLowerCase() : messageId;
+}
+
 interface PaymentFiatStoreOptions {
   fetchImpl?: FetchFn;
   fiatRates?: FiatRateBook;
@@ -1388,7 +1393,8 @@ export interface MessageStore {
   /**
    * Serialize close, gift mint, repayment reservation, and settlement for one message.
    * Postgres holds a transaction-scoped advisory lock; memory queues callbacks
-   * on the stable message id. The callback must use the supplied locked store.
+   * on the stable message id. Valid UUIDs are lowercased in both lock keys. The
+   * callback must use the supplied locked store.
    *
    * @param messageId - Forum message id.
    * @param run - Work performed while the message lock is held.
@@ -1835,6 +1841,9 @@ export type ZapReceiptGiftPatch = {
 
 /** Failure of the indexed ingest row within an atomic receipt write. */
 export class ZapIngestRecordError extends Error {
+  /**
+   * @param error - Underlying failure from recording the indexed ingest row.
+   */
   constructor(error: unknown) {
     super(String(error).replace(/^Error: /, ''));
     this.name = 'ZapIngestRecordError';
@@ -4734,20 +4743,21 @@ export class InMemoryMessageStore implements MessageStore {
     messageId: string,
     run: (store: MessageStore) => Promise<T>,
   ): Promise<T> {
-    const previous = this.#messageLocks.get(messageId) ?? Promise.resolve();
+    const key = messageLockKey(messageId);
+    const previous = this.#messageLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const tail = previous.then(() => gate);
-    this.#messageLocks.set(messageId, tail);
+    this.#messageLocks.set(key, tail);
     await previous;
     try {
       return await run(this);
     } finally {
       release();
-      if (this.#messageLocks.get(messageId) === tail) {
-        this.#messageLocks.delete(messageId);
+      if (this.#messageLocks.get(key) === tail) {
+        this.#messageLocks.delete(key);
       }
     }
   }
@@ -8734,9 +8744,10 @@ export class PostgresMessageStore implements MessageStore {
     if (this.#sql.transaction === undefined) {
       return run(this);
     }
+    const key = messageLockKey(messageId);
     return this.#sql.transaction(async (tx) => {
-      await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-        `message:${messageId}`,
+      await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, [
+        `message:${key}`,
       ]);
       return run(new PostgresMessageStore(tx, this.#paymentFiat));
     });

@@ -841,23 +841,57 @@ function billError(c: Context, bill: Extract<RepaymentBill, { ok: false }>): Res
 }
 
 /**
- * BOLT11 that pays the next giver who can receive their share, at that giver's
- * receiving address (`receivingAddress`), plus a Spark invoice for it when the
- * giver is wallet-backed.
+ * With no body, returns a BOLT11 that pays the next giver who can receive their
+ * share, plus a Spark invoice when the giver is wallet-backed. With an
+ * `{ amount: string }` body, prepays that amount in plan order.
  *
  * @param deps - Store, auth, clock, LNURL fetch, and the optional LNURL server and
  *   Spark invoice store.
  * @param c - Request.
- * @returns `{ pr, amountSats, sparkInvoice }`, or an error.
+ * @returns The next bill, the requested amount's bills and waiting shares, or an error.
  */
 export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise<Response> {
-  const opened = await openCredit(deps, c);
+  const requestBody = await c.req.text();
+  const hasBody = requestBody.trim() !== '';
+  let body: unknown = undefined;
+  let bodyParsed = true;
+  if (hasBody) {
+    try {
+      body = JSON.parse(requestBody);
+    } catch {
+      bodyParsed = false;
+    }
+  }
+  const bodyObject =
+    body !== null && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  const hasAmountBody =
+    hasBody && (!bodyParsed || bodyObject === null || Object.keys(bodyObject).length > 0);
+  const opened = await openCredit(deps, c, hasAmountBody ? { allowCollecting: true } : undefined);
   if (opened instanceof Response) {
     return opened;
   }
   const payGate = requireAction(opened.account, 'forum.pay');
   if (!payGate.ok) {
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
+  }
+  if (hasAmountBody) {
+    const amount = bodyObject?.['amount'];
+    const fiat = isFiatCredit(opened.row);
+    const parsed: PrepayAmount | null = fiat ? fiatPrepayAmount(amount) : btcPrepayAmount(amount);
+    if (parsed === null) {
+      return c.json({ error: INVALID_AMOUNT_BODY, code: 'invalid_amount' }, 400);
+    }
+    return deps.store.withMessageLock(opened.row.id, async (locked) => {
+      const row = await lockedCredit(locked, opened, true);
+      if (row === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      opened.row = row;
+      opened.nowMs = deps.now();
+      return repaymentAmountLocked({ ...deps, store: locked }, c, opened, parsed);
+    });
   }
   return deps.store.withMessageLock(opened.row.id, async (locked) => {
     const row = await lockedCredit(locked, opened);
@@ -1047,7 +1081,7 @@ async function repaymentDueBillsLocked(
   return c.json({ bills, waiting }, 200);
 }
 
-/** Parsed `POST /messages/:id/repayment/prepay` amount in loan units. */
+/** Parsed free amount from `POST /messages/:id/repayment` in loan units. */
 type PrepayAmount = { units: bigint; typed: string };
 
 const AMOUNT_TOO_HIGH_BODY = 'Amount is above what is left';
@@ -1148,7 +1182,19 @@ async function prepayPlan(
     })),
     maxParts,
   );
-  const maxSats = price(maxUnits);
+  const maximum = allocateRepayment(
+    maxUnits,
+    plan.shares.map((share) => ({
+      dayIndex: share.dayIndex,
+      accountId: share.accountId,
+      units: share.units,
+      paidUnits: share.paidUnits,
+      nextPartIndex: share.nextPartIndex,
+      openParts: share.openParts,
+      canReceive: share.canReceive,
+    })),
+  );
+  const maxSats = pricedSum(price, maximum.parts);
   return {
     allocation,
     maxSats,
@@ -1237,8 +1283,11 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
  * @param requested - Requested units.
  * @returns Units covered by the first 60 parts.
  */
-function cappedAllocation(shares: readonly ShareState[], requested: bigint): bigint {
-  const allocation = allocateRepayment(
+function cappedAllocation(
+  shares: readonly ShareState[],
+  requested: bigint,
+): ReturnType<typeof allocateRepayment> {
+  return allocateRepayment(
     requested,
     shares.map((share) => ({
       dayIndex: share.dayIndex,
@@ -1251,52 +1300,10 @@ function cappedAllocation(shares: readonly ShareState[], requested: bigint): big
     })),
     REPAYMENT_BILLS_MAX,
   );
-  return allocation.parts.reduce((sum, part) => sum + part.units, 0n);
-}
-
-/**
- * `POST /messages/:id/repayment/prepay`: pay any amount up to the remaining
- * payable plan, in plan order. A still-collecting ask is closed first.
- *
- * @param deps - Store, auth, clock, rate loader, LNURL fetch, and optional Spark store.
- * @param c - Request.
- * @returns The bills and waiting shares, or an error.
- */
-export async function repaymentPrepay(deps: RepaymentDeps, c: Context): Promise<Response> {
-  const opened = await openCredit(deps, c, { allowCollecting: true });
-  if (opened instanceof Response) {
-    return opened;
-  }
-  const payGate = requireAction(opened.account, 'forum.pay');
-  if (!payGate.ok) {
-    return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
-  }
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: INVALID_AMOUNT_BODY, code: 'invalid_amount' }, 400);
-  }
-  const amount =
-    body !== null && typeof body === 'object' ? (body as { amount?: unknown }).amount : undefined;
-  const fiat = isFiatCredit(opened.row);
-  const parsed: PrepayAmount | null = fiat ? fiatPrepayAmount(amount) : btcPrepayAmount(amount);
-  if (parsed === null) {
-    return c.json({ error: INVALID_AMOUNT_BODY, code: 'invalid_amount' }, 400);
-  }
-  return deps.store.withMessageLock(opened.row.id, async (locked) => {
-    const row = await lockedCredit(locked, opened, true);
-    if (row === undefined) {
-      return c.json({ error: 'Not found' }, 404);
-    }
-    opened.row = row;
-    opened.nowMs = deps.now();
-    return repaymentPrepayLocked({ ...deps, store: locked }, c, opened, parsed);
-  });
 }
 
 /** Close when needed, then plan and reserve a prepayment under one message lock. */
-async function repaymentPrepayLocked(
+async function repaymentAmountLocked(
   deps: RepaymentDeps,
   c: Context,
   opened: { account: Account; row: MessageRow; nowMs: number },
@@ -1354,13 +1361,14 @@ async function repaymentPrepayLocked(
   }
   if (plan.allocation.parts.length > REPAYMENT_BILLS_MAX) {
     const capped = cappedAllocation(plan.shares, parsed.units);
-    const cappedSats = plan.price(capped);
+    const cappedUnits = capped.parts.reduce((sum, part) => sum + part.units, 0n);
+    const cappedSats = pricedSum(plan.price, capped.parts);
     return c.json(
       {
         error: TOO_MANY_SHARES_BODY,
         code: 'too_many_shares',
         maxSats: cappedSats,
-        maxAmount: plan.fiat ? formatCents(capped) : null,
+        maxAmount: plan.fiat ? formatCents(cappedUnits) : null,
       },
       400,
     );
@@ -1775,13 +1783,17 @@ async function loanRow(
       return 'unavailable';
     }
     const maxUnits = payable.reduce((sum, payer) => sum + payer.units, 0n);
+    const payableIds = new Set(payable.map((payer) => payer.accountId));
+    const maximumShares = repaymentSchedule(row.goalTermDays as number, named).filter((share) =>
+      payableIds.has(share.accountId),
+    );
     return {
       ...base,
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
       totalSats: price === undefined ? 0 : pricedSum(price, named),
-      maxSats: price === undefined ? 0 : price(maxUnits),
+      maxSats: price === undefined ? 0 : pricedSum(price, maximumShares),
       maxAmount: cents(maxUnits),
       due: {
         payableSats: 0,
@@ -1837,13 +1849,25 @@ async function loanRow(
   const maxUnits = open
     .filter((share) => share.canReceive)
     .reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
+  const maximum = allocateRepayment(
+    maxUnits,
+    plan.shares.map((share) => ({
+      dayIndex: share.dayIndex,
+      accountId: share.accountId,
+      units: share.units,
+      paidUnits: share.paidUnits,
+      nextPartIndex: share.nextPartIndex,
+      openParts: share.openParts,
+      canReceive: share.canReceive,
+    })),
+  );
   return {
     ...base,
     daysDue: plan.daysDue,
     daysPaid: plan.daysPaid,
     repaidSats,
     totalSats: openSats === null ? null : repaidSats + openSats,
-    maxSats: price(maxUnits),
+    maxSats: pricedSum(price, maximum.parts),
     maxAmount: cents(maxUnits),
     due: {
       payableSats: pricedSum(

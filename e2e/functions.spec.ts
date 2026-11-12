@@ -3919,26 +3919,22 @@ test('POST /messages/:id/repayment/close without bearer is 401 then 404 for a mi
   ).toBe(404);
 });
 
-test('Function: repaymentPrepay — POST /messages/:id/repayment/prepay without bearer is 401', async ({
+test('Function: repaymentInvoice — POST /messages/:id/repayment with amount without bearer is 401', async ({
   request,
 }) => {
   expect(
     (
-      await request.post('/messages/00000000-0000-4000-8000-000000000000/repayment/prepay', {
+      await request.post('/messages/00000000-0000-4000-8000-000000000000/repayment', {
         data: { amount: '1000' },
       })
     ).status(),
   ).toBe(401);
 });
 
-test('POST /messages/:id/repayment/prepay without bearer is 401', async ({ request }) => {
-  expect((await request.post('/messages/:id/repayment/prepay')).status()).toBe(401);
-});
-
-test('POST /messages/:id/repayment/prepay without bearer is 401 then 404 for a missing loan', async ({
+test('POST /messages/:id/repayment with amount without bearer is 401 then 404 for a missing loan', async ({
   request,
 }) => {
-  const path = '/messages/00000000-0000-4000-8000-000000000000/repayment/prepay';
+  const path = '/messages/00000000-0000-4000-8000-000000000000/repayment';
   expect((await request.post(path, { data: { amount: '1000' } })).status()).toBe(401);
   const session = await memberSession(request);
   expect(
