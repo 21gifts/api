@@ -47,6 +47,14 @@ export interface WalletPaymentTotals {
   feesSats: bigint;
 }
 
+/** Keyset position after the last row of a payment page. */
+export interface WalletPaymentCursor {
+  /** Paid instant of the last returned row. */
+  paidAt: Date;
+  /** Payment id of the last returned row. */
+  paymentId: string;
+}
+
 /** Persistence contract for wallet report data. */
 export interface WalletStore {
   /**
@@ -96,9 +104,14 @@ export interface WalletStore {
    *
    * @param accountId - Reporting account id.
    * @param limit - Maximum rows.
+   * @param after - Optional keyset position; only rows strictly after it are returned.
    * @returns Caller-owned payment rows.
    */
-  listPayments(accountId: string, limit: number): Promise<WalletPaymentRecord[]>;
+  listPayments(
+    accountId: string,
+    limit: number,
+    after?: WalletPaymentCursor,
+  ): Promise<WalletPaymentRecord[]>;
 }
 
 /** Idempotent DDL for wallet balance snapshots and reported payments. */
@@ -402,13 +415,25 @@ export class InMemoryWalletStore implements WalletStore {
    *
    * @param accountId - Reporting account id.
    * @param limit - Maximum rows.
+   * @param after - Optional keyset position after the last row of the previous page.
    * @returns Sorted payment copies.
    */
-  listPayments(accountId: string, limit: number): Promise<WalletPaymentRecord[]> {
+  listPayments(
+    accountId: string,
+    limit: number,
+    after?: WalletPaymentCursor,
+  ): Promise<WalletPaymentRecord[]> {
     return Promise.resolve(
       [...this.#payments.values()]
         .map((entry) => entry.row)
         .filter((row) => row.accountId === accountId)
+        .filter(
+          (row) =>
+            after === undefined ||
+            row.paidAt.getTime() < after.paidAt.getTime() ||
+            (row.paidAt.getTime() === after.paidAt.getTime() &&
+              byteOrder(row.paymentId, after.paymentId) < 0),
+        )
         .sort((a, b) => {
           const byTime = b.paidAt.getTime() - a.paidAt.getTime();
           return byTime === 0 ? byteOrder(b.paymentId, a.paymentId) : byTime;
@@ -763,16 +788,29 @@ GROUP BY direction`,
    *
    * @param accountId - Reporting account id (`$1`).
    * @param limit - Maximum rows (`$2`).
+   * @param after - Optional keyset position after the last row of the previous page.
    * @returns Mapped payment rows.
    */
-  async listPayments(accountId: string, limit: number): Promise<WalletPaymentRecord[]> {
+  async listPayments(
+    accountId: string,
+    limit: number,
+    after?: WalletPaymentCursor,
+  ): Promise<WalletPaymentRecord[]> {
+    const keyset =
+      after === undefined
+        ? ''
+        : ' AND (paid_at < $3 OR (paid_at = $3 AND payment_id COLLATE "C" < $4))';
+    const params: unknown[] = [accountId, limit];
+    if (after !== undefined) {
+      params.push(after.paidAt, after.paymentId);
+    }
     const rows = await this.sql.query<WalletPaymentSqlRow>(
       `SELECT ${PAYMENT_COLUMNS}
 FROM wallet_payment
-WHERE account_id = $1
+WHERE account_id = $1${keyset}
 ORDER BY paid_at DESC, payment_id COLLATE "C" DESC
 LIMIT $2`,
-      [accountId, limit],
+      params,
     );
     return rows.map(mapPayment);
   }

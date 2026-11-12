@@ -4527,6 +4527,19 @@ wallet) when the LNURL server is configured. Session tokens are plaintext. nsec 
 envelope hex, never decrypted. Unknown or non-UUID id → **Response** `404`.
 Same `DEBUG_TOKEN` gate as `GET /debug/accounts`.
 
+### `GET /debug/accounts/:id/wallet`
+
+Operator read of one account's wallet, read-only: the newest stored balance
+snapshot (`balanceSats`, ISO-8601 `syncedAt` and `receivedAt`, and floored,
+non-negative `ageSeconds`), or `null` when the account never reported, plus
+that account's stored payments newest first (`paidAt`, then payment id), at
+most `limit` rows (default 50, decimal integer 1..500). `nextCursor` is an
+opaque cursor when another row exists and is omitted on the last page. Every
+`WalletPaymentRecord` field is JSON, with dates as ISO strings. Unknown or
+non-UUID id → **Response** `404`; malformed limit or cursor → **Response**
+`400`. `DEBUG_TOKEN` and `DEBUG_READ_TOKEN` both read this route. A store
+failure → **Response** `503` `{ "error": "Wallet data is unavailable" }`.
+
 ### `POST /debug/accounts`
 
 Operator provision of accounts by display name, with no passkey, no wallet,

@@ -924,6 +924,89 @@ test('GET /debug/accounts/:id without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('Function: encodeWalletPaymentCursor — wallet nextCursor encodes a page position', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/accounts/:id/wallet');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: decodeWalletPaymentCursor — a malformed wallet cursor is 400', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eCursor${stamp.slice(0, 8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name, username: `e2e-cursor-${stamp}`.slice(0, 32) }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const account = accounts.find((row) => row.name === name);
+  expect(account).toBeDefined();
+  const res = await request.get(`/debug/accounts/${account?.id}/wallet?cursor=not-a-cursor`, {
+    headers: DEBUG,
+  });
+  expect(res.status()).toBe(400);
+});
+
+test('Function: debugWalletRoutes — GET /debug/accounts/:id/wallet shows balance and payments', async ({
+  request,
+}) => {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eWallet${stamp.slice(0, 8)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name, username: `e2e-wallet-${stamp}`.slice(0, 32) }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const account = accounts.find((row) => row.name === name);
+  expect(account).toBeDefined();
+  const session = await request.post(`/debug/accounts/${account?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  const report = await request.post('/me/wallet/report', {
+    headers: { authorization: `Bearer ${token}` },
+    data: {
+      balanceSats: 1000,
+      syncedAt: new Date().toISOString(),
+      payments: [
+        {
+          id: 'e2e-wallet-payment',
+          direction: 'out',
+          status: 'completed',
+          amountSats: 21,
+          feeSats: 0,
+          timestamp: Math.floor(Date.now() / 1000),
+          method: 'lightning',
+        },
+      ],
+    },
+  });
+  expect(report.status()).toBe(200);
+  const res = await request.get(`/debug/accounts/${account?.id}/wallet`, { headers: DEBUG });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    accountId: string;
+    balance: { balanceSats: number; ageSeconds: number } | null;
+    payments: Array<{ paymentId: string }>;
+  };
+  expect(body.accountId).toBe(account?.id);
+  expect(body.balance?.balanceSats).toBe(1000);
+  expect(body.balance?.ageSeconds).toBeGreaterThanOrEqual(0);
+  expect(body.payments.map((row) => row.paymentId)).toContain('e2e-wallet-payment');
+});
+
+test('GET /debug/accounts/:id/wallet without bearer is 401', async ({ request }) => {
+  const res = await request.get('/debug/accounts/:id/wallet');
+  expect(res.status()).toBe(401);
+});
+
 test('GET /debug/dump without bearer is 401', async ({ request }) => {
   const res = await request.get('/debug/dump');
   expect(res.status()).toBe(401);

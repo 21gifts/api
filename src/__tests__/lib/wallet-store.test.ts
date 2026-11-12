@@ -282,6 +282,36 @@ describe('InMemoryWalletStore', () => {
     ]);
   });
 
+  it('pages payments after a paidAt and payment id position in the same newest-first order', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([
+      payment({ paymentId: 'd', paidAt: T2 }),
+      payment({ paymentId: 'c', paidAt: T2 }),
+      payment({ paymentId: 'b', paidAt: T1 }),
+      payment({ paymentId: 'a', paidAt: T1 }),
+      payment({ paymentId: '0', paidAt: new Date(T1.getTime() - 1) }),
+    ]);
+    const first = await store.listPayments('account', 2);
+    expect(first.map((row) => row.paymentId)).toEqual(['d', 'c']);
+    const second = await store.listPayments('account', 2, {
+      paidAt: first[1]?.paidAt ?? T2,
+      paymentId: 'c',
+    });
+    expect(second.map((row) => row.paymentId)).toEqual(['b', 'a']);
+    await expect(store.listPayments('account', 2, { paidAt: T2, paymentId: 'c' })).resolves.toEqual(
+      second,
+    );
+    await expect(store.listPayments('account', 2, { paidAt: T1, paymentId: 'a' })).resolves.toEqual(
+      [expect.objectContaining({ paymentId: '0' })],
+    );
+    await expect(
+      store.listPayments('account', 2, {
+        paidAt: new Date(T1.getTime() - 1),
+        paymentId: '0',
+      }),
+    ).resolves.toEqual([]);
+  });
+
   it('advances the staleness watermark on a no-op re-send, so an older different report is ignored', async () => {
     const t0 = new Date('2026-10-01T00:00:00.000Z');
     const t1 = new Date('2026-10-01T00:00:01.000Z');
@@ -740,6 +770,20 @@ describe('PostgresWalletStore', () => {
         updatedAt: T2,
       }),
     ]);
+  });
+
+  it('adds the keyset predicate only when after is set and binds both cursor values', async () => {
+    const sql = new MockSql();
+    const store = new PostgresWalletStore(sql);
+    await store.listPayments('account', 20, { paidAt: T2, paymentId: 'p' });
+    expect(sql.queries[0]?.text).toContain(
+      'WHERE account_id = $1 AND (paid_at < $3 OR (paid_at = $3 AND payment_id COLLATE "C" < $4))',
+    );
+    expect(sql.queries[0]?.text).toContain('ORDER BY paid_at DESC, payment_id COLLATE "C" DESC');
+    expect(sql.queries[0]?.params).toEqual(['account', 20, T2, 'p']);
+    await store.listPayments('account', 20);
+    expect(sql.queries[1]?.text).not.toContain('paid_at <');
+    expect(sql.queries[1]?.params).toEqual(['account', 20]);
   });
 
   it('never binds secret-shaped optional values after the real report parser filters them', async () => {

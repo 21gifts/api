@@ -2832,6 +2832,29 @@ describe('PostgresWalletStore', () => {
       const ordered = await store.listPayments(accountId, 10);
       expect(ordered.map((row) => row.paymentId)).toEqual(['p-later', 'p-pending']);
 
+      const firstPage = await store.listPayments(accountId, 1);
+      expect(firstPage.map((row) => row.paymentId)).toEqual(['p-later']);
+      const afterFirst = firstPage[0];
+      if (afterFirst === undefined) {
+        throw new Error('expected one first-page payment');
+      }
+      const nextPage = await store.listPayments(accountId, 10, {
+        paidAt: afterFirst.paidAt,
+        paymentId: afterFirst.paymentId,
+      });
+      expect(nextPage.map((row) => row.paymentId)).toEqual(['p-pending']);
+
+      const tied = new Date(paidLater.getTime() + 1_000);
+      await store.upsertPayments([
+        { ...pending, paymentId: 'p-tie-a', paidAt: tied, firstSeenAt: tied, updatedAt: tied },
+        { ...pending, paymentId: 'p-tie-b', paidAt: tied, firstSeenAt: tied, updatedAt: tied },
+      ]);
+      const tiePage = await store.listPayments(accountId, 10, {
+        paidAt: tied,
+        paymentId: 'p-tie-b',
+      });
+      expect(tiePage.map((row) => row.paymentId)).toEqual(['p-tie-a', 'p-later', 'p-pending']);
+
       // An observation older than the stored state never overwrites it.
       await store.upsertPayments([{ ...pending, status: 'pending', updatedAt: firstSeen }]);
       const notRegressed = (await store.listPayments(accountId, 10)).find(
