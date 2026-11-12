@@ -56,6 +56,7 @@ function payment(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord 
     status: 'pending',
     amountSats: 21,
     feeSats: 1,
+    feeUsd: null,
     paidAt: T1,
     method: 'bolt11',
     paymentHash: 'a'.repeat(64),
@@ -73,7 +74,7 @@ function payment(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord 
 
 describe('wallet schema', () => {
   it('contains the exact idempotent tables, migration order, and mirrored documentation', async () => {
-    expect(WALLET_SCHEMA_SQL).toHaveLength(7);
+    expect(WALLET_SCHEMA_SQL).toHaveLength(8);
     expect(WALLET_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/);
     expect(WALLET_SCHEMA_SQL[1]).toMatch(/received_at DESC, id DESC/);
     expect(WALLET_SCHEMA_SQL[2]).toMatch(/PRIMARY KEY \(account_id, payment_id\)/);
@@ -84,8 +85,11 @@ describe('wallet schema', () => {
     expect(WALLET_SCHEMA_SQL[4]).toBe(
       'ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz',
     );
-    expect(WALLET_SCHEMA_SQL[5]).toMatch(/paid_at DESC, payment_id DESC/);
-    expect(WALLET_SCHEMA_SQL[6]).toBe(
+    expect(WALLET_SCHEMA_SQL[5]).toBe(
+      'ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS fee_usd text',
+    );
+    expect(WALLET_SCHEMA_SQL[6]).toMatch(/paid_at DESC, payment_id DESC/);
+    expect(WALLET_SCHEMA_SQL[7]).toBe(
       'CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)',
     );
     const documented = readFileSync(join(process.cwd(), 'docs/schema/wallet.sql'), 'utf8');
@@ -232,6 +236,25 @@ describe('InMemoryWalletStore', () => {
     expect((await store.listPayments('account', 1))[0]?.updatedAt).toEqual(T2);
   });
 
+  it('keeps the first non-null frozen fee USD', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([payment({ feeUsd: '0.04' })]);
+    await store.upsertPayments([payment({ feeUsd: '0.08', updatedAt: T2 })]);
+    expect((await store.listPayments('account', 1))[0]).toMatchObject({
+      feeUsd: '0.04',
+      updatedAt: T1,
+    });
+  });
+
+  it('fills a null frozen fee USD once and keeps the first filled value', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([payment({ status: 'completed', feeUsd: null })]);
+    await store.upsertPayments([payment({ status: 'completed', feeUsd: '0.04' })]);
+    expect((await store.listPayments('account', 1))[0]?.feeUsd).toBe('0.04');
+    await store.upsertPayments([payment({ status: 'completed', feeUsd: '0.08' })]);
+    expect((await store.listPayments('account', 1))[0]?.feeUsd).toBe('0.04');
+  });
+
   it('never turns a resolved category back into a fallback one, but upgrades and switches resolved ones', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([payment({ category: 'gift', counterpartyAccountId: 'other' })]);
@@ -337,14 +360,14 @@ describe('InMemoryWalletStore', () => {
       ).map((row) => row.paymentId),
     ).toEqual(['A']);
     expect(
-      (
-        await store.listPayments('account', 10, { paidAt: T1, paymentId: 'B' })
-      ).map((row) => row.paymentId),
+      (await store.listPayments('account', 10, { paidAt: T1, paymentId: 'B' })).map(
+        (row) => row.paymentId,
+      ),
     ).toEqual(['A']);
     expect(
-      (
-        await store.listPayments('account', 10, { paidAt: T2, paymentId: 'D' })
-      ).map((row) => row.paymentId),
+      (await store.listPayments('account', 10, { paidAt: T2, paymentId: 'D' })).map(
+        (row) => row.paymentId,
+      ),
     ).toEqual(['C', 'B', 'A']);
   });
 
@@ -680,12 +703,15 @@ describe('PostgresWalletStore', () => {
     expect(pairing[0]?.text).toContain('WHERE t.payment_id = $2 AND s.payment_id = t.payment_id');
     expect(sql.executes[1]?.text).toContain('ON CONFLICT (account_id, payment_id) DO UPDATE');
     expect(sql.executes[1]?.text).toContain('COALESCE(EXCLUDED.invoice, wallet_payment.invoice)');
+    expect(sql.executes[1]?.text).toContain(
+      'fee_usd = COALESCE(wallet_payment.fee_usd, EXCLUDED.fee_usd)',
+    );
     expect(sql.executes[1]?.text).toContain('IS DISTINCT FROM');
     expect(sql.executes[1]?.text).toContain(
       'WHERE EXCLUDED.last_observed_at >= COALESCE(wallet_payment.last_observed_at, wallet_payment.updated_at)',
     );
     expect(sql.executes[1]?.text).toContain('last_observed_at = EXCLUDED.last_observed_at');
-    expect(sql.executes[1]?.text).toContain('$17,$17)');
+    expect(sql.executes[1]?.text).toContain('$18,$18)');
     expect(sql.executes[1]?.text).toContain(
       "category = CASE WHEN (EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown')) THEN wallet_payment.category ELSE EXCLUDED.category END",
     );
@@ -696,6 +722,7 @@ describe('PostgresWalletStore', () => {
       'pending',
       21,
       1,
+      null,
       T1,
       'bolt11',
       'a'.repeat(64),
@@ -808,6 +835,7 @@ describe('PostgresWalletStore', () => {
         status: 'failed',
         amount_sats: '42',
         fee_sats: 2n,
+        fee_usd: '0.04',
         paid_at: T2.toISOString(),
         method: 'spark',
         payment_hash: null,
@@ -830,6 +858,7 @@ describe('PostgresWalletStore', () => {
         status: 'failed',
         amountSats: 42,
         feeSats: 2,
+        feeUsd: '0.04',
         paidAt: T2,
         method: 'spark',
         paymentHash: null,
@@ -863,12 +892,7 @@ describe('PostgresWalletStore', () => {
     const sql = new MockSql();
     const paidAt = new Date('2026-10-02T00:00:00.000Z');
     const store = new PostgresWalletStore(sql);
-    await store.listPayments(
-      'account',
-      51,
-      { paidAt, paymentId: 'p' },
-      { status: 'completed' },
-    );
+    await store.listPayments('account', 51, { paidAt, paymentId: 'p' }, { status: 'completed' });
     expect(sql.queries[0]?.text).toContain(
       'AND (paid_at < $3 OR (paid_at = $3 AND payment_id COLLATE "C" < $4))',
     );
@@ -951,6 +975,7 @@ describe('PostgresWalletStore', () => {
       parsed.report.payments.map((row) => ({
         ...row,
         accountId: 'account',
+        feeUsd: null,
         category: 'unknown',
         counterpartyAccountId: null,
         firstSeenAt: T2,

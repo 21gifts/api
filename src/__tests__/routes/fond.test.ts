@@ -1,3 +1,4 @@
+import { createHash, createHmac } from 'node:crypto';
 import { bech32 } from '@scure/base';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,6 +44,7 @@ const NOW = Date.parse('2026-11-09T12:00:00.000Z');
 const TODAY = '2026-11-09';
 const YESTERDAY = '2026-11-08';
 const TOKEN = 'fond-session';
+const SPEND_API_TOKEN = 'fond-public-payment-key';
 const FOND = 'tondo-fond';
 const INVOICE_ID = 'inv-1';
 const HASH = 'aa'.repeat(32);
@@ -81,6 +83,7 @@ function walletPayment(partial: Partial<WalletPaymentRecord> = {}): WalletPaymen
     status: 'completed',
     amountSats: 21,
     feeSats: 0,
+    feeUsd: null,
     paidAt: new Date(NOW),
     method: 'spark',
     paymentHash: null,
@@ -195,6 +198,7 @@ interface AppOptions {
   now?: () => number;
   freePayments?: boolean;
   randomBytes?: (length: number) => Uint8Array;
+  spendApiToken?: string | null;
 }
 
 async function makeApp(options: AppOptions = {}): Promise<{
@@ -232,6 +236,8 @@ async function makeApp(options: AppOptions = {}): Promise<{
   const invoices = options.actionsStore ?? new InMemoryInvoiceStore();
   const messages = options.messageStore ?? new InMemoryMessageStore();
   const fetchImpl = options.fetchImpl ?? (async () => new Response(null, { status: 500 }));
+  const spendApiToken =
+    options.spendApiToken === undefined ? SPEND_API_TOKEN : (options.spendApiToken ?? undefined);
   const app = new Hono().route(
     '/fond',
     fondRoutes({
@@ -240,6 +246,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
       walletStore,
       payoutSigner: options.signer ?? 'fond',
       fondUsername: FOND,
+      spendApiToken,
       now,
       fetchImpl,
       lnurlServer: LNURL,
@@ -450,6 +457,7 @@ describe('fondRoutes switch and auth', () => {
         walletStore: new InMemoryWalletStore(),
         payoutSigner: 'fond',
         fondUsername: FOND,
+        spendApiToken: SPEND_API_TOKEN,
         now: () => NOW,
         fetchImpl: async () => new Response(null, { status: 500 }),
         actions: {
@@ -1090,6 +1098,16 @@ describe('GET /fond/payments', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
+  it.each([null, ''])('returns 503 and logs when the public-id key is unavailable', async (key) => {
+    const events = captureEvents();
+    const { app } = await makeApp({ spendApiToken: key });
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual({ error: 'Fond payments are unavailable' });
+    expect(events).toEqual(['fond.payments.failed']);
+  });
+
   it('returns an empty page for a missing Fond account without reading payments', async () => {
     const { app, walletStore } = await makeApp({ seedFond: false });
     const list = vi.spyOn(walletStore, 'listPayments');
@@ -1145,6 +1163,7 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_A.toISOString(),
           counterparty: { accountId: ALICE, username: 'alice', name: 'Alice' },
           storedFiat: null,
+          storedFee: null,
         },
         {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
@@ -1154,6 +1173,7 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_B.toISOString(),
           counterparty: null,
           storedFiat: null,
+          storedFee: null,
         },
         {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
@@ -1163,6 +1183,7 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_C.toISOString(),
           counterparty: null,
           storedFiat: null,
+          storedFee: null,
         },
         {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
@@ -1172,6 +1193,7 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_D.toISOString(),
           counterparty: null,
           storedFiat: null,
+          storedFee: null,
         },
       ],
       next: null,
@@ -1204,6 +1226,7 @@ describe('GET /fond/payments', () => {
           paidAt: PAID_A.toISOString(),
           counterparty: { accountId: NO_USERNAME, username: null, name: 'No Username' },
           storedFiat: null,
+          storedFee: null,
         },
       ],
       next: null,
@@ -1260,8 +1283,52 @@ describe('GET /fond/payments', () => {
       paidAt: PAID_A.toISOString(),
       counterparty: null,
       storedFiat: { currency: 'USD', amount: '1.25' },
+      storedFee: null,
     });
     expect(body.payments[0]).not.toHaveProperty('paymentHash');
+  });
+
+  it('returns only a valid stored fee for a positive fee without recomputing it', async () => {
+    const { app, walletStore } = await makeApp();
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'valid-fee',
+        feeSats: 40,
+        feeUsd: '0.04',
+        paidAt: PAID_A,
+      }),
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'zero-fee',
+        feeSats: 0,
+        feeUsd: '1.00',
+        paidAt: PAID_B,
+      }),
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'invalid-fee',
+        feeSats: 1,
+        feeUsd: '01.00',
+        paidAt: PAID_C,
+      }),
+      walletPayment({
+        accountId: 'fond-account',
+        paymentId: 'missing-fee',
+        feeSats: 1,
+        feeUsd: null,
+        paidAt: PAID_D,
+      }),
+    ]);
+    const res = await app.request('/fond/payments');
+    expect(res.status).toBe(200);
+    const response = (await res.json()) as { payments: Array<{ storedFee: unknown }> };
+    expect(response.payments.map((row) => row.storedFee)).toEqual([
+      { currency: 'USD', amount: '0.04' },
+      null,
+      null,
+      null,
+    ]);
   });
 
   it('adds stored USD for Spark-invoice and BOLT11 matches without a wallet hash', async () => {
@@ -1488,13 +1555,25 @@ describe('GET /fond/payments', () => {
     expect(body.payments[0]?.counterparty).toBeNull();
   });
 
-  it('returns an opaque id that does not expose the stored payment id', async () => {
+  it('returns a keyed id that differs from plain SHA-256 and from another key', async () => {
     const { app, walletStore } = await makeApp();
     await walletStore.upsertPayments([walletPayment({ accountId: 'fond-account' })]);
     const res = await app.request('/fond/payments');
     const body = (await res.json()) as { payments: Array<{ id: string }> };
-    expect(body.payments[0]?.id).toMatch(/^[0-9a-f]{16}$/);
-    expect(body.payments[0]?.id).not.toContain('p');
+    const id = body.payments[0]?.id;
+    expect(id).toBe(
+      createHmac('sha256', SPEND_API_TOKEN)
+        .update('fond-payment-id:p', 'utf8')
+        .digest('hex')
+        .slice(0, 16),
+    );
+    expect(id).not.toBe(createHash('sha256').update('p', 'utf8').digest('hex').slice(0, 16));
+
+    const other = await makeApp({ walletStore, spendApiToken: 'another-key' });
+    const otherBody = (await (await other.app.request('/fond/payments')).json()) as {
+      payments: Array<{ id: string }>;
+    };
+    expect(otherBody.payments[0]?.id).not.toBe(id);
   });
 
   it('returns a next cursor for a full page and follows it without duplicates', async () => {
@@ -1589,6 +1668,27 @@ describe('GET /fond/payments', () => {
       { paidAt: rows[49]?.paidAt, paymentId: rows[49]?.paymentId },
       { status: 'completed' },
     );
+  });
+
+  it('rejects a cursor issued under another spend token', async () => {
+    const walletStore = new InMemoryWalletStore();
+    const firstApp = await makeApp({ walletStore });
+    await walletStore.upsertPayments(
+      Array.from({ length: 51 }, (_, index) =>
+        walletPayment({
+          accountId: 'fond-account',
+          paymentId: `token-${index}`,
+          paidAt: new Date(NOW - index * 1_000),
+        }),
+      ),
+    );
+    const first = (await (await firstApp.app.request('/fond/payments')).json()) as {
+      next: string;
+    };
+    const changed = await makeApp({ walletStore, spendApiToken: 'rotated-token' });
+    const res = await changed.app.request(`/fond/payments?before=${first.next}`);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid cursor' });
   });
 
   it('rejects a cursor whose public id is not a completed payment at that time', async () => {

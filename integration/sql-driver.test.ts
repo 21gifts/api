@@ -2856,6 +2856,7 @@ describe('PostgresWalletStore', () => {
         status: 'pending' as const,
         amountSats: 21,
         feeSats: 0,
+        feeUsd: null,
         paidAt: paidPending,
         method: 'lightning',
         paymentHash: null,
@@ -3045,6 +3046,7 @@ describe('PostgresWalletStore', () => {
         {
           ...secretPayment,
           accountId,
+          feeUsd: null,
           category: 'unknown',
           counterpartyAccountId: null,
           firstSeenAt: secretSeen,
@@ -3129,6 +3131,7 @@ describe('PostgresWalletStore', () => {
         status,
         amountSats,
         feeSats,
+        feeUsd: null,
         paidAt: at,
         method: 'spark',
         paymentHash: null,
@@ -3387,6 +3390,7 @@ describe('PostgresWalletStore', () => {
         status,
         amountSats: 1,
         feeSats: 0,
+        feeUsd: null,
         paidAt: when,
         method: 'spark',
         paymentHash: null,
@@ -3687,6 +3691,7 @@ describe('PostgresWalletStore pairing by payment id', () => {
     status: 'completed',
     amountSats: 500,
     feeSats: 0,
+    feeUsd: null,
     paidAt: at(0),
     method: 'spark',
     paymentHash: null,
@@ -3715,6 +3720,32 @@ describe('PostgresWalletStore pairing by payment id', () => {
       counterpartyAccountId: sender,
       ...extra,
     });
+
+  test('migrates nullable fee_usd and keeps the first frozen value on conflict', async () => {
+    const { client, sql, store, newAccount } = await setup();
+    try {
+      const [column] = await client.query<{ data_type: string; is_nullable: string }>(
+        `SELECT data_type, is_nullable
+         FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'wallet_payment' AND column_name = 'fee_usd'`,
+      );
+      expect(column).toEqual({ data_type: 'text', is_nullable: 'YES' });
+
+      const accountId = await newAccount();
+      const paymentId = `fee-${crypto.randomUUID()}`;
+      await store.upsertPayments([bare(accountId, paymentId, { feeSats: 40, feeUsd: '0.04' })]);
+      await store.upsertPayments([
+        bare(accountId, paymentId, { feeSats: 40, feeUsd: '0.08', updatedAt: at(1) }),
+      ]);
+      const [stored] = await client.query<{ fee_usd: string | null }>(
+        `SELECT fee_usd FROM wallet_payment WHERE account_id = $1 AND payment_id = $2`,
+        [accountId, paymentId],
+      );
+      expect(stored?.fee_usd).toBe('0.04');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
 
   test('fills either side in either order, names a shop, and never overwrites own categories', async () => {
     const { client, sql, store, newAccount, row } = await setup();
@@ -4107,6 +4138,7 @@ describe('PostgresDebugDbStore member data tables', () => {
           status: 'completed' as const,
           amountSats: 1,
           feeSats: 0,
+          feeUsd: null,
           paidAt: now,
           method: 'spark',
           paymentHash: null,

@@ -5,9 +5,11 @@ import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
 import type { LnurlServerConfig } from '@/lib/config';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { IP_RATE_WINDOW_MS, IpRateLimiter } from '@/lib/ip-rate-limit';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
+import { satsToUsdCents, usdCentsToString } from '@/lib/money';
 import type { PosStore } from '@/lib/pos-store';
 import { walletPaymentClassifier } from '@/lib/wallet-category';
 import { parseWalletReport } from '@/lib/wallet-report';
@@ -33,12 +35,32 @@ export interface WalletReportRouteDeps {
   messages: MessageStore;
   /** Point-of-sale charge lookup. */
   posStore: PosStore;
+  /** Latest BTC/USD spot used once to freeze a completed payment fee. */
+  fxSpotStore?: FxSpotStore;
   /** Self-hosted receiving-address configuration, when enabled. */
   lnurlServer?: LnurlServerConfig;
   /** Clock returning epoch milliseconds. */
   now: () => number;
   /** Optional injected per-account limiter. */
   limiter?: IpRateLimiter;
+}
+
+/** Freeze one completed positive fee at the current USD spot without failing ingestion. */
+async function frozenFeeUsd(
+  spot: FxSpotStore | undefined,
+  status: WalletPaymentRecord['status'],
+  feeSats: number,
+): Promise<string | null> {
+  if (spot === undefined || status !== 'completed' || feeSats <= 0) {
+    return null;
+  }
+  try {
+    const quote = await spot.latest();
+    const usd = quote?.rates.USD;
+    return usd === undefined ? null : usdCentsToString(satsToUsdCents(feeSats, usd));
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -107,6 +129,7 @@ export function walletReportRoutes(deps: WalletReportRouteDeps): Hono {
             payments.slice(start, start + WALLET_REPORT_CONCURRENCY).map(async (payment) => ({
               ...payment,
               ...(await classify(payment)),
+              feeUsd: await frozenFeeUsd(deps.fxSpotStore, payment.status, payment.feeSats),
               accountId: account.id,
               firstSeenAt: new Date(seenAt.getTime()),
               updatedAt: new Date(seenAt.getTime()),

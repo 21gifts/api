@@ -13,7 +13,7 @@
  * payment hashes, BOLT11, or Spark invoices.
  */
 
-import { createHash } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { Hono } from 'hono';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { canSignFondPayouts } from '@/lib/auth/roles';
@@ -52,6 +52,8 @@ export interface FondRouteDeps {
   payoutSigner: PayoutSigner;
   /** `FOND_USERNAME`; the one account allowed on the surface. */
   fondUsername: string;
+  /** Secret key for public payment ids; the payment list is unavailable without it. */
+  spendApiToken: string | undefined;
   /** Clock, epoch milliseconds. */
   now: () => number;
   /** Injected fetch for the BTC/USD spot and LNURL-pay. */
@@ -105,7 +107,7 @@ const PAYMENTS_PAGE_SIZE = 50;
 /** Canonical unpadded base64url text. */
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 
-/** Public payment id: first 16 lowercase hex characters of its SHA-256 digest. */
+/** Public payment id: first 16 lowercase hex characters of its HMAC-SHA-256 digest. */
 const PUBLIC_PAYMENT_ID_RE = /^[0-9a-f]{16}$/;
 
 /** Exclusive `(paidAt, public id)` position of a `GET /fond/payments` page. */
@@ -136,17 +138,22 @@ interface FondPaymentListRow {
   paidAt: string;
   counterparty: FondPaymentCounterparty | null;
   storedFiat: FondPaymentStoredFiat | null;
+  storedFee: FondPaymentStoredFiat | null;
 }
 
 /**
  * Encode the last row of a page as an opaque cursor.
  *
  * @param row - Last returned payment.
+ * @param key - Server secret used to derive the public id.
  * @returns Canonical unpadded base64url JSON `{ paidAt, id }` with only the public id.
  */
-function encodeFondPaymentsCursor(row: WalletPaymentRecord): string {
+function encodeFondPaymentsCursor(row: WalletPaymentRecord, key: string): string {
   return Buffer.from(
-    JSON.stringify({ paidAt: row.paidAt.toISOString(), id: publicPaymentId(row.paymentId) }),
+    JSON.stringify({
+      paidAt: row.paidAt.toISOString(),
+      id: publicPaymentId(row.paymentId, key),
+    }),
     'utf8',
   ).toString('base64url');
 }
@@ -206,19 +213,27 @@ function decodeFondPaymentsCursor(raw: string | undefined): FondPaymentsCursor |
  * Stable public React key for a wallet payment without exposing its stored id.
  *
  * @param paymentId - Stored wallet payment id.
- * @returns First 16 lowercase hex characters of its SHA-256 digest.
+ * @param key - Server secret used as the HMAC key.
+ * @returns First 16 lowercase hex characters of its HMAC-SHA-256 digest.
  */
-function publicPaymentId(paymentId: string): string {
-  return createHash('sha256').update(paymentId, 'utf8').digest('hex').slice(0, 16);
+function publicPaymentId(paymentId: string, key: string): string {
+  return createHmac('sha256', key)
+    .update(`fond-payment-id:${paymentId}`, 'utf8')
+    .digest('hex')
+    .slice(0, 16);
 }
 
 /** The completed payment whose public id a cursor names, if any. */
 function cursorPayment(
   rows: readonly WalletPaymentRecord[],
   id: string,
+  key: string,
 ): WalletPaymentRecord | null {
-  return rows.find((row) => publicPaymentId(row.paymentId) === id) ?? null;
+  return rows.find((row) => publicPaymentId(row.paymentId, key) === id) ?? null;
 }
+
+/** Non-negative stored USD decimal with at most two fractional digits. */
+const STORED_USD_RE = /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/;
 
 /**
  * Project a stored payment to the public Fond list row.
@@ -226,12 +241,14 @@ function cursorPayment(
  * @param row - Completed stored payment.
  * @param counterparties - Known non-platform accounts by id.
  * @param paidUsd - Stored USD amount of each outgoing row's paid payout, by hash or invoice.
- * @returns Only the public id, direction, amounts, time, counterparty, and stored fiat.
+ * @param publicIdKey - Server secret used to derive the public id.
+ * @returns Only the public id, direction, amounts, time, counterparty, stored fiat, and stored fee.
  */
 function publicPaymentRow(
   row: WalletPaymentRecord,
   counterparties: ReadonlyMap<string, FondPaymentCounterparty>,
   paidUsd: ReadonlyMap<string, string>,
+  publicIdKey: string,
 ): FondPaymentListRow {
   // Only a member-to-member transfer or a direct member payout names the other account.
   // A gift category can come from a conversation invoice, whose payer stays private.
@@ -244,13 +261,17 @@ function publicPaymentRow(
         (row.invoice === null ? undefined : paidUsd.get(row.invoice)))
       : undefined;
   return {
-    id: publicPaymentId(row.paymentId),
+    id: publicPaymentId(row.paymentId, publicIdKey),
     direction: row.direction,
     amountSats: row.amountSats,
     feeSats: row.feeSats,
     paidAt: row.paidAt.toISOString(),
     counterparty,
     storedFiat: amountUsd === undefined ? null : { currency: 'USD', amount: amountUsd },
+    storedFee:
+      row.feeSats > 0 && row.feeUsd !== null && STORED_USD_RE.test(row.feeUsd)
+        ? { currency: 'USD', amount: row.feeUsd }
+        : null,
   };
 }
 
@@ -441,6 +462,7 @@ async function payoutSparkInvoice(
  * @returns Hono app mounted at `/fond`.
  */
 export function fondRoutes(deps: FondRouteDeps): Hono {
+  const publicPaymentIdKey = deps.spendApiToken?.trim() ?? '';
   const authGate = async (
     header: string | undefined,
   ): Promise<{ status: 401 | 403; error: string } | null> => {
@@ -530,6 +552,10 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (deps.payoutSigner !== 'fond') {
         return c.json({ error: 'Not found' }, 404, FOND_NO_STORE);
       }
+      if (publicPaymentIdKey === '') {
+        logEvent('fond.payments.failed');
+        return c.json({ error: PAYMENTS_UNAVAILABLE }, 503, FOND_NO_STORE);
+      }
       const decodedBefore = decodeFondPaymentsCursor(c.req.query('before'));
       if (decodedBefore === false) {
         return c.json({ error: 'Invalid cursor' }, 400, FOND_NO_STORE);
@@ -548,7 +574,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
             undefined,
             { status: 'completed', paidAt: before.paidAt },
           );
-          const cursorRow = cursorPayment(matching, before.id);
+          const cursorRow = cursorPayment(matching, before.id, publicPaymentIdKey);
           if (cursorRow === null) {
             return c.json({ error: 'Invalid cursor' }, 400, FOND_NO_STORE);
           }
@@ -606,11 +632,16 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
                 outgoingInvoices,
               );
         const next = hasMore
-          ? encodeFondPaymentsCursor(page[page.length - 1] as WalletPaymentRecord)
+          ? encodeFondPaymentsCursor(
+              page[page.length - 1] as WalletPaymentRecord,
+              publicPaymentIdKey,
+            )
           : null;
         return c.json(
           {
-            payments: page.map((row) => publicPaymentRow(row, counterparties, paidUsd)),
+            payments: page.map((row) =>
+              publicPaymentRow(row, counterparties, paidUsd, publicPaymentIdKey),
+            ),
             next,
           },
           200,

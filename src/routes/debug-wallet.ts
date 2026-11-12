@@ -114,6 +114,8 @@ interface DebugWalletPayment {
   amountSats: number;
   /** Wallet fee in whole sats. */
   feeSats: number;
+  /** USD fee frozen when the payment completed, or null. */
+  feeUsd: string | null;
   /** Paid instant as ISO-8601. */
   paidAt: string;
   /** Lower-case wallet method identifier. */
@@ -152,6 +154,7 @@ function serializePayment(row: WalletPaymentRecord): DebugWalletPayment {
     status: row.status,
     amountSats: row.amountSats,
     feeSats: row.feeSats,
+    feeUsd: row.feeUsd,
     paidAt: row.paidAt.toISOString(),
     method: row.method,
     paymentHash: row.paymentHash,
