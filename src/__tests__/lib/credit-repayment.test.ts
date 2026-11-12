@@ -222,7 +222,7 @@ describe('credit repayment', () => {
     const lines = repaymentLedger(
       1,
       [{ accountId: id, units: 100n }],
-      [{ dayIndex: 0, accountId: id, dueSats: 40 }],
+      [{ dayIndex: 0, accountId: id, paidUnits: 40n }],
       Date.UTC(2026, 10, 9),
       Date.UTC(2026, 10, 20),
       '22222222-2222-4222-8222-222222222222',
@@ -231,7 +231,7 @@ describe('credit repayment', () => {
     const paid = repaymentLedger(
       1,
       [{ accountId: id, units: 100n }],
-      [{ dayIndex: 0, accountId: id, dueSats: 100 }],
+      [{ dayIndex: 0, accountId: id, paidUnits: 100n }],
       Date.UTC(2026, 10, 9),
       Date.UTC(2026, 10, 20),
       '22222222-2222-4222-8222-222222222222',
@@ -327,7 +327,7 @@ describe('credit repayment', () => {
     const plan = repaymentLedger(
       2,
       [{ accountId: 'a', units: 2n }],
-      [{ dayIndex: 0, accountId: 'a', dueSats: 1 }],
+      [{ dayIndex: 0, accountId: 'a', paidUnits: 1n }],
       funded,
       now,
       ORDINARY_CREDIT,

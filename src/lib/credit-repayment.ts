@@ -613,7 +613,7 @@ export function formatCents(cents: bigint): string {
  *
  * @param days - Term length.
  * @param payers - Positive contributions. Their units are the debt.
- * @param paid - Shares already paid. `dueSats` is optional; a missing amount
+ * @param paid - Shares already paid. `paidUnits` is optional; a missing amount
  *   means the whole share under the legacy marker.
  * @param fundedAtMs - When the credit filled, or null while it is still open.
  * @param nowMs - Clock.
@@ -624,7 +624,7 @@ export function formatCents(cents: bigint): string {
 export function repaymentLedger(
   days: number,
   payers: readonly { accountId: string; units: bigint }[],
-  paid: readonly { dayIndex: number; accountId: string; dueSats?: number }[],
+  paid: readonly { dayIndex: number; accountId: string; paidUnits?: bigint }[],
   fundedAtMs: number | null,
   nowMs: number,
   messageId: string,
@@ -634,10 +634,10 @@ export function repaymentLedger(
   const fullySettled = new Set<string>();
   for (const row of paid) {
     const key = `${row.dayIndex}:${row.accountId}`;
-    if (row.dueSats === undefined) {
+    if (row.paidUnits === undefined) {
       fullySettled.add(key);
     } else {
-      settled.set(key, (settled.get(key) ?? 0n) + BigInt(row.dueSats));
+      settled.set(key, (settled.get(key) ?? 0n) + row.paidUnits);
     }
   }
   const daysDue = fundedAtMs === null ? 0 : dueDayCount(fundedAtMs, nowMs, days, messageId);

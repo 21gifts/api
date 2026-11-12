@@ -4979,6 +4979,11 @@ export class InMemoryMessageStore implements MessageStore {
       try {
         await settlement.recordIngest(settlement.ingest);
       } catch (error: unknown) {
+        for (const [paymentHash, payment] of this.#zapPayments) {
+          if (payment.receiptEventId === receiptEventId) {
+            this.#zapPayments.delete(paymentHash);
+          }
+        }
         throw new ZapIngestRecordError(error);
       }
     }

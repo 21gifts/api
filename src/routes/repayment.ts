@@ -404,7 +404,7 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
     ...parts.map((part) => ({
       dayIndex: part.dayIndex,
       accountId: part.recipientAccountId,
-      dueSats: Number(part.units),
+      paidUnits: part.units,
     })),
   ];
   const lines = repaymentLedger(
@@ -1793,9 +1793,8 @@ async function loanRow(
     }
     const maxUnits = payable.reduce((sum, payer) => sum + payer.units, 0n);
     const payableIds = new Set(payable.map((payer) => payer.accountId));
-    const maximumShares = repaymentSchedule(row.goalTermDays as number, named).filter((share) =>
-      payableIds.has(share.accountId),
-    );
+    const totalShares = repaymentSchedule(row.goalTermDays as number, named);
+    const maximumShares = totalShares.filter((share) => payableIds.has(share.accountId));
     const maximum = allocateRepayment(
       maxUnits,
       maximumShares.map((share) => ({
@@ -1812,7 +1811,7 @@ async function loanRow(
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
-      totalSats: price === undefined ? 0 : pricedSum(price, named),
+      totalSats: price === undefined ? 0 : pricedSum(price, totalShares),
       maxSats: price === undefined ? 0 : pricedSum(price, maximum.parts),
       maxAmount: cents(maximum.usedUnits),
       due: {

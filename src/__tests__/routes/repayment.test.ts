@@ -2104,7 +2104,7 @@ describe('repayment from the in-app wallet', () => {
       maxAmount: '0.03',
     });
     expect(await (await loans(app)).json()).toMatchObject({
-      loans: [{ maxSats: 9, maxAmount: '0.03' }],
+      loans: [{ totalSats: 9, maxSats: 9, maxAmount: '0.03' }],
     });
   });
 
@@ -2235,6 +2235,44 @@ describe('repayment from the in-app wallet', () => {
           attempt.description?.startsWith('repayp:0:'),
         )?.description,
       ).toBe(repaymentPartDescription(0, GIVER, 1, 5n, 10n));
+    });
+  });
+
+  it('keeps canonical fiat repayment units precise above Number.MAX_SAFE_INTEGER', async () => {
+    const units = 9_007_199_254_740_993n;
+    const { app, messages } = await readyCredit({
+      goalCurrency: 'USD',
+      rate: true,
+    });
+    vi.spyOn(messages, 'listCreditPayers').mockResolvedValue([
+      {
+        accountId: GIVER,
+        sats: 21,
+        usd: '90071992547409.93',
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
+    await messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      partIndex: 0,
+      units,
+      sats: 1,
+      shareUnits: units,
+      paidAt: new Date(now()),
+    });
+
+    expect(await (await app.request(`/messages/${CREDIT}/repayment`)).json()).toMatchObject({
+      repayments: [
+        {
+          status: 'paid',
+          amount: '90071992547409.93',
+          paidAmount: '90071992547409.93',
+        },
+      ],
     });
   });
 

@@ -6579,6 +6579,8 @@ describe('indexOpenZapReceipts', () => {
         accountId: 'acc-record-fail',
         lightningAddress: 'zap-record-fail@example.com',
       });
+      const unrelatedHash = '22'.repeat(32);
+      await base.claimZapPayment(unrelatedHash, 'unrelated-receipt', new Date(0));
       const store: MessageStore = {
         listLatest: (limit: number) => base.listLatest(limit),
         listFeed: (query: MessageFeedQuery) => base.listFeed(query),
@@ -6783,7 +6785,8 @@ describe('indexOpenZapReceipts', () => {
           ],
         },
       ];
-      mockedDecode.mockReturnValue({ paymentHash: '11'.repeat(32), amountMsat: 21_000 });
+      const paymentHash = '11'.repeat(32);
+      mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
       await expect(
         ingest({
           store,
@@ -6796,6 +6799,8 @@ describe('indexOpenZapReceipts', () => {
         }),
       ).resolves.toBeUndefined();
       expect((await store.getByEventId(NOTE_EVENT_ID))?.sats).toBe(0);
+      expect(await store.zapPaymentReceiptId(paymentHash)).toBeUndefined();
+      expect(await store.zapPaymentReceiptId(unrelatedHash)).toBe('unrelated-receipt');
       const events = warn.mock.calls
         .map((call) => call[0])
         .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
