@@ -178,6 +178,7 @@ describe('GET /notifications', () => {
       expect(item).not.toHaveProperty('recipientAccountId');
       expect(item).not.toHaveProperty('actorAccountId');
       expect(item['type']).toBe('forum_reply');
+      expect(item['personal']).toBe(true);
     }
   });
 
@@ -217,6 +218,109 @@ describe('GET /notifications', () => {
     expect(body.unreadCount).toBe(1);
     expect(body.notifications).toHaveLength(1);
     expect(body.notifications[0]?.['id']).toBe(ID_B);
+  });
+
+  it('marks each listed row personal exactly when level mentions would keep it', async () => {
+    const mine = 'mine-note';
+    const theirs = 'theirs-note';
+    const replyMine = '01010101-0101-4101-8101-010101010101';
+    const replyTheirs = '02020202-0202-4202-8202-020202020202';
+    const messages = new InMemoryMessageStore([
+      forumNote({ id: mine, accountId: 'acc', sats: 0 }),
+      forumNote({ id: theirs, accountId: 'actor', sats: 0 }),
+      forumNote({ id: replyMine, accountId: 'actor', parentId: mine }),
+      forumNote({ id: replyTheirs, accountId: 'actor', parentId: theirs }),
+    ]);
+    const rows: Array<[NotificationRow, boolean]> = [
+      [note({ id: 'n-post', type: 'forum_post', parentId: theirs, replyId: theirs }), false],
+      [note({ id: 'n-reply-mine', parentId: mine, replyId: replyMine }), true],
+      [note({ id: 'n-reply-theirs', parentId: theirs, replyId: replyTheirs }), false],
+      [note({ id: 'n-zap-mine', type: 'zap', parentId: mine, replyId: ID_E, text: '21' }), true],
+      [
+        note({ id: 'n-zap-theirs', type: 'zap', parentId: theirs, replyId: ID_F, text: '21' }),
+        false,
+      ],
+      [
+        note({
+          id: 'n-mention',
+          type: 'forum_mention',
+          parentId: theirs,
+          replyId: 'mention-reply',
+        }),
+        true,
+      ],
+      [note({ id: 'n-heart', type: 'heart', parentId: mine, replyId: ID_A, text: '1' }), true],
+      [
+        note({ id: 'n-appointed', type: 'moderator_appointed', parentId: 'acc', replyId: 'acc' }),
+        true,
+      ],
+      [
+        note({ id: 'n-proposal', type: 'moderator_proposal', parentId: 'subj', replyId: 'subj' }),
+        true,
+      ],
+    ];
+    const store = new InMemoryNotificationStore(rows.map(([row]) => row));
+    const res = await mount(await seeded(), store, messages).request('/notifications', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: Array<{ id: string; personal: boolean }>;
+      unreadCount: number;
+    };
+    const personalById = new Map(body.notifications.map((item) => [item.id, item.personal]));
+    expect(personalById).toEqual(new Map(rows.map(([row, personal]) => [row.id, personal])));
+    for (const item of body.notifications) {
+      expect(typeof item.personal).toBe('boolean');
+      expect(Object.keys(item).sort()).toEqual([
+        'createdAt',
+        'id',
+        'name',
+        'parentId',
+        'personal',
+        'readAt',
+        'replyId',
+        'text',
+        'type',
+      ]);
+    }
+  });
+
+  it('lists personal rows on an inactive thread at active and drops the bystander row', async () => {
+    const mine = 'mine-note';
+    const theirs = 'theirs-note';
+    const replyMine = '01010101-0101-4101-8101-010101010101';
+    const replyTheirs = '02020202-0202-4202-8202-020202020202';
+    const messages = new InMemoryMessageStore([
+      forumNote({ id: mine, accountId: 'acc', sats: 0 }),
+      forumNote({ id: theirs, accountId: 'actor', sats: 0 }),
+      forumNote({ id: replyMine, accountId: 'actor', parentId: mine }),
+      forumNote({ id: replyTheirs, accountId: 'actor', parentId: theirs }),
+    ]);
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_A, parentId: mine, replyId: replyMine }),
+      note({ id: ID_B, parentId: theirs, replyId: replyTheirs }),
+      note({ id: ID_E, type: 'forum_mention', parentId: theirs, replyId: 'mention-reply' }),
+    ]);
+    const auth = await seeded();
+    const account = await auth.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('missing seed account');
+    }
+    await auth.updateAccount({ ...account, notificationLevel: 'active' });
+    const res = await mount(auth, store, messages).request('/notifications', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      notifications: Array<{ id: string; personal: boolean }>;
+      unreadCount: number;
+    };
+    expect(new Map(body.notifications.map((item) => [item.id, item.personal]))).toEqual(
+      new Map([
+        [ID_A, true],
+        [ID_E, true],
+      ]),
+    );
+    expect(body.unreadCount).toBe(2);
   });
 
   it('returns 503 when listing throws', async () => {
@@ -1301,6 +1405,34 @@ describe('POST /notifications/:id/read', () => {
     expect(await bad.json()).toEqual({ error: 'Not found' });
   });
 
+  it('returns personal from the parent note author and false for a missing parent', async () => {
+    const mine = 'mine-note';
+    const theirs = 'theirs-note';
+    const messages = new InMemoryMessageStore([
+      forumNote({ id: mine, accountId: 'acc', sats: 0 }),
+      forumNote({ id: theirs, accountId: 'actor', sats: 21 }),
+    ]);
+    const store = new InMemoryNotificationStore([
+      note({ id: ID_A, parentId: mine }),
+      note({ id: ID_B, parentId: theirs }),
+      note({ id: ID_E, type: 'zap', parentId: 'missing-note', text: '21' }),
+      note({ id: ID_F, type: 'moderator_appointed', parentId: 'acc', replyId: 'acc' }),
+    ]);
+    const app = mount(await seeded(), store, messages);
+    const personal = async (id: string): Promise<unknown> => {
+      const res = await app.request(`/notifications/${id}/read`, {
+        method: 'POST',
+        headers: AUTH,
+      });
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { personal: unknown }).personal;
+    };
+    expect(await personal(ID_A)).toBe(true);
+    expect(await personal(ID_B)).toBe(false);
+    expect(await personal(ID_E)).toBe(false);
+    expect(await personal(ID_F)).toBe(true);
+  });
+
   it('returns 503 when markRead throws', async () => {
     const store = new InMemoryNotificationStore();
     store.markRead = async () => {
@@ -1418,6 +1550,7 @@ describe('POST /notifications/:id/read', () => {
       text: string;
       createdAt: string;
       readAt: string | null;
+      personal: boolean;
     };
     expect(body).toEqual({
       id: forum.id,
@@ -1428,6 +1561,7 @@ describe('POST /notifications/:id/read', () => {
       text: forum.text,
       createdAt: forum.createdAt.toISOString(),
       readAt: readAt.toISOString(),
+      personal: false,
     });
     expect(await pushStore.listAllOutbox(10)).toEqual([]);
   });
