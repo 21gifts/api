@@ -635,7 +635,7 @@ export async function settleInvoiceManually(args: {
             kind: 'legacy',
             messageId: message.id,
             dayIndex: repayment.dayIndex,
-            recipientAccountId: repayment.recipientAccountId,
+            recipientAccountId: invoice.authorAccountId,
             dueSats: invoice.amountSats,
             paidAt: claimedAt,
           }
@@ -643,7 +643,7 @@ export async function settleInvoiceManually(args: {
             kind: 'part',
             messageId: message.id,
             dayIndex: part.dayIndex,
-            recipientAccountId: part.recipientAccountId,
+            recipientAccountId: invoice.authorAccountId,
             partIndex: part.partIndex,
             units: part.units,
             sats: invoice.amountSats,
@@ -1922,8 +1922,9 @@ async function ingestOneReceipt(
  * A receipt that is not signed by the giver's provider is rejected and does
  * not claim the payment hash. A repay invoice for another note, or for a
  * different sat amount, is rejected the same way and does not credit the ask.
- * A same-receipt claim resumes only the missing ingest, without resolving the
- * invoice's possibly merged-away giver again.
+ * A same-receipt claim first verifies or repairs the settlement row, then
+ * resumes the missing ingest without resolving the invoice's possibly
+ * merged-away giver again.
  * Returns true when this receipt was a repayment attempt, including a rejection.
  *
  * @param args - Ingest collaborators.
@@ -1974,8 +1975,10 @@ async function settleRepaymentReceipt(
     return true;
   }
   const existingClaimReceiptId = await args.store.zapPaymentReceiptId(decoded.paymentHash);
+  const recipientAccountId =
+    existingClaimReceiptId === event.id ? invoice.authorAccountId : repayment.recipientAccountId;
   if (existingClaimReceiptId !== event.id) {
-    const giver = await args.auth.getAccount(repayment.recipientAccountId);
+    const giver = await args.auth.getAccount(recipientAccountId);
     const address =
       giver === undefined
         ? ''
@@ -2006,52 +2009,52 @@ async function settleRepaymentReceipt(
       );
       return true;
     }
-    const part = parseRepaymentPartDescription(invoice.description);
-    const paidAt = new Date(args.now());
-    if (
-      !(await args.store.settleRepaymentPayment(
-        decoded.paymentHash,
-        event.id,
-        paidAt,
-        part === null
-          ? {
-              kind: 'legacy',
-              messageId: row.id,
-              dayIndex: repayment.dayIndex,
-              recipientAccountId: repayment.recipientAccountId,
-              dueSats: amountSats,
-              paidAt,
-            }
-          : {
-              kind: 'part',
-              messageId: row.id,
-              dayIndex: part.dayIndex,
-              recipientAccountId: part.recipientAccountId,
-              partIndex: part.partIndex,
-              units: part.units,
-              sats: amountSats,
-              shareUnits: part.shareUnits,
-              paidAt,
-            },
-        part !== null && !FIAT_GOAL_CURRENCIES.has(row.goalCurrency ?? ''),
-      ))
-    ) {
-      logEvent('nostr.zap.rejected', { reason: 'settled' });
-      await persistZapIngest(
-        args.store,
-        zapIngestRow({
-          receiptId: event.id,
-          noteEventId,
-          messageId: row.id,
-          outcome: 'rejected',
-          reason: 'settled',
-          amountSats,
-          receiptPubkey: event.pubkey,
-          receipt,
-        }),
-      );
-      return true;
-    }
+  }
+  const part = parseRepaymentPartDescription(invoice.description);
+  const paidAt = new Date(args.now());
+  if (
+    !(await args.store.settleRepaymentPayment(
+      decoded.paymentHash,
+      event.id,
+      paidAt,
+      part === null
+        ? {
+            kind: 'legacy',
+            messageId: row.id,
+            dayIndex: repayment.dayIndex,
+            recipientAccountId,
+            dueSats: amountSats,
+            paidAt,
+          }
+        : {
+            kind: 'part',
+            messageId: row.id,
+            dayIndex: part.dayIndex,
+            recipientAccountId,
+            partIndex: part.partIndex,
+            units: part.units,
+            sats: amountSats,
+            shareUnits: part.shareUnits,
+            paidAt,
+          },
+      part !== null && !FIAT_GOAL_CURRENCIES.has(row.goalCurrency ?? ''),
+    ))
+  ) {
+    logEvent('nostr.zap.rejected', { reason: 'settled' });
+    await persistZapIngest(
+      args.store,
+      zapIngestRow({
+        receiptId: event.id,
+        noteEventId,
+        messageId: row.id,
+        outcome: 'rejected',
+        reason: 'settled',
+        amountSats,
+        receiptPubkey: event.pubkey,
+        receipt,
+      }),
+    );
+    return true;
   }
   logEvent('nostr.zap.repaid', { messageId: row.id, sats: amountSats });
   await persistZapIngest(

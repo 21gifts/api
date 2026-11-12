@@ -10,7 +10,7 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
 or a round trip through sats does not fill or replace it. This file does not
 describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-11-12 (round 53: early fiat close keeps its exact PostgreSQL timestamp boundary; `GET /me/loans` uses one settlement snapshot per loan; repayment-ingest retries reuse an existing same-receipt payment claim without recreating settlement rows).
+**Status**: living document. Last revised 2026-11-12 (round 55: the close response reads its collected snapshot directly through stored `goal_closed_at`; a same-receipt repayment claim repairs a missing settlement row; account merge refuses claim-only repayment invoices).
 
 <!-- Superseded status line retained for its earlier revision history.
 
@@ -4784,9 +4784,13 @@ identities gave to the same repayable credit and that credit has any settled
 legacy repayment or repayment part. Combining the giver shares could otherwise
 change their rounded day slices and make paid debt due again. It is also refused
 while a successful, unpaid, unexpired `repay:` or `repayp:` invoice embeds
-either identity on any affected source-funded credit. The survivor need not
-have given to that credit: the open reservation cannot be repointed after the
-source identity is merged.
+either identity on any affected source-funded credit. A payment-hash claim
+counts as paid here only when the invoice's described legacy or part settlement
+row exists for its current recipient. A claim without that row refuses the
+merge even after the invoice expires, so its retry can settle onto the account
+the merge would otherwise remove. The survivor need not have given to that
+credit: the open reservation cannot be repointed after the source identity is
+merged.
 
 An invalid body is **400**
 `{ "error": "Expected a JSON body with \"from\" and \"into\"" }`
@@ -4814,7 +4818,8 @@ reconstructed, the merge is **409**
 `{ "error": "Repayment history is unavailable" }` and changes nothing.
 The same **409** and no changes apply to the settled dual-giver collision and
 the still-payable dual-giver-credit repayment invoice described above. The
-merge can be retried after the invoice is paid or expires; accounts with a
+merge can be retried after an unclaimed invoice is paid or expires; a
+claim-only invoice must first repair its settlement row. Accounts with a
 settled dual-giver credit remain separate.
 The source's paid and closed shop payments move like every other row. Every
 charge row of both accounts is locked first in id order (`SELECT id …
@@ -7732,7 +7737,7 @@ Any other error of `POST /messages/:id/repayment` while making a bill (`This mes
 
 End collecting on a live, top-level repayable ask. Bearer session required. No body. The caller must be the author. Sunday rest does not refuse close.
 
-Under the per-message lock, the first close chooses the server clock and sets `message.goal_closed_at`; when the ask had not filled, it also sets `message.goal_funded_at` to that same instant. PostgreSQL evaluates `clock_timestamp()` once and keeps that exact `timestamptz` in the database for both columns and the inclusive receipt comparison; the boundary is never truncated through a JavaScript `Date`. Gift-receipt settlement takes the same lock, so the frozen debt and the response's collected snapshot have one atomic boundary. For such an early fiat close, `message.goal_debt_frozen` is true and each giver's exact stored gift-time loan-currency cents are frozen in `message_credit_payer_snapshot`; a gift without that snapshot contributes zero cents to its giver and never receives another giver's cents. Their sum, not the original goal, is the debt and `collectedAmount`. The same exact-cents preview supplies `maxAmount` while the loan is still collecting. The debt and daily plan then follow the ordinary funded-loan rules. A BTC close never sets `goal_debt_frozen`. A loan that already filled keeps its `goal_funded_at`, leaves `goal_debt_frozen` false, and keeps its existing payment-snapshot computation. Closing again is idempotent. A loan closed with 0 collected owes nothing. For staff deletion, a frozen fiat loan is open only while a positive frozen scheduled unit remains unsettled; unassigned sats and an empty frozen schedule do not keep it open.
+Under the per-message lock, the first close chooses the server clock and sets `message.goal_closed_at`; when the ask had not filled, it also sets `message.goal_funded_at` to that same instant. PostgreSQL evaluates `clock_timestamp()` once and keeps that exact `timestamptz` in the database for both columns and the inclusive receipt comparison; the boundary is never truncated through a JavaScript `Date`. The response queries named and unassigned receipts against the stored `message.goal_closed_at` directly, rather than binding the returned timestamp again. Gift-receipt settlement takes the same lock, so the frozen debt and the response's collected snapshot have one atomic boundary. For such an early fiat close, `message.goal_debt_frozen` is true and each giver's exact stored gift-time loan-currency cents are frozen in `message_credit_payer_snapshot`; a gift without that snapshot contributes zero cents to its giver and never receives another giver's cents. Their sum, not the original goal, is the debt and `collectedAmount`. The same exact-cents preview supplies `maxAmount` while the loan is still collecting. The debt and daily plan then follow the ordinary funded-loan rules. A BTC close never sets `goal_debt_frozen`. A loan that already filled keeps its `goal_funded_at`, leaves `goal_debt_frozen` false, and keeps its existing payment-snapshot computation. Closing again is idempotent. A loan closed with 0 collected owes nothing. For staff deletion, a frozen fiat loan is open only while a positive frozen scheduled unit remains unsettled; unassigned sats and an empty frozen schedule do not keep it open.
 
 Success → **Response** `200`:
 

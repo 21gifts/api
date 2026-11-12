@@ -1283,7 +1283,7 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
     const collectedPayers = await locked.previewCreditPayerSnapshot(
       closedRow.id,
       fiat ? (closedRow.goalCurrency as GoalFiatCode) : 'USD',
-      closed.closedAt,
+      'closed',
       includeUnassignedFiat,
     );
     const collectedUnits = closedRow.goalDebtFrozen
@@ -1293,7 +1293,7 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
       collectedPayers.reduce((sum, payer) => sum + payer.sats, 0) +
       (includeUnassignedFiat
         ? 0
-        : await locked.sumUnassignedCreditSats(closedRow.id, true, closed.closedAt));
+        : await locked.sumUnassignedCreditSats(closedRow.id, true, 'closed'));
     return c.json(
       {
         fundedAt: closed.fundedAt.toISOString(),

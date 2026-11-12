@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { SQL } from 'bun';
 import { describe, expect, spyOn, test } from 'bun:test';
+import { Hono } from 'hono';
 import { mergeAccounts, type MergeDb, type MergeTx } from '@/lib/account-merge';
 import {
   backfillSparkAddresses,
@@ -80,6 +81,7 @@ import { isListedShop } from '@/lib/shop-place';
 import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
 import { signEventForShop } from '@/lib/nostr/sign';
 import type { ForumPhoto, MessageRow } from '@/lib/message';
+import { messagesRoutes } from '@/routes/messages';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -4243,12 +4245,13 @@ describe('PostgresMessageStore loan ledger fiat', () => {
     }
   });
 
-  test('early fiat close includes an earlier receipt in the same millisecond', async () => {
+  test('early fiat close endpoint includes earlier-microsecond receipts in its response', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     const authorId = crypto.randomUUID();
     const payerId = crypto.randomUUID();
     const loanId = crypto.randomUUID();
     const receiptId = `receipt-${crypto.randomUUID()}`;
+    const unassignedReceiptId = `receipt-${crypto.randomUUID()}`;
     let ready = false;
     try {
       await migrateAuthSchema(client);
@@ -4258,6 +4261,7 @@ describe('PostgresMessageStore loan ledger fiat', () => {
       await migrateShopIdentitySchema(client);
       ready = true;
       const auth = new PostgresAuthStore(client);
+      const nowMs = Date.now();
       for (const [id, suffix] of [
         [authorId, 'a'],
         [payerId, 'b'],
@@ -4270,10 +4274,12 @@ describe('PostgresMessageStore loan ledger fiat', () => {
           forumLawsDismissed: false,
           location: null,
           viewKey: id.replaceAll('-', '').padEnd(64, suffix),
-          createdAt: 1,
-          rulesAgreedAt: null,
+          createdAt: nowMs,
+          rulesAgreedAt: nowMs,
         });
       }
+      const sessionToken = `close-${crypto.randomUUID()}`;
+      await auth.createSession({ token: sessionToken, accountId: authorId, createdAt: nowMs });
       const store = new PostgresMessageStore(client);
       await store.create({
         id: loanId,
@@ -4291,6 +4297,7 @@ describe('PostgresMessageStore loan ledger fiat', () => {
       });
       expect(await store.recordZapReceipt(receiptId, loanId, 100, null)).toBe(true);
       await store.updateZapReceiptGift(receiptId, { payerAccountId: payerId });
+      expect(await store.recordZapReceipt(unassignedReceiptId, loanId, 7, null)).toBe(true);
       await store.recordZapIngest({
         id: crypto.randomUUID(),
         createdAt: new Date(),
@@ -4307,17 +4314,35 @@ describe('PostgresMessageStore loan ledger fiat', () => {
       await client.execute(
         `UPDATE nostr_zap_receipt
          SET recorded_at = '2026-11-11T12:00:00.123456Z'::timestamptz
-         WHERE event_id = $1`,
+         WHERE event_id = $1::text`,
         [receiptId],
+      );
+      await client.execute(
+        `UPDATE nostr_zap_receipt
+         SET recorded_at = '2026-11-11T12:00:00.123500Z'::timestamptz
+         WHERE event_id = $1::text`,
+        [unassignedReceiptId],
       );
       await client.execute(
         `UPDATE message
          SET goal_closed_at = '2026-11-11T12:00:00.123789Z'::timestamptz
-         WHERE id = $1`,
+         WHERE id = $1::uuid`,
         [loanId],
       );
 
-      expect(await store.closeCredit(loanId, new Date(0))).toBeDefined();
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({ store, authStore: auth, now: () => nowMs }),
+      );
+      const response = await app.request(`/messages/${loanId}/repayment/close`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${sessionToken}` },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        collectedSats: 107,
+        collectedAmount: '1.23',
+      });
       const snapshot = await client.query<{
         units: string;
         funded_at: string;
@@ -4328,7 +4353,7 @@ describe('PostgresMessageStore loan ledger fiat', () => {
                 message.goal_closed_at::text AS closed_at
          FROM message_credit_payer_snapshot AS snapshot
          JOIN message ON message.id = snapshot.message_id
-         WHERE snapshot.message_id = $1 AND snapshot.account_id = $2`,
+         WHERE snapshot.message_id = $1::uuid AND snapshot.account_id = $2::uuid`,
         [loanId, payerId],
       );
       expect(snapshot).toEqual([
@@ -4340,6 +4365,7 @@ describe('PostgresMessageStore loan ledger fiat', () => {
       ]);
     } finally {
       if (ready) {
+        await client.execute('DELETE FROM auth_session WHERE account_id = $1::uuid', [authorId]);
         await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1', [receiptId]);
         await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1', [loanId]);
         await client.execute('DELETE FROM message WHERE id = $1', [loanId]);
@@ -4369,7 +4395,7 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
 }
 
 describe('Postgres repayment retry after account merge', () => {
-  test('an existing claim repairs ingest without restoring the merged account', async () => {
+  test('a claim-only retry settles once around a refused merge and survives a later merge', async () => {
     for (const kind of ['legacy', 'part'] as const) {
       const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
       const authorId = crypto.randomUUID();
@@ -4459,9 +4485,27 @@ describe('Postgres repayment retry after account merge', () => {
                 shareUnits: 100n,
                 paidAt,
               };
+        // Reproduce the historical split write: the durable claim committed,
+        // then the repayment-row insert failed.
+        expect(await store.claimZapPayment(paymentHash, receiptId, paidAt)).toBe(true);
+        expect(
+          await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
+        ).toEqual({ ok: false, error: 'repayment_unavailable' });
         expect(
           await store.settleRepaymentPayment(paymentHash, receiptId, paidAt, settlement, true),
         ).toBe(true);
+        expect(
+          await store.settleRepaymentPayment(paymentHash, receiptId, paidAt, settlement, true),
+        ).toBe(true);
+        expect(
+          await client.query<{ n: number }>(
+            `SELECT (
+               (SELECT COUNT(*) FROM message_repayment WHERE message_id = $1::uuid) +
+               (SELECT COUNT(*) FROM message_repayment_part WHERE message_id = $1::uuid)
+             )::integer AS n`,
+            [loanId],
+          ),
+        ).toEqual([{ n: 1 }]);
         expect(
           await client.query<{ n: number }>(
             'SELECT count(*)::int AS n FROM nostr_zap_ingest WHERE receipt_id = $1',
@@ -4472,8 +4516,15 @@ describe('Postgres repayment retry after account merge', () => {
         expect(
           await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
         ).toEqual(expect.objectContaining({ ok: true }));
+        const mergedSettlement = { ...settlement, recipientAccountId: intoId };
         expect(
-          await store.settleRepaymentPayment(paymentHash, receiptId, paidAt, settlement, true),
+          await store.settleRepaymentPayment(
+            paymentHash,
+            receiptId,
+            paidAt,
+            mergedSettlement,
+            true,
+          ),
         ).toBe(true);
 
         const rows = await client.query<{ recipient_account_id: string; n: number }>(

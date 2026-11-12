@@ -1911,6 +1911,8 @@ describe('repayment from the in-app wallet', () => {
 
   it('takes the message lock before collecting the close response snapshot', async () => {
     const { app, messages } = await readyCredit({ fundedAt: null });
+    const preview = vi.spyOn(messages, 'previewCreditPayerSnapshot');
+    const unassigned = vi.spyOn(messages, 'sumUnassignedCreditSats');
     const withMessageLock = messages.withMessageLock.bind(messages);
     let injected = false;
     vi.spyOn(messages, 'withMessageLock').mockImplementation(async (messageId, run) => {
@@ -1928,6 +1930,8 @@ describe('repayment from the in-app wallet', () => {
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ collectedSats: 26 });
+    expect(preview).toHaveBeenCalledWith(CREDIT, 'USD', 'closed', false);
+    expect(unassigned).toHaveBeenCalledWith(CREDIT, true, 'closed');
   });
 
   it('reports named and anonymous fiat received through close after natural funding', async () => {

@@ -70,6 +70,7 @@ interface LegacyRepaymentRow {
 interface OpenRepaymentInvoiceRow {
   created_at: Date | string;
   pr: string;
+  claim_only: boolean;
 }
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
@@ -115,8 +116,9 @@ function quoteIdentifier(identifier: string): string {
  * account's id and words, so the surviving account could never open it.
  * Frozen credit snapshots are combined by message. Before either identity is
  * moved, the merge refuses without writes when both identities gave to one
- * credit with a settled repayment, or when a still-payable repayment invoice
- * embeds either identity on an affected source-funded credit. Otherwise,
+ * credit with a settled repayment, when a still-payable repayment invoice
+ * embeds either identity on an affected source-funded credit, or when such an
+ * invoice has a payment claim but no matching settlement row. Otherwise,
  * legacy full-share repayments are reconstructed from the original loan
  * schedule and converted to canonical parts. A schedule that cannot be
  * reconstructed refuses the merge without writes. Parts from both identities
@@ -152,8 +154,11 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          UNION
          SELECT message_id FROM message_invoice
          WHERE result = 'ok'
+           AND (description LIKE 'repay:%' OR description LIKE 'repayp:%')
            AND (
-             description LIKE 'repay:%:' || $1::text
+             author_account_id = $1::uuid
+             OR author_account_id = $2::uuid
+             OR description LIKE 'repay:%:' || $1::text
              OR description LIKE 'repay:%:' || $2::text
              OR description LIKE 'repayp:%:' || $1::text || ':%'
              OR description LIKE 'repayp:%:' || $2::text || ':%'
@@ -281,16 +286,64 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     if (settledMergeConflicts.length > 0) {
       return { ok: false, error: 'repayment_unavailable' };
     }
-    // A repayment description is settlement metadata and embeds its recipient
-    // account id. Keep every open reservation that names either identity on a
-    // source-funded credit immutable until it settles or expires, even when
-    // only the source gave.
+    // A repayment description is settlement metadata and embeds its original
+    // recipient account id. Keep every open reservation that names either
+    // identity on a source-funded credit immutable until it settles or
+    // expires. A payment-hash claim is settled only when the invoice's current
+    // recipient also has the described legacy or part row; a claim-only
+    // invoice refuses the merge even after the invoice itself expired.
     const openRepaymentInvoices = await tx.query<OpenRepaymentInvoiceRow>(
-      `SELECT invoice.created_at, invoice.pr
+      `SELECT invoice.created_at, invoice.pr,
+              invoice.payment_hash IS NOT NULL
+                AND EXISTS (
+                  SELECT 1 FROM nostr_zap_payment AS claimed
+                  WHERE claimed.payment_hash = lower(invoice.payment_hash)
+                )
+                AND NOT (
+                  (
+                    invoice.description LIKE 'repay:%'
+                    AND (
+                      EXISTS (
+                        SELECT 1 FROM message_repayment AS settled
+                        WHERE settled.message_id = invoice.message_id
+                          AND settled.recipient_account_id = invoice.author_account_id
+                          AND invoice.description LIKE
+                            'repay:' || settled.day_index::text || ':%'
+                          AND settled.due_sats = invoice.amount_sats
+                      )
+                      OR EXISTS (
+                        SELECT 1 FROM message_repayment_part AS canonical_legacy
+                        WHERE canonical_legacy.message_id = invoice.message_id
+                          AND canonical_legacy.recipient_account_id = invoice.author_account_id
+                          AND invoice.description LIKE
+                            'repay:' || canonical_legacy.day_index::text || ':%'
+                        GROUP BY canonical_legacy.message_id, canonical_legacy.day_index,
+                                 canonical_legacy.recipient_account_id
+                        HAVING SUM(canonical_legacy.sats) = invoice.amount_sats
+                      )
+                    )
+                  )
+                  OR (
+                    invoice.description LIKE 'repayp:%'
+                    AND EXISTS (
+                      SELECT 1 FROM message_repayment_part AS settled_part
+                      WHERE settled_part.message_id = invoice.message_id
+                        AND settled_part.recipient_account_id = invoice.author_account_id
+                        AND invoice.description LIKE
+                          'repayp:' || settled_part.day_index::text || ':%:%:' ||
+                          settled_part.units::text || ':%'
+                        AND settled_part.sats = invoice.amount_sats
+                    )
+                  )
+                ) AS claim_only
        FROM message_invoice AS invoice
        JOIN message AS credit ON credit.id = invoice.message_id
        WHERE invoice.result = 'ok'
          AND invoice.pr IS NOT NULL
+         AND (
+           invoice.description LIKE 'repay:%'
+           OR invoice.description LIKE 'repayp:%'
+         )
          AND credit.goal_repayable IS TRUE
          AND EXISTS (
            SELECT 1 FROM nostr_zap_receipt AS source_gift
@@ -303,7 +356,9 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
              )
          )
          AND (
-           invoice.description LIKE 'repay:%:' || $1::text
+           invoice.author_account_id = $1::uuid
+           OR invoice.author_account_id = $2::uuid
+           OR invoice.description LIKE 'repay:%:' || $1::text
            OR invoice.description LIKE 'repayp:%:' || $1::text || ':%'
            OR invoice.description LIKE 'repay:%:' || $2::text
            OR invoice.description LIKE 'repayp:%:' || $2::text || ':%'
@@ -312,15 +367,53 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
            invoice.payment_hash IS NULL
            OR NOT EXISTS (
              SELECT 1 FROM nostr_zap_payment AS payment
-             WHERE payment.payment_hash = invoice.payment_hash
+             WHERE payment.payment_hash = lower(invoice.payment_hash)
+           )
+           OR NOT (
+             (
+               invoice.description LIKE 'repay:%'
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM message_repayment AS settled
+                   WHERE settled.message_id = invoice.message_id
+                     AND settled.recipient_account_id = invoice.author_account_id
+                     AND invoice.description LIKE 'repay:' || settled.day_index::text || ':%'
+                     AND settled.due_sats = invoice.amount_sats
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM message_repayment_part AS canonical_legacy
+                   WHERE canonical_legacy.message_id = invoice.message_id
+                     AND canonical_legacy.recipient_account_id = invoice.author_account_id
+                     AND invoice.description LIKE
+                       'repay:' || canonical_legacy.day_index::text || ':%'
+                   GROUP BY canonical_legacy.message_id, canonical_legacy.day_index,
+                            canonical_legacy.recipient_account_id
+                   HAVING SUM(canonical_legacy.sats) = invoice.amount_sats
+                 )
+               )
+             )
+             OR (
+               invoice.description LIKE 'repayp:%'
+               AND EXISTS (
+                 SELECT 1 FROM message_repayment_part AS settled_part
+                 WHERE settled_part.message_id = invoice.message_id
+                   AND settled_part.recipient_account_id = invoice.author_account_id
+                   AND invoice.description LIKE
+                     'repayp:' || settled_part.day_index::text || ':%:%:' ||
+                     settled_part.units::text || ':%'
+                   AND settled_part.sats = invoice.amount_sats
+               )
+             )
            )
          )
        ORDER BY invoice.created_at, invoice.id`,
       accountParams,
     );
     if (
-      openRepaymentInvoices.some((invoice) =>
-        invoiceStillOpen(invoice.pr, new Date(invoice.created_at).getTime(), Date.now()),
+      openRepaymentInvoices.some(
+        (invoice) =>
+          invoice.claim_only ||
+          invoiceStillOpen(invoice.pr, new Date(invoice.created_at).getTime(), Date.now()),
       )
     ) {
       return { ok: false, error: 'repayment_unavailable' };

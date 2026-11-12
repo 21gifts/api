@@ -1319,29 +1319,34 @@ export interface MessageStore {
    *
    * @param messageId - Credit note.
    * @param currency - Fiat goal currency.
-   * @param through - Inclusive receipt boundary; omitted means all current receipts.
+   * @param through - Inclusive receipt boundary. A `Date` uses that timestamp;
+   *   `'closed'` uses the stored `goal_closed_at` without a JavaScript timestamp
+   *   round-trip; omitted means all current receipts.
    * @param includeUnassigned - Include one aggregate row for receipts without a member payer.
    * @returns One row per payer, using an empty account id for the optional unassigned aggregate.
    */
   previewCreditPayerSnapshot(
     messageId: string,
     currency: 'USD' | 'CHF' | 'EUR' | 'PHP',
-    through?: Date,
+    through?: Date | 'closed',
     includeUnassigned?: boolean,
   ): Promise<CreditPayerSnapshotPreview[]>;
 
   /**
    * Sats on this note whose zap has no 21.gifts payer account.
+   * The optional `'closed'` boundary uses the note's goal-close time; omission has no boundary.
    *
    * @param messageId - Forum note.
    * @param includeAfterFunding - Include receipts after the natural funding boundary.
-   * @param through - Inclusive receipt boundary; omitted means no close boundary.
+   * @param through - Inclusive receipt boundary. `'closed'` uses the stored
+   *   `goal_closed_at` without a JavaScript timestamp round-trip; omitted
+   *   means no close boundary.
    * @returns Those sats. They are not part of the repayment plan.
    */
   sumUnassignedCreditSats(
     messageId: string,
     includeAfterFunding?: boolean,
-    through?: Date,
+    through?: 'closed',
   ): Promise<number>;
 
   /**
@@ -1445,8 +1450,9 @@ export interface MessageStore {
    * @param requireExactPartSats - True for a BTC part settlement.
    * @returns `false` when another receipt owns the hash or the repayment row
    *   conflicts, including a BTC part whose sats differ from its units; a
-   *   failed row write leaves no claim for this receipt. An existing claim
-   *   owned by this receipt returns `true` without writing a settlement row.
+   *   failed row write removes only a claim inserted by this call. An existing
+   *   claim owned by this receipt still verifies or creates its settlement row;
+   *   exact values under a merge-normalized recipient/part index also verify it.
    */
   settleRepaymentPayment(
     paymentHash: string,
@@ -4529,11 +4535,14 @@ export class InMemoryMessageStore implements MessageStore {
   previewCreditPayerSnapshot(
     messageId: string,
     currency: 'USD' | 'CHF' | 'EUR' | 'PHP',
-    through?: Date,
+    through?: Date | 'closed',
     includeUnassigned = false,
   ): Promise<CreditPayerSnapshotPreview[]> {
     const totals = new Map<string, { sats: number; units: bigint }>();
-    const boundary = through?.getTime();
+    const boundary =
+      through === 'closed'
+        ? this.#rows.find((row) => row.id === messageId)?.goalClosedAt?.getTime()
+        : through?.getTime();
     for (const [eventId, receipt] of this.#receipts) {
       if (
         receipt.messageId !== messageId ||
@@ -4574,10 +4583,13 @@ export class InMemoryMessageStore implements MessageStore {
   sumUnassignedCreditSats(
     messageId: string,
     includeAfterFunding = false,
-    through?: Date,
+    through?: Date | 'closed',
   ): Promise<number> {
     const freezeAt = this.#creditFreezeAt.get(messageId) ?? null;
-    const boundary = through?.getTime();
+    const boundary =
+      through === 'closed'
+        ? this.#rows.find((row) => row.id === messageId)?.goalClosedAt?.getTime()
+        : undefined;
     let sats = 0;
     for (const receipt of this.#receipts.values()) {
       if (
@@ -4831,6 +4843,22 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve({ ...stored, paidAt: new Date(stored.paidAt.getTime()) });
   }
 
+  /** Match a settlement row whose recipient or part index was normalized by an account merge. */
+  #hasMergedRepaymentSettlement(settlement: RepaymentSettlement): boolean {
+    const parts = this.#repaymentParts.filter(
+      (part) =>
+        part.messageId === settlement.messageId &&
+        part.dayIndex === settlement.dayIndex &&
+        part.recipientAccountId === settlement.recipientAccountId,
+    );
+    if (settlement.kind === 'legacy') {
+      return (
+        parts.length > 0 && parts.reduce((sum, part) => sum + part.sats, 0) === settlement.dueSats
+      );
+    }
+    return parts.some((part) => part.units === settlement.units && part.sats === settlement.sats);
+  }
+
   settleRepaymentPayment(
     paymentHash: string,
     receiptEventId: string,
@@ -4850,13 +4878,15 @@ export class InMemoryMessageStore implements MessageStore {
       if (claim === 'conflict') {
         return false;
       }
-      if (claim === 'existing') {
-        return true;
-      }
       if (settlement.kind === 'legacy') {
         const stored = await this.#markRepaymentPaidUnlocked(settlement);
         if (!stored) {
-          this.#zapPayments.delete(paymentHash.toLowerCase());
+          if (claim === 'existing' && this.#hasMergedRepaymentSettlement(settlement)) {
+            return true;
+          }
+          if (claim === 'inserted') {
+            this.#zapPayments.delete(paymentHash.toLowerCase());
+          }
           logEvent('repayment.settlement.conflict', {
             messageId: settlement.messageId,
             dayIndex: settlement.dayIndex,
@@ -4866,7 +4896,12 @@ export class InMemoryMessageStore implements MessageStore {
       } else {
         const stored = await this.#markRepaymentPartPaidUnlocked(settlement);
         if (stored === undefined) {
-          this.#zapPayments.delete(paymentHash.toLowerCase());
+          if (claim === 'existing' && this.#hasMergedRepaymentSettlement(settlement)) {
+            return true;
+          }
+          if (claim === 'inserted') {
+            this.#zapPayments.delete(paymentHash.toLowerCase());
+          }
           logEvent('repayment.settlement.conflict', {
             messageId: settlement.messageId,
             dayIndex: settlement.dayIndex,
@@ -8485,10 +8520,12 @@ export class PostgresMessageStore implements MessageStore {
 
   #creditPayerRows(
     messageId: string,
-    through: Date | null | undefined,
+    through: Date | 'closed' | null | undefined,
     includeUnassigned = false,
   ): Promise<CreditPayerQueryRow[]> {
     const useFundedBoundary = through === undefined;
+    const useClosedBoundary = through === 'closed';
+    const throughTimestamp = through instanceof Date ? through : null;
     return this.#sql.query<CreditPayerQueryRow>(
       `WITH payers AS (
        SELECT r.payer_account_id AS account_id,
@@ -8511,7 +8548,7 @@ export class PostgresMessageStore implements MessageStore {
        ) i ON true
        JOIN message m ON m.id = r.message_id
        WHERE r.message_id = $1::uuid
-         AND ($4::boolean OR r.payer_account_id IS NOT NULL)
+         AND ($5::boolean OR r.payer_account_id IS NOT NULL)
          AND (
            (
              $2::boolean
@@ -8524,9 +8561,21 @@ export class PostgresMessageStore implements MessageStore {
            OR (
              NOT $2::boolean
              AND (
-               $3::timestamptz IS NULL
-               OR r.recorded_at IS NULL
-               OR r.recorded_at <= $3::timestamptz
+               (
+      $3::boolean
+                 AND (
+                   r.recorded_at IS NULL
+                   OR r.recorded_at <= m.goal_closed_at
+                 )
+               )
+               OR (
+      NOT $3::boolean
+                 AND (
+                   $4::timestamptz IS NULL
+                   OR r.recorded_at IS NULL
+                   OR r.recorded_at <= $4::timestamptz
+                 )
+               )
              )
            )
          )
@@ -8537,14 +8586,14 @@ export class PostgresMessageStore implements MessageStore {
        LEFT JOIN message_credit_payer_snapshot s
         ON s.message_id = $1::uuid AND s.account_id = p.account_id
        ORDER BY p.account_id`,
-      [messageId, useFundedBoundary, through ?? null, includeUnassigned],
+      [messageId, useFundedBoundary, useClosedBoundary, throughTimestamp, includeUnassigned],
     );
   }
 
   async previewCreditPayerSnapshot(
     messageId: string,
     currency: 'USD' | 'CHF' | 'EUR' | 'PHP',
-    through?: Date,
+    through?: Date | 'closed',
     includeUnassigned = false,
   ): Promise<CreditPayerSnapshotPreview[]> {
     const rows = await this.#creditPayerRows(messageId, through ?? null, includeUnassigned);
@@ -8568,8 +8617,10 @@ export class PostgresMessageStore implements MessageStore {
   async sumUnassignedCreditSats(
     messageId: string,
     includeAfterFunding = false,
-    through?: Date,
+    through?: Date | 'closed',
   ): Promise<number> {
+    const useClosedBoundary = through === 'closed';
+    const throughTimestamp = through instanceof Date ? through : null;
     const rows = await this.#sql.query<{ sats: string | number | null }>(
       `SELECT COALESCE(SUM(r.sats), 0)::bigint AS sats
        FROM nostr_zap_receipt r
@@ -8582,11 +8633,23 @@ export class PostgresMessageStore implements MessageStore {
            OR r.recorded_at <= m.goal_funded_at
          )
          AND (
-           $3::timestamptz IS NULL
-           OR r.recorded_at IS NULL
-           OR r.recorded_at <= $3::timestamptz
+           (
+             $3::boolean
+             AND (
+               r.recorded_at IS NULL
+               OR r.recorded_at <= m.goal_closed_at
+             )
+           )
+           OR (
+             NOT $3::boolean
+             AND (
+               $4::timestamptz IS NULL
+               OR r.recorded_at IS NULL
+               OR r.recorded_at <= $4::timestamptz
+             )
+           )
          )`,
-      [messageId, includeAfterFunding, through ?? null],
+      [messageId, includeAfterFunding, useClosedBoundary, throughTimestamp],
     );
     return Number(rows[0]?.sats ?? 0);
   }
@@ -8886,6 +8949,44 @@ export class PostgresMessageStore implements MessageStore {
     return { ...row };
   }
 
+  /** Match a settlement row whose recipient or part index was normalized by an account merge. */
+  async #hasMergedRepaymentSettlement(settlement: RepaymentSettlement): Promise<boolean> {
+    if (settlement.kind === 'legacy') {
+      const rows = await this.#sql.query<{ matches: boolean | string }>(
+        `SELECT COUNT(*) > 0 AND COALESCE(SUM(sats), 0) = $4::bigint AS matches
+         FROM message_repayment_part
+         WHERE message_id = $1::uuid
+           AND day_index = $2::integer
+           AND recipient_account_id = $3::uuid`,
+        [
+          settlement.messageId,
+          settlement.dayIndex,
+          settlement.recipientAccountId,
+          settlement.dueSats,
+        ],
+      );
+      return rows[0]?.matches === true || rows[0]?.matches === 't';
+    }
+    const rows = await this.#sql.query<{ matches: boolean | string }>(
+      `SELECT true AS matches
+       FROM message_repayment_part
+       WHERE message_id = $1::uuid
+         AND day_index = $2::integer
+         AND recipient_account_id = $3::uuid
+         AND units = $4::bigint
+         AND sats = $5::bigint
+       LIMIT 1`,
+      [
+        settlement.messageId,
+        settlement.dayIndex,
+        settlement.recipientAccountId,
+        settlement.units.toString(),
+        settlement.sats,
+      ],
+    );
+    return rows[0]?.matches === true || rows[0]?.matches === 't';
+  }
+
   settleRepaymentPayment(
     paymentHash: string,
     receiptEventId: string,
@@ -8906,17 +9007,19 @@ export class PostgresMessageStore implements MessageStore {
       if (claim === 'conflict') {
         return false;
       }
-      if (claim === 'existing') {
-        return true;
-      }
       if (settlement.kind === 'legacy') {
         const stored = await store.#markRepaymentPaidUnlocked(settlement);
         if (!stored) {
-          await store.#sql.execute(
-            `DELETE FROM nostr_zap_payment
-             WHERE payment_hash = $1 AND receipt_event_id = $2`,
-            [paymentHash.toLowerCase(), receiptEventId],
-          );
+          if (claim === 'existing' && (await store.#hasMergedRepaymentSettlement(settlement))) {
+            return true;
+          }
+          if (claim === 'inserted') {
+            await store.#sql.execute(
+              `DELETE FROM nostr_zap_payment
+               WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
+              [paymentHash.toLowerCase(), receiptEventId],
+            );
+          }
           logEvent('repayment.settlement.conflict', {
             messageId: settlement.messageId,
             dayIndex: settlement.dayIndex,
@@ -8926,11 +9029,16 @@ export class PostgresMessageStore implements MessageStore {
       } else {
         const stored = await store.#markRepaymentPartPaidUnlocked(settlement);
         if (stored === undefined) {
-          await store.#sql.execute(
-            `DELETE FROM nostr_zap_payment
-             WHERE payment_hash = $1 AND receipt_event_id = $2`,
-            [paymentHash.toLowerCase(), receiptEventId],
-          );
+          if (claim === 'existing' && (await store.#hasMergedRepaymentSettlement(settlement))) {
+            return true;
+          }
+          if (claim === 'inserted') {
+            await store.#sql.execute(
+              `DELETE FROM nostr_zap_payment
+               WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
+              [paymentHash.toLowerCase(), receiptEventId],
+            );
+          }
           logEvent('repayment.settlement.conflict', {
             messageId: settlement.messageId,
             dayIndex: settlement.dayIndex,
@@ -9056,7 +9164,7 @@ export class PostgresMessageStore implements MessageStore {
     const normalizedHash = paymentHash.toLowerCase();
     const inserted = await this.#sql.query<{ receipt_event_id: string }>(
       `INSERT INTO nostr_zap_payment (payment_hash, receipt_event_id, created_at)
-       VALUES ($1, $2, $3)
+       VALUES ($1::text, $2::text, $3::timestamptz)
        ON CONFLICT (payment_hash) DO NOTHING
        RETURNING receipt_event_id`,
       [normalizedHash, receiptEventId, at],
@@ -9067,7 +9175,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<{ receipt_event_id: string }>(
       `SELECT receipt_event_id
        FROM nostr_zap_payment
-       WHERE payment_hash = $1`,
+       WHERE payment_hash = $1::text`,
       [normalizedHash],
     );
     return rows[0]?.receipt_event_id === receiptEventId ? 'existing' : 'conflict';
@@ -9084,7 +9192,7 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<{ receipt_event_id: string }>(
       `SELECT receipt_event_id
        FROM nostr_zap_payment
-       WHERE payment_hash = $1`,
+       WHERE payment_hash = $1::text`,
       [paymentHash.toLowerCase()],
     );
     return rows[0]?.receipt_event_id;

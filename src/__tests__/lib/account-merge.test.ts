@@ -81,7 +81,7 @@ interface FakeDatabaseOptions {
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
   /** Successful, unpaid repayment invoices on affected source-funded credits. */
-  openRepaymentInvoices?: readonly { created_at: Date; pr: string }[];
+  openRepaymentInvoices?: readonly { created_at: Date; pr: string; claim_only?: boolean }[];
 }
 
 function fakeDatabase(options: FakeDatabaseOptions = {}): {
@@ -325,7 +325,7 @@ describe('mergeAccounts', () => {
     expect(converted?.text).toContain('$4::bigint, $5::bigint, $6::timestamptz');
     expect(canonicalPayers?.text).toContain('ORDER BY created_at ASC, id ASC');
     expect(canonicalPayers?.text).not.toContain('ORDER BY created_at DESC');
-    expect(canonicalPayers?.params).toEqual([messageId, true, null, false]);
+    expect(canonicalPayers?.params).toEqual([messageId, true, false, null, false]);
     expect(deleted?.params).toEqual([messageId, 0, FROM]);
     expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
   });
@@ -471,6 +471,26 @@ describe('mergeAccounts', () => {
     expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $2::text");
     expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $2::text || ':%'");
     expect(open?.text).toContain('FROM nostr_zap_payment AS payment');
+    expect(
+      queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+    ).toBe(false);
+  });
+
+  it('refuses an expired claim-only repayment invoice without writes', async () => {
+    const { db, queries } = fakeDatabase({
+      openRepaymentInvoices: [
+        { created_at: new Date(0), pr: 'expired-repayment', claim_only: true },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    const open = queries.find((query) => query.text.includes('FROM message_invoice AS invoice'));
+    expect(open?.text).toContain('AS claim_only');
+    expect(open?.text).toContain('settled.recipient_account_id = invoice.author_account_id');
+    expect(open?.text).toContain('settled_part.recipient_account_id = invoice.author_account_id');
     expect(
       queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
     ).toBe(false);

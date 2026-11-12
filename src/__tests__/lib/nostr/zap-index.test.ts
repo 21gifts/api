@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it, vi, type MockInstance } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
-import { repaymentDescription, repaymentPartDescription } from '@/lib/credit-repayment';
+import {
+  parseRepaymentDescription,
+  repaymentDescription,
+  repaymentPartDescription,
+} from '@/lib/credit-repayment';
 import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { unsignedConversationDefaults } from '@/lib/conversation';
@@ -470,12 +474,13 @@ async function seedManualInvoice(
   paymentHash: string,
   overrides: Partial<MessageInvoiceAttempt> = {},
 ): Promise<void> {
+  const repayment = parseRepaymentDescription(overrides.description ?? null);
   await store.recordInvoiceAttempt({
     id: `manual-invoice-${paymentHash.slice(0, 4)}`,
     createdAt: new Date('2026-09-18T11:00:00.000Z'),
     messageId: 'manual-message',
     payerAccountId: 'manual-payer',
-    authorAccountId: 'manual-author',
+    authorAccountId: repayment?.recipientAccountId ?? 'manual-author',
     amountSats: 210_000,
     lightningAddress: 'author@example.com',
     zapRequest: { content: 'manual gift' },
@@ -6569,7 +6574,7 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.claimZapPayment(paymentHash, 'r-after-missing', new Date(11))).toBe(true);
   });
 
-  it('repairs an existing repayment claim without looking up a merged-away giver', async () => {
+  it('repairs a claim-only repayment onto the survivor without looking up the merged-away giver', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
     const messageId = await seedStore({ store, auth, accountId: 'acc-repay-repair' });
@@ -6582,7 +6587,7 @@ describe('indexOpenZapReceipts', () => {
       createdAt: new Date(1),
       messageId,
       payerAccountId: 'acc-repay-repair',
-      authorAccountId: mergedAway,
+      authorAccountId: survivor,
       amountSats: 21,
       lightningAddress: 'gone@example.test',
       zapRequest: null,
@@ -6595,15 +6600,8 @@ describe('indexOpenZapReceipts', () => {
       isNip57Invoice: true,
       lnurlResponse: null,
     });
-    await store.markRepaymentPaid({
-      messageId,
-      dayIndex: 0,
-      recipientAccountId: survivor,
-      dueSats: 21,
-      paidAt: new Date(1),
-    });
-    // Settlement and its claim committed, the account merge moved the row,
-    // and the first ingest write failed before leaving an indexed row.
+    // The claim committed, the settlement insert failed, and a historical
+    // merge moved the invoice recipient while its description stayed frozen.
     expect(await store.claimZapPayment(paymentHash, receiptId, new Date(1))).toBe(true);
     const querier = new RecordingQuerier();
     querier.events = [
@@ -6636,7 +6634,7 @@ describe('indexOpenZapReceipts', () => {
         dayIndex: 0,
         recipientAccountId: survivor,
         dueSats: 21,
-        paidAt: new Date(1),
+        paidAt: new Date(12),
       },
     ]);
     expect(await store.listIndexedZapIngests()).toEqual([
