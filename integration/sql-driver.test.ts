@@ -7,6 +7,7 @@ import {
   migrateAuthSchema,
   PostgresAuthStore,
 } from '@/lib/auth/postgres-store';
+import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import type { PasskeyChallenge, PendingRecovery } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
@@ -751,6 +752,108 @@ describe('daily roster keyed by account', () => {
       await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
         postgresTextArrayLiteral(ids),
       ]);
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('staff_tag role migration on Postgres', () => {
+  test('promotes fond and the lower ranks; initiator and founder keep their role', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const ids = {
+      basis: crypto.randomUUID(),
+      verified: crypto.randomUUID(),
+      moderator: crypto.randomUUID(),
+      fond: crypto.randomUUID(),
+      initiator: crypto.randomUUID(),
+      founder: crypto.randomUUID(),
+    };
+    try {
+      await migrateAuthSchema(client);
+      await client.execute('ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text');
+      for (const [role, id] of Object.entries(ids)) {
+        await client.execute(
+          `INSERT INTO account
+             (id, role, staff_tag, lightning_address_verified, forum_laws_dismissed, created_at)
+           VALUES ($1, $2, 'software_developer', false, false, $3)`,
+          [id, role, new Date()],
+        );
+      }
+
+      await migrateAuthSchema(client);
+
+      const roleOf = async (id: string): Promise<string | undefined> => {
+        const rows = await client.query<{ role: string }>(
+          'SELECT role FROM account WHERE id = $1',
+          [id],
+        );
+        return rows[0]?.role;
+      };
+      expect(await roleOf(ids.basis)).toBe('software_developer');
+      expect(await roleOf(ids.verified)).toBe('software_developer');
+      expect(await roleOf(ids.moderator)).toBe('software_developer');
+      expect(await roleOf(ids.fond)).toBe('software_developer');
+      expect(await roleOf(ids.initiator)).toBe('initiator');
+      expect(await roleOf(ids.founder)).toBe('founder');
+      expect(
+        await client.query(
+          `SELECT 1 FROM information_schema.columns
+           WHERE table_schema = current_schema()
+             AND table_name = 'account' AND column_name = 'staff_tag'`,
+        ),
+      ).toEqual([]);
+    } finally {
+      for (const id of Object.values(ids)) {
+        await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('runs the staff_tag migration once when 8 boots race', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const id = crypto.randomUUID();
+    try {
+      await migrateAuthSchema(client);
+      await client.execute('ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text');
+      await client.execute(
+        `INSERT INTO account
+           (id, role, staff_tag, lightning_address_verified, forum_laws_dismissed, created_at)
+         VALUES ($1, 'moderator', 'software_developer', false, false, $2)`,
+        [id, new Date()],
+      );
+
+      const statement = AUTH_SCHEMA_SQL.find((s) => s.includes('$staff_tag_role$'));
+      expect(statement).toBeDefined();
+      if (statement === undefined) {
+        throw new Error('staff_tag migration statement is missing');
+      }
+
+      const boots = Array.from({ length: 8 }, () =>
+        createBunSqlClient(String(databaseUrl), { max: 1 }),
+      );
+      try {
+        const results = await Promise.allSettled(
+          boots.map(({ client: bootClient }) => bootClient.execute(statement)),
+        );
+        expect(results.filter((result) => result.status === 'rejected')).toEqual([]);
+      } finally {
+        await Promise.all(boots.map(({ sql: bootSql }) => closeIfPossible(bootSql)));
+      }
+
+      const rows = await client.query<{ role: string }>('SELECT role FROM account WHERE id = $1', [
+        id,
+      ]);
+      expect(rows[0]?.role).toBe('software_developer');
+      expect(
+        await client.query(
+          `SELECT 1 FROM information_schema.columns
+           WHERE table_schema = current_schema()
+             AND table_name = 'account' AND column_name = 'staff_tag'`,
+        ),
+      ).toEqual([]);
+    } finally {
+      await client.execute('DELETE FROM account WHERE id = $1', [id]);
       await closeIfPossible(sql);
     }
   });
@@ -2831,6 +2934,29 @@ describe('PostgresWalletStore', () => {
 
       const ordered = await store.listPayments(accountId, 10);
       expect(ordered.map((row) => row.paymentId)).toEqual(['p-later', 'p-pending']);
+
+      const firstPage = await store.listPayments(accountId, 1);
+      expect(firstPage.map((row) => row.paymentId)).toEqual(['p-later']);
+      const afterFirst = firstPage[0];
+      if (afterFirst === undefined) {
+        throw new Error('expected one first-page payment');
+      }
+      const nextPage = await store.listPayments(accountId, 10, {
+        paidAt: afterFirst.paidAt,
+        paymentId: afterFirst.paymentId,
+      });
+      expect(nextPage.map((row) => row.paymentId)).toEqual(['p-pending']);
+
+      const tied = new Date(paidLater.getTime() + 1_000);
+      await store.upsertPayments([
+        { ...pending, paymentId: 'p-tie-a', paidAt: tied, firstSeenAt: tied, updatedAt: tied },
+        { ...pending, paymentId: 'p-tie-b', paidAt: tied, firstSeenAt: tied, updatedAt: tied },
+      ]);
+      const tiePage = await store.listPayments(accountId, 10, {
+        paidAt: tied,
+        paymentId: 'p-tie-b',
+      });
+      expect(tiePage.map((row) => row.paymentId)).toEqual(['p-tie-a', 'p-later', 'p-pending']);
 
       // An observation older than the stored state never overwrites it.
       await store.upsertPayments([{ ...pending, status: 'pending', updatedAt: firstSeen }]);

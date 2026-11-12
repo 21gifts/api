@@ -12,9 +12,12 @@ import { HEART_SATS_MAX } from '@/lib/config';
  * columns existed. `spark_address` values are filled by `backfillSparkAddresses`, not here.
  * A pre-role-label database is migrated by the block below: only when
  * `account.staff_tag` exists, rows with `staff_tag = 'software_developer'`
- * get `role = 'software_developer'` while their current role is below
- * software developer, then the old label column is dropped. The old boot
- * statement gave `dansw` that label, so the label alone carries `dansw`.
+ * get `role = 'software_developer'` while their current role is `basis`,
+ * `verified`, `moderator`, or `fond` (every rank below software developer),
+ * then the old label column is dropped. The block takes
+ * {@link STAFF_TAG_MIGRATION_LOCK} first, so concurrent boots run it one at a
+ * time. The old boot statement gave `dansw` that label, so the label alone
+ * carries `dansw`.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows), and the social recovery tables
  * `recovery_share` (the encrypted 21.gifts share per account and wallet key),
@@ -27,6 +30,15 @@ import { HEART_SATS_MAX } from '@/lib/config';
  * existing rows).
  * Drops leftover `auth_challenge` from LNURL-auth.
  */
+
+/**
+ * Fixed `pg_advisory_xact_lock` key of the staff-tag role migration. The `DO`
+ * block of {@link AUTH_SCHEMA_SQL} takes it first, so the check for
+ * `account.staff_tag` and the UPDATE/DROP of concurrent boots run one at a
+ * time instead of both seeing the column and the second failing with
+ * `column "staff_tag" does not exist` after the first commits.
+ */
+const STAFF_TAG_MIGRATION_LOCK = 21_499_002;
 
 /** Ordered CREATE/ALTER statements for the auth schema. */
 export const AUTH_SCHEMA_SQL: readonly string[] = [
@@ -184,9 +196,11 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS passkey_renew_attempt_account_idx
     ON passkey_renew_attempt (account_id, created_at DESC)`,
   `ALTER TABLE passkey_challenge ADD COLUMN IF NOT EXISTS requested_name text`,
-  // The staff label became a real role. Migrate any existing column once, then drop it.
+  // The staff label became a real role. Under the fixed advisory lock, migrate any
+  // existing column once (promoting basis, verified, moderator, and fond), then drop it.
   `DO $staff_tag_role$
   BEGIN
+    PERFORM pg_advisory_xact_lock(${STAFF_TAG_MIGRATION_LOCK});
     IF EXISTS (
       SELECT 1 FROM information_schema.columns
       WHERE table_schema = current_schema()
@@ -196,7 +210,7 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
       UPDATE account
       SET role = 'software_developer'
       WHERE staff_tag = 'software_developer'
-        AND role IN ('basis', 'verified', 'moderator');
+        AND role IN ('basis', 'verified', 'moderator', 'fond');
       ALTER TABLE account DROP CONSTRAINT IF EXISTS account_staff_tag_chk;
       ALTER TABLE account DROP COLUMN staff_tag;
     END IF;

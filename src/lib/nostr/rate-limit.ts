@@ -126,18 +126,17 @@ export function utcDayKey(nowMs: number): string {
 
 /**
  * Whether an account skips the forum rate limits: top-level notes, replies,
- * note invoices, and hearts. True for a founder and for the
- * `software_developer` role. The software developer is the named exception
- * that replaces the old staff tag; initiators and moderators are not exempt.
- * Callers check this before the limiter, so an exempt attempt is never
- * recorded. IP-based limiters and the conversation, repayment, and habit
- * invoice limiters do not use it.
+ * note invoices, and hearts. True for an account at least `software_developer`
+ * (`software_developer`, `initiator`, and `founder`). Every lower rank,
+ * including `fond` and `moderator`, is not exempt. Callers check this before
+ * the limiter, so an exempt attempt is never recorded. IP-based limiters and
+ * the conversation, repayment, and habit invoice limiters do not use it.
  *
  * @param account - Live role.
  * @returns `true` when no forum limiter applies to the account.
  */
 export function forumRateLimitExempt(account: Pick<Account, 'role'>): boolean {
-  return roleAtLeast(account.role, 'founder') || account.role === 'software_developer';
+  return roleAtLeast(account.role, 'software_developer');
 }
 
 /**

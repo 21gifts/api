@@ -14996,6 +14996,7 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
 
   it.each([
     ['founder', { role: 'founder' as const }],
+    ['initiator', { role: 'initiator' as const }],
     ['software_developer', { role: 'software_developer' as const }],
   ])(
     'lets a %s mint gifts and hearts past every cap without recording them',
@@ -15028,7 +15029,7 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
     },
   );
 
-  it.each(['basis', 'verified', 'moderator', 'fond', 'initiator'] as const)(
+  it.each(['basis', 'verified', 'moderator', 'fond'] as const)(
     'still limits gifts and hearts of a %s payer',
     async (role) => {
       await withMintedInvoices(async () => {
@@ -15384,7 +15385,7 @@ describe('separate top-level and reply limits on POST /messages', () => {
   });
 
   it('logs messages.rate_limited for a limited member', async () => {
-    const { authStore, messages } = await memberSetup({ role: 'initiator' });
+    const { authStore, messages } = await memberSetup({ role: 'moderator' });
     const replyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
     vi.spyOn(replyLimiter, 'check').mockReturnValue('day');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -15407,6 +15408,7 @@ describe('separate top-level and reply limits on POST /messages', () => {
 
   it.each([
     ['founder', { role: 'founder' as const }],
+    ['initiator', { role: 'initiator' as const }],
     ['software_developer', { role: 'software_developer' as const }],
   ])('lets a %s post and reply past every cap without recording it', async (_label, patch) => {
     const { authStore, messages } = await memberSetup(patch);
@@ -15430,7 +15432,7 @@ describe('separate top-level and reply limits on POST /messages', () => {
     expect(replyLimiter.check('acc', now())).toBeNull();
   });
 
-  it.each(['basis', 'verified', 'moderator', 'fond', 'initiator'] as const)(
+  it.each(['basis', 'verified', 'moderator', 'fond'] as const)(
     'still limits a %s member',
     async (role) => {
       const { authStore, messages } = await memberSetup({ role });

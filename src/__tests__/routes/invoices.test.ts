@@ -2281,6 +2281,79 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.comment).toBe('21gifts moderator');
   });
 
+  it('ignores a software developer groupMessageId and never records a moderator payout', async () => {
+    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const sender = await authStore.getAccount('acc-alice');
+    if (sender === undefined) {
+      throw new Error('expected seeded sender');
+    }
+    await authStore.updateAccount({ ...sender, role: 'software_developer' });
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const recorded: GiftRecord[] = [];
+    const deps = {
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      conversationStore,
+      now: () => NOW_MS,
+      giftRecorder: {
+        recordOutbound: async (row: GiftRecord): Promise<void> => {
+          recorded.push(row);
+        },
+      },
+    };
+    const app = createApp(deps);
+    const body = JSON.stringify({
+      address: ADDRESS,
+      amountMsat: 1000,
+      groupMessageId: GROUP_MSG_ID,
+      comment: 'Welcome',
+    });
+    const issued = await app.request('/invoices', auth({ method: 'POST', body }));
+    expect(issued.status).toBe(200);
+    const issuedBody = (await issued.json()) as { id: string };
+    expect(invoiceStore.get(issuedBody.id)?.groupMessageId).toBeUndefined();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
+      ),
+    ).toBe(true);
+    const proved = await app.request(
+      '/invoices/proof',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ id: issuedBody.id, preimage: PREIMAGE }),
+      }),
+    );
+    expect(proved.status).toBe(200);
+    expect(recorded[0]?.kind).toBe('welcome');
+    expect(recorded.some((row) => row.kind === 'moderator')).toBe(false);
+
+    const welcomePaidApp = createApp({
+      ...deps,
+      invoiceStore: new InMemoryInvoiceStore(),
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+    });
+    const refused = await welcomePaidApp.request('/invoices', auth({ method: 'POST', body }));
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(recorded.some((row) => row.kind === 'moderator')).toBe(false);
+  });
+
   it('stores an empty comment when groupMessageId is set and comment is omitted', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);

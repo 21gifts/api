@@ -43,10 +43,6 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `heart_sats`                   | Integer            | `integer`                  | No       | `1`         | –                            |
 | `spark_address`                | Free text          | `text`                     | Yes      | –           | –                            |
 
-## Role values
-
-`basis`, `verified`, `moderator`, `fond`, `software_developer`, `initiator`, `founder`
-
 ## Indexes
 
 | Columns              | Unique | Where                                                                 | Definition                                                                                                                                                                            |

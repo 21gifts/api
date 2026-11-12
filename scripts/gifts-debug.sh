@@ -7,6 +7,7 @@
 #               grant goal, staff funding/trust/forum reads, and
 #               full-table dump for 21.gifts
 #               (GET /debug/accounts, GET /debug/accounts/:id,
+#               GET /debug/accounts/:id/wallet,
 #               PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
 #               GET /debug/api-log, GET /debug/db, GET /debug/external-pubkeys,
@@ -36,6 +37,8 @@
 #   gifts-debug auth                 # check token; print account count on stderr
 #   gifts-debug accounts [--raw]     # table (default) or JSON
 #   gifts-debug account <id>         # GET /debug/accounts/:id JSON
+#   gifts-debug wallet <account-id|username> [--limit N] [--all]
+#                                    # balance with age and payment history
 #   gifts-debug dump [table] [--raw] # GET /debug/dump or /debug/dump/:table JSON
 #                                    # tables: account, passkey_credential, passkey_challenge, auth_session, api_log, contact, conversation, conversation_message, conversation_read, message, message_extra_photo, message_invoice, nostr_zap_ingest, nostr_zap_receipt, nostr_zap_payment, nostr_zapper, nostr_blocked_pubkey, notification, push_subscription, push_outbox, trust_edge, gift, btc_usd_daily, usd_fiat_daily, db_change
 #   gifts-debug trust-edges [--raw]  # GET /debug/trust-edges JSON
@@ -84,6 +87,8 @@
 #   gifts-debug accounts
 #   gifts-debug accounts --raw
 #   gifts-debug account <account-id>
+#   gifts-debug wallet <account-id|username>
+#   gifts-debug wallet <username> --limit 20 --all
 #   gifts-debug dump
 #   gifts-debug dump passkey_credential --raw
 #   gifts-debug trust-edges --raw
@@ -187,6 +192,150 @@ cmd_account() {
   local id="${1:-}"
   [ -n "$id" ] || die "usage: gifts-debug account <account-id>"
   printf '%s\n' "$(debug_get "/debug/accounts/${id}")"
+}
+
+fetch_wallet() {
+  local account_id="$1" tmp status body
+  shift
+  tmp=$(mktemp)
+  status=$(curl -sS -G -o "$tmp" -w '%{http_code}' \
+    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    "$@" \
+    "${DEBUG_API_URL}/debug/accounts/${account_id}/wallet") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s' "$body"
+}
+
+resolve_wallet_account() {
+  local ref="$1" matches body
+  if [[ "$ref" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    printf '%s' "$ref"
+    return
+  fi
+  body=$(fetch_accounts)
+  matches=$(printf '%s' "$body" | python3 -c '
+import json, sys
+wanted = sys.argv[1].casefold()
+rows = json.load(sys.stdin).get("accounts") or []
+for row in rows:
+    username = row.get("username")
+    if isinstance(username, str) and username.casefold() == wanted:
+        print(row.get("id") or "")
+' "$ref")
+  if [ -z "$matches" ]; then
+    die "no account with username: ${ref}"
+  fi
+  if [ "$(printf '%s' "$matches" | awk 'END { print NR }')" != "1" ]; then
+    die "more than one account with username: ${ref}"
+  fi
+  printf '%s' "$matches"
+}
+
+cmd_wallet() {
+  local ref="${1:-}" limit=50 all=0 body cursor dir page account_id
+  [ -n "$ref" ] || die "usage: gifts-debug wallet <account-id|username> [--limit N] [--all]"
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit)
+        [ $# -ge 2 ] || die "usage: gifts-debug wallet <account-id|username> [--limit N] [--all]"
+        limit="$2"
+        shift 2
+        ;;
+      --limit=*)
+        limit="${1#--limit=}"
+        shift
+        ;;
+      --all)
+        all=1
+        shift
+        ;;
+      *)
+        die "usage: gifts-debug wallet <account-id|username> [--limit N] [--all]"
+        ;;
+    esac
+  done
+  [[ "$limit" =~ ^[0-9]+$ ]] || die "limit must be an integer from 1 to 500"
+  limit=$(printf '%s' "$limit" | sed 's/^0*//')
+  [ -n "$limit" ] || limit=0
+  [ "$limit" -ge 1 ] && [ "$limit" -le 500 ] || die "limit must be an integer from 1 to 500"
+  account_id=$(resolve_wallet_account "$ref")
+  dir=$(mktemp -d)
+  page=0
+  cursor=""
+  while true; do
+    if [ -z "$cursor" ]; then
+      body=$(fetch_wallet "$account_id" --data-urlencode "limit=${limit}")
+    else
+      body=$(fetch_wallet "$account_id" --data-urlencode "limit=${limit}" --data-urlencode "cursor=${cursor}")
+    fi
+    printf '%s' "$body" > "${dir}/${page}.json"
+    cursor=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("nextCursor") or "")')
+    page=$((page + 1))
+    if [ "$all" -ne 1 ] || [ -z "$cursor" ]; then
+      break
+    fi
+  done
+  if [ "$RAW" -eq 1 ]; then
+    if [ "$all" -eq 0 ]; then
+      printf '%s\n' "$body"
+    else
+      python3 -c '
+import json, pathlib, sys
+folder = pathlib.Path(sys.argv[1])
+pages = [json.loads(path.read_text()) for path in sorted(folder.glob("*.json"), key=lambda item: int(item.stem))]
+payments = []
+for item in pages:
+    payments.extend(item.get("payments") or [])
+first = pages[0]
+body = {"accountId": first.get("accountId"), "balance": first.get("balance"), "payments": payments}
+json.dump(body, sys.stdout)
+sys.stdout.write("\n")
+' "$dir"
+    fi
+  else
+    python3 -c '
+import json, pathlib, sys
+folder = pathlib.Path(sys.argv[1])
+pages = [json.loads(path.read_text()) for path in sorted(folder.glob("*.json"), key=lambda item: int(item.stem))]
+first = pages[0]
+print("account\t%s" % first.get("accountId", ""))
+balance = first.get("balance")
+if balance is None:
+    print("balance\tno report")
+else:
+    age = int(balance.get("ageSeconds") or 0)
+    hours, rest = divmod(age, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        age_text = "%dh%dm%ds" % (hours, minutes, seconds)
+    elif minutes:
+        age_text = "%dm%ds" % (minutes, seconds)
+    else:
+        age_text = "%ds" % seconds
+    stale = " STALE" if age > 600 else ""
+    print("balance\t%s sats" % balance.get("balanceSats", ""))
+    print("receivedAt\t%s" % balance.get("receivedAt", ""))
+    print("syncedAt\t%s" % balance.get("syncedAt", ""))
+    print("age\t%s%s" % (age_text, stale))
+rows = []
+for item in pages:
+    rows.extend(item.get("payments") or [])
+keys = ["paidAt", "direction", "status", "amountSats", "feeSats", "category", "counterpartyAccountId", "paymentId"]
+print("\t".join(keys))
+for row in rows:
+    print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
+print("%s payments" % len(rows), file=sys.stderr)
+' "$dir"
+  fi
+  rm -rf "$dir"
 }
 
 cmd_dump() {
@@ -825,6 +974,7 @@ case "${1:-}" in
   auth) cmd_auth ;;
   accounts) cmd_accounts ;;
   account) shift; cmd_account "$@" ;;
+  wallet) shift; cmd_wallet "$@" ;;
   dump) shift; cmd_dump "$@" ;;
   trust-edges) cmd_trust_edges ;;
   role) shift; cmd_role "$@" ;;
