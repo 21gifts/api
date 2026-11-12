@@ -8825,7 +8825,8 @@ Each item carries a required boolean `personal`: true exactly when level
 `mentions`, whatever the owner's own level is). `moderator_appointed`,
 `moderator_proposal`, `heart`, and `forum_mention` are always personal.
 `forum_reply` and `zap` are personal when the parent note's author is the
-recipient; a missing parent is not personal. `forum_post` is never
+recipient, so a `forum_reply` or `zap` whose parent is missing is not
+personal. `forum_post` is never
 personal. `personal` does not change which rows are listed, their order,
 the 200 cap, or `unreadCount`, and it exposes no account id.
 
@@ -8949,8 +8950,8 @@ Success → **Response** `200`:
 
 Bearer session required. `:id` is a UUID. Marks one notification read and
 returns that `PublicNotification` with `readAt` set, including `personal`
-from the same rule as the list (the parent note is looked up; a missing
-parent is not personal; a failed parent lookup still answers **200** with
+from the same rule as the list (the parent note is looked up; a `forum_reply`
+or `zap` whose parent is missing is not personal; a failed parent lookup still answers **200** with
 `personal: false` and logs `notifications.read.personal_failed`). A `moderator_proposal`
 row is **200** with `readAt` still `null` (mark-read does not dismiss it).
 Unknown id, another account's notification, or a non-uuid `:id` → **404**
