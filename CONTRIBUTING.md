@@ -327,6 +327,60 @@ every pull request it bundles already passed the check on `staging`. This check 
 not replace the author's own judgement about whether a change affects the
 database.
 
+### Wallet data (hard requirement)
+
+21.gifts has two separate things, and this rule keeps them apart.
+
+- **The 21.gifts applications are public.** The forum and its notes, gifts,
+  hearts, credit requests and their repayments, shops, and the Fond are public.
+  Anyone can see every such activity and every transaction that belongs to it.
+  The private parts of the app stay private as decided elsewhere:
+  conversations, notifications, the contact mailbox, a shop's own till
+  (`GET /pos`), and notes hidden by staff.
+- **The wallet is not an application.** The wallet is the member's in-app
+  Bitcoin wallet for sending, receiving, and holding bitcoin. It is private to
+  the public and completely visible to 21.gifts. Both halves are binding. A
+  change that breaks either half is rejected. [CONCEPT.md](CONCEPT.md), Core
+  Principle 9, states the same rule.
+
+The wallet rule in detail:
+
+- **Private to the public.** No wallet data of an individual member may be
+  readable outside 21.gifts: not the balance, the payment history, an amount, a
+  fee, a payment time, a counterparty, or an on-chain address of the wallet.
+  This covers public routes, responses to other members, NOSTR events, logs,
+  error reports, and public block explorers. The wallet keeps the Breez SDK
+  Spark private mode on, so its transfers are not published to public Spark
+  explorers. These exceptions are decided, and they are the only ones:
+  - A payment that belongs to a 21.gifts activity (for example a gift to a
+    note or a credit repayment) is public as part of that activity.
+  - What a payer needs to pay a member is public: the receiving address
+    `<username>@<host>` and the invoice (BOLT11 or Spark) issued for one
+    payment.
+  - The Fond account is a 21.gifts application, not a member, so its wallet
+    totals are public (`GET /fond/summary`).
+  - `GET /wallets/stats` publishes totals over all wallets that never name or
+    single out one account.
+  - The owner's previous-wallet lookup (`GET /me/previous-wallets`) reads only
+    what a public Spark explorer already shows and returns it only to the
+    owner.
+- **Completely visible to 21.gifts.** Every wallet event **must** be stored in
+  this api's database: every payment in either direction and of every method
+  (Spark, Lightning, on-chain, token), every status it passes through
+  (`pending`, `completed`, `failed`), with amount, fee, time, method,
+  counterparty, and invoice or destination, and every balance sync. Nothing a
+  wallet does may be missing, filtered, sampled, aggregated away, or kept only
+  in the browser. A wallet event that reaches no table is a defect. A change
+  that drops a field, a status, or a method from storage is a defect.
+- **Who reads it.** The admin team (role at least `software_developer`:
+  software developer, initiator, founder) and operator debug access
+  (`DEBUG_TOKEN`, `DEBUG_READ_TOKEN`) **must** be able to read every stored
+  wallet record of every member. A member reads only their own wallet data. No
+  other role and no other member reads it.
+- **Never key material.** Completeness never includes secrets: the recovery
+  phrase, seed, PRF output, preimages, and any private or spending key are
+  never collected, stored, or logged.
+
 ### Tests
 
 - One `*.test.ts` per source file, under `src/__tests__/` mirroring the source tree
