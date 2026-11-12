@@ -114,6 +114,9 @@ describe('InMemoryWalletStore', () => {
         counterpartyAccountId: null,
       }),
       payment({ accountId: 'a', paymentId: 'shared', status: 'completed' }),
+      // M1: a failed outgoing report is not a sender; completed `a` and `z` beside it are.
+      // More than two rows share `shared`, all category `member`, so pairing does not run.
+      payment({ accountId: 'failed', paymentId: 'shared', status: 'failed' }),
       payment({ accountId: 'pending', paymentId: 'shared', status: 'pending' }),
       payment({ accountId: 'incoming', paymentId: 'shared', direction: 'in', status: 'completed' }),
       payment({ accountId: 'z', paymentId: 'own-pending', status: 'completed' }),
