@@ -30,7 +30,7 @@ import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { NOT_PAYABLE, serializeMessage, unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 import { migrateBannerSchema } from '@/lib/banner-store';
-import { migrateConversationSchema } from '@/lib/conversation-store';
+import { migrateConversationSchema, PostgresConversationStore } from '@/lib/conversation-store';
 import { migrateNotificationSchema } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushOutboxRow } from '@/lib/push-store';
 import { migrateTrustSchema } from '@/lib/trust-store';
@@ -2558,6 +2558,62 @@ describe('PostgresAuthStore wallet intro seen', () => {
             row.after?.['wallet_intro_seen'] === true,
         ),
       ).toBe(true);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresConversationStore memberWroteToDamus', () => {
+  test('is true only when the member sent in that member_damus thread', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateConversationSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const store = new PostgresConversationStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const member = crypto.randomUUID();
+      await auth.createAccount({
+        id: member,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      const wrote = hex64();
+      const inboundOnly = hex64();
+      const now = new Date();
+      const row = (conversationId: string, senderAccountId: string | null) => ({
+        id: crypto.randomUUID(),
+        conversationId,
+        text: 'hi',
+        createdAt: now,
+        senderAccountId,
+        senderPubkey: null,
+        name: 'n',
+        actorAccountId: senderAccountId,
+        actorName: '',
+        eventId: null,
+        nostrPublishState: 'skipped' as const,
+        nostrEvent: null,
+        claimedUntil: null,
+        sats: 0,
+      });
+      expect(await store.memberWroteToDamus(member, wrote)).toBe(false);
+      const wroteThread = await store.openMemberDamus(member, wrote, now);
+      expect(await store.memberWroteToDamus(member, wrote)).toBe(false);
+      await store.appendMessage(row(wroteThread.id, member));
+      expect(await store.memberWroteToDamus(member, wrote.toUpperCase())).toBe(true);
+      const inboundThread = await store.openMemberDamus(member, inboundOnly, now);
+      await store.appendMessage(row(inboundThread.id, null));
+      expect(await store.memberWroteToDamus(member, inboundOnly)).toBe(false);
+      expect(await store.memberWroteToDamus(crypto.randomUUID(), wrote)).toBe(false);
     } finally {
       await closeIfPossible(sql);
     }
