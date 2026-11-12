@@ -142,6 +142,7 @@ interface FondPaymentListRow {
 
 /**
  * Encode the last row of a page as an opaque cursor.
+ * Unlike `encodeWalletPaymentCursor` / `decodeWalletPaymentCursor` in `src/routes/debug-wallet.ts`, this carries the keyed public id, never the stored payment id.
  *
  * @param row - Last returned payment.
  * @param key - Server secret used to derive the public id.

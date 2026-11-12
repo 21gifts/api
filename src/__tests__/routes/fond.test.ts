@@ -1477,6 +1477,21 @@ describe('GET /fond/payments', () => {
     expect(body.payments[0]?.counterparty).toEqual(expected);
   });
 
+  it('returns a null counterparty for a member row whose account is the platform', async () => {
+    const { app, auth, walletStore } = await makeApp();
+    await counterparty(auth, PLATFORM, 'platform', '21.gifts', true);
+    await walletStore.upsertPayments([
+      walletPayment({
+        accountId: 'fond-account',
+        category: 'member',
+        counterpartyAccountId: PLATFORM,
+      }),
+    ]);
+    const res = await app.request('/fond/payments');
+    const body = (await res.json()) as { payments: Array<{ counterparty: unknown }> };
+    expect(body.payments[0]?.counterparty).toBeNull();
+  });
+
   it('returns a null counterparty for a member row without one', async () => {
     const { app, walletStore } = await makeApp();
     await walletStore.upsertPayments([
