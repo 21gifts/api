@@ -516,7 +516,10 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * call `notifyZap`. A member-note gift-reply does not call `notifyForumReply`.
  * When a conversation store is present, `'all'` / `'fast'` also
  * signs/publishes NIP-17 wraps; `'all'` / `'ingest'` REQs inbound kind:1059 /
- * kind:4 to member and platform pubkeys. Fast-lane ticks are not serialised
+ * kind:4 to member and platform pubkeys from now minus
+ * {@link INBOUND_DM_SINCE_S}, and stores one from a pubkey that is not an
+ * account only for an unblocked known contact within the direct-message
+ * limiter (see `indexInboundDirectMessages`). Fast-lane ticks are not serialised
  * (`setInterval` does not await the previous tick), except the S1 shop key
  * backfill and the shop kind 0 and kind 10002 passes, each skipped while its
  * previous pass for the same store is in flight and bounded to `WORKER_BATCH`
