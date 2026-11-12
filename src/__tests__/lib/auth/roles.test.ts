@@ -159,14 +159,14 @@ describe('earnsModeratorGroupPay', () => {
 });
 
 describe('canEditDailyPayoutRoster', () => {
-  it('is true only for initiator and founder', () => {
+  it('is true from initiator upwards', () => {
+    expect(canEditDailyPayoutRoster('basis')).toBe(false);
+    expect(canEditDailyPayoutRoster('verified')).toBe(false);
+    expect(canEditDailyPayoutRoster('moderator')).toBe(false);
+    expect(canEditDailyPayoutRoster('fond')).toBe(false);
+    expect(canEditDailyPayoutRoster('software_developer')).toBe(false);
     expect(canEditDailyPayoutRoster('initiator')).toBe(true);
     expect(canEditDailyPayoutRoster('founder')).toBe(true);
-    expect(canEditDailyPayoutRoster('software_developer')).toBe(false);
-    expect(canEditDailyPayoutRoster('fond')).toBe(false);
-    expect(canEditDailyPayoutRoster('moderator')).toBe(false);
-    expect(canEditDailyPayoutRoster('verified')).toBe(false);
-    expect(canEditDailyPayoutRoster('basis')).toBe(false);
   });
 });
 

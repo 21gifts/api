@@ -38,8 +38,9 @@ export function roleRank(role: AccountRole): number {
  * can do everything a lower rank can; equal ranks can do the same things.
  * Every permission check, including the daily payout roster, names a
  * minimum role and uses this function; an equality test on the caller's
- * role is a defect. The named payout exception is
- * {@link earnsModeratorGroupPay}; the roster permission is
+ * role is a defect. The one named exception is
+ * {@link earnsModeratorGroupPay} (no moderator-group payout for
+ * `software_developer`). The roster permission is
  * {@link canEditDailyPayoutRoster}.
  *
  * @param role - Caller's live role.
@@ -96,8 +97,9 @@ export function isModeratorGroupMember(account: {
  *
  * The software developer is a member of the closed Moderators group with
  * every moderator permission, but is not paid for moderator-group messages
- * (user decision 2026-11-09). This is the named payout exception on top of
- * {@link isModeratorGroupMember}; every other group member earns it.
+ * (user decision 2026-11-09). This is the one named exception: no
+ * moderator-group payout for `software_developer`. Every other
+ * {@link isModeratorGroupMember} earns it.
  *
  * @param account - Role plus optional platform flag.
  * @returns `true` for a non-platform group member except `software_developer`.
@@ -112,8 +114,9 @@ export function earnsModeratorGroupPay(account: {
 /**
  * Whether the caller may read and edit the daily payout roster.
  *
- * True for `initiator` and above. The software developer ranks below
- * `initiator` and cannot edit the roster. This is the same rule as the app.
+ * True for at least `initiator`; every lower rank, including
+ * `software_developer`, `fond` and `moderator`, cannot read or edit the
+ * roster. This is the same rule as the app.
  *
  * @param role - Caller's live role.
  * @returns `true` for at least `initiator`.
