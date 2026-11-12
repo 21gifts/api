@@ -9325,6 +9325,7 @@ describe('inbound direct-message admission', () => {
     ctx.querier.events = [kind4(sender, ctx.recipient, 'hi')];
     await tick(ctx);
     expect(await storedTexts(ctx)).toEqual(['first']);
+    expect(ctx.decrypts()).toBe(0);
   });
 
   it('skips a sender blocked after the pass loaded its block list', async () => {
@@ -9592,6 +9593,82 @@ describe('inbound direct-message admission', () => {
     ctx.auth.getNostrSecret = getSecret;
     await tick(ctx);
     expect(await storedTexts(ctx)).toEqual(['once the key is back']);
+  });
+
+  it('admits a remembered gift wrap once the member writes first', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'after you wrote'))];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    const thread = await ctx.conversations.openMemberDamus(
+      'acc',
+      getPublicKey(sender),
+      new Date(NOW),
+    );
+    await ctx.conversations.appendMessage(memberDamusRow(thread.id, 'first'));
+    await tick(ctx);
+    expect((await storedTexts(ctx)).sort()).toEqual(['after you wrote', 'first']);
+    expect(ctx.decrypts()).toBe(2);
+  });
+
+  it('releases the budget of an admitted kind:4 whose account secret is missing', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const pubkey = getPublicKey(sender);
+    await ctx.messages.recordZapper(pubkey, 'receipt-missing', new Date(0));
+    const getSecret = ctx.auth.getNostrSecret.bind(ctx.auth);
+    ctx.auth.getNostrSecret = async () => undefined;
+    const limiter = new ExternalIngestLimiter();
+    const release = vi.spyOn(limiter, 'release');
+    ctx.querier.events = [kind4(sender, ctx.recipient, 'later')];
+    await tick(ctx, { externalDmLimiter: limiter });
+    expect(release).toHaveBeenCalledWith(pubkey, NOW);
+    await expectNothingStored(ctx);
+    ctx.auth.getNostrSecret = getSecret;
+    await tick(ctx, { externalDmLimiter: limiter });
+    expect(await storedTexts(ctx)).toEqual(['later']);
+  });
+
+  it('decides each of our p-tags on its own and stores the message once', async () => {
+    const ctx = await setup();
+    await ctx.auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(ctx.auth, 'bob', KEK);
+    const bobPubkey = (await ctx.auth.getNostrPublicKey('bob')) as string;
+    const sender = generateSecretKey();
+    const thread = await ctx.conversations.openMemberDamus(
+      'bob',
+      getPublicKey(sender),
+      new Date(NOW),
+    );
+    await ctx.conversations.appendMessage({
+      ...memberDamusRow(thread.id, 'bob first'),
+      senderAccountId: 'bob',
+      actorAccountId: 'bob',
+    });
+    const event = kind4(sender, bobPubkey, 'to bob');
+    ctx.querier.events = [
+      {
+        ...event,
+        tags: [
+          ['p', ctx.recipient],
+          ['p', bobPubkey],
+        ],
+      },
+    ];
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['bob first', 'to bob']);
+    expect((await ctx.conversations.listAll(10)).map((row) => row.accountA)).toEqual(['bob']);
   });
 
   it('caps the remembered skips and keeps the remembered ones as hits', async () => {
