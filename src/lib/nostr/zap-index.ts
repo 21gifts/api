@@ -1344,6 +1344,9 @@ export async function ingestZapReceipt(
  * After address/provider/pubkey checks, an existing PN gift row is persisted
  * as `indexed` without claim or append. Every other rejection reason is
  * re-validated on each call.
+ * A loaded invoice supplies its durable payer attribution even when the later
+ * payer lookup fails. Heart status learned from either lookup suppresses the
+ * gift reply and selects the heart notification.
  *
  * @param event - Queried frame.
  * @param args - Ingest collaborators.
@@ -1781,8 +1784,8 @@ async function ingestOneReceipt(
     return;
   }
   // A thrown lookup must not reject a receipt that already passed validation.
-  // Retry the lookup once; a second throw is not a heart, so the receipt keeps the normal
-  // gift notice, the same as `tryEnsureGiftReply`. Gift-reply looks the invoice up again.
+  // Retry the lookup once. The later payer lookup can still recover the payer and heart flag;
+  // gift-reply also looks the invoice up again.
   let invoice: MessageInvoiceAttempt | undefined;
   try {
     invoice = await args.store.findOkInvoiceByPaymentHash(decoded.paymentHash);
@@ -1794,7 +1797,6 @@ async function ingestOneReceipt(
     }
   }
   const pinnedForum = pinnedInvoiceFiat(invoice);
-  const heart = invoice?.heart === true;
   const forumDelta =
     pinnedForum !== undefined
       ? pinnedForum
@@ -1824,16 +1826,20 @@ async function ingestOneReceipt(
   } else {
     resolvedPayer = undefined;
   }
-  const payerAccountId =
-    heart && invoice !== undefined
+  const heartPayerAccountId =
+    invoice?.heart === true
       ? invoice.payerAccountId
-      : resolvedPayer?.kind === 'account' && resolvedPayer.heart !== true
+      : resolvedPayer?.kind === 'account' && resolvedPayer.heart === true
         ? resolvedPayer.payer.id
         : undefined;
-  const payerComment =
-    resolvedPayer?.kind === 'account' && resolvedPayer.heart !== true
-      ? resolvedPayer.text
-      : undefined;
+  const heart = heartPayerAccountId !== undefined;
+  const payerAccountId =
+    invoice !== undefined
+      ? invoice.payerAccountId
+      : resolvedPayer?.kind === 'account' && !heart
+        ? resolvedPayer.payer.id
+        : undefined;
+  const payerComment = resolvedPayer?.kind === 'account' && !heart ? resolvedPayer.text : undefined;
   const indexed = await indexZapReceipt({
     store: args.store,
     messageId: row.id,
@@ -1856,14 +1862,14 @@ async function ingestOneReceipt(
   }
   if (indexed && row.accountId !== null) {
     const payer = resolvedPayer?.kind === 'account' ? resolvedPayer.payer : undefined;
-    if (heart && invoice !== undefined) {
+    if (heart) {
       try {
         await notifyHeart({
           note: row,
           receiptId: event.id,
           nowMs: args.now(),
           auth: args.auth,
-          payerAccountId: invoice.payerAccountId,
+          payerAccountId: heartPayerAccountId,
           amountSats,
           ...(args.notificationStore === undefined
             ? {}

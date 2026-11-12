@@ -23,6 +23,7 @@ import {
   type UnattributedIndexedReceipt,
   type ZapIngestRow,
   type ZapReceiptGiftRow,
+  type ZapReceiptGiftState,
 } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { verifiedExternalZapRequest } from '@/lib/nostr/external';
@@ -9427,6 +9428,148 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toHaveLength(1);
   });
 
+  it('freezes a known invoice payer before a failed payer lookup can be repaired', async () => {
+    class CloseBeforeGiftRepairStore extends InMemoryMessageStore {
+      lookups = 0;
+      receiptReads = 0;
+      frozenPayers:
+        Awaited<ReturnType<InMemoryMessageStore['previewCreditPayerSnapshot']>> | undefined;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.lookups === 4) {
+          return Promise.reject(new Error('payer lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+
+      override async getZapReceiptGift(
+        ...args: Parameters<InMemoryMessageStore['getZapReceiptGift']>
+      ): Promise<ZapReceiptGiftState | undefined> {
+        const gift = await super.getZapReceiptGift(...args);
+        if (args[0] === 'r-known-payer-close') {
+          this.receiptReads += 1;
+          if (this.receiptReads === 2) {
+            const closedAt = new Date('2100-01-01T00:00:00.000Z');
+            await this.closeCredit('m-known-payer-close', closedAt);
+            this.frozenPayers = await this.previewCreditPayerSnapshot(
+              'm-known-payer-close',
+              'USD',
+              closedAt,
+            );
+          }
+        }
+        return gift;
+      }
+    }
+    const store = new CloseBeforeGiftRepairStore();
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc-known-payer-close',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'known-payer-close',
+      walletRequired: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('acc-known-payer-close'),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(auth, 'acc-known-payer-close', 'known-payer-close');
+    await auth.createAccount({
+      id: 'payer-known-payer-close',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-known-payer-close'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.create({
+      id: 'm-known-payer-close',
+      accountId: 'acc-known-payer-close',
+      name: 'Ada',
+      text: 'loan',
+      createdAt: new Date('2026-11-12T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: NOTE_EVENT_ID,
+      goalSats: 100,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: null,
+      goalCurrency: 'USD',
+      goalAmount: '1.00',
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-known-payer-close',
+      createdAt: new Date('2026-11-12T00:00:00.000Z'),
+      messageId: 'm-known-payer-close',
+      payerAccountId: 'payer-known-payer-close',
+      authorAccountId: 'acc-known-payer-close',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'known giver' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-known-payer-close',
+      paymentHash: 'cd'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      fiatPinned: true,
+      amountUsd: '0.21',
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-known-payer-close',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-known-payer-close'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'cd'.repeat(32), amountMsat: 21_000 });
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-11-12T12:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(store.lookups).toBe(5);
+    expect(store.frozenPayers).toEqual([
+      { accountId: 'payer-known-payer-close', sats: 21, units: 21n },
+    ]);
+    expect(await store.listCreditPayers('m-known-payer-close')).toEqual([
+      {
+        accountId: 'payer-known-payer-close',
+        sats: 21,
+        usd: '0.21',
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
+  });
+
   it('credits a heart receipt to repayable debt, skips gift-reply and notifyZap, and notifies the author', async () => {
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
@@ -9952,7 +10095,7 @@ describe('indexOpenZapReceipts', () => {
     expect(forAuthor[0]?.type).toBe('heart');
   });
 
-  it('treats a heart as a normal gift for the notice when both notice lookups reject', async () => {
+  it('notifies only a heart when both initial invoice lookups reject', async () => {
     class HeartNoticeFailStore extends InMemoryMessageStore {
       lookups = 0;
 
@@ -10032,8 +10175,8 @@ describe('indexOpenZapReceipts', () => {
     expect((await store.getById(parentId))?.sats).toBe(1);
     expect(await store.listReplies(parentId)).toHaveLength(0);
     const forAuthor = await notifications.listByRecipient('acc-heart-notice-fail', 10);
-    expect(forAuthor.map((row) => row.type)).toEqual(['zap']);
-    expect(store.lookups).toBe(6);
+    expect(forAuthor.map((row) => row.type)).toEqual(['heart']);
+    expect(store.lookups).toBe(5);
   });
 
   it('keeps notifyZap and the gift-reply for a normal gift when both notice lookups reject', async () => {
