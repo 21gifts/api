@@ -9660,22 +9660,23 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[1]?.params).toEqual(['m1', 3, null, null, null, null]);
   });
 
-  it('claimZapPayment lowercases the hash and accepts the stored receipt owner', async () => {
+  it('claimZapPayment lowercases the hash and accepts a new or stored receipt owner', async () => {
     const sql = new MockSql();
-    sql.nextRows = [{ receipt_event_id: 'receipt-a' }];
+    sql.queryQueue = [[{ receipt_event_id: 'receipt-a' }], [], [{ receipt_event_id: 'receipt-a' }]];
     const at = new Date('2026-09-18T12:00:00.000Z');
     const paymentHash = 'AB'.repeat(32);
     const store = new PostgresMessageStore(sql);
     expect(await store.claimZapPayment(paymentHash, 'receipt-a', at)).toBe(true);
     expect(await store.claimZapPayment(paymentHash.toLowerCase(), 'receipt-a', at)).toBe(true);
-    expect(sql.executes).toHaveLength(2);
-    expect(sql.executes[0]?.text).toMatch(/INSERT INTO nostr_zap_payment/);
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(payment_hash\) DO NOTHING/);
-    expect(sql.executes[0]?.params).toEqual([paymentHash.toLowerCase(), 'receipt-a', at]);
-    expect(sql.queries).toHaveLength(2);
-    expect(sql.queries[0]?.text).toMatch(/SELECT receipt_event_id/);
-    expect(sql.queries[0]?.text).toMatch(/WHERE payment_hash = \$1/);
-    expect(sql.queries[0]?.params).toEqual([paymentHash.toLowerCase()]);
+    expect(sql.executes).toHaveLength(0);
+    expect(sql.queries).toHaveLength(3);
+    expect(sql.queries[0]?.text).toMatch(/INSERT INTO nostr_zap_payment/);
+    expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(payment_hash\) DO NOTHING/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING receipt_event_id/);
+    expect(sql.queries[0]?.params).toEqual([paymentHash.toLowerCase(), 'receipt-a', at]);
+    expect(sql.queries[2]?.text).toMatch(/SELECT receipt_event_id/);
+    expect(sql.queries[2]?.text).toMatch(/WHERE payment_hash = \$1/);
+    expect(sql.queries[2]?.params).toEqual([paymentHash.toLowerCase()]);
   });
 
   it('zapPaymentReceiptId selects the owner of the lowercased hash', async () => {
@@ -9691,13 +9692,14 @@ describe('PostgresMessageStore', () => {
 
   it('claimZapPayment rejects a receipt id that does not own the hash', async () => {
     const sql = new MockSql();
-    sql.nextRows = [{ receipt_event_id: 'receipt-a' }];
+    sql.queryQueue = [[], [{ receipt_event_id: 'receipt-a' }]];
     const store = new PostgresMessageStore(sql);
     expect(await store.claimZapPayment('ab'.repeat(32), 'receipt-b', new Date(0))).toBe(false);
   });
 
   it('claimZapPayment returns false when the ownership row is unavailable', async () => {
     const sql = new MockSql();
+    sql.queryQueue = [[], []];
     const store = new PostgresMessageStore(sql);
     expect(await store.claimZapPayment('ab'.repeat(32), 'receipt-a', new Date(0))).toBe(false);
   });
@@ -10892,19 +10894,32 @@ describe('PostgresMessageStore', () => {
     expect(await memory.listRepaymentParts('underpriced')).toEqual([]);
   });
 
-  it('releases a legacy settlement claim when canonical parts already exist', async () => {
+  it('skips a repayment row for an existing claim and releases a conflicting new claim', async () => {
     const memory = new InMemoryMessageStore();
     const paidAt = new Date('2026-11-11T12:00:00.000Z');
     const legacy = {
       kind: 'legacy' as const,
       messageId: 'legacy-share',
       dayIndex: 0,
-      recipientAccountId: 'giver',
+      recipientAccountId: 'survivor',
       dueSats: 100,
       paidAt,
     };
     expect(await memory.settleRepaymentPayment('AA', 'exact-receipt', paidAt, legacy)).toBe(true);
-    expect(await memory.settleRepaymentPayment('AA', 'exact-receipt', paidAt, legacy)).toBe(true);
+    expect(
+      await memory.settleRepaymentPayment('AA', 'exact-receipt', paidAt, {
+        ...legacy,
+        recipientAccountId: 'merged-away',
+      }),
+    ).toBe(true);
+    expect(await memory.listRepayments('legacy-share')).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: 'survivor',
+        dueSats: 100,
+        paidAt,
+      },
+    ]);
 
     await memory.markRepaymentPartPaid({
       messageId: 'part-share',
@@ -11678,16 +11693,7 @@ describe('PostgresMessageStore', () => {
 
   it('marks debt frozen only for an early fiat close', async () => {
     const sql = new MockSql();
-    const databaseNow = new Date('2026-11-11T12:00:00.000Z');
     sql.queryQueue = [
-      [
-        {
-          goal_funded_at: null,
-          goal_closed_at: null,
-          goal_currency: 'BTC',
-          close_at: databaseNow,
-        },
-      ],
       [
         {
           goal_funded_at: new Date('2026-11-11T12:00:00.000Z'),
@@ -11701,7 +11707,7 @@ describe('PostgresMessageStore', () => {
     );
     const update = sql.queries.find((query) => query.text.includes('goal_debt_frozen'))?.text ?? '';
     expect(update).toMatch(
-      /goal_funded_at IS NULL AND goal_currency IN \('USD','CHF','EUR','PHP'\)/,
+      /goal_funded_at IS NULL\s+AND goal_currency IN \('USD','CHF','EUR','PHP'\)/,
     );
   });
 
@@ -14249,7 +14255,7 @@ describe('shop identity on message rows', () => {
     });
 
     const foreignSql = new MockSql();
-    foreignSql.queryQueue = [[{ receipt_event_id: 'someone-else' }]];
+    foreignSql.queryQueue = [[], [{ receipt_event_id: 'someone-else' }]];
     expect(
       await new PostgresMessageStore(foreignSql).settleRepaymentPayment('CC', 'ours', paidAt, {
         kind: 'legacy',
@@ -14260,10 +14266,27 @@ describe('shop identity on message rows', () => {
         paidAt,
       }),
     ).toBe(false);
-    expect(foreignSql.executes).toHaveLength(1);
+    expect(foreignSql.executes).toHaveLength(0);
+
+    const existingSql = new MockSql();
+    existingSql.queryQueue = [[], [{ receipt_event_id: 'ours' }]];
+    expect(
+      await new PostgresMessageStore(existingSql).settleRepaymentPayment('CE', 'ours', paidAt, {
+        kind: 'legacy',
+        messageId: 'm5',
+        dayIndex: 0,
+        recipientAccountId: 'merged-away',
+        dueSats: 1,
+        paidAt,
+      }),
+    ).toBe(true);
+    expect(existingSql.queries).toHaveLength(2);
+    expect(
+      existingSql.queries.every((query) => !query.text.includes('INSERT INTO message_repayment')),
+    ).toBe(true);
   });
 
-  it('uses one database timestamp for Postgres close preview, update, and response', async () => {
+  it('keeps the exact Postgres close timestamp in one snapshot-and-update statement', async () => {
     const missing = new MockSql();
     missing.queryQueue = [[]];
     expect(
@@ -14271,42 +14294,26 @@ describe('shop identity on message rows', () => {
     ).toBeUndefined();
 
     const fiat = new MockSql();
-    const databaseCloseAt = new Date('2026-11-11T12:00:00.000Z');
     fiat.queryQueue = [
       [
         {
-          goal_funded_at: null,
-          goal_closed_at: null,
-          goal_currency: 'CHF',
-          close_at: databaseCloseAt,
-        },
-      ],
-      [
-        {
-          account_id: 'giver',
-          sats: '10',
-          usd: null,
-          chf: '1.23',
-          eur: null,
-          php: null,
-        },
-      ],
-      [
-        {
-          goal_funded_at: '2026-11-11T12:00:00.000Z',
-          goal_closed_at: new Date('2026-11-11T12:00:00.000Z'),
+          goal_funded_at: '2026-11-11T12:00:00.123789Z',
+          goal_closed_at: new Date('2026-11-11T12:00:00.123Z'),
         },
       ],
     ];
     const closed = await new PostgresMessageStore(fiat).closeCredit('credit', new Date(2), true);
     expect(closed).toEqual({
-      fundedAt: new Date('2026-11-11T12:00:00.000Z'),
-      closedAt: new Date('2026-11-11T12:00:00.000Z'),
+      fundedAt: new Date('2026-11-11T12:00:00.123789Z'),
+      closedAt: new Date('2026-11-11T12:00:00.123Z'),
     });
-    expect(fiat.executes[0]?.params).toEqual(['credit', 'giver', 'CHF', '123']);
-    expect(fiat.queries[1]?.params).toEqual(['credit', false, databaseCloseAt, false]);
-    expect(fiat.queries[2]?.params).toEqual(['credit', databaseCloseAt]);
-    expect(fiat.queries[0]?.text).toContain('clock_timestamp() AS close_at');
+    expect(fiat.executes).toEqual([]);
+    expect(fiat.queries).toHaveLength(1);
+    expect(fiat.queries[0]?.params).toEqual(['credit']);
+    expect(fiat.queries[0]?.text.match(/clock_timestamp\(\)/g)).toHaveLength(1);
+    expect(fiat.queries[0]?.text).toContain('receipt.recorded_at <= updated.goal_closed_at');
+    expect(fiat.queries[0]?.text).toContain('INSERT INTO message_credit_payer_snapshot');
+    expect(fiat.queries[0]?.text).not.toContain('$2::timestamptz');
 
     const existingCloseAt = '2026-11-10T08:00:00.000Z';
     const alreadyClosed = new MockSql();
@@ -14315,63 +14322,19 @@ describe('shop identity on message rows', () => {
         {
           goal_funded_at: new Date(existingCloseAt),
           goal_closed_at: existingCloseAt,
-          goal_currency: 'BTC',
-          close_at: new Date('2026-11-12T08:00:00.000Z'),
-        },
-      ],
-      [
-        {
-          goal_funded_at: existingCloseAt,
-          goal_closed_at: existingCloseAt,
         },
       ],
     ];
     expect(
       await new PostgresMessageStore(alreadyClosed).closeCredit('credit', new Date(0), true),
     ).toEqual({ fundedAt: new Date(existingCloseAt), closedAt: new Date(existingCloseAt) });
-    expect(alreadyClosed.queries[1]?.params).toEqual(['credit', new Date(existingCloseAt)]);
+    expect(alreadyClosed.queries[0]?.params).toEqual(['credit']);
 
     const raced = new MockSql();
-    raced.queryQueue = [
-      [
-        {
-          goal_funded_at: new Date(1),
-          goal_closed_at: null,
-          goal_currency: 'BTC',
-          close_at: new Date(2),
-        },
-      ],
-      [],
-    ];
+    raced.queryQueue = [[]];
     expect(
       await new PostgresMessageStore(raced).closeCredit('credit', new Date(2)),
     ).toBeUndefined();
-
-    for (const currency of ['USD', 'EUR', 'PHP'] as const) {
-      const sql = new MockSql();
-      const closeAt = new Date(3);
-      sql.queryQueue = [
-        [
-          {
-            goal_funded_at: null,
-            goal_closed_at: null,
-            goal_currency: currency,
-            close_at: closeAt,
-          },
-        ],
-        [],
-        [
-          {
-            goal_funded_at: new Date(3),
-            goal_closed_at: '2026-11-12T12:00:00.000Z',
-          },
-        ],
-      ];
-      expect(await new PostgresMessageStore(sql).closeCredit('credit', new Date(3))).toEqual({
-        fundedAt: new Date(3),
-        closedAt: new Date('2026-11-12T12:00:00.000Z'),
-      });
-    }
   });
 
   it('maps Postgres closed-at strings and dates and lists attempts for one message', async () => {

@@ -1445,7 +1445,8 @@ export interface MessageStore {
    * @param requireExactPartSats - True for a BTC part settlement.
    * @returns `false` when another receipt owns the hash or the repayment row
    *   conflicts, including a BTC part whose sats differ from its units; a
-   *   failed row write leaves no claim for this receipt.
+   *   failed row write leaves no claim for this receipt. An existing claim
+   *   owned by this receipt returns `true` without writing a settlement row.
    */
   settleRepaymentPayment(
     paymentHash: string,
@@ -4845,8 +4846,12 @@ export class InMemoryMessageStore implements MessageStore {
       ) {
         return false;
       }
-      if (!(await this.claimZapPayment(paymentHash, receiptEventId, claimedAt))) {
+      const claim = await this.#claimZapPayment(paymentHash, receiptEventId, claimedAt);
+      if (claim === 'conflict') {
         return false;
+      }
+      if (claim === 'existing') {
+        return true;
       }
       if (settlement.kind === 'legacy') {
         const stored = await this.#markRepaymentPaidUnlocked(settlement);
@@ -4927,16 +4932,26 @@ export class InMemoryMessageStore implements MessageStore {
    * @returns `true` for a new or same-owner claim; `false` for another owner.
    */
   claimZapPayment(paymentHash: string, receiptEventId: string, at: Date): Promise<boolean> {
+    return this.#claimZapPayment(paymentHash, receiptEventId, at).then(
+      (claim) => claim !== 'conflict',
+    );
+  }
+
+  #claimZapPayment(
+    paymentHash: string,
+    receiptEventId: string,
+    at: Date,
+  ): Promise<'inserted' | 'existing' | 'conflict'> {
     const normalizedHash = paymentHash.toLowerCase();
     const existing = this.#zapPayments.get(normalizedHash);
     if (existing !== undefined) {
-      return Promise.resolve(existing.receiptEventId === receiptEventId);
+      return Promise.resolve(existing.receiptEventId === receiptEventId ? 'existing' : 'conflict');
     }
     this.#zapPayments.set(normalizedHash, {
       receiptEventId,
       createdAt: new Date(at.getTime()),
     });
-    return Promise.resolve(true);
+    return Promise.resolve('inserted');
   }
 
   /**
@@ -8887,8 +8902,12 @@ export class PostgresMessageStore implements MessageStore {
       ) {
         return false;
       }
-      if (!(await store.claimZapPayment(paymentHash, receiptEventId, claimedAt))) {
+      const claim = await store.#claimZapPayment(paymentHash, receiptEventId, claimedAt);
+      if (claim === 'conflict') {
         return false;
+      }
+      if (claim === 'existing') {
+        return true;
       }
       if (settlement.kind === 'legacy') {
         const stored = await store.#markRepaymentPaidUnlocked(settlement);
@@ -8940,56 +8959,68 @@ export class PostgresMessageStore implements MessageStore {
   async #closeCreditUnlocked(
     messageId: string,
   ): Promise<{ fundedAt: Date; closedAt: Date } | undefined> {
-    const locked = await this.#sql.query<{
-      goal_funded_at: Date | string | null;
-      goal_closed_at: Date | string | null;
-      goal_currency: string | null;
-      close_at: Date | string;
-    }>(
-      `SELECT goal_funded_at, goal_closed_at, goal_currency, clock_timestamp() AS close_at
-       FROM message
-       WHERE id = $1::uuid
-         AND goal_repayable IS TRUE
-         AND goal_term_days IS NOT NULL
-       FOR UPDATE`,
-      [messageId],
-    );
-    const current = locked[0];
-    if (current === undefined) {
-      return undefined;
-    }
-    const closeAtValue = current.goal_closed_at ?? current.close_at;
-    const closeAt = closeAtValue instanceof Date ? closeAtValue : new Date(closeAtValue);
-    const currency = current.goal_currency;
-    if (
-      current.goal_funded_at === null &&
-      (currency === 'USD' || currency === 'CHF' || currency === 'EUR' || currency === 'PHP')
-    ) {
-      const preview = await this.previewCreditPayerSnapshot(messageId, currency, closeAt);
-      for (const payer of preview) {
-        await this.#sql.execute(
-          `INSERT INTO message_credit_payer_snapshot (message_id, account_id, currency, units)
-             VALUES ($1, $2, $3, $4::bigint)
-             ON CONFLICT (message_id, account_id) DO NOTHING`,
-          [messageId, payer.accountId, currency, payer.units.toString()],
-        );
-      }
-    }
     const rows = await this.#sql.query<{
       goal_funded_at: Date | string;
       goal_closed_at: Date | string;
     }>(
-      `UPDATE message
-       SET goal_funded_at = COALESCE(goal_funded_at, $2::timestamptz),
-           goal_closed_at = COALESCE(goal_closed_at, $2::timestamptz),
-           goal_debt_frozen = goal_debt_frozen OR (
-             goal_funded_at IS NULL AND goal_currency IN ('USD','CHF','EUR','PHP')
+      `WITH current AS MATERIALIZED (
+         SELECT id, goal_funded_at, goal_closed_at, goal_currency
+         FROM message
+         WHERE id = $1::uuid
+           AND goal_repayable IS TRUE
+           AND goal_term_days IS NOT NULL
+         FOR UPDATE
+       ), boundary AS MATERIALIZED (
+         SELECT id, goal_funded_at, goal_currency,
+                COALESCE(goal_closed_at, clock_timestamp()) AS close_at,
+                goal_funded_at IS NULL
+                  AND goal_currency IN ('USD','CHF','EUR','PHP') AS freeze_snapshot
+         FROM current
+       ), updated AS (
+         UPDATE message AS target
+         SET goal_funded_at = COALESCE(target.goal_funded_at, boundary.close_at),
+             goal_closed_at = COALESCE(target.goal_closed_at, boundary.close_at),
+             goal_debt_frozen = target.goal_debt_frozen OR boundary.freeze_snapshot
+         FROM boundary
+         WHERE target.id = boundary.id
+         RETURNING target.id, target.goal_funded_at, target.goal_closed_at,
+                   target.goal_currency, boundary.freeze_snapshot
+       ), snapshot AS (
+         INSERT INTO message_credit_payer_snapshot (message_id, account_id, currency, units)
+         SELECT updated.id, receipt.payer_account_id, updated.goal_currency,
+                (COALESCE(SUM(
+                  CASE updated.goal_currency
+                    WHEN 'USD' THEN ingest.fiat_usd
+                    WHEN 'CHF' THEN ingest.fiat_chf
+                    WHEN 'EUR' THEN ingest.fiat_eur
+                    WHEN 'PHP' THEN ingest.fiat_php
+                  END
+                ), 0) * 100)::bigint
+         FROM updated
+         JOIN nostr_zap_receipt AS receipt ON receipt.message_id = updated.id
+         LEFT JOIN LATERAL (
+           SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php
+           FROM nostr_zap_ingest
+           WHERE receipt_id = receipt.event_id
+             AND outcome = 'indexed'
+             AND message_id = receipt.message_id
+           ORDER BY created_at ASC, id ASC
+           LIMIT 1
+         ) AS ingest ON true
+         WHERE updated.freeze_snapshot
+           AND receipt.payer_account_id IS NOT NULL
+           AND (
+             receipt.recorded_at IS NULL
+             OR receipt.recorded_at <= updated.goal_closed_at
            )
-       WHERE id = $1::uuid
-         AND goal_repayable IS TRUE
-         AND goal_term_days IS NOT NULL
-       RETURNING goal_funded_at, goal_closed_at`,
-      [messageId, closeAt],
+         GROUP BY updated.id, receipt.payer_account_id, updated.goal_currency
+         ON CONFLICT (message_id, account_id) DO NOTHING
+         RETURNING 1
+       )
+       SELECT goal_funded_at, goal_closed_at,
+              (SELECT COUNT(*) FROM snapshot) AS snapshot_count
+       FROM updated`,
+      [messageId],
     );
     const row = rows[0];
     if (row === undefined) {
@@ -9014,20 +9045,32 @@ export class PostgresMessageStore implements MessageStore {
    * @throws Propagates SQL insert and lookup failures.
    */
   async claimZapPayment(paymentHash: string, receiptEventId: string, at: Date): Promise<boolean> {
+    return (await this.#claimZapPayment(paymentHash, receiptEventId, at)) !== 'conflict';
+  }
+
+  async #claimZapPayment(
+    paymentHash: string,
+    receiptEventId: string,
+    at: Date,
+  ): Promise<'inserted' | 'existing' | 'conflict'> {
     const normalizedHash = paymentHash.toLowerCase();
-    await this.#sql.execute(
+    const inserted = await this.#sql.query<{ receipt_event_id: string }>(
       `INSERT INTO nostr_zap_payment (payment_hash, receipt_event_id, created_at)
        VALUES ($1, $2, $3)
-       ON CONFLICT (payment_hash) DO NOTHING`,
+       ON CONFLICT (payment_hash) DO NOTHING
+       RETURNING receipt_event_id`,
       [normalizedHash, receiptEventId, at],
     );
+    if (inserted[0] !== undefined) {
+      return 'inserted';
+    }
     const rows = await this.#sql.query<{ receipt_event_id: string }>(
       `SELECT receipt_event_id
        FROM nostr_zap_payment
        WHERE payment_hash = $1`,
       [normalizedHash],
     );
-    return rows[0]?.receipt_event_id === receiptEventId;
+    return rows[0]?.receipt_event_id === receiptEventId ? 'existing' : 'conflict';
   }
 
   /**

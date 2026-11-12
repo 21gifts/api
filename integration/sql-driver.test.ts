@@ -11,6 +11,7 @@ import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import type { PasskeyChallenge, PendingRecovery } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
+import { repaymentDescription, repaymentPartDescription } from '@/lib/credit-repayment';
 import {
   linkDailyRosterAccounts,
   migrateDailyRosterSchema,
@@ -4241,6 +4242,112 @@ describe('PostgresMessageStore loan ledger fiat', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('early fiat close includes an earlier receipt in the same millisecond', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const authorId = crypto.randomUUID();
+    const payerId = crypto.randomUUID();
+    const loanId = crypto.randomUUID();
+    const receiptId = `receipt-${crypto.randomUUID()}`;
+    let ready = false;
+    try {
+      await migrateAuthSchema(client);
+      await migrateBtcUsdSchema(client);
+      await migrateFiatSchema(client);
+      await migrateMessageSchema(client);
+      await migrateShopIdentitySchema(client);
+      ready = true;
+      const auth = new PostgresAuthStore(client);
+      for (const [id, suffix] of [
+        [authorId, 'a'],
+        [payerId, 'b'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: `02${id.replaceAll('-', '').padEnd(64, suffix)}`,
+          role: 'verified',
+          name: suffix,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        });
+      }
+      const store = new PostgresMessageStore(client);
+      await store.create({
+        id: loanId,
+        accountId: authorId,
+        name: 'Ada',
+        text: 'microsecond close',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 1_000,
+        goalCurrency: 'USD',
+        goalAmount: '10.00',
+        goalRepayable: true,
+        goalTermDays: 1,
+      });
+      expect(await store.recordZapReceipt(receiptId, loanId, 100, null)).toBe(true);
+      await store.updateZapReceiptGift(receiptId, { payerAccountId: payerId });
+      await store.recordZapIngest({
+        id: crypto.randomUUID(),
+        createdAt: new Date(),
+        receiptId,
+        noteEventId: null,
+        messageId: loanId,
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 100,
+        amountUsd: '1.23',
+        receiptPubkey: null,
+        receipt: { id: receiptId, kind: 9735 },
+      });
+      await client.execute(
+        `UPDATE nostr_zap_receipt
+         SET recorded_at = '2026-11-11T12:00:00.123456Z'::timestamptz
+         WHERE event_id = $1`,
+        [receiptId],
+      );
+      await client.execute(
+        `UPDATE message
+         SET goal_closed_at = '2026-11-11T12:00:00.123789Z'::timestamptz
+         WHERE id = $1`,
+        [loanId],
+      );
+
+      expect(await store.closeCredit(loanId, new Date(0))).toBeDefined();
+      const snapshot = await client.query<{
+        units: string;
+        funded_at: string;
+        closed_at: string;
+      }>(
+        `SELECT snapshot.units::text AS units,
+                message.goal_funded_at::text AS funded_at,
+                message.goal_closed_at::text AS closed_at
+         FROM message_credit_payer_snapshot AS snapshot
+         JOIN message ON message.id = snapshot.message_id
+         WHERE snapshot.message_id = $1 AND snapshot.account_id = $2`,
+        [loanId, payerId],
+      );
+      expect(snapshot).toEqual([
+        expect.objectContaining({
+          units: '123',
+          funded_at: expect.stringContaining('.123789'),
+          closed_at: expect.stringContaining('.123789'),
+        }),
+      ]);
+    } finally {
+      if (ready) {
+        await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1', [receiptId]);
+        await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1', [loanId]);
+        await client.execute('DELETE FROM message WHERE id = $1', [loanId]);
+        await client.execute('DELETE FROM account WHERE id = $1 OR id = $2', [authorId, payerId]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 /** Every table `mergeAccounts` names, so the merge runs end to end. */
@@ -4260,6 +4367,148 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateWalletSchema(client);
   await migrateDailyRosterSchema(client);
 }
+
+describe('Postgres repayment retry after account merge', () => {
+  test('an existing claim repairs ingest without restoring the merged account', async () => {
+    for (const kind of ['legacy', 'part'] as const) {
+      const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+      const authorId = crypto.randomUUID();
+      const fromId = crypto.randomUUID();
+      const intoId = crypto.randomUUID();
+      const loanId = crypto.randomUUID();
+      const receiptId = `receipt-${crypto.randomUUID()}`;
+      const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
+      let ready = false;
+      try {
+        await migrateMergeTables(client);
+        ready = true;
+        const auth = new PostgresAuthStore(client);
+        for (const [id, suffix] of [
+          [authorId, 'a'],
+          [fromId, 'b'],
+          [intoId, 'c'],
+        ] as const) {
+          await auth.createAccount({
+            id,
+            linkingKey: null,
+            role: 'verified',
+            name: suffix,
+            forumLawsDismissed: false,
+            location: null,
+            viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+            createdAt: 1,
+            rulesAgreedAt: null,
+          });
+        }
+        const store = new PostgresMessageStore(client);
+        await store.create({
+          id: loanId,
+          accountId: authorId,
+          name: 'Ada',
+          text: `${kind} retry`,
+          createdAt: new Date(),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+          goalSats: 100,
+          goalRepayable: true,
+          goalTermDays: 1,
+          goalFundedAt: new Date('2099-01-01T00:00:00.000Z'),
+        });
+        expect(await store.recordZapReceipt(receiptId, loanId, 100, null)).toBe(true);
+        await store.updateZapReceiptGift(receiptId, { payerAccountId: fromId });
+        await store.recordInvoiceAttempt({
+          id: crypto.randomUUID(),
+          createdAt: new Date(),
+          messageId: loanId,
+          payerAccountId: authorId,
+          authorAccountId: fromId,
+          amountSats: 100,
+          lightningAddress: 'merged-away@example.test',
+          zapRequest: null,
+          result: 'ok',
+          httpStatus: 200,
+          pr: `lnbc-${kind}-${loanId}`,
+          paymentHash,
+          description:
+            kind === 'legacy'
+              ? repaymentDescription(0, fromId)
+              : repaymentPartDescription(0, fromId, 0, 100n, 100n),
+          descriptionHash: null,
+          isNip57Invoice: true,
+          lnurlResponse: null,
+        });
+        const paidAt = new Date('2026-11-12T12:00:00.000Z');
+        const settlement: Parameters<PostgresMessageStore['settleRepaymentPayment']>[3] =
+          kind === 'legacy'
+            ? {
+                kind,
+                messageId: loanId,
+                dayIndex: 0,
+                recipientAccountId: fromId,
+                dueSats: 100,
+                paidAt,
+              }
+            : {
+                kind,
+                messageId: loanId,
+                dayIndex: 0,
+                recipientAccountId: fromId,
+                partIndex: 0,
+                units: 100n,
+                sats: 100,
+                shareUnits: 100n,
+                paidAt,
+              };
+        expect(
+          await store.settleRepaymentPayment(paymentHash, receiptId, paidAt, settlement, true),
+        ).toBe(true);
+        expect(
+          await client.query<{ n: number }>(
+            'SELECT count(*)::int AS n FROM nostr_zap_ingest WHERE receipt_id = $1',
+            [receiptId],
+          ),
+        ).toEqual([{ n: 0 }]);
+
+        expect(
+          await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
+        ).toEqual(expect.objectContaining({ ok: true }));
+        expect(
+          await store.settleRepaymentPayment(paymentHash, receiptId, paidAt, settlement, true),
+        ).toBe(true);
+
+        const rows = await client.query<{ recipient_account_id: string; n: number }>(
+          `SELECT recipient_account_id, count(*)::int AS n
+           FROM message_repayment_part
+           WHERE message_id = $1::uuid
+           GROUP BY recipient_account_id
+           ORDER BY recipient_account_id`,
+          [loanId],
+        );
+        expect(rows).toEqual([{ recipient_account_id: intoId, n: 1 }]);
+        expect(await auth.getAccount(fromId)).toBeUndefined();
+      } finally {
+        if (ready) {
+          await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1', [
+            paymentHash,
+          ]);
+          await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1', [receiptId]);
+          await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1', [loanId]);
+          await client.execute('DELETE FROM message_repayment_part WHERE message_id = $1', [
+            loanId,
+          ]);
+          await client.execute('DELETE FROM message_repayment WHERE message_id = $1', [loanId]);
+          await client.execute('DELETE FROM message WHERE id = $1', [loanId]);
+          await client.execute('DELETE FROM account WHERE id = $1 OR id = $2 OR id = $3', [
+            authorId,
+            fromId,
+            intoId,
+          ]);
+        }
+        await closeIfPossible(sql);
+      }
+    }
+  });
+});
 
 describe('PostgresShopPaymentStore', () => {
   const hex64 = (): string =>

@@ -3589,6 +3589,39 @@ describe('repayment from the in-app wallet', () => {
     expect(body.loans[0]?.closedAt).toBe(at.toISOString());
   });
 
+  it('builds each member loan from one repayment-parts snapshot', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    const partReads = vi
+      .spyOn(messages, 'listRepaymentParts')
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          messageId: CREDIT,
+          dayIndex: 0,
+          recipientAccountId: WALLET_GIVER,
+          partIndex: 0,
+          units: 40n,
+          sats: 40,
+          paidAt: new Date(clock.now),
+        },
+      ]);
+
+    const body = (await (await loans(app)).json()) as {
+      loans: Array<{ goalSats: number; repaidSats: number; totalSats: number }>;
+    };
+
+    expect(partReads).toHaveBeenCalledTimes(1);
+    expect(body.loans[0]).toMatchObject({
+      goalSats: 100,
+      repaidSats: 0,
+      totalSats: 100,
+    });
+    expect(body.loans[0]!.totalSats).toBeLessThanOrEqual(body.loans[0]!.goalSats);
+  });
+
   it('shows the next day, the last payment, and drops a repaid loan', async () => {
     const both = [
       { id: WALLET_GIVER, sats: 300, wallet: true },

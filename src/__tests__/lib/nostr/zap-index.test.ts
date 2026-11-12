@@ -6569,6 +6569,81 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.claimZapPayment(paymentHash, 'r-after-missing', new Date(11))).toBe(true);
   });
 
+  it('repairs an existing repayment claim without looking up a merged-away giver', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-repay-repair' });
+    const mergedAway = '77777777-7777-4777-8777-777777777777';
+    const survivor = '88888888-8888-4888-8888-888888888888';
+    const paymentHash = '19'.repeat(32);
+    const receiptId = 'r-repay-repair';
+    await store.recordInvoiceAttempt({
+      id: 'inv-repay-repair',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-repay-repair',
+      authorAccountId: mergedAway,
+      amountSats: 21,
+      lightningAddress: 'gone@example.test',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-repay-repair',
+      paymentHash,
+      description: repaymentDescription(0, mergedAway),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    await store.markRepaymentPaid({
+      messageId,
+      dayIndex: 0,
+      recipientAccountId: survivor,
+      dueSats: 21,
+      paidAt: new Date(1),
+    });
+    // Settlement and its claim committed, the account merge moved the row,
+    // and the first ingest write failed before leaving an indexed row.
+    expect(await store.claimZapPayment(paymentHash, receiptId, new Date(1))).toBe(true);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: receiptId,
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-repay-repair'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 12,
+      fetchImpl,
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(await store.listRepayments(messageId)).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: survivor,
+        dueSats: 21,
+        paidAt: new Date(1),
+      },
+    ]);
+    expect(await store.listIndexedZapIngests()).toEqual([
+      expect.objectContaining({ receiptId, outcome: 'indexed', reason: null }),
+    ]);
+  });
+
   it('logs nostr.zap.ingest.record_failed when recordZapIngest throws', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {

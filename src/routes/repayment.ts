@@ -152,6 +152,7 @@ interface DuePlan {
   daysPaid: number;
   schedule: RepaymentSlice[];
   paid: Awaited<ReturnType<MessageStore['listRepayments']>>;
+  parts: Awaited<ReturnType<MessageStore['listRepaymentParts']>>;
   /** Every giver-day share with paid and open parts, in schedule order. */
   shares: ShareState[];
   /** Due, unpaid shares: oldest day first, then schedule order. */
@@ -349,7 +350,7 @@ async function duePlan(
   ) {
     daysPaid += 1;
   }
-  return { daysDue, daysPaid, schedule, paid, shares, due };
+  return { daysDue, daysPaid, schedule, paid, parts, shares, due };
 }
 
 /**
@@ -1874,7 +1875,7 @@ async function loanRow(
   if (price === null) {
     return 'unavailable';
   }
-  const paidParts = await deps.store.listRepaymentParts(row.id);
+  const paidParts = plan.parts;
   const partKeys = new Set(paidParts.map((part) => `${part.dayIndex}:${part.recipientAccountId}`));
   const legacyRepaidSats = plan.paid
     .filter((item) => !partKeys.has(`${item.dayIndex}:${item.recipientAccountId}`))
