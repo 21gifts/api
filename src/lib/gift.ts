@@ -607,7 +607,8 @@ function cumulativeFiat(running: number | null): string | null {
  * `welcome` (gap days 0; moderator excluded). `giftCount` remains every
  * outbound row. `recipientCount` is the number of distinct stored
  * `recipientWosUser` strings (exact text, not lowercased). The payload has
- * no per-recipient names or amounts. `fiatRates` is quote metadata, not the amount.
+ * no per-recipient names or amounts. The rows passed in are aggregated as
+ * given. `fiatRates` is quote metadata, not the amount.
  *
  * @param rows - Outbound gifts (order does not matter).
  * @param _rates - Ignored. A daily close does not price a stored amount.

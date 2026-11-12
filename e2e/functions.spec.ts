@@ -959,19 +959,11 @@ test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot',
   expect(body).not.toHaveProperty('byRecipient');
 });
 
-test('Function: giftsForRecipient — GET /gifts/stats?recipient= is empty on default boot', async ({
+test('Function: giftsForRecipient — GET /me/activity without bearer is 401', async ({
   request,
 }) => {
-  const res = await request.get('/gifts/stats?recipient=alice');
-  expect(res.status()).toBe(200);
-  const body = (await res.json()) as {
-    giftCount: number;
-    totalSats: number;
-    spendOverTime: unknown[];
-  };
-  expect(body.giftCount).toBe(0);
-  expect(body.totalSats).toBe(0);
-  expect(body.spendOverTime).toEqual([]);
+  const res = await request.get('/me/activity');
+  expect(res.status()).toBe(401);
 });
 
 test('Function: InMemoryGiftStore — GET /gifts/stats is empty on default boot', async ({

@@ -162,10 +162,10 @@
 
 ## Function: giftsForRecipient
 
-- **Purpose:** Filter outbound gift rows to one recipient handle (the local part of the receiving address; case-insensitive). Used by `GET /gifts/stats?recipient=` so stats reflect that handle's gifts only.
+- **Purpose:** Filter outbound gift rows to one recipient handle (the local part of the receiving address; case-insensitive).
 - **Inputs:** `readonly GiftRow[]` and `recipient` string. Trims `recipient`; when `indexOf('@') > 0` compares the local-part before `@`, otherwise the whole trimmed string. Empty after trim matches nothing — never "all gifts".
 - **Returns / side effects:** Matching `GiftRow[]` in input order, or `[]`. No I/O.
-- **Used by:** `giftsStatsRoutes`.
+- **Used by:** `buildAccountActivity`.
 
 ## Function: giftsRoutes
 
@@ -190,9 +190,9 @@
 
 ## Function: giftsStatsRoutes
 
-- **Purpose:** Hono sub-app for `GET /gifts/stats`. Optional `?recipient=` filters via `giftsForRecipient` before aggregation. Amounts are the stored strings. A missing stored amount stays null. The rate books are not read. A missing stored amount is never 503.
-- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; fiatRates?: FiatRateBook; now?: () => number }`. The rate books and the clock are accepted and not read. Query `recipient` is optional (missing/blank = unfiltered).
-- **Returns / side effects:** Hono app mounted at `/gifts/stats`. Empty selection (no gifts, or unknown handle) is empty stats 200 without Coinbase or Frankfurter. A store throw logs `gifts.stats.failed` and answers 503. No I/O to a rate book.
+- **Purpose:** Hono sub-app for `GET /gifts/stats`. Every outbound row is aggregated. A `recipient` query parameter is ignored. Amounts are the stored strings. A missing stored amount stays null. The rate books are not read. A missing stored amount is never 503.
+- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; fiatRates?: FiatRateBook; now?: () => number }`. The rate books and the clock are accepted and not read.
+- **Returns / side effects:** Hono app mounted at `/gifts/stats`. No outbound gifts is empty stats 200 without Coinbase or Frankfurter. A store throw logs `gifts.stats.failed` and answers 503. No I/O to a rate book.
 - **Used by:** `createApp`.
 
 ## Function: isUtcDay
