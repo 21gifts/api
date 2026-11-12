@@ -10095,7 +10095,7 @@ describe('indexOpenZapReceipts', () => {
     expect(forAuthor[0]?.type).toBe('heart');
   });
 
-  it('notifies only a heart when both initial invoice lookups reject', async () => {
+  it('keeps a repayable heart payer when both initial invoice lookups reject', async () => {
     class HeartNoticeFailStore extends InMemoryMessageStore {
       lookups = 0;
 
@@ -10117,6 +10117,7 @@ describe('indexOpenZapReceipts', () => {
       accountId: 'acc-heart-notice-fail',
       lightningAddress: 'zap-heart-notice-fail@example.com',
       messageId: 'm-heart-notice-fail',
+      repayable: true,
     });
     await auth.createAccount({
       id: 'payer-heart-notice-fail',
@@ -10173,6 +10174,16 @@ describe('indexOpenZapReceipts', () => {
       notificationStore: notifications,
     });
     expect((await store.getById(parentId))?.sats).toBe(1);
+    expect(await store.listCreditPayers(parentId)).toEqual([
+      {
+        accountId: 'payer-heart-notice-fail',
+        sats: 1,
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
     expect(await store.listReplies(parentId)).toHaveLength(0);
     const forAuthor = await notifications.listByRecipient('acc-heart-notice-fail', 10);
     expect(forAuthor.map((row) => row.type)).toEqual(['heart']);
@@ -10994,8 +11005,21 @@ describe('indexOpenZapReceipts', () => {
     expect(replies[0]?.text).toBe('later');
   });
 
-  it('copies pinned invoice amounts onto the note instead of a new spot', async () => {
-    const store = new InMemoryMessageStore();
+  it('keeps later-resolved pinned invoice amounts instead of current spot rates', async () => {
+    class LaterPinnedInvoiceStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        if (this.lookups === 3 || this.lookups === 4) {
+          return Promise.reject(new Error('pinned invoice lookup boom'));
+        }
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new LaterPinnedInvoiceStore();
     const auth = new InMemoryAuthStore();
     const parentId = await seedStore({
       store,
@@ -11003,6 +11027,7 @@ describe('indexOpenZapReceipts', () => {
       accountId: 'acc-pin-parent',
       lightningAddress: 'zap-pin-parent@example.com',
       messageId: 'm-pin-parent',
+      repayable: true,
     });
     await store.recordInvoiceAttempt({
       id: 'inv-pin-note',
@@ -11044,9 +11069,19 @@ describe('indexOpenZapReceipts', () => {
     const fetchImpl: FetchFn = async (input, init) => {
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
-      if (url.includes('coinbase.com') || url.includes('frankfurter.app')) {
+      if (url.includes('coinbase.com')) {
         spotUrls.push(url);
-        return new Response('no', { status: 500 });
+        return new Response(JSON.stringify({ data: { amount: '100000.00' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('frankfurter.app')) {
+        spotUrls.push(url);
+        return new Response(JSON.stringify({ rates: { CHF: 0.8, EUR: 0.9, PHP: 50 } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }
       return lnurlFetch(PROVIDER_PUBKEY)(input, init);
     };
@@ -11065,6 +11100,17 @@ describe('indexOpenZapReceipts', () => {
     expect(note?.amountChf).toBeNull();
     expect(note?.amountEur).toBe('4.50');
     expect(note?.amountPhp).toBeNull();
+    expect(await store.listCreditPayers(parentId)).toEqual([
+      {
+        accountId: 'acc-pin-parent',
+        sats: 21,
+        usd: '5.00',
+        chf: null,
+        eur: '4.50',
+        php: null,
+      },
+    ]);
+    expect(store.lookups).toBe(6);
     expect(spotUrls).toEqual([]);
   });
 
