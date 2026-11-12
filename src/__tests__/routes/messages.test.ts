@@ -386,6 +386,54 @@ describe('GET /messages', () => {
     expect(await res.json()).toEqual({ messages: [] });
   });
 
+  it('exposes goalClosedAt on closed credits in list and single-message JSON only', async () => {
+    const closedId = '16161616-1616-4161-8161-161616161616';
+    const openId = '17171717-1717-4171-8171-171717171717';
+    const closedAt = new Date('2026-11-12T09:10:11.000Z');
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: closedId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'closed credit',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalClosedAt: closedAt,
+      },
+      {
+        id: openId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'open credit',
+        createdAt: new Date(now() + 1),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+      },
+    ]);
+    const app = mount(await rulesStore(), messageStore);
+
+    const listed = await app.request('/messages', { headers: AUTH });
+    expect(listed.status).toBe(200);
+    const listBody = (await listed.json()) as {
+      messages: Array<{ id: string; goalClosedAt?: string }>;
+    };
+    expect(listBody.messages.find((row) => row.id === closedId)?.goalClosedAt).toBe(
+      closedAt.toISOString(),
+    );
+    expect(listBody.messages.find((row) => row.id === openId)).not.toHaveProperty('goalClosedAt');
+
+    const single = await app.request(`/messages/${closedId}`);
+    expect(single.status).toBe(200);
+    expect(await single.json()).toMatchObject({
+      id: closedId,
+      goalRepayable: true,
+      goalClosedAt: closedAt.toISOString(),
+    });
+  });
+
   it('drops missing-file video notes from the list', async () => {
     const authStore = await namedStore('Ada');
     const messageStore = new InMemoryMessageStore([

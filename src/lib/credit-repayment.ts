@@ -277,6 +277,8 @@ export interface RepaymentAllocationPart {
   open: boolean;
   /** Stored description of an open bill; omitted for a new part. */
   description?: string;
+  /** Stored invoice sats of an open bill; omitted for a new part. */
+  amountSats?: number;
 }
 
 /** Plan-order allocation of one prepayment. */

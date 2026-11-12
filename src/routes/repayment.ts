@@ -125,6 +125,8 @@ interface SharePart {
 interface OpenSharePart extends RepaymentAllocationPart {
   open: true;
   description: string;
+  /** Fixed sats of the invoice when it was minted. */
+  amountSats: number;
 }
 
 /** One giver-day share with what is settled and what is open. */
@@ -290,6 +292,7 @@ async function duePlan(
         units,
         open: true,
         description: attempt.description as string,
+        amountSats: attempt.amountSats,
       });
       reserved += units;
     }
@@ -1258,7 +1261,9 @@ export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<R
       fiat ? (closedRow.goalCurrency as GoalFiatCode) : 'USD',
       closed.closedAt,
     );
-    const collectedUnits = collectedPayers.reduce((sum, payer) => sum + payer.units, 0n);
+    const collectedUnits = closedRow.goalDebtFrozen
+      ? owed.reduce((sum, payer) => sum + payer.units, 0n)
+      : collectedPayers.reduce((sum, payer) => sum + payer.units, 0n);
     const collectedSats =
       collectedPayers.reduce((sum, payer) => sum + payer.sats, 0) +
       (await locked.sumUnassignedCreditSats(closedRow.id, true, closed.closedAt));
@@ -1697,19 +1702,19 @@ export type MyLoansRouteDeps = Pick<
 >;
 
 /**
- * Sum of priced shares, or null when one has no price.
+ * Sum new parts at the current price and open parts at their stored invoice sats.
  *
  * @param price - Units → sats.
- * @param shares - Shares to price.
+ * @param shares - Shares or allocation parts to price.
  * @returns Sats, or null.
  */
 function pricedSum(
   price: (units: bigint) => number | null,
-  shares: readonly { units: bigint }[],
+  shares: readonly { units: bigint; open?: boolean; amountSats?: number }[],
 ): number | null {
   let total = 0;
   for (const share of shares) {
-    const sats = price(share.units);
+    const sats = share.open === true ? (share.amountSats as number) : price(share.units);
     if (sats === null) {
       return null;
     }
@@ -1787,14 +1792,25 @@ async function loanRow(
     const maximumShares = repaymentSchedule(row.goalTermDays as number, named).filter((share) =>
       payableIds.has(share.accountId),
     );
+    const maximum = allocateRepayment(
+      maxUnits,
+      maximumShares.map((share) => ({
+        ...share,
+        paidUnits: 0n,
+        nextPartIndex: 0,
+        openParts: [],
+        canReceive: true,
+      })),
+      REPAYMENT_BILLS_MAX,
+    );
     return {
       ...base,
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
       totalSats: price === undefined ? 0 : pricedSum(price, named),
-      maxSats: price === undefined ? 0 : pricedSum(price, maximumShares),
-      maxAmount: cents(maxUnits),
+      maxSats: price === undefined ? 0 : pricedSum(price, maximum.parts),
+      maxAmount: cents(maximum.usedUnits),
       due: {
         payableSats: 0,
         payableAmount: cents(0n),
@@ -1849,18 +1865,7 @@ async function loanRow(
   const maxUnits = open
     .filter((share) => share.canReceive)
     .reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
-  const maximum = allocateRepayment(
-    maxUnits,
-    plan.shares.map((share) => ({
-      dayIndex: share.dayIndex,
-      accountId: share.accountId,
-      units: share.units,
-      paidUnits: share.paidUnits,
-      nextPartIndex: share.nextPartIndex,
-      openParts: share.openParts,
-      canReceive: share.canReceive,
-    })),
-  );
+  const maximum = cappedAllocation(plan.shares, maxUnits);
   return {
     ...base,
     daysDue: plan.daysDue,
@@ -1868,7 +1873,7 @@ async function loanRow(
     repaidSats,
     totalSats: openSats === null ? null : repaidSats + openSats,
     maxSats: pricedSum(price, maximum.parts),
-    maxAmount: cents(maxUnits),
+    maxAmount: cents(maximum.usedUnits),
     due: {
       payableSats: pricedSum(
         price,

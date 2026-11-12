@@ -3064,7 +3064,9 @@ newest-first, capped at 200. Body `{ "messages": [...] }` via
 `authorCanReceive` (true when the author has a receiving address, signed or not);
 optional `goalSats` omitted when unset, optional `goalRepayable: true` when
 the stored column is true (omitted when null; never false), optional
-`goalTermDays` when the stored column is not null (omitted when null), and when
+`goalClosedAt` as an ISO-8601 string when `goal_closed_at` is set (omitted
+otherwise), optional `goalTermDays` when the stored column is not null
+(omitted when null), and when
 `goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
 `goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
 keys).
@@ -5472,8 +5474,10 @@ matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
 JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
 `nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths,
 stored `goalSats` (JSON `null` when unset), `goalRepayable: true` only when
-the stored column is true (omitted when null; never false), `goalTermDays`
-only when the stored column is not null (omitted when null), `goalCurrency`,
+the stored column is true (omitted when null; never false), `goalClosedAt` as
+an ISO-8601 string only when `goal_closed_at` is set (omitted otherwise),
+`goalTermDays` only when the stored column is not null (omitted when null),
+`goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots when `goalCurrency` is
 stored (omitted on a legacy row; a snapshot may be null), and always-present
 `placeLat`, `placeLng`, `placeLabel`, `placeStreet`, `placeHouseNumber`,
@@ -5512,8 +5516,9 @@ Same debug token gate as `GET /debug/messages`. Body is the debug object
 (not wrapped), including `nostrEvent`, `claimedUntil`, `contentFp`, photo
 MIME/byte lengths, stored `goalSats` (JSON `null` when unset),
 `goalRepayable: true` only when the stored column is true (omitted when null;
-never false), `goalTermDays` only when the stored column is not null (omitted
-when null), `goalCurrency`, `goalAmount`, and the four `goalAmount*`
+never false), `goalClosedAt` as an ISO-8601 string only when `goal_closed_at`
+is set (omitted otherwise), `goalTermDays` only when the stored column is not
+null (omitted when null), `goalCurrency`, `goalAmount`, and the four `goalAmount*`
 snapshots when `goalCurrency` is stored (omitted on a legacy row; a snapshot
 may be null), and always-present `placeLat`, `placeLng`, `placeLabel`,
 `placeStreet`, `placeHouseNumber`, `placePostalCode`, `placeCity`,
@@ -6833,8 +6838,10 @@ display. Each message exposes the author **name snapshotted at post time**,
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
 optional `goalSats` (positive integer on a top-level note; omitted when
 unset/null/0), optional `goalRepayable: true` when the stored column is true
-(omitted when null; never false), optional `goalTermDays` when the stored
-column is not null (omitted when null), and when `goalCurrency` is stored also
+(omitted when null; never false), optional `goalClosedAt` as an ISO-8601
+string when `goal_closed_at` is set (omitted otherwise), optional
+`goalTermDays` when the stored column is not null (omitted when null), and when
+`goalCurrency` is stored also
 `goalCurrency`, `goalAmount`, and `goalAmountUsd` / `goalAmountChf` /
 `goalAmountEur` / `goalAmountPhp` (a snapshot may be null; a legacy row omits
 those keys),
@@ -7215,6 +7222,12 @@ otherwise **400** with that shop error and nothing is stored. A reply, and
 a note that is not a shop, may still omit the pin.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that for `goal_term_days` days, but for a credit outside the operator-approved exception never before 2026-11-16. A non-exempt credit that filled on or before 2026-11-15 starts on 2026-11-16. The three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c` are exempt from that minimum and start the day after they filled. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. A BTC `goalAmount` is the whole-sat canonical string: a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). A fiat `goalAmount` keeps the typed decimal after trim and a comma turned into a dot (`5.00` stays `5.00`, `1.0` stays `1.0`), and that string is also stored in `goal_amount_text`. A read uses `goal_amount_text` when it is a non-empty string, otherwise the numeric column. `goal_sats` is that integer for `BTC` (1..10_000_000; a missing spot quote does not reject it). For fiat, sats are half-up from the current spot rate of the typed currency (`round(typed * 1e8 / fiatPerBtc)`), and a positive amount that rounds to 0 becomes 1. Fiat needs a spot quote that prices the typed currency and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If the spot read throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the spot read throws or returns no quote. The typed currency's snapshot is the typed amount at two decimals, not a satoshi round trip. The other three currencies are frozen from that same spot quote and are null when their rate is missing. A BTC ask freezes each fiat snapshot from the spot, or leaves it null. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the stored typed string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
+Every public, debug, and hidden forum message JSON that can carry
+`goalRepayable: true` also carries `goalClosedAt` as an ISO-8601 string when
+`goal_closed_at` is set and omits `goalClosedAt` otherwise. This applies to
+lists, single messages, member feeds and profile messages, external-author
+feeds, funding surfaces, and the corresponding `GET /view/:viewKey` surfaces.
+
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
@@ -7236,8 +7249,10 @@ stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
 `videoContentType`, and always `shopNpub` (the npub of a currently listed
 shop with a key, otherwise JSON `null`). May include `goalSats` (positive integer on a top-level
 note; omitted when unset). May include `goalRepayable: true` when the stored
-column is true (omitted when null; never false). May include `goalTermDays`
-when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
+column is true (omitted when null; never false). May include `goalClosedAt` as
+an ISO-8601 string when `goal_closed_at` is set (omitted otherwise). May include
+`goalTermDays` when the stored column is not null (omitted when null). May include
+`accountId` (21gifts author id) and `mentions`
 (`{ accountId, username }[]`, only when that list is non-empty). A stored
 self mark does not notify the author. Other marks fan out one
 `forum_mention` per person. That is the only in-app row and the only Web
@@ -7894,6 +7909,7 @@ receiving address (see [Receiving address](#receiving-address)),
 the stored author id is non-null, with or without a session. External replies
 set `via: "nostr"`, keep `payable: false` and `authorCanReceive: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
+They also never include `goalClosedAt`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`). The response also carries `hearts`: one entry per claimed
 paid heart on the parent, ordered newest first (`createdAt` desc, then invoice
@@ -8152,7 +8168,9 @@ those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
 when the stored ask is a positive integer, optional `goalRepayable: true`
 when the stored column is true (omitted when null; never false), optional
-`goalTermDays` when the stored column is not null (omitted when null), and when
+`goalClosedAt` as an ISO-8601 string when `goal_closed_at` is set (omitted
+otherwise), optional `goalTermDays` when the stored column is not null
+(omitted when null), and when
 `goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
 `goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
 keys — optional `place` (`{ lat, lng, label, address }` when a pin is stored;
@@ -8434,8 +8452,10 @@ when there are no stills) and `photoTakenAt` only when `photoCount` is 1 /
 `hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
 top-level note; omitted when unset/null/0 or on a reply), optional
 `goalRepayable: true` when the stored column is true (omitted when null;
-never false), optional `goalTermDays` when the stored column is not null
-(omitted when null), and when `goalCurrency` is stored also `goalCurrency`,
+never false), optional `goalClosedAt` as an ISO-8601 string when
+`goal_closed_at` is set (omitted otherwise), optional `goalTermDays` when the
+stored column is not null (omitted when null), and when `goalCurrency` is
+stored also `goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots (a snapshot may be null;
 a legacy row omits those keys), optional `place` (`{ lat, lng, label, address }`
 when a pin is stored; `address` is the structured postal address or JSON `null`;

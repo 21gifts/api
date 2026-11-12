@@ -1937,12 +1937,30 @@ describe('repayment from the in-app wallet', () => {
 
     const close = await post(app, `/messages/${CREDIT}/repayment/close`);
     expect(close.status).toBe(200);
-    expect(await close.json()).toMatchObject({ collectedSats: 21, collectedAmount: '0.00' });
+    const closeBody = await close.json();
+    expect(closeBody).toMatchObject({ collectedSats: 21, collectedAmount: '0.00' });
     expect((await messages.getById(CREDIT))?.goalDebtFrozen).toBe(true);
+
+    await messages.updateZapReceiptGift(`r-${WALLET_GIVER}`, {
+      payerAccountId: WALLET_GIVER,
+    });
+    const repeated = await post(app, `/messages/${CREDIT}/repayment/close`);
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toEqual(closeBody);
 
     const status = await app.request(`/messages/${CREDIT}/repayment`);
     expect(status.status).toBe(200);
-    expect(await status.json()).toMatchObject({ givers: [], repayments: [], unassignedSats: 21 });
+    expect(await status.json()).toMatchObject({
+      givers: [
+        expect.objectContaining({
+          accountId: WALLET_GIVER,
+          givenSats: 21,
+          givenAmount: '0.00',
+        }),
+      ],
+      repayments: [],
+      unassignedSats: 0,
+    });
 
     const prepay = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
@@ -2521,7 +2539,7 @@ describe('repayment from the in-app wallet', () => {
       headers: { authorization: 'Bearer acc' },
     });
     expect(noDebt.status).toBe(200);
-    expect(await noDebt.json()).toMatchObject({ collectedAmount: '0.21' });
+    expect(await noDebt.json()).toMatchObject({ collectedAmount: '0.00' });
     expect((await unavailable.messages.getById(CREDIT))?.goalClosedAt).toBeInstanceOf(Date);
 
     const fundedUnavailable = await readyCredit({
@@ -2706,6 +2724,9 @@ describe('repayment from the in-app wallet', () => {
       termDays: REPAYMENT_BILLS_MAX + 1,
       givers: [{ id: WALLET_GIVER, sats: REPAYMENT_BILLS_MAX + 1, wallet: true }],
     });
+    expect(await (await loans(app)).json()).toMatchObject({
+      loans: [{ maxSats: REPAYMENT_BILLS_MAX, maxAmount: null }],
+    });
     const response = await app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
       headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
@@ -2723,6 +2744,7 @@ describe('repayment from the in-app wallet', () => {
     const fiat = await loanSetup({
       goalCurrency: 'USD',
       goalAmount: '0.61',
+      fundedAt: null,
       rates: async () => ({
         sats: 100_000_000,
         usd: '300000.00',
@@ -2739,6 +2761,9 @@ describe('repayment from the in-app wallet', () => {
           fiatAmount: '0.61',
         },
       ],
+    });
+    expect(await (await loans(fiat.app)).json()).toMatchObject({
+      loans: [{ maxSats: REPAYMENT_BILLS_MAX * 3, maxAmount: '0.60' }],
     });
     const fiatResponse = await fiat.app.request(`/messages/${CREDIT}/repayment`, {
       method: 'POST',
@@ -2835,6 +2860,54 @@ describe('repayment from the in-app wallet', () => {
       waiting: [],
     });
     expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(1);
+  });
+
+  it('keeps open fiat invoice sats fixed in every repayment maximum', async () => {
+    await withNip57(async () => {
+      const rates = { usd: '50000.00' };
+      const { app, messages, clock } = await loanSetup({
+        goalCurrency: 'USD',
+        goalAmount: '1.00',
+        termDays: 1,
+        rates: async () => ({
+          sats: 100_000_000,
+          usd: rates.usd,
+          chf: null,
+          eur: null,
+          php: null,
+        }),
+        givers: [{ id: WALLET_GIVER, sats: 100, wallet: true, fiatAmount: '1.00' }],
+      });
+      await messages.recordInvoiceAttempt(openPartAttempt(200, 10n, 100n, new Date(clock.now)));
+      rates.usd = '100000.00';
+
+      expect(await (await loans(app)).json()).toMatchObject({
+        loans: [{ maxSats: 1100, maxAmount: '1.00' }],
+      });
+      const tooHigh = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '1.01' }),
+      });
+      expect(tooHigh.status).toBe(400);
+      expect(await tooHigh.json()).toMatchObject({
+        code: 'amount_too_high',
+        maxSats: 1100,
+        maxAmount: '1.00',
+      });
+
+      const maximum = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '1.00' }),
+      });
+      expect(maximum.status).toBe(200);
+      expect(await maximum.json()).toMatchObject({
+        amountSats: 1100,
+        amount: '1.00',
+        bills: [{ amountSats: 200 }, { amountSats: 900 }],
+      });
+    });
   });
 
   it('rejects inconsistent open part reservations under the message lock', async () => {
