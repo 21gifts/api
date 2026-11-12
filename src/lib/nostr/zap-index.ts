@@ -527,12 +527,13 @@ function zapIngestRow(args: {
  * `DEBUG_TOKEN` is the authority for the route caller; the required note is
  * durable operator evidence. A supplied preimage is additionally verified
  * against the payment hash and stored only in the synthetic receipt tags.
- * A retry after a failed ingest write resumes even when the note was hidden in
- * the meantime; it then only completes the ingest row (no notification, no
- * gift-reply). A fresh settle on a hidden or missing note is refused.
- * The payment-hash claim and forum receipt/repayment row are stored under the
- * same per-message lock, so invoice reservation cannot observe one without
- * the other.
+ * A pre-existing legacy partial normal credit may resume even when the note
+ * was hidden in the meantime; it then only completes the ingest row (no
+ * notification, no gift-reply) and returns `resumed: true`. Fresh normal
+ * credits store the payment-hash claim, forum receipt credit, and ingest
+ * atomically and return `resumed: false`. Repayment claims and rows are atomic,
+ * while their subsequent ingest write remains retryable. A fresh settle on a
+ * hidden or missing note is refused.
  * On a member note, fans out `notifyZap` and attempts the payer gift-reply
  * unless the settled invoice is a heart (`heart === true`): then credits
  * sats, calls `notifyHeart`, and skips `notifyZap` and the gift-reply.

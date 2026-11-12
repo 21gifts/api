@@ -5359,16 +5359,21 @@ Success → **Response** `200` (never includes the note or preimage):
 }
 ```
 
-Under the advisory message lock and one transaction, the route makes the
-payment-hash claim visible together with its settlement. A
-`repay:<day>:<accountId>` invoice writes a legacy full-share
-`message_repayment`; a
-`repayp:<day>:<accountId>:<partIndex>:<units>:<shareUnits>` invoice writes the
-exact canonical `message_repayment_part`; neither credits the ask. Any other
-invoice credits the message receipt once. A repayment-row conflict leaves no
-new claim. After this atomic claim/repayment-or-credit boundary, the route
-persists an indexed synthetic kind:9735 ingest with `manual=debug-settle` and
-the note (plus `preimage` only when it was supplied and verified). On a member
+Under the advisory message lock and one transaction, a normal credit persists
+the payment-hash claim, message receipt credit, and indexed synthetic kind:9735
+ingest atomically. Its ingest contains `manual=debug-settle` and the note (plus
+`preimage` only when it was supplied and verified). A failed normal-credit
+write leaves none of those rows visible, so a retry is fresh and returns
+`resumed: false`. Only a pre-existing legacy partial state in which the
+synthetic receipt was already credited but its ingest is absent is resumed;
+that repair does not credit again and returns `resumed: true`.
+
+For a `repay:<day>:<accountId>` invoice, the locked transaction stores the
+claim with a legacy full-share `message_repayment`; for a
+`repayp:<day>:<accountId>:<partIndex>:<units>:<shareUnits>` invoice, it stores
+the claim with the exact canonical `message_repayment_part`. Neither credits
+the ask, and a repayment-row conflict leaves no new claim. Their indexed
+synthetic ingest is written subsequently and remains retryable. On a member
 note a non-repayment settlement then fans out `notifyZap` and inserts the payer
 gift-reply from the original zap request. On the official platform profile
 note it skips
@@ -5381,16 +5386,15 @@ budget when it is a reply; a payer at least `software_developer` (`software_deve
 exempt). Missing `forum.post` fields dequeue the receipt without creating a row.
 A created top-level post fans out `notifyForumPost` and `spendPing` only
 when `eligibleToday` (same gate as `POST /messages`; ineligible logs
-`spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that
-failure returns 503; a retry writes the missing ingest from the current
-request, runs the post-credit effects, returns `resumed: true`, and does not
-credit again. Fresh success returns `resumed: false`.
+`spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`.
 
-The durable payment-hash claim prevents a later real receipt, an ingest-write
-failure, or message deletion from allowing another credit. A later real
-receipt is persisted as `rejected` / `settled`. A payment hash already owned by
-another receipt or represented by any indexed ingest cannot be settled
-manually. If payer lookup throws after credit, the route still succeeds: it
+Once a settlement commits, the durable payment-hash claim prevents a later
+real receipt or message deletion from allowing another credit; for a repayment
+it also survives a subsequent ingest-write failure. A failed fresh normal
+credit leaves neither a claim nor credited sats. A later real receipt after a
+committed settle is persisted as `rejected` / `settled`. A payment hash already
+owned by another receipt or represented by any indexed ingest cannot be
+settled manually. If payer lookup throws after credit, the route still succeeds: it
 logs the gift-reply failure, omits payer fields from the notification, and
 skips the gift-reply. Note-author lookup runs **before** `claimZapPayment`;
 a throw there fails the settle with no claim, receipt, or ingest.
@@ -5408,8 +5412,10 @@ Failures:
 - store failure, including the direct ingest write, or a thrown note-author lookup → `503 { "error": "Messages are unavailable" }`
 
 `DEBUG_TOKEN` unset/blank returns 503; a missing or bad Bearer returns 401.
-The direct ingest write and post-credit effects are outside the locked atomic
-boundary and are retryable. The claim remains the payment's tombstone.
+Repayment ingest writes are outside their locked settlement boundary and are
+retryable; a normal credit's ingest is inside its atomic boundary. Post-credit
+effects run afterward, and their failures are logged and suppressed. The claim
+remains the payment's tombstone.
 
 ### `GET /debug/zap-ingests`
 

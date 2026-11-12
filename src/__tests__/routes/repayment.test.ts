@@ -1316,6 +1316,40 @@ describe('repayment from the in-app wallet', () => {
     expect(body.next).toEqual({ dayIndex: 0, recipientAccountId: WALLET_GIVER, sats: 150 });
   });
 
+  it('builds the public ledger and next share from one settlement snapshot', async () => {
+    const { app, messages } = await loanSetup();
+    for (const dayIndex of [0, 1]) {
+      for (const recipientAccountId of [WALLET_GIVER, NO_WALLET]) {
+        await messages.markRepaymentPaid({
+          messageId: CREDIT,
+          dayIndex,
+          recipientAccountId,
+          dueSats: 1,
+          paidAt: new Date(MONDAY),
+        });
+      }
+    }
+    const settled = await messages.listRepayments(CREDIT);
+    const repaymentReads = vi
+      .spyOn(messages, 'listRepayments')
+      .mockResolvedValueOnce([])
+      .mockResolvedValue(settled);
+    const partReads = vi.spyOn(messages, 'listRepaymentParts');
+
+    const res = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      daysPaid: number;
+      repayments: { status: string }[];
+      next: { dayIndex: number; recipientAccountId: string; sats: number } | null;
+    };
+    expect(repaymentReads).toHaveBeenCalledTimes(1);
+    expect(partReads).toHaveBeenCalledTimes(1);
+    expect(body.daysPaid).toBe(0);
+    expect(body.repayments.some((line) => line.status === 'due')).toBe(true);
+    expect(body.next).toEqual({ dayIndex: 0, recipientAccountId: WALLET_GIVER, sats: 150 });
+  });
+
   it('leaves dueSats null on lines that are not due and refuses a due fiat share without a rate', async () => {
     const early = await loanSetup({ now: Date.UTC(2027, 1, 27, 20) });
     const scheduled = (await (await early.app.request(`/messages/${CREDIT}/repayment`)).json()) as {

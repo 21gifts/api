@@ -158,6 +158,13 @@ interface DuePlan {
   due: ShareState[];
 }
 
+/** Already-read settlement data used to build one consistent due plan. */
+interface DuePlanSnapshot {
+  owed: Exclude<Awaited<ReturnType<typeof creditOwed>>['owed'], 'unavailable'>;
+  paid: Awaited<ReturnType<MessageStore['listRepayments']>>;
+  parts: Awaited<ReturnType<MessageStore['listRepaymentParts']>>;
+}
+
 /**
  * Since when each account can receive (`receivingAddress(...) !== null`).
  *
@@ -193,19 +200,33 @@ async function receiverMap(
  * @param deps - Store, auth, and the optional LNURL server.
  * @param row - Funded credit note.
  * @param nowMs - Clock.
+ * @param snapshot - Optional already-read debt and settlement rows.
  * @returns The plan, or `unavailable` when the debt cannot be computed.
  */
+function duePlan(
+  deps: RepaymentDeps,
+  row: MessageRow,
+  nowMs: number,
+  snapshot: DuePlanSnapshot,
+): Promise<DuePlan>;
+function duePlan(
+  deps: RepaymentDeps,
+  row: MessageRow,
+  nowMs: number,
+  snapshot?: undefined,
+): Promise<DuePlan | 'unavailable'>;
 async function duePlan(
   deps: RepaymentDeps,
   row: MessageRow,
   nowMs: number,
+  snapshot?: DuePlanSnapshot,
 ): Promise<DuePlan | 'unavailable'> {
   const termDays = row.goalTermDays as number;
   const fundedAt = row.goalFundedAt as Date;
   const daysDue = dueDayCount(fundedAt.getTime(), nowMs, termDays, row.id);
-  const paid = await deps.store.listRepayments(row.id);
-  const parts = await deps.store.listRepaymentParts(row.id);
-  const { owed } = await creditOwed(deps, row);
+  const paid = snapshot?.paid ?? (await deps.store.listRepayments(row.id));
+  const parts = snapshot?.parts ?? (await deps.store.listRepaymentParts(row.id));
+  const owed = snapshot?.owed ?? (await creditOwed(deps, row)).owed;
   if (owed === 'unavailable') {
     return 'unavailable';
   }
@@ -437,13 +458,14 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
   let next: { dayIndex: number; sats: number; recipientAccountId: string } | null = null;
   let price: Awaited<ReturnType<typeof sharePricer>> | null = null;
   if (fundedAt !== null) {
-    const share = await nextShare(deps, row, nowMs);
+    const plan = await duePlan(deps, row, nowMs, { owed, paid, parts });
+    price = plan.due.length > 0 ? await sharePricer(deps, row).catch(() => null) : null;
+    const share = await nextShare(deps, row, nowMs, { plan, price });
     if (share.error !== null) {
       return c.json({ error: share.error }, share.status);
     }
     daysDue = share.daysDue;
     daysPaid = share.daysPaid;
-    price = lines.some((line) => line.status === 'due') ? await sharePricer(deps, row) : null;
     if (share.share !== null) {
       const nextShareState = share.share;
       const nextLine = lines.find(
@@ -1610,11 +1632,21 @@ async function openCredit(
  * cannot receive are skipped; `waiting` says some were. A due share that
  * cannot be priced (a fiat loan with no rate, or a rate loader that fails) is
  * 503, whoever its giver is.
+ *
+ * @param deps - Store, auth, and optional rate loader.
+ * @param row - Funded credit note.
+ * @param nowMs - Clock.
+ * @param prepared - Optional plan snapshot and its already-read price function.
+ * @returns The next payable share or the route error state.
  */
 async function nextShare(
   deps: RepaymentDeps,
   row: MessageRow,
   nowMs: number,
+  prepared?: {
+    plan: DuePlan | 'unavailable';
+    price: Awaited<ReturnType<typeof sharePricer>> | null;
+  },
 ): Promise<{
   daysDue: number;
   daysPaid: number;
@@ -1631,7 +1663,7 @@ async function nextShare(
   error: string | null;
   status: 400 | 503;
 }> {
-  const plan = await duePlan(deps, row, nowMs);
+  const plan = prepared?.plan ?? (await duePlan(deps, row, nowMs));
   if (plan === 'unavailable') {
     return {
       daysDue: dueDayCount(
@@ -1653,7 +1685,8 @@ async function nextShare(
   }
   // Every due share needs a price, whether or not its giver can receive. A rate
   // loader that fails is the same 503 as a missing rate.
-  const price = await sharePricer(deps, row).catch(() => null);
+  const price =
+    prepared === undefined ? await sharePricer(deps, row).catch(() => null) : prepared.price;
   if (price === null || plan.due.some((share) => price(share.units) === null)) {
     return {
       daysDue,
