@@ -78,6 +78,16 @@ class FailingWalletStore implements WalletStore {
   ): Promise<WalletPaymentRecord[]> {
     return Promise.reject(new Error('sql failed'));
   }
+
+  findPaymentCounterparties(
+    _receiverAccountId: string,
+    _keys: readonly {
+      id: string;
+      direction: 'in' | 'out';
+    }[],
+  ): Promise<Map<string, string[]>> {
+    return Promise.reject(new Error('sql failed'));
+  }
 }
 
 async function walletApp(
