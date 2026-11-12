@@ -1433,6 +1433,25 @@ describe('POST /notifications/:id/read', () => {
     expect(await personal(ID_F)).toBe(true);
   });
 
+  it('keeps 200 with personal false and logs when the parent lookup throws', async () => {
+    const store = new InMemoryNotificationStore([note({ id: ID_A, parentId: 'mine-note' })]);
+    const messages = new InMemoryMessageStore([forumNote({ id: 'mine-note', accountId: 'acc' })]);
+    messages.getById = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(await seeded(), store, messages).request(
+      `/notifications/${ID_A}/read`,
+      { method: 'POST', headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { readAt: string; personal: boolean };
+    expect(body.readAt).toBe(READ_ISO);
+    expect(body.personal).toBe(false);
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'notifications.read.personal_failed'),
+    ).toBe(true);
+  });
+
   it('returns 503 when markRead throws', async () => {
     const store = new InMemoryNotificationStore();
     store.markRead = async () => {

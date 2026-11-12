@@ -370,14 +370,21 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
           }
         }
         const row = outcome.row;
-        const parent = await deps.messages.getById(row.parentId);
-        const personal = personalRowIds({
-          rows: [row],
-          recipientAccountId: account.id,
-          accounts: await deps.authStore.listAccounts(),
-          parentById: new Map(parent === undefined ? [] : [[row.parentId, parent]]),
-        });
-        return c.json(serializeNotification(row, personal.has(row.id)), 200);
+        let personal = false;
+        try {
+          const parent = await deps.messages.getById(row.parentId);
+          // notificationsMatchingLevel does not read `accounts`.
+          personal = personalRowIds({
+            rows: [row],
+            recipientAccountId: account.id,
+            accounts: [],
+            parentById: new Map(parent === undefined ? [] : [[row.parentId, parent]]),
+          }).has(row.id);
+        } catch {
+          // The row is already stamped; an unreadable parent counts as missing.
+          logEvent('notifications.read.personal_failed');
+        }
+        return c.json(serializeNotification(row, personal), 200);
       } catch {
         logEvent('notifications.read.failed');
         return c.json({ error: 'Notifications are unavailable' }, 503);

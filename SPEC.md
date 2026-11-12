@@ -8950,7 +8950,8 @@ Success → **Response** `200`:
 Bearer session required. `:id` is a UUID. Marks one notification read and
 returns that `PublicNotification` with `readAt` set, including `personal`
 from the same rule as the list (the parent note is looked up; a missing
-parent is not personal). A `moderator_proposal`
+parent is not personal; a failed parent lookup still answers **200** with
+`personal: false` and logs `notifications.read.personal_failed`). A `moderator_proposal`
 row is **200** with `readAt` still `null` (mark-read does not dismiss it).
 Unknown id, another account's notification, or a non-uuid `:id` → **404**
 `{ "error": "Not found" }`. Same **401** / **503** as list.

@@ -628,7 +628,7 @@ export async function notifyForumMentions(args: {
   created: MessageRow;
   /** Top-level note id. The push opens `created.id`, which may be this note or a reply. */
   parentId: string;
-  /** True when the related top-level note would already notify at level `active`. */
+  /** True when the related top-level note is active; level `active` keeps the mark either way. */
   isActive: boolean;
   inboxUnreadCount?: (accountId: string) => Promise<number>;
 }): Promise<void> {
