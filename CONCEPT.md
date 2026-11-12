@@ -1163,4 +1163,3 @@ repository — they're intentionally not part of this project's scope.
 _This document is the canonical source for product-level decisions on 21.gifts.
 Hosting, secrets, DNS, and any other operator-specific details are out of scope
 and live in the operator's separate infrastructure repository._
-
