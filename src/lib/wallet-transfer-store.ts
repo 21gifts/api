@@ -58,6 +58,7 @@ export interface WalletTokenTransactionRecord {
   direction: WalletTransferDirection;
   amount: string;
   counterpartyPubkeys: string[];
+  sparkInvoices: string[];
   type: 'create' | 'mint' | 'transfer' | 'unknown';
   status: WalletTokenTransactionStatus;
   transactionCreatedAt: Date | null;
@@ -134,23 +135,29 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
   readonly #tokens = new Map<string, WalletTokenTransactionRecord>();
   readonly #fullSyncAt = new Map<string, Date>();
   readonly #wallets: WalletTransferWallet[];
-  readonly #accountForPubkey: (pubkey: string) => Promise<string | null>;
+  readonly #verifiedAccountForPubkey: (pubkey: string) => Promise<string | null>;
+  readonly #previousAccountForPubkey: (pubkey: string) => Promise<string | null>;
   readonly #isShop: (accountId: string) => Promise<boolean>;
 
   /**
    * Create an in-memory transfer store.
    *
-   * @param options - Optional wallets, key resolver, and shop predicate.
+   * @param options - Optional wallets, verified-current and previous-key resolvers,
+   *   and shop predicate.
    */
   constructor(
     options: {
       wallets?: readonly WalletTransferWallet[];
-      accountForPubkey?: (pubkey: string) => Promise<string | null>;
+      verifiedAccountForPubkey?: (pubkey: string) => Promise<string | null>;
+      previousAccountForPubkey?: (pubkey: string) => Promise<string | null>;
       isShop?: (accountId: string) => Promise<boolean>;
     } = {},
   ) {
     this.#wallets = (options.wallets ?? []).map((wallet) => ({ ...wallet }));
-    this.#accountForPubkey = options.accountForPubkey ?? (() => Promise.resolve(null));
+    this.#verifiedAccountForPubkey =
+      options.verifiedAccountForPubkey ?? (() => Promise.resolve(null));
+    this.#previousAccountForPubkey =
+      options.previousAccountForPubkey ?? (() => Promise.resolve(null));
     this.#isShop = options.isShop ?? (() => Promise.resolve(false));
   }
 
@@ -247,6 +254,7 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
       transactionCreatedAt: dateCopy(row.transactionCreatedAt),
       transactionExpiryAt: dateCopy(row.transactionExpiryAt),
       counterpartyPubkeys: [...row.counterpartyPubkeys],
+      sparkInvoices: [...row.sparkInvoices],
       seenAt: new Date(row.seenAt.getTime()),
     });
     return Promise.resolve();
@@ -281,6 +289,13 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
       }
     }
     return false;
+  }
+
+  async #accountForPubkey(pubkey: string): Promise<string | null> {
+    return (
+      (await this.#verifiedAccountForPubkey(pubkey)) ??
+      (await this.#previousAccountForPubkey(pubkey))
+    );
   }
 }
 
@@ -317,8 +332,9 @@ const SHOP_EXISTS_SQL = `EXISTS (
   FROM unnest(wallet_transfer.counterparty_pubkeys) AS counterparty(pubkey)
   JOIN LATERAL (
     SELECT COALESCE(
-      (SELECT id FROM account WHERE spark_pubkey = counterparty.pubkey
-       ORDER BY (spark_pubkey_verified_at IS NOT NULL) DESC LIMIT 1),
+      (SELECT id FROM account
+       WHERE spark_pubkey = counterparty.pubkey AND spark_pubkey_verified_at IS NOT NULL
+       ORDER BY id LIMIT 1),
       (SELECT account_id FROM previous_wallet WHERE spark_pubkey = counterparty.pubkey
        ORDER BY replaced_at DESC, account_id LIMIT 1)
     ) AS account_id
@@ -445,7 +461,9 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
            transfer_updated_at, first_seen_at, last_seen_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],
            COALESCE(
-             (SELECT id FROM account WHERE spark_pubkey = $8 ORDER BY (spark_pubkey_verified_at IS NOT NULL) DESC LIMIT 1),
+             (SELECT id FROM account
+              WHERE spark_pubkey = $8 AND spark_pubkey_verified_at IS NOT NULL
+              ORDER BY id LIMIT 1),
              (SELECT account_id FROM previous_wallet WHERE spark_pubkey = $8 ORDER BY replaced_at DESC, account_id LIMIT 1)
            ),$10,$11,$12,$13,$13)
          ON CONFLICT (account_id, wallet_pubkey, transfer_id) DO UPDATE SET
@@ -505,14 +523,15 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
     await this.sql.execute(
       `INSERT INTO wallet_token_transaction
          (account_id, wallet_pubkey, transaction_hash, token_identifier, direction, amount,
-          counterparty_pubkeys, type, status, transaction_created_at, transaction_expiry_at,
-          first_seen_at, last_seen_at)
-       VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::text[],$8,$9,$10,$11,$12,$12)
+          counterparty_pubkeys, spark_invoices, type, status, transaction_created_at,
+          transaction_expiry_at, first_seen_at, last_seen_at)
+       VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::text[],$8::text[],$9,$10,$11,$12,$13,$13)
        ON CONFLICT (account_id, wallet_pubkey, transaction_hash) DO UPDATE SET
          token_identifier = EXCLUDED.token_identifier,
          direction = EXCLUDED.direction,
          amount = EXCLUDED.amount,
          counterparty_pubkeys = EXCLUDED.counterparty_pubkeys,
+         spark_invoices = EXCLUDED.spark_invoices,
          type = EXCLUDED.type,
          status = EXCLUDED.status,
          transaction_created_at = EXCLUDED.transaction_created_at,
@@ -526,6 +545,7 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
         row.direction,
         row.amount,
         postgresTextArrayLiteral(row.counterpartyPubkeys),
+        postgresTextArrayLiteral(row.sparkInvoices),
         row.type,
         row.status,
         row.transactionCreatedAt,
@@ -553,8 +573,9 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
          CROSS JOIN LATERAL unnest(payment.counterparty_pubkeys) AS counterparty(pubkey)
          JOIN LATERAL (
            SELECT COALESCE(
-             (SELECT id FROM account WHERE spark_pubkey = counterparty.pubkey
-              ORDER BY (spark_pubkey_verified_at IS NOT NULL) DESC LIMIT 1),
+             (SELECT id FROM account
+              WHERE spark_pubkey = counterparty.pubkey AND spark_pubkey_verified_at IS NOT NULL
+              ORDER BY id LIMIT 1),
              (SELECT account_id FROM previous_wallet WHERE spark_pubkey = counterparty.pubkey
               ORDER BY replaced_at DESC, account_id LIMIT 1)
            ) AS account_id

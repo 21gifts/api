@@ -109,7 +109,9 @@ function pingFetch(
       throw opts.pingError;
     }
     const pingStatus = opts.pingStatus !== undefined ? opts.pingStatus : 200;
-    return new Response(null, { status: pingStatus });
+    return new Response(pingStatus === 200 ? JSON.stringify({ status: 'accepted' }) : null, {
+      status: pingStatus,
+    });
   };
 }
 
@@ -122,7 +124,8 @@ describe('NoopSpendPing', () => {
 });
 
 describe('resolveSpendPing', () => {
-  const fetchImpl: FetchFn = async () => new Response(null, { status: 200 });
+  const fetchImpl: FetchFn = async () =>
+    new Response(JSON.stringify({ status: 'accepted' }), { status: 200 });
 
   it('returns undefined when SPEND_URL is missing', () => {
     expect(resolveSpendPing({ SPEND_API_TOKEN: TOKEN }, fetchImpl)).toBeUndefined();
@@ -152,7 +155,7 @@ describe('resolveSpendPing', () => {
     let seen = '';
     const recording: FetchFn = async (input) => {
       seen = String(input);
-      return new Response(null, { status: 200 });
+      return new Response(JSON.stringify({ status: 'accepted' }), { status: 200 });
     };
     const ping = resolveSpendPing(
       { SPEND_URL: ' https://spend.example/// ', SPEND_API_TOKEN: ` ${TOKEN} ` },
@@ -1595,12 +1598,26 @@ describe('HttpSpendPing stored rows by account', () => {
 describe('HttpPayoutSink', () => {
   const sinkOpts = { spendUrl: SPEND_URL, token: TOKEN };
 
-  it('maps ping bodies by ok status and never throws', async () => {
+  it('maps ping bodies with the same strict response contract and never throws', async () => {
     const accepted = new HttpPayoutSink({
+      ...sinkOpts,
+      fetchImpl: async () => new Response(null, { status: 202 }),
+    });
+    expect(await accepted.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'accepted' });
+    const empty200 = new HttpPayoutSink({
       ...sinkOpts,
       fetchImpl: async () => new Response(null, { status: 200 }),
     });
-    expect(await accepted.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'accepted' });
+    expect(await empty200.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'failed' });
+    const skipped = new HttpPayoutSink({
+      ...sinkOpts,
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ status: 'skipped', reason: 'not_ready' }), { status: 200 }),
+    });
+    expect(await skipped.deliver(ADDRESS, { address: ADDRESS })).toEqual({
+      outcome: 'skipped',
+      reason: 'not_ready',
+    });
     const failed = new HttpPayoutSink({
       ...sinkOpts,
       fetchImpl: async () => new Response(null, { status: 500 }),

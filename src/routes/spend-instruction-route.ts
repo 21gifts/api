@@ -135,12 +135,11 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
     let grantStatus: SpendGrantStatus | undefined;
     if (account !== undefined) {
       hasPasskey = await deps.authStore.accountHasPasskey(account.id);
+      messageId = await latestTodayMediaPostId(deps.messageStore, account.id, nowMs);
+      hasMedia = messageId !== null;
       const excludeId = account.profileMessageId ?? null;
-      hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
-      if (hasPosted) {
-        messageId = await latestTodayMediaPostId(deps.messageStore, account.id, nowMs);
-        hasMedia = messageId !== null;
-      }
+      hasPosted =
+        hasMedia || (await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId));
       if (account.role !== 'basis') {
         const payout = await loadPayoutEligibility(
           deps.fundingStore,

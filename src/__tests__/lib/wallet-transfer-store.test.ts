@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import {
   InMemoryWalletTransferStore,
   PostgresWalletTransferStore,
@@ -42,6 +43,7 @@ function tokenRow(
     direction: 'in',
     amount: '21',
     counterpartyPubkeys: [],
+    sparkInvoices: [],
     type: 'mint',
     status: 'started',
     transactionCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
@@ -55,7 +57,7 @@ describe('InMemoryWalletTransferStore', () => {
   it('lists wallets, tracks pending state, updates, and verifies shop days', async () => {
     const store = new InMemoryWalletTransferStore({
       wallets: [{ accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' }],
-      accountForPubkey: async (pubkey) => (pubkey === SHOP ? 'shop-account' : null),
+      verifiedAccountForPubkey: async (pubkey) => (pubkey === SHOP ? 'shop-account' : null),
       isShop: async (accountId) => accountId === 'shop-account',
     });
     await expect(store.listWallets()).resolves.toEqual([
@@ -115,6 +117,7 @@ describe('InMemoryWalletTransferStore', () => {
       direction: 'in',
       amount: '21',
       counterpartyPubkeys: [],
+      sparkInvoices: ['spark1mint'],
       type: 'mint',
       status: 'finalized',
       transactionCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
@@ -175,7 +178,7 @@ describe('InMemoryWalletTransferStore', () => {
 
   it('treats counterparties as non-shops when no shop predicate is provided', async () => {
     const store = new InMemoryWalletTransferStore({
-      accountForPubkey: async (pubkey) => (pubkey === MEMBER ? 'member-account' : null),
+      verifiedAccountForPubkey: async (pubkey) => (pubkey === MEMBER ? 'member-account' : null),
     });
     await expect(
       store.upsertTransfer(
@@ -211,7 +214,7 @@ describe('InMemoryWalletTransferStore', () => {
     );
 
     const edge = new InMemoryWalletTransferStore({
-      accountForPubkey: async (pubkey) => {
+      verifiedAccountForPubkey: async (pubkey) => {
         if (pubkey === SHOP) return 'shop-account';
         if (pubkey === OWNER) return 'account';
         if (pubkey === MEMBER) return 'member-account';
@@ -263,6 +266,51 @@ describe('InMemoryWalletTransferStore', () => {
       await expect(store.upsertTransfer(row(change))).resolves.toMatchObject({ updated: true });
     }
   });
+
+  it('keeps hasShopPayment false when an unverified shop account claims the payer key', async () => {
+    const store = new InMemoryWalletTransferStore({
+      verifiedAccountForPubkey: async () => null,
+      previousAccountForPubkey: async () => null,
+      isShop: async (accountId) => accountId === 'unverified-shop',
+    });
+    await store.upsertTransfer(
+      row({
+        status: 'completed',
+        counterpartyPubkey: OWNER,
+        counterpartyPubkeys: [OWNER],
+      }),
+    );
+
+    await expect(store.hasShopPayment('account', '2026-11-12', '2026-11-12')).resolves.toBe(false);
+  });
+
+  it('keeps a previous_wallet shop key true when another account claims it unverified', async () => {
+    const verified = vi.fn(async () => null);
+    const previous = vi.fn(async (pubkey: string) => (pubkey === SHOP ? 'shop-account' : null));
+    const store = new InMemoryWalletTransferStore({
+      verifiedAccountForPubkey: verified,
+      previousAccountForPubkey: previous,
+      isShop: async (accountId) => accountId === 'shop-account',
+    });
+    await store.upsertTransfer(row({ status: 'completed' }));
+
+    await expect(store.hasShopPayment('account', '2026-11-12', '2026-11-12')).resolves.toBe(true);
+    expect(verified).toHaveBeenCalledWith(SHOP);
+    expect(previous).toHaveBeenCalledWith(SHOP);
+  });
+
+  it('deterministically prefers a verified current owner over previous_wallet', async () => {
+    const previous = vi.fn(async () => 'old-shop');
+    const store = new InMemoryWalletTransferStore({
+      verifiedAccountForPubkey: async () => 'verified-member',
+      previousAccountForPubkey: previous,
+      isShop: async (accountId) => accountId === 'old-shop',
+    });
+    await store.upsertTransfer(row({ status: 'completed' }));
+
+    await expect(store.hasShopPayment('account', '2026-11-12', '2026-11-12')).resolves.toBe(false);
+    expect(previous).not.toHaveBeenCalled();
+  });
 });
 
 describe('PostgresWalletTransferStore', () => {
@@ -301,6 +349,8 @@ describe('PostgresWalletTransferStore', () => {
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(true);
     expect(query.mock.calls.at(-1)?.[0]).toContain('JOIN message AS shop');
     expect(query.mock.calls.at(-1)?.[0]).toContain('unnest(payment.counterparty_pubkeys)');
+    expect(query.mock.calls.at(-1)?.[0]).toContain('spark_pubkey_verified_at IS NOT NULL');
+    expect(query.mock.calls.at(-1)?.[0]).toContain('ORDER BY replaced_at DESC, account_id');
     expect(query.mock.calls.at(-1)?.[0]).toContain("AT TIME ZONE 'UTC'");
   });
 
@@ -344,6 +394,7 @@ describe('PostgresWalletTransferStore', () => {
       direction: 'out',
       amount: '256',
       counterpartyPubkeys: [MEMBER, SHOP],
+      sparkInvoices: ['spark1one', 'spark1two'],
       type: 'transfer',
       status: 'revealed',
       transactionCreatedAt: null,
@@ -354,6 +405,9 @@ describe('PostgresWalletTransferStore', () => {
     expect(execute.mock.calls[0]?.[0]).toContain('INSERT INTO wallet_token_transaction');
     expect(execute.mock.calls[0]?.[0]).not.toContain('payload');
     expect(execute.mock.calls[0]?.[1]).toContain('256');
+    expect(execute.mock.calls[0]?.[1]?.[7]).toBe(
+      postgresTextArrayLiteral(['spark1one', 'spark1two']),
+    );
     expect(execute.mock.calls[1]?.[0]).toContain('INSERT INTO wallet_transfer_sync');
   });
 

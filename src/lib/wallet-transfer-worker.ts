@@ -277,6 +277,7 @@ async function syncWallet(
         direction: transaction.direction,
         amount: transaction.amount,
         counterpartyPubkeys: transaction.counterpartyPubkeys,
+        sparkInvoices: transaction.sparkInvoices,
         type: transaction.type,
         status: tokenStatus(transaction.status),
         transactionCreatedAt: transaction.createdTime ?? null,

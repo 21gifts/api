@@ -6,6 +6,7 @@ CREATE TABLE wallet_token_transaction (
   direction text NOT NULL CHECK (direction IN ('in', 'out')),
   amount numeric(39, 0) NOT NULL CHECK (amount >= 0),
   counterparty_pubkeys text[] NOT NULL,
+  spark_invoices text[] NOT NULL DEFAULT ARRAY[]::text[],
   type text NOT NULL CHECK (type IN ('create', 'mint', 'transfer', 'unknown')),
   status text NOT NULL CHECK (status IN ('started', 'signed', 'revealed', 'finalized', 'cancelled', 'unknown')),
   transaction_created_at timestamptz,

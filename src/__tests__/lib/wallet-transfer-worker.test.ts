@@ -96,6 +96,7 @@ describe('runWalletTransferTick', () => {
         direction: 'in' as const,
         amount: '0',
         counterpartyPubkeys: [],
+        sparkInvoices: [],
         type: 'unknown' as const,
       })),
       hasNextPage: false,
@@ -296,8 +297,10 @@ describe('runWalletTransferTick', () => {
     const ping = vi.fn(async () => {
       pingAttempts += 1;
       return pingAttempts === 1
-        ? ({ status: 'failed' } as const)
-        : ({ status: 'accepted' } as const);
+        ? ({ status: 'skipped', reason: 'not_ready' } as const)
+        : pingAttempts === 2
+          ? ({ status: 'failed' } as const)
+          : ({ status: 'accepted' } as const);
     });
     const deps = {
       viewer: {
@@ -353,14 +356,15 @@ describe('runWalletTransferTick', () => {
       now: () => now,
     };
 
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
     expect((await runWalletTransferTick(deps)).get(`retry-account\u0000${OWNER}`)).toBe(true);
     expect((await runWalletTransferTick(deps)).size).toBe(0);
     expect((await runWalletTransferTick(deps)).size).toBe(0);
-    expect(ping).toHaveBeenCalledTimes(2);
+    expect(ping).toHaveBeenCalledTimes(3);
     now += 86_400_000;
     dailyPaid = true;
     expect((await runWalletTransferTick(deps)).size).toBe(0);
-    expect(ping).toHaveBeenCalledTimes(2);
+    expect(ping).toHaveBeenCalledTimes(3);
   });
 
   it('continues catch-up eligibility without reading gifts when the account has no username', async () => {
@@ -1365,6 +1369,7 @@ describe('wallet transfer worker edge decisions', () => {
           direction: 'in' as const,
           amount: '1',
           counterpartyPubkeys: [],
+          sparkInvoices: ['spark1token'],
           type: 'mint' as const,
           status: 2,
           createdTime: new Date('2026-11-12T10:00:00.000Z'),

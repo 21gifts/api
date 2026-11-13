@@ -189,8 +189,9 @@ describe('ensureSparkViewer', () => {
     await expect(opened.viewer.balance('spark1address')).resolves.toBe(0);
   });
 
-  it('normalizes allow-listed token facts and cursor pagination', async () => {
+  it('maps mint amount, issuer counterparty, invoice, and cursor pagination', async () => {
     const hash = new Uint8Array(32).fill(5);
+    const issuer = new Uint8Array([3, ...Array<number>(32).fill(8)]);
     getTokenTransactions
       .mockResolvedValueOnce({
         transactions: [
@@ -198,7 +199,10 @@ describe('ensureSparkViewer', () => {
             tokenTransactionHash: hash,
             status: 2,
             tokenTransaction: {
-              tokenInputs: { $case: 'mintInput', mintInput: { tokenIdentifier: hash } },
+              tokenInputs: {
+                $case: 'mintInput',
+                mintInput: { tokenIdentifier: hash, issuerPublicKey: issuer },
+              },
               clientCreatedTimestamp: new Date('2026-11-12T02:00:00.000Z'),
               expiryTime: new Date('2026-11-12T02:05:00.000Z'),
               tokenOutputs: [
@@ -208,6 +212,7 @@ describe('ensureSparkViewer', () => {
                   tokenAmount: Uint8Array.of(21),
                 },
               ],
+              invoiceAttachments: [{ sparkInvoice: 'spark1mint' }],
             },
           },
           { tokenTransactionHash: new Uint8Array(32).fill(6), status: 10 },
@@ -230,7 +235,8 @@ describe('ensureSparkViewer', () => {
           tokenIdentifier: '05'.repeat(32),
           direction: 'in',
           amount: '21',
-          counterpartyPubkeys: [],
+          counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+          sparkInvoices: ['spark1mint'],
           type: 'mint',
           status: 2,
           createdTime: new Date('2026-11-12T02:00:00.000Z'),
@@ -511,7 +517,7 @@ describe('Spark viewer SDK value mapping', () => {
           tokenTransactionHash: Uint8Array.of(1),
           status: 1,
           tokenTransaction: {
-            tokenInputs: { $case: 'createInput' },
+            tokenInputs: { $case: 'createInput', createInput: { issuerPublicKey: PUBLIC_BYTES } },
             clientCreatedTimestamp: 'not-a-date',
             tokenOutputs: [
               null,
@@ -565,6 +571,8 @@ describe('Spark viewer SDK value mapping', () => {
         direction: 'in',
         amount: '2',
         tokenIdentifier: null,
+        counterpartyPubkeys: [PUBLIC_KEY],
+        sparkInvoices: [],
         createdTime: undefined,
       }),
       expect.objectContaining({
@@ -573,6 +581,8 @@ describe('Spark viewer SDK value mapping', () => {
         direction: 'in',
         amount: '0',
         tokenIdentifier: '09',
+        counterpartyPubkeys: [],
+        sparkInvoices: [],
       }),
       expect.objectContaining({
         hash: '03',
@@ -592,35 +602,398 @@ describe('Spark viewer SDK value mapping', () => {
     expect(page.rawCount).toBe(4);
   });
 
-  it('stores only allow-listed token facts and excludes revocation secrets', async () => {
-    const createdTime = new Date('2025-02-03T04:05:06.000Z');
+  it('maps receive-with-change as incoming and send-with-change as outgoing from spent owners', async () => {
     const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
+    const receiveInputHash = new Uint8Array(32).fill(0x11);
+    const sendInputHash = new Uint8Array(32).fill(0x22);
+    getTokenTransactions
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: new Uint8Array(32).fill(0x33),
+            status: 2,
+            tokenTransaction: {
+              tokenInputs: {
+                $case: 'transferInput',
+                transferInput: {
+                  outputsToSpend: [
+                    { prevTokenTransactionHash: receiveInputHash, prevTokenTransactionVout: 0 },
+                  ],
+                },
+              },
+              tokenOutputs: [
+                { ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(21) },
+                { ownerPublicKey: otherKey, tokenAmount: Uint8Array.of(79) },
+              ],
+              invoiceAttachments: [{ sparkInvoice: 'spark1receive' }],
+            },
+            confirmationMetadata: {
+              spentTokenOutputsMetadata: [{ outputId: 'receive-spent' }],
+            },
+          },
+          {
+            tokenTransactionHash: new Uint8Array(32).fill(0x44),
+            status: 2,
+            tokenTransaction: {
+              tokenInputs: {
+                $case: 'transferInput',
+                transferInput: {
+                  outputsToSpend: [
+                    { prevTokenTransactionHash: sendInputHash, prevTokenTransactionVout: 0 },
+                  ],
+                },
+              },
+              tokenOutputs: [
+                { ownerPublicKey: otherKey, tokenAmount: Uint8Array.of(30) },
+                { ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(70) },
+              ],
+              invoiceAttachments: [{ sparkInvoice: 'spark1send' }],
+            },
+            confirmationMetadata: {
+              spentTokenOutputsMetadata: [{ outputId: 'send-spent' }],
+            },
+          },
+        ],
+        pageResponse: null,
+      })
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: new Uint8Array(32).fill(0x99),
+            status: 2,
+            tokenTransaction: {
+              tokenOutputs: [
+                { id: 'receive-spent', ownerPublicKey: otherKey, tokenAmount: Uint8Array.of(100) },
+              ],
+            },
+          },
+        ],
+        pageResponse: { hasNextPage: true, nextCursor: 'lookup-next' },
+      })
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: sendInputHash,
+            status: 2,
+            tokenTransaction: {
+              tokenOutputs: [
+                { id: 'send-spent', ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(100) },
+              ],
+            },
+          },
+        ],
+        pageResponse: { hasNextPage: false },
+      });
+    const opened = await ensureSparkViewer(undefined, undefined);
+
+    const page = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark1address',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+    });
+
+    expect(page.transactions).toEqual([
+      expect.objectContaining({
+        direction: 'in',
+        amount: '21',
+        counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+        sparkInvoices: ['spark1receive'],
+      }),
+      expect.objectContaining({
+        direction: 'out',
+        amount: '30',
+        counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+        sparkInvoices: ['spark1send'],
+      }),
+    ]);
+    expect(getTokenTransactions.mock.calls[1]?.[0]).toMatchObject({
+      outputIds: ['receive-spent', 'send-spent'],
+      direction: 'NEXT',
+    });
+    expect(getTokenTransactions.mock.calls[2]?.[0]).toMatchObject({ cursor: 'lookup-next' });
+  });
+
+  it('uses a local outpoint owner and never guesses ownership for an unresolved input', async () => {
+    const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
+    const previousHash = new Uint8Array(32).fill(0x61);
     getTokenTransactions.mockResolvedValueOnce({
       transactions: [
         {
-          tokenTransactionHash: new Uint8Array([0xab, 0xcd]),
-          status: 3,
+          tokenTransactionHash: previousHash,
+          status: 2,
           tokenTransaction: {
-            tokenInputs: { $case: 'transferInput', transferInput: { outputsToSpend: [] } },
-            clientCreatedTimestamp: createdTime,
-            tokenOutputs: [
-              {
-                ownerPublicKey: otherKey,
-                tokenIdentifier: Uint8Array.of(9),
-                tokenAmount: Uint8Array.of(1, 0),
-                seWithdrawalSignature: Uint8Array.of(4, 5),
+            tokenOutputs: [null, { ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(100) }],
+          },
+        },
+        {
+          tokenTransactionHash: new Uint8Array(32).fill(0x62),
+          status: 2,
+          tokenTransaction: {
+            tokenInputs: {
+              $case: 'transferInput',
+              transferInput: {
+                outputsToSpend: [
+                  null,
+                  { prevTokenTransactionHash: 'bad', prevTokenTransactionVout: 0 },
+                  { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 1.5 },
+                  { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: -1 },
+                  { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 1 },
+                ],
               },
+            },
+            tokenOutputs: [
+              { ownerPublicKey: otherKey, tokenAmount: Uint8Array.of(25) },
+              { ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(75) },
             ],
           },
-          confirmationMetadata: {
-            spentTokenOutputsMetadata: [
-              { outputId: 'secret-output', revocationSecret: Uint8Array.of(1, 2, 3) },
+        },
+        {
+          tokenTransactionHash: new Uint8Array(32).fill(0x63),
+          status: 2,
+          tokenTransaction: {
+            tokenInputs: {
+              $case: 'transferInput',
+              transferInput: {
+                outputsToSpend: [
+                  {
+                    prevTokenTransactionHash: new Uint8Array(32).fill(0x64),
+                    prevTokenTransactionVout: 0,
+                  },
+                ],
+              },
+            },
+            tokenOutputs: [
+              { ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(5) },
+              { ownerPublicKey: otherKey, tokenAmount: Uint8Array.of(95) },
             ],
           },
+          confirmationMetadata: { spentTokenOutputsMetadata: [{ outputId: '' }] },
         },
       ],
       pageResponse: null,
     });
+    const opened = await ensureSparkViewer(undefined, undefined);
+
+    const page = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark1address',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+    });
+
+    expect(page.transactions[1]).toMatchObject({
+      direction: 'out',
+      amount: '25',
+      counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+    });
+    expect(page.transactions[2]).toMatchObject({
+      direction: 'in',
+      amount: '5',
+      counterpartyPubkeys: [],
+    });
+    expect(getTokenTransactions).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves an output owner by outpoint from an older wallet-history page', async () => {
+    const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
+    const previousHash = new Uint8Array(32).fill(0x68);
+    getTokenTransactions
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: new Uint8Array(32).fill(0x69),
+            status: 2,
+            tokenTransaction: {
+              tokenInputs: {
+                $case: 'transferInput',
+                transferInput: {
+                  outputsToSpend: [
+                    { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 0 },
+                  ],
+                },
+              },
+              tokenOutputs: [
+                { ownerPublicKey: otherKey, tokenAmount: Uint8Array.of(40) },
+                { ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(60) },
+              ],
+            },
+          },
+        ],
+        pageResponse: { hasPreviousPage: true, previousCursor: 'older-history' },
+      })
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: previousHash,
+            status: 2,
+            tokenTransaction: {
+              tokenOutputs: [{ ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(100) }],
+            },
+          },
+        ],
+        pageResponse: null,
+      });
+    const opened = await ensureSparkViewer(undefined, undefined);
+
+    const page = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark1address',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+    });
+
+    expect(page.transactions[0]).toMatchObject({
+      direction: 'out',
+      amount: '40',
+      counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+    });
+    expect(getTokenTransactions.mock.calls[1]?.[0]).toMatchObject({
+      sparkAddresses: ['spark1address'],
+      cursor: 'older-history',
+      direction: 'PREVIOUS',
+    });
+  });
+
+  it('rejects a non-advancing token-input lookup cursor', async () => {
+    const previousHash = new Uint8Array(32).fill(0x71);
+    for (const nextCursor of [undefined, '', 'same'] as const) {
+      getTokenTransactions
+        .mockResolvedValueOnce({
+          transactions: [
+            {
+              tokenTransactionHash: new Uint8Array(32).fill(0x72),
+              status: 2,
+              tokenTransaction: {
+                tokenInputs: {
+                  $case: 'transferInput',
+                  transferInput: {
+                    outputsToSpend: [
+                      { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 0 },
+                    ],
+                  },
+                },
+                tokenOutputs: [],
+              },
+              confirmationMetadata: { spentTokenOutputsMetadata: [{ outputId: 'spent' }] },
+            },
+          ],
+          pageResponse: null,
+        })
+        .mockResolvedValueOnce({
+          transactions: null,
+          pageResponse: { hasNextPage: true, nextCursor },
+        });
+      if (nextCursor === 'same') {
+        getTokenTransactions.mockResolvedValueOnce({
+          transactions: [],
+          pageResponse: { hasNextPage: true, nextCursor },
+        });
+      }
+      const opened = await ensureSparkViewer(undefined, undefined);
+
+      await expect(
+        opened.viewer.tokenTransactions({
+          sparkAddress: 'spark1address',
+          walletPubkey: PUBLIC_KEY,
+          pageSize: 100,
+        }),
+      ).rejects.toThrow('token input cursor did not advance');
+    }
+  });
+
+  it('rejects a repeated token-input history cursor', async () => {
+    const previousHash = new Uint8Array(32).fill(0x73);
+    getTokenTransactions
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: new Uint8Array(32).fill(0x74),
+            status: 2,
+            tokenTransaction: {
+              tokenInputs: {
+                $case: 'transferInput',
+                transferInput: {
+                  outputsToSpend: [
+                    { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 0 },
+                  ],
+                },
+              },
+              tokenOutputs: [],
+            },
+          },
+        ],
+        pageResponse: { hasPreviousPage: true, previousCursor: 'same' },
+      })
+      .mockResolvedValueOnce({
+        transactions: null,
+        pageResponse: { hasPreviousPage: true, previousCursor: 'same' },
+      });
+    const opened = await ensureSparkViewer(undefined, undefined);
+
+    await expect(
+      opened.viewer.tokenTransactions({
+        sparkAddress: 'spark1address',
+        walletPubkey: PUBLIC_KEY,
+        pageSize: 100,
+      }),
+    ).rejects.toThrow('token input history cursor did not advance');
+  });
+
+  it('stores only allow-listed token facts and excludes revocation secrets', async () => {
+    const createdTime = new Date('2025-02-03T04:05:06.000Z');
+    const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
+    const previousHash = new Uint8Array(32).fill(0x55);
+    getTokenTransactions
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: new Uint8Array([0xab, 0xcd]),
+            status: 3,
+            tokenTransaction: {
+              tokenInputs: {
+                $case: 'transferInput',
+                transferInput: {
+                  outputsToSpend: [
+                    { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 0 },
+                  ],
+                },
+              },
+              clientCreatedTimestamp: createdTime,
+              tokenOutputs: [
+                {
+                  ownerPublicKey: otherKey,
+                  tokenIdentifier: Uint8Array.of(9),
+                  tokenAmount: Uint8Array.of(1, 0),
+                  seWithdrawalSignature: Uint8Array.of(4, 5),
+                },
+              ],
+              invoiceAttachments: [null, { sparkInvoice: '' }, { sparkInvoice: 'spark1safe' }],
+            },
+            confirmationMetadata: {
+              spentTokenOutputsMetadata: [
+                { outputId: 'secret-output', revocationSecret: Uint8Array.of(1, 2, 3) },
+              ],
+            },
+          },
+        ],
+        pageResponse: null,
+      })
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: previousHash,
+            status: 2,
+            tokenTransaction: {
+              tokenOutputs: [
+                {
+                  id: 'secret-output',
+                  ownerPublicKey: PUBLIC_BYTES,
+                  tokenAmount: Uint8Array.of(1, 0),
+                },
+              ],
+            },
+          },
+        ],
+        pageResponse: null,
+      });
     const opened = await ensureSparkViewer(undefined, undefined);
     const page = await opened.viewer.tokenTransactions({
       sparkAddress: 'spark1address',
@@ -635,6 +1008,7 @@ describe('Spark viewer SDK value mapping', () => {
       direction: 'out',
       amount: '256',
       counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+      sparkInvoices: ['spark1safe'],
       type: 'transfer',
       status: 3,
       createdTime,

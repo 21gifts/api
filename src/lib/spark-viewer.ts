@@ -1,6 +1,10 @@
 /** Read-only Spark viewer key custody and SDK adapter. */
 
-import { SparkReadonlyClient, deriveViewerIdentityPublicKey } from '@buildonspark/spark-sdk';
+import {
+  SparkReadonlyClient,
+  deriveViewerIdentityPublicKey,
+  type QueryTokenTransactionsParams,
+} from '@buildonspark/spark-sdk';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { sealAesGcmEnvelope } from '@/lib/aes-gcm-envelope';
@@ -45,6 +49,7 @@ export interface SparkViewerTokenTransaction {
   direction: 'in' | 'out';
   amount: string;
   counterpartyPubkeys: string[];
+  sparkInvoices: string[];
   type: 'create' | 'mint' | 'transfer' | 'unknown';
   status: number;
   createdTime: Date | undefined;
@@ -155,12 +160,7 @@ type SdkViewer = {
     types: readonly number[];
     createdAfter?: Date;
   }): Promise<SdkTransferPage>;
-  getTokenTransactions(input: {
-    sparkAddresses: string[];
-    pageSize: number;
-    cursor?: string;
-    direction: 'PREVIOUS';
-  }): Promise<SdkTokenPage>;
+  getTokenTransactions(input: QueryTokenTransactionsParams): Promise<SdkTokenPage>;
   getOwnedBalance(sparkAddress: string): Promise<unknown>;
 };
 
@@ -262,9 +262,140 @@ function uint128Decimal(value: unknown): bigint | null {
   return amount;
 }
 
+function compressedPublicKey(value: unknown): string | null {
+  if (!(value instanceof Uint8Array)) return null;
+  const key = bytesToHex(value);
+  return /^0[23][0-9a-f]{64}$/.test(key) ? key : null;
+}
+
+function transactionHashOf(row: Record<string, unknown>): string | null {
+  const hash = row['tokenTransactionHash'];
+  return hash instanceof Uint8Array ? bytesToHex(hash) : null;
+}
+
+function tokenOutputOwners(values: readonly unknown[]): Array<{
+  vout: number;
+  id: string | null;
+  owner: string;
+  amount: bigint;
+  tokenIdentifier: string | null;
+}> {
+  return values.flatMap((output, vout) => {
+    if (typeof output !== 'object' || output === null) return [];
+    const candidate = output as Record<string, unknown>;
+    const owner = compressedPublicKey(candidate['ownerPublicKey']);
+    const amount = uint128Decimal(candidate['tokenAmount']);
+    if (owner === null || amount === null) return [];
+    return [
+      {
+        vout,
+        id: typeof candidate['id'] === 'string' && candidate['id'] !== '' ? candidate['id'] : null,
+        owner,
+        amount,
+        tokenIdentifier:
+          candidate['tokenIdentifier'] instanceof Uint8Array
+            ? bytesToHex(candidate['tokenIdentifier'])
+            : null,
+      },
+    ];
+  });
+}
+
+function inputReferences(value: unknown): Array<{ outpoint: string; outputId: string | null }> {
+  if (typeof value !== 'object' || value === null) return [];
+  const row = value as Record<string, unknown>;
+  const transaction = row['tokenTransaction'];
+  if (typeof transaction !== 'object' || transaction === null) return [];
+  const tokenInputs = (transaction as Record<string, unknown>)['tokenInputs'];
+  if (typeof tokenInputs !== 'object' || tokenInputs === null) return [];
+  const input = tokenInputs as Record<string, unknown>;
+  if (input['$case'] !== 'transferInput') return [];
+  const transferInput = input['transferInput'];
+  const outputsToSpend =
+    typeof transferInput === 'object' && transferInput !== null
+      ? (transferInput as Record<string, unknown>)['outputsToSpend']
+      : null;
+  const metadata = row['confirmationMetadata'];
+  const spentMetadata =
+    typeof metadata === 'object' && metadata !== null
+      ? (metadata as Record<string, unknown>)['spentTokenOutputsMetadata']
+      : null;
+  if (!Array.isArray(outputsToSpend)) return [];
+  return outputsToSpend.flatMap((reference, index) => {
+    if (typeof reference !== 'object' || reference === null) return [];
+    const ref = reference as Record<string, unknown>;
+    const previousHash = ref['prevTokenTransactionHash'];
+    const previousVout = ref['prevTokenTransactionVout'];
+    if (
+      !(previousHash instanceof Uint8Array) ||
+      !Number.isSafeInteger(previousVout) ||
+      (previousVout as number) < 0
+    ) {
+      return [];
+    }
+    const spent = Array.isArray(spentMetadata) ? spentMetadata[index] : undefined;
+    const spentOutputId =
+      typeof spent === 'object' && spent !== null
+        ? (spent as Record<string, unknown>)['outputId']
+        : null;
+    const outputId =
+      typeof spentOutputId === 'string' && spentOutputId !== '' ? spentOutputId : null;
+    return [
+      {
+        outpoint: `${bytesToHex(previousHash)}:${String(previousVout)}`,
+        outputId,
+      },
+    ];
+  });
+}
+
+function inputOwnerIndexes(values: readonly unknown[]): {
+  byOutpoint: Map<string, string>;
+  byOutputId: Map<string, string>;
+} {
+  const byOutpoint = new Map<string, string>();
+  const byOutputId = new Map<string, string>();
+  for (const value of values) {
+    if (typeof value !== 'object' || value === null) continue;
+    const row = value as Record<string, unknown>;
+    const hash = transactionHashOf(row);
+    const transaction = row['tokenTransaction'];
+    if (hash === null || typeof transaction !== 'object' || transaction === null) continue;
+    const rawOutputs = (transaction as Record<string, unknown>)['tokenOutputs'];
+    const outputs = tokenOutputOwners(Array.isArray(rawOutputs) ? rawOutputs : []);
+    outputs.forEach((output) => {
+      byOutpoint.set(`${hash}:${String(output.vout)}`, output.owner);
+      if (output.id !== null) byOutputId.set(output.id, output.owner);
+    });
+  }
+  return { byOutpoint, byOutputId };
+}
+
+function mergeInputOwnerIndexes(
+  target: { byOutpoint: Map<string, string>; byOutputId: Map<string, string> },
+  source: { byOutpoint: ReadonlyMap<string, string>; byOutputId: ReadonlyMap<string, string> },
+): void {
+  for (const [outpoint, owner] of source.byOutpoint) target.byOutpoint.set(outpoint, owner);
+  for (const [outputId, owner] of source.byOutputId) target.byOutputId.set(outputId, owner);
+}
+
+function unresolvedInputReferences(
+  transactions: readonly unknown[],
+  owners: { byOutpoint: ReadonlyMap<string, string>; byOutputId: ReadonlyMap<string, string> },
+): Array<{ outpoint: string; outputId: string | null }> {
+  return transactions.flatMap((transaction) =>
+    inputReferences(transaction).filter(
+      (reference) =>
+        !owners.byOutpoint.has(reference.outpoint) &&
+        (reference.outputId === null || !owners.byOutputId.has(reference.outputId)),
+    ),
+  );
+}
+
 function tokenTransactionOf(
   value: unknown,
   walletPubkey: string,
+  inputOwners: readonly string[],
 ): SparkViewerTokenTransaction | null {
   if (typeof value !== 'object' || value === null) return null;
   const row = value as Record<string, unknown>;
@@ -287,36 +418,23 @@ function tokenTransactionOf(
         : inputCase === 'transferInput'
           ? 'transfer'
           : 'unknown';
-  const outputs = Array.isArray(tx['tokenOutputs'])
-    ? tx['tokenOutputs'].flatMap((output) => {
-        if (typeof output !== 'object' || output === null) return [];
-        const candidate = output as Record<string, unknown>;
-        if (!(candidate['ownerPublicKey'] instanceof Uint8Array)) return [];
-        const owner = bytesToHex(candidate['ownerPublicKey']);
-        if (!/^0[23][0-9a-f]{64}$/.test(owner)) return [];
-        const amount = uint128Decimal(candidate['tokenAmount']);
-        if (amount === null) return [];
-        return [
-          {
-            owner,
-            amount,
-            tokenIdentifier:
-              candidate['tokenIdentifier'] instanceof Uint8Array
-                ? bytesToHex(candidate['tokenIdentifier'])
-                : null,
-          },
-        ];
-      })
-    : [];
+  const outputs = tokenOutputOwners(Array.isArray(tx['tokenOutputs']) ? tx['tokenOutputs'] : []);
   const externalOutputs = outputs.filter((output) => output.owner !== walletPubkey);
   const ownOutputs = outputs.filter((output) => output.owner === walletPubkey);
-  const direction = type === 'transfer' && externalOutputs.length > 0 ? 'out' : 'in';
+  const direction = type === 'transfer' && inputOwners.includes(walletPubkey) ? 'out' : 'in';
   const attributedOutputs = direction === 'out' ? externalOutputs : ownOutputs;
   const amount = attributedOutputs.reduce((sum, output) => sum + output.amount, 0n);
   const mintInput =
     inputCase === 'mintInput' && typeof tokenInputs['mintInput'] === 'object'
       ? (tokenInputs['mintInput'] as Record<string, unknown>)
       : {};
+  const createInput =
+    inputCase === 'createInput' && typeof tokenInputs['createInput'] === 'object'
+      ? (tokenInputs['createInput'] as Record<string, unknown>)
+      : {};
+  const issuerPublicKey = compressedPublicKey(
+    inputCase === 'mintInput' ? mintInput['issuerPublicKey'] : createInput['issuerPublicKey'],
+  );
   const tokenIdentifier =
     outputs.find((output) => output.tokenIdentifier !== null)?.tokenIdentifier ??
     (mintInput['tokenIdentifier'] instanceof Uint8Array
@@ -324,14 +442,28 @@ function tokenTransactionOf(
       : null);
   const createdTime = tx['clientCreatedTimestamp'];
   const expiryTime = tx['expiryTime'];
+  const sparkInvoices = Array.isArray(tx['invoiceAttachments'])
+    ? tx['invoiceAttachments'].flatMap((attachment) => {
+        if (typeof attachment !== 'object' || attachment === null) return [];
+        const invoice = (attachment as Record<string, unknown>)['sparkInvoice'];
+        return typeof invoice === 'string' && invoice !== '' ? [invoice] : [];
+      })
+    : [];
+  const counterpartyPubkeys =
+    type === 'create' || type === 'mint'
+      ? issuerPublicKey === null
+        ? []
+        : [issuerPublicKey]
+      : direction === 'out'
+        ? externalOutputs.map((output) => output.owner)
+        : inputOwners;
   return {
     hash: bytesToHex(row['tokenTransactionHash']),
     tokenIdentifier,
     direction,
     amount: amount.toString(),
-    counterpartyPubkeys: [
-      ...new Set(externalOutputs.map((output) => output.owner).filter((key) => key !== '')),
-    ].sort(),
+    counterpartyPubkeys: [...new Set(counterpartyPubkeys)].sort(),
+    sparkInvoices,
     type,
     status: row['status'],
     createdTime: createdTime instanceof Date ? new Date(createdTime.getTime()) : undefined,
@@ -373,21 +505,104 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
         direction: 'PREVIOUS',
       });
       const rawCount = Array.isArray(page.transactions) ? page.transactions.length : 0;
-      const transactions = Array.isArray(page.transactions)
-        ? page.transactions
-            .map((transaction) => tokenTransactionOf(transaction, input.walletPubkey))
-            .filter((row): row is SparkViewerTokenTransaction => row !== null)
-        : [];
-      const response =
+      const rawTransactions = Array.isArray(page.transactions) ? page.transactions : [];
+      const localOwners = inputOwnerIndexes(rawTransactions);
+      const unresolvedOutputIds = [
+        ...new Set(
+          unresolvedInputReferences(rawTransactions, localOwners).flatMap((reference) =>
+            reference.outputId === null ? [] : [reference.outputId],
+          ),
+        ),
+      ];
+      if (unresolvedOutputIds.length > 0) {
+        let lookupCursor: string | undefined;
+        const seenLookupCursors = new Set<string>();
+        for (;;) {
+          const lookup = await sdk.getTokenTransactions({
+            outputIds: unresolvedOutputIds,
+            pageSize: input.pageSize,
+            ...(lookupCursor === undefined ? {} : { cursor: lookupCursor }),
+            direction: 'NEXT',
+          });
+          const lookupTransactions = Array.isArray(lookup.transactions) ? lookup.transactions : [];
+          mergeInputOwnerIndexes(localOwners, inputOwnerIndexes(lookupTransactions));
+          const lookupResponse =
+            typeof lookup.pageResponse === 'object' && lookup.pageResponse !== null
+              ? (lookup.pageResponse as Record<string, unknown>)
+              : {};
+          if (lookupResponse['hasNextPage'] !== true) break;
+          const nextCursor = lookupResponse['nextCursor'];
+          if (
+            typeof nextCursor !== 'string' ||
+            nextCursor === '' ||
+            seenLookupCursors.has(nextCursor)
+          ) {
+            throw new Error('Spark viewer token input cursor did not advance');
+          }
+          seenLookupCursors.add(nextCursor);
+          lookupCursor = nextCursor;
+        }
+      }
+      const pageResponse =
         typeof page.pageResponse === 'object' && page.pageResponse !== null
           ? (page.pageResponse as Record<string, unknown>)
           : {};
+      let historyCursor =
+        pageResponse['hasPreviousPage'] === true &&
+        typeof pageResponse['previousCursor'] === 'string' &&
+        pageResponse['previousCursor'] !== ''
+          ? pageResponse['previousCursor']
+          : null;
+      const seenHistoryCursors = new Set<string>();
+      while (
+        unresolvedInputReferences(rawTransactions, localOwners).length > 0 &&
+        historyCursor !== null
+      ) {
+        if (seenHistoryCursors.has(historyCursor)) {
+          throw new Error('Spark viewer token input history cursor did not advance');
+        }
+        seenHistoryCursors.add(historyCursor);
+        const history = await sdk.getTokenTransactions({
+          sparkAddresses: [input.sparkAddress],
+          pageSize: input.pageSize,
+          cursor: historyCursor,
+          direction: 'PREVIOUS',
+        });
+        mergeInputOwnerIndexes(
+          localOwners,
+          inputOwnerIndexes(Array.isArray(history.transactions) ? history.transactions : []),
+        );
+        const historyResponse =
+          typeof history.pageResponse === 'object' && history.pageResponse !== null
+            ? (history.pageResponse as Record<string, unknown>)
+            : {};
+        historyCursor =
+          historyResponse['hasPreviousPage'] === true &&
+          typeof historyResponse['previousCursor'] === 'string' &&
+          historyResponse['previousCursor'] !== ''
+            ? historyResponse['previousCursor']
+            : null;
+      }
+      const transactions = rawTransactions
+        .map((transaction) => {
+          const owners = inputReferences(transaction).flatMap((reference) => {
+            const owner =
+              localOwners.byOutpoint.get(reference.outpoint) ??
+              (reference.outputId === null
+                ? undefined
+                : localOwners.byOutputId.get(reference.outputId));
+            return owner === undefined ? [] : [owner];
+          });
+          return tokenTransactionOf(transaction, input.walletPubkey, owners);
+        })
+        .filter((row): row is SparkViewerTokenTransaction => row !== null);
       return {
         transactions,
-        hasNextPage: response['hasPreviousPage'] === true,
+        hasNextPage: pageResponse['hasPreviousPage'] === true,
         nextCursor:
-          typeof response['previousCursor'] === 'string' && response['previousCursor'] !== ''
-            ? response['previousCursor']
+          typeof pageResponse['previousCursor'] === 'string' &&
+          pageResponse['previousCursor'] !== ''
+            ? pageResponse['previousCursor']
             : null,
         rawCount,
       };

@@ -50,11 +50,10 @@ export interface PayoutSink {
  * POST `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`, exactly as the legacy
  * ping did.
  *
- * A `ping` body (no `day`) maps any 2xx to `'accepted'` and everything else
- * to `'failed'`. A `pingOnDay` body (with `day`) uses the strict mapping: 202
- * accepted, 200 whose JSON `status` is `accepted` accepted, 200 whose JSON
- * `status` is `skipped` with a non-empty reason skipped with that reason,
- * else failed. Never throws and never logs the token.
+ * Every body uses the strict mapping: 202 accepted, 200 whose JSON `status`
+ * is `accepted` accepted, 200 whose JSON `status` is `skipped` with a
+ * non-empty reason skipped with that reason, else failed. Never throws and
+ * never logs the token.
  */
 export class HttpPayoutSink implements PayoutSink {
   readonly #spendUrl: string;
@@ -91,9 +90,6 @@ export class HttpPayoutSink implements PayoutSink {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
-      if (typeof body['day'] !== 'string') {
-        return response.ok ? { outcome: 'accepted' } : { outcome: 'failed' };
-      }
       if (response.status === 202) {
         return { outcome: 'accepted' };
       }

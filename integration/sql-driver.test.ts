@@ -3039,6 +3039,7 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
         direction: 'in',
         amount: '21',
         counterpartyPubkeys: [],
+        sparkInvoices: ['spark1token'],
         type: 'mint',
         status: 'finalized',
         transactionCreatedAt: new Date('2026-11-12T22:00:00.000Z'),
@@ -3053,6 +3054,12 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
       );
       expect(tokenChanges.map((row) => row.op)).toContain('INSERT');
       expect(tokenChanges.every((row) => !('payload' in row.after))).toBe(true);
+      expect(
+        tokenChanges.some((row) => {
+          const invoices = row.after['spark_invoices'];
+          return Array.isArray(invoices) && invoices[0] === 'spark1token';
+        }),
+      ).toBe(true);
       expect(JSON.stringify(tokenChanges)).not.toContain('revocationSecret');
       const observed = new Date('2026-11-13T00:00:00.000Z');
       const transfer = (id: string, at: string) => ({
@@ -3079,6 +3086,134 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
       await client.execute('DELETE FROM wallet_transfer WHERE account_id = $1', [buyerId]);
       await client.execute('DELETE FROM message WHERE id = $1', [noteId]);
       await client.execute('DELETE FROM account WHERE id IN ($1, $2)', [buyerId, shopId]);
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresWalletTransferStore verified counterparty ownership', () => {
+  test('an unverified shop claim is ignored and an unverified claim cannot shadow previous_wallet', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl, { max: 1 });
+    const buyerId = crypto.randomUUID();
+    const unverifiedShopId = crypto.randomUUID();
+    const previousShopId = crypto.randomUUID();
+    const claimantId = crypto.randomUUID();
+    const unverifiedShopNoteId = crypto.randomUUID();
+    const previousShopNoteId = crypto.randomUUID();
+    const hex64 = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    const buyerKey = `02${hex64()}`;
+    const unverifiedClaimKey = `03${hex64()}`;
+    const previousShopKey = `02${hex64()}`;
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migrateWalletSchema(client);
+      const auth = new PostgresAuthStore(client);
+      for (const [id, username] of [
+        [buyerId, `claim_buyer_${buyerId.slice(0, 8)}`],
+        [unverifiedShopId, `claim_shop_${unverifiedShopId.slice(0, 8)}`],
+        [previousShopId, `previous_shop_${previousShopId.slice(0, 8)}`],
+        [claimantId, `claimant_${claimantId.slice(0, 8)}`],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'verified',
+          name: null,
+          username,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+      await client.execute(
+        `UPDATE account
+         SET spark_pubkey = CASE
+           WHEN id = $1 THEN $2
+           WHEN id = $3 THEN $4
+           ELSE $5
+         END,
+         spark_pubkey_verified_at = CASE WHEN id = $1 THEN now() ELSE NULL END
+         WHERE id IN ($1, $3, $6)`,
+        [buyerId, buyerKey, unverifiedShopId, unverifiedClaimKey, previousShopKey, claimantId],
+      );
+      await client.execute(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          previousShopId,
+          previousShopKey,
+          `spark1${'q'.repeat(62)}`,
+          new Date('2026-11-11T00:00:00.000Z'),
+        ],
+      );
+      const messages = new PostgresMessageStore(client);
+      for (const [id, accountId, name] of [
+        [unverifiedShopNoteId, unverifiedShopId, 'Unverified Claim Shop'],
+        [previousShopNoteId, previousShopId, 'Previous Wallet Shop'],
+      ] as const) {
+        await messages.create({
+          id,
+          accountId,
+          name,
+          text: `${name} #21GiftsShop`,
+          createdAt: new Date('2026-11-12T12:00:00.000Z'),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+          shopAccount: { id: accountId, username: null, name },
+        });
+      }
+      const store = new PostgresWalletTransferStore(client);
+      const transfer = (transferId: string, counterpartyPubkey: string) => ({
+        accountId: buyerId,
+        walletPubkey: buyerKey,
+        transferId,
+        direction: 'out' as const,
+        type: 'transfer' as const,
+        status: 'completed' as const,
+        amountSats: 21,
+        counterpartyPubkey,
+        counterpartyPubkeys: [counterpartyPubkey],
+        sparkInvoice: null,
+        transferCreatedAt: new Date('2026-11-12T13:00:00.000Z'),
+        transferUpdatedAt: null,
+        seenAt: new Date('2026-11-12T13:01:00.000Z'),
+      });
+
+      await store.upsertTransfer(transfer('unverified-shop-claim', unverifiedClaimKey));
+      await expect(store.hasShopPayment(buyerId, '2026-11-12', '2026-11-12')).resolves.toBe(false);
+      const unverified = await client.query<{ counterparty_account_id: string | null }>(
+        `SELECT counterparty_account_id FROM wallet_transfer
+         WHERE account_id = $1 AND transfer_id = 'unverified-shop-claim'`,
+        [buyerId],
+      );
+      expect(unverified[0]?.counterparty_account_id).toBeNull();
+
+      await store.upsertTransfer(transfer('previous-wallet-shop', previousShopKey));
+      await expect(store.hasShopPayment(buyerId, '2026-11-12', '2026-11-12')).resolves.toBe(true);
+      const previous = await client.query<{ counterparty_account_id: string | null }>(
+        `SELECT counterparty_account_id FROM wallet_transfer
+         WHERE account_id = $1 AND transfer_id = 'previous-wallet-shop'`,
+        [buyerId],
+      );
+      expect(previous[0]?.counterparty_account_id).toBe(previousShopId);
+    } finally {
+      await client.execute('DELETE FROM wallet_transfer WHERE account_id = $1', [buyerId]);
+      await client.execute('DELETE FROM message WHERE id IN ($1, $2)', [
+        unverifiedShopNoteId,
+        previousShopNoteId,
+      ]);
+      await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [previousShopId]);
+      await client.execute('DELETE FROM account WHERE id IN ($1, $2, $3, $4)', [
+        buyerId,
+        unverifiedShopId,
+        previousShopId,
+        claimantId,
+      ]);
       await closeIfPossible(sql);
     }
   });

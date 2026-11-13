@@ -6,21 +6,22 @@ Source: [src/lib/wallet-store.ts](../../../src/lib/wallet-store.ts)
 
 ## Columns
 
-| Column                   | Kind                    | Database type              | Nullable | Default | References                   |
-| ------------------------ | ----------------------- | -------------------------- | -------- | ------- | ---------------------------- |
-| `account_id`             | UUID (primary key)      | `uuid`                     | No       | –       | [`account`.`id`](account.md) |
-| `wallet_pubkey`          | Free text (primary key) | `text`                     | No       | –       | –                            |
-| `transaction_hash`       | Free text (primary key) | `text`                     | No       | –       | –                            |
-| `token_identifier`       | Free text               | `text`                     | Yes      | –       | –                            |
-| `direction`              | ENUM                    | `text`                     | No       | –       | –                            |
-| `amount`                 | Decimal                 | `numeric(39,0)`            | No       | –       | –                            |
-| `counterparty_pubkeys`   | Array of text           | `text[]`                   | No       | –       | –                            |
-| `type`                   | ENUM                    | `text`                     | No       | –       | –                            |
-| `status`                 | ENUM                    | `text`                     | No       | –       | –                            |
-| `transaction_created_at` | Date/time               | `timestamp with time zone` | Yes      | –       | –                            |
-| `transaction_expiry_at`  | Date/time               | `timestamp with time zone` | Yes      | –       | –                            |
-| `first_seen_at`          | Date/time               | `timestamp with time zone` | No       | –       | –                            |
-| `last_seen_at`           | Date/time               | `timestamp with time zone` | No       | –       | –                            |
+| Column                   | Kind                    | Database type              | Nullable | Default           | References                   |
+| ------------------------ | ----------------------- | -------------------------- | -------- | ----------------- | ---------------------------- |
+| `account_id`             | UUID (primary key)      | `uuid`                     | No       | –                 | [`account`.`id`](account.md) |
+| `wallet_pubkey`          | Free text (primary key) | `text`                     | No       | –                 | –                            |
+| `transaction_hash`       | Free text (primary key) | `text`                     | No       | –                 | –                            |
+| `token_identifier`       | Free text               | `text`                     | Yes      | –                 | –                            |
+| `direction`              | ENUM                    | `text`                     | No       | –                 | –                            |
+| `amount`                 | Decimal                 | `numeric(39,0)`            | No       | –                 | –                            |
+| `counterparty_pubkeys`   | Array of text           | `text[]`                   | No       | –                 | –                            |
+| `spark_invoices`         | Array of text           | `text[]`                   | No       | `ARRAY[]::text[]` | –                            |
+| `type`                   | ENUM                    | `text`                     | No       | –                 | –                            |
+| `status`                 | ENUM                    | `text`                     | No       | –                 | –                            |
+| `transaction_created_at` | Date/time               | `timestamp with time zone` | Yes      | –                 | –                            |
+| `transaction_expiry_at`  | Date/time               | `timestamp with time zone` | Yes      | –                 | –                            |
+| `first_seen_at`          | Date/time               | `timestamp with time zone` | No       | –                 | –                            |
+| `last_seen_at`           | Date/time               | `timestamp with time zone` | No       | –                 | –                            |
 
 ## Indexes
 

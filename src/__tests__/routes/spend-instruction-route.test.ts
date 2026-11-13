@@ -151,6 +151,7 @@ async function seedPasskeyAccount(
   authStore: InMemoryAuthStore,
   role: 'verified' | 'basis' = 'verified',
   share = true,
+  profileMessageId: string | null = null,
 ): Promise<void> {
   await authStore.createAccount({
     id: 'acc-alice',
@@ -164,6 +165,7 @@ async function seedPasskeyAccount(
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
+    profileMessageId,
   });
   await verifyWallet(authStore, share);
   await authStore.createPasskeyCredential({
@@ -331,7 +333,7 @@ describe('POST /spend/daily-instruction', () => {
     expect(await res.json()).toEqual({ action: 'skip', reason: 'no_passkey' });
   });
 
-  it('returns no_post when there is no live top-level non-profile post', async () => {
+  it('always reads today media and returns no_post when no top-level post exists', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const messageStore = new InMemoryMessageStore();
@@ -343,8 +345,39 @@ describe('POST /spend/daily-instruction', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ action: 'skip', reason: 'no_post' });
-    expect(latestMedia).not.toHaveBeenCalled();
+    expect(latestMedia).toHaveBeenCalledWith('acc-alice');
     expect(getById).not.toHaveBeenCalled();
+  });
+
+  it('pays when today media is the About-me profile note', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, 'verified', true, PROFILE_NOTE_ID);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create(
+      {
+        id: PROFILE_NOTE_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'About Ada',
+        createdAt: new Date('2026-10-08T09:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      JPEG,
+    );
+
+    const res = await createSpendApp({ authStore, messageStore }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      action: 'pay',
+      amountUsd: 2,
+      comment: 'thanks',
+      messageId: PROFILE_NOTE_ID,
+    });
   });
 
   it('returns no_media when the live post has no media', async () => {
