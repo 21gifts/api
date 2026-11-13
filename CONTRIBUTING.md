@@ -359,8 +359,11 @@ The wallet rule in detail:
     payment.
   - The Fond account is a 21.gifts application, not a member, so its wallet
     totals are public (`GET /fond/summary`).
-  - `GET /wallets/stats` publishes totals over all wallets that never name or
-    single out one account.
+  - `GET /wallets/stats` (all-wallet totals) and `GET /wallets/usage` (usage
+    aggregates since the wallet release: counts and sats per UTC day and
+    purpose; counts, sats and fees per UTC day, party pair and purpose; counts
+    and sats per amount bucket; counts per UTC hour), both without any account,
+    person or payment identifier.
   - The owner's previous-wallet lookup (`GET /me/previous-wallets`) reads only
     what a public Spark explorer already shows and returns it only to the
     owner.
