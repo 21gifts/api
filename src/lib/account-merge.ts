@@ -130,12 +130,13 @@ function quoteIdentifier(identifier: string): string {
  * credit with a settled repayment, when a still-payable repayment invoice
  * embeds either identity on an affected source-funded credit, or when such an
  * invoice has a payment claim but no exact settlement row (including part
- * index, units, and sats for a part). Otherwise,
- * legacy full-share repayments are reconstructed from the original loan
- * schedule and converted to canonical parts. A schedule that cannot be
+ * index, units, and sats for a part). It also refuses when any historical
+ * part invoice or settled part of one identity has the same message, day, and
+ * immutable part index as an invoice or settled part of the other identity.
+ * Otherwise, legacy full-share repayments are reconstructed from the original
+ * loan schedule and converted to canonical parts. A schedule that cannot be
  * reconstructed refuses the merge without writes. Parts from both identities
- * are then moved without changing their immutable part indexes. A remaining
- * source/survivor part-key collision refuses the merge before any write.
+ * are then moved without changing their immutable part indexes.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -325,23 +326,6 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     if (settledMergeConflicts.length > 0) {
       return { ok: false, error: 'repayment_unavailable' };
     }
-    // Part indexes are immutable invoice identity. Moving the source recipient
-    // must not renumber either side; refuse the unique key that would collide.
-    const partKeyCollisions = await tx.query<{ message_id: string }>(
-      `SELECT source.message_id
-       FROM message_repayment_part AS source
-       JOIN message_repayment_part AS survivor
-         ON survivor.message_id = source.message_id
-        AND survivor.day_index = source.day_index
-        AND survivor.part_index = source.part_index
-       WHERE source.recipient_account_id = $1::uuid
-         AND survivor.recipient_account_id = $2::uuid
-       LIMIT 1`,
-      accountParams,
-    );
-    if (partKeyCollisions.length > 0) {
-      return { ok: false, error: 'repayment_unavailable' };
-    }
     // A repayment description is settlement metadata and embeds its original
     // recipient account id. Keep every open reservation that names either
     // identity on a source-funded credit immutable until it settles or
@@ -417,6 +401,57 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       ) {
         return { ok: false, error: 'repayment_unavailable' };
       }
+    }
+    // Part indexes are immutable invoice identity. Include every successfully
+    // issued historical part invoice under its current author: its description
+    // can still name an account merged away earlier, and its receipt can arrive
+    // after expiry. Moving the source recipient/author must not make any
+    // invoice or settled part share a canonical key with the survivor. Keep
+    // this check after the invoice scan so its more specific refusals win.
+    const partKeyCollisions = await tx.query<{ message_id: string }>(
+      `WITH part_invoices AS (
+         SELECT invoice.message_id,
+                invoice.author_account_id AS recipient_account_id,
+                ((matched.parts)[1])::numeric AS day_index,
+                ((matched.parts)[2])::numeric AS part_index
+         FROM message_invoice AS invoice
+         CROSS JOIN LATERAL regexp_match(
+           invoice.description,
+           '^repayp:([0-9]+):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:([0-9]+):([0-9]+):([0-9]+)$',
+           'i'
+         ) AS matched(parts)
+         WHERE invoice.result = 'ok'
+           AND (
+             invoice.author_account_id = $1::uuid
+             OR invoice.author_account_id = $2::uuid
+           )
+           AND ((matched.parts)[2])::numeric <= 9007199254740991::numeric
+           AND ((matched.parts)[3])::numeric > 0::numeric
+           AND ((matched.parts)[4])::numeric > 0::numeric
+       ), part_keys AS (
+         SELECT settled.message_id, settled.recipient_account_id,
+                settled.day_index::numeric AS day_index,
+                settled.part_index::numeric AS part_index
+         FROM message_repayment_part AS settled
+         WHERE settled.recipient_account_id = $1::uuid
+            OR settled.recipient_account_id = $2::uuid
+         UNION ALL
+         SELECT message_id, recipient_account_id, day_index, part_index
+         FROM part_invoices
+       )
+       SELECT source.message_id
+       FROM part_keys AS source
+       JOIN part_keys AS survivor
+         ON survivor.message_id = source.message_id
+        AND survivor.day_index = source.day_index
+        AND survivor.part_index = source.part_index
+       WHERE source.recipient_account_id = $1::uuid
+         AND survivor.recipient_account_id = $2::uuid
+       LIMIT 1`,
+      accountParams,
+    );
+    if (partKeyCollisions.length > 0) {
+      return { ok: false, error: 'repayment_unavailable' };
     }
     const legacyRepayments = await tx.query<LegacyRepaymentRow>(
       `SELECT legacy.message_id, legacy.day_index, legacy.recipient_account_id,

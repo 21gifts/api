@@ -80,7 +80,7 @@ interface FakeDatabaseOptions {
   unassignedRepaymentSats?: number;
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
-  /** Existing source/survivor rows with the same immutable part key. */
+  /** Existing source/survivor invoices or settled rows with the same immutable part key. */
   partKeyCollisions?: readonly { message_id: string }[];
   /** Successful repayment invoice candidates on affected source-funded credits. */
   openRepaymentInvoices?: readonly {
@@ -131,7 +131,7 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
             return (options.repaymentConflicts ?? []) as T[];
           }
           if (
-            text.includes('FROM message_repayment_part AS source') &&
+            text.includes('WITH part_invoices AS') &&
             text.includes('survivor.part_index = source.part_index')
           ) {
             return (options.partKeyCollisions ?? []) as T[];
@@ -344,7 +344,7 @@ describe('mergeAccounts', () => {
     expect(messageLocks[1]!.index).toBeLessThan(accountLocks);
   });
 
-  it('refuses an immutable repayment part-key collision before any write', async () => {
+  it('refuses an invoice-or-settlement part-key collision before any write', async () => {
     const { db, queries } = fakeDatabase({
       partKeyCollisions: [{ message_id: '33333333-3333-4333-8333-333333333333' }],
     });
@@ -354,6 +354,14 @@ describe('mergeAccounts', () => {
       error: 'repayment_unavailable',
     });
     const collision = queries.at(-1);
+    const invoiceRefusal = queries.findIndex((query) => query.text.includes('AS payment_claimed'));
+    expect(queries.indexOf(collision as RecordedQuery)).toBeGreaterThan(invoiceRefusal);
+    expect(collision?.text).toContain('FROM message_invoice AS invoice');
+    expect(collision?.text).toContain("invoice.result = 'ok'");
+    expect(collision?.text).toContain('invoice.author_account_id = $1::uuid');
+    expect(collision?.text).toContain('invoice.author_account_id = $2::uuid');
+    expect(collision?.text).toContain('FROM message_repayment_part AS settled');
+    expect(collision?.text).toContain('UNION ALL');
     expect(collision?.text).toContain('survivor.part_index = source.part_index');
     expect(collision?.params).toEqual([FROM, INTO]);
     expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);

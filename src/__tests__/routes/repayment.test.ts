@@ -13,6 +13,7 @@ import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { MessageInvoiceAttempt } from '@/lib/message-store';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { formatCents, repaymentPartDescription } from '@/lib/credit-repayment';
+import { bolt11ExpiresAtMs } from '@/lib/bolt11';
 import {
   BOLT11,
   LNURL_SERVER,
@@ -2361,6 +2362,66 @@ describe('repayment from the in-app wallet', () => {
           attempt.description?.startsWith('repayp:0:'),
         )?.description,
       ).toBe(repaymentPartDescription(0, GIVER, 1, 5n, 10n));
+    });
+  });
+
+  it('does not reuse an expired paid part index after its recipient was merged', async () => {
+    await withNip57(async () => {
+      const { app, messages, clock } = await loanSetup({
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+      });
+      const paymentHash = 'ab'.repeat(32);
+      const issuedAt = new Date(clock.now - 30 * 86_400_000);
+      const paidAt = new Date(issuedAt.getTime() + 30_000);
+      const expiresAt = bolt11ExpiresAtMs(BOLT11, issuedAt.getTime());
+      expect(paidAt.getTime()).toBeLessThan(expiresAt);
+      expect(expiresAt).toBeLessThan(clock.now);
+      const paidBeforeMerge = {
+        ...openPartAttempt(5, 5n, 21n, issuedAt),
+        authorAccountId: NO_WALLET,
+        paymentHash,
+        description: repaymentPartDescription(0, NO_WALLET, 0, 5n, 21n),
+      };
+      const afterMerge = { ...paidBeforeMerge, authorAccountId: WALLET_GIVER };
+      await messages.recordInvoiceAttempt(afterMerge);
+
+      const issuedAfterMerge = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${AUTHOR}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ amount: '10' }),
+      });
+
+      expect(issuedAfterMerge.status).toBe(200);
+      expect(
+        (await messages.listInvoiceAttemptsForMessage(CREDIT)).find(
+          (attempt) => attempt.id !== afterMerge.id,
+        )?.description,
+      ).toBe(repaymentPartDescription(0, WALLET_GIVER, 1, 10n, 21n));
+      await expect(
+        messages.settleRepaymentPayment(paymentHash, 'late-merged-receipt', paidAt, {
+          kind: 'part',
+          messageId: CREDIT,
+          dayIndex: 0,
+          recipientAccountId: WALLET_GIVER,
+          partIndex: 0,
+          units: 5n,
+          sats: 5,
+          shareUnits: 21n,
+          paidAt,
+        }),
+      ).resolves.toBe(true);
+      expect(await messages.listRepaymentParts(CREDIT)).toEqual([
+        expect.objectContaining({
+          recipientAccountId: WALLET_GIVER,
+          partIndex: 0,
+          units: 5n,
+          sats: 5,
+        }),
+      ]);
     });
   });
 

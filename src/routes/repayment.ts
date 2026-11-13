@@ -367,9 +367,12 @@ async function duePlan(
         ...paidParts,
         ...invoiceAttempts.flatMap((attempt) => {
           const historical = parseRepaymentPartDescription(attempt.description);
+          // A merge moves the invoice author but deliberately leaves its
+          // settlement description unchanged. Reserve the index for the
+          // current recipient identity so a delayed receipt cannot collide.
           return historical !== null &&
             historical.dayIndex === slice.dayIndex &&
-            historical.recipientAccountId === slice.accountId
+            attempt.authorAccountId === slice.accountId
             ? [{ partIndex: historical.partIndex, units: historical.units }]
             : [];
         }),
@@ -745,7 +748,7 @@ async function repaymentBillLocked(
       if (
         historical !== null &&
         historical.dayIndex === share.dayIndex &&
-        historical.recipientAccountId === share.accountId
+        attempt.authorAccountId === share.accountId
       ) {
         nextPartIndex = Math.max(nextPartIndex, historical.partIndex + 1);
       }
