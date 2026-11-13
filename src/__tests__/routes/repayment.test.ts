@@ -1736,6 +1736,39 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
+  it('does not price a payable fiat share after sixty stored bills', async () => {
+    const rates = vi.fn<() => Promise<FxSpotQuote>>(() => Promise.reject(new Error('spot down')));
+    const { app, messages, clock } = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '0.61',
+      termDays: REPAYMENT_BILLS_MAX + 1,
+      fundedAt: new Date(Date.UTC(2026, 10, 2, 12)),
+      rates,
+      givers: [
+        {
+          id: WALLET_GIVER,
+          sats: REPAYMENT_BILLS_MAX + 1,
+          wallet: true,
+          fiatAmount: '0.61',
+        },
+      ],
+    });
+    for (let dayIndex = 0; dayIndex < REPAYMENT_BILLS_MAX; dayIndex += 1) {
+      await messages.recordInvoiceAttempt({
+        ...openPartAttempt(7, 1n, 1n, new Date(clock.now)),
+        description: repaymentDescription(dayIndex, WALLET_GIVER),
+      });
+    }
+
+    const response = await post(app, `/messages/${CREDIT}/repayment/due`);
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { bills: { amountSats: number }[] };
+    expect(body.bills).toHaveLength(REPAYMENT_BILLS_MAX);
+    expect(body.bills.every((bill) => bill.amountSats === 7)).toBe(true);
+    expect(rates).not.toHaveBeenCalled();
+  });
+
   it('skips payable shares past the cap before looking anything up', async () => {
     await withNip57(async () => {
       const lookups: number[] = [];
@@ -1758,22 +1791,54 @@ describe('repayment from the in-app wallet', () => {
 
   it('prices fiat bills at the current rate and refuses them without one', async () => {
     await withNip57(async () => {
-      const priced = await loanSetup({ goalCurrency: 'USD', rate: true });
+      const rates = vi.fn<() => Promise<FxSpotQuote>>(() =>
+        Promise.resolve(spot({ USD: '100000.00' })),
+      );
+      const priced = await loanSetup({ goalCurrency: 'USD', rates });
       const body = (await (await post(priced.app, `/messages/${CREDIT}/repayment/due`)).json()) as {
         bills: { amount: string; amountSats: number }[];
         waiting: { amount: string; amountSats: number }[];
       };
       expect(body.bills[0]).toMatchObject({ amount: '1.50', amountSats: 1500 });
       expect(body.waiting[0]).toMatchObject({ amount: '2.50', amountSats: 2500 });
+      expect(rates).toHaveBeenCalledTimes(1);
       const unpriced = await loanSetup({ goalCurrency: 'USD' });
       const res = await post(unpriced.app, `/messages/${CREDIT}/repayment/due`);
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
+      const broken = await loanSetup({
+        goalCurrency: 'USD',
+        rates: () => Promise.reject(new Error('spot down')),
+      });
+      const failed = await post(broken.app, `/messages/${CREDIT}/repayment/due`);
+      expect(failed.status).toBe(503);
+      expect(await failed.json()).toEqual({ error: 'Ask amount is unavailable' });
       const noAmount = await loanSetup({ goalCurrency: 'USD', goalAmount: null });
       const missing = await post(noAmount.app, `/messages/${CREDIT}/repayment/due`);
       expect(missing.status).toBe(503);
       expect(await missing.json()).toEqual({ error: 'Ask amount is unavailable' });
     });
+  });
+
+  it('requires a spot only after a due batch reaches an unreserved fiat share', async () => {
+    const rates = vi.fn<() => Promise<FxSpotQuote | null>>(() => Promise.resolve(null));
+    const { app, messages, clock } = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '0.02',
+      termDays: 2,
+      rates,
+      givers: [{ id: WALLET_GIVER, sats: 2, wallet: false, fiatAmount: '0.02' }],
+    });
+    await messages.recordInvoiceAttempt({
+      ...openPartAttempt(17, 1n, 1n, new Date(clock.now)),
+      description: repaymentDescription(0, WALLET_GIVER),
+    });
+
+    const response = await post(app, `/messages/${CREDIT}/repayment/due`);
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Ask amount is unavailable' });
+    expect(rates).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the guards of the single pay route', async () => {
@@ -2610,6 +2675,37 @@ describe('repayment from the in-app wallet', () => {
     expect(body.next.sats).toBe(5);
   });
 
+  it('mints the remaining part of a partially settled share', async () => {
+    await withNip57(async () => {
+      const { app, messages, clock } = await loanSetup({
+        termDays: 1,
+        givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+      });
+      await messages.markRepaymentPartPaid({
+        messageId: CREDIT,
+        dayIndex: 0,
+        recipientAccountId: WALLET_GIVER,
+        partIndex: 0,
+        units: 5n,
+        sats: 5,
+        shareUnits: 21n,
+        paidAt: new Date(clock.now),
+      });
+
+      const response = await post(app, `/messages/${CREDIT}/repayment`);
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        pr: BOLT11,
+        amountSats: 16,
+        sparkInvoice: null,
+      });
+      const attempts = await messages.listInvoiceAttemptsForMessage(CREDIT);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.description).toBe(repaymentPartDescription(0, WALLET_GIVER, 1, 16n, 21n));
+    });
+  });
+
   it('blocks a new part while a legacy full-share bill is still payable', async () => {
     const { app, messages, clock } = await loanSetup({
       termDays: 1,
@@ -2734,6 +2830,113 @@ describe('repayment from the in-app wallet', () => {
         waiting: [{ recipientAccountId: WALLET_GIVER, amountSats: 10 }],
       });
     });
+  });
+
+  it('spot-prices a later fiat share after an open invoice becomes waiting', async () => {
+    await withNip57(async () => {
+      const lnurlPay = await import('@/lib/lnurl-pay');
+      const requestSpy = vi.spyOn(lnurlPay, 'requestZapInvoice');
+      try {
+        const { app, messages, auth, clock } = await loanSetup({
+          goalCurrency: 'USD',
+          goalAmount: '0.03',
+          termDays: 2,
+          rate: true,
+          givers: [
+            { id: WALLET_GIVER, sats: 2, wallet: true, fiatAmount: '0.02' },
+            { id: NO_WALLET, sats: 1, wallet: true, fiatAmount: '0.01' },
+          ],
+        });
+        await messages.recordInvoiceAttempt({
+          ...openPartAttempt(17, 1n, 1n, new Date(clock.now)),
+          description: repaymentDescription(0, WALLET_GIVER),
+        });
+        const paymentHash = 'ca'.repeat(32);
+        await messages.recordInvoiceAttempt({
+          ...openPartAttempt(19, 1n, 1n, new Date(clock.now)),
+          paymentHash,
+          description: repaymentDescription(1, WALLET_GIVER),
+        });
+        expect(
+          await messages.claimZapPayment(paymentHash, 'blocking-legacy', new Date(clock.now)),
+        ).toBe(true);
+        const getAccount = auth.getAccount.bind(auth);
+        let giverReads = 0;
+        vi.spyOn(auth, 'getAccount').mockImplementation(async (id) => {
+          const account = await getAccount(id);
+          if (id !== WALLET_GIVER || account === undefined) {
+            return account;
+          }
+          giverReads += 1;
+          return giverReads < 3 ? account : { ...account, sparkPubkeyVerifiedAt: null };
+        });
+
+        const response = await app.request(`/messages/${CREDIT}/repayment`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ amount: '0.01' }),
+        });
+
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          amountSats: 10,
+          bills: [{ recipientAccountId: NO_WALLET, amountSats: 10, amount: '0.01' }],
+          waiting: [
+            { recipientAccountId: WALLET_GIVER, amountSats: 17, amount: '0.01' },
+            { recipientAccountId: WALLET_GIVER, amountSats: 19, amount: '0.01' },
+          ],
+        });
+        expect(requestSpy).toHaveBeenCalledTimes(1);
+        expect(requestSpy.mock.calls[0]?.[0]?.amountMsat).toBe(10_000);
+        expect(requestSpy.mock.calls[0]?.[0]?.amountMsat).toBeGreaterThan(0);
+      } finally {
+        requestSpy.mockRestore();
+      }
+    });
+  });
+
+  it('answers 503 before an unpriced fallback share can mint a zero-sat invoice', async () => {
+    const lnurlPay = await import('@/lib/lnurl-pay');
+    const requestSpy = vi.spyOn(lnurlPay, 'requestZapInvoice');
+    try {
+      const rates = vi.fn<() => Promise<FxSpotQuote | null>>(() => Promise.resolve(null));
+      const { app, messages, clock } = await loanSetup({
+        goalCurrency: 'USD',
+        goalAmount: '0.03',
+        termDays: 2,
+        rates,
+        givers: [
+          { id: WALLET_GIVER, sats: 2, wallet: true, fiatAmount: '0.02' },
+          { id: NO_WALLET, sats: 1, wallet: true, fiatAmount: '0.01' },
+        ],
+      });
+      await messages.recordInvoiceAttempt({
+        ...openPartAttempt(17, 1n, 1n, new Date(clock.now)),
+        description: repaymentDescription(0, WALLET_GIVER),
+      });
+      const paymentHash = 'cb'.repeat(32);
+      await messages.recordInvoiceAttempt({
+        ...openPartAttempt(19, 1n, 1n, new Date(clock.now)),
+        paymentHash,
+        description: repaymentDescription(1, WALLET_GIVER),
+      });
+      expect(
+        await messages.claimZapPayment(paymentHash, 'blocking-legacy', new Date(clock.now)),
+      ).toBe(true);
+
+      const response = await app.request(`/messages/${CREDIT}/repayment`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: '0.01' }),
+      });
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'Ask amount is unavailable' });
+      expect(rates).toHaveBeenCalledTimes(1);
+      expect(requestSpy).not.toHaveBeenCalled();
+    } finally {
+      requestSpy.mockRestore();
+    }
   });
 
   it('rejects a replacement whose open bill exceeds the remaining prepay amount', async () => {
@@ -3072,6 +3275,7 @@ describe('repayment from the in-app wallet', () => {
       body: JSON.stringify({ amount: '0.01' }),
     });
     expect(noRate.status).toBe(503);
+    expect(await noRate.json()).toEqual({ error: 'Ask amount is unavailable' });
 
     const brokenRate = await loanSetup({
       goalCurrency: 'USD',
@@ -3085,6 +3289,7 @@ describe('repayment from the in-app wallet', () => {
       body: JSON.stringify({ amount: '0.01' }),
     });
     expect(failedRate.status).toBe(503);
+    expect(await failedRate.json()).toEqual({ error: 'Ask amount is unavailable' });
 
     for (const amount of [1, '0']) {
       const invalidFiat = await unpriced.app.request(`/messages/${CREDIT}/repayment`, {
@@ -4526,7 +4731,7 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
-  it('answers 503 Ask amount is unavailable when the spot cannot be read', async () => {
+  it('leaves read sat fields null when the spot cannot be read', async () => {
     const rates = (): Promise<FxSpotQuote | null> => Promise.reject(new Error('rate down'));
     for (const fundedAt of [undefined, null]) {
       const failing = await loanSetup({
@@ -4536,8 +4741,10 @@ describe('repayment from the in-app wallet', () => {
         ...(fundedAt === null ? { fundedAt } : {}),
       });
       const res = await loans(failing.app);
-      expect(res.status).toBe(503);
-      expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        loans: [{ totalSats: null, maxSats: null }],
+      });
     }
     const lent = await loanSetup({ goalCurrency: 'USD', rates, termDays: 4 });
     await lent.auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: MONDAY });
@@ -4545,8 +4752,10 @@ describe('repayment from the in-app wallet', () => {
     const res = await lent.app.request('/me/loans', {
       headers: { authorization: `Bearer ${NO_WALLET}` },
     });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      lenderWaiting: { shares: 2, loans: 1, sats: null },
+    });
   });
 });
 

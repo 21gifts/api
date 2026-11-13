@@ -501,25 +501,20 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
       plan.due.map((share) => [`${share.dayIndex}:${share.accountId}`, share] as const),
     );
     price =
-      plan.due.length > 0 ? await sharePartsPricer(deps, row, unpaidSharesParts(plan.due)) : null;
-    const share = await nextShare(deps, row, nowMs, { plan, price });
-    if (share.error !== null) {
-      return c.json({ error: share.error }, share.status);
+      plan.due.length > 0 ? await invoicePartsPricer(deps, row, unpaidSharesParts(plan.due)) : null;
+    if (plan.due.length > 0 && price === null) {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
     }
-    daysDue = share.daysDue;
-    daysPaid = share.daysPaid;
-    if (share.share !== null) {
-      const nextShareState = share.share;
-      const state = dueShares.get(
-        `${nextShareState.dayIndex}:${nextShareState.accountId}`,
-      ) as ShareState;
-      const unpaidSats = pricedSum(
-        price as Awaited<ReturnType<typeof sharePricer>>,
-        unpaidShareParts(state),
-      ) as number;
+    daysDue = plan.daysDue;
+    daysPaid = plan.daysPaid;
+    const nextShareState = plan.due.find(
+      (share) => share.canReceive && share.paidUnits < share.units,
+    );
+    if (nextShareState !== undefined) {
+      const nextPrice = price as Awaited<ReturnType<typeof sharePricer>>;
       next = {
         dayIndex: nextShareState.dayIndex,
-        sats: unpaidSats,
+        sats: pricedSum(nextPrice, unpaidShareParts(nextShareState)) as number,
         recipientAccountId: nextShareState.accountId,
       };
     }
@@ -1037,11 +1032,12 @@ function billableSharePart(share: ShareState): {
  * A giver whose wallet refuses the zap is tried once per call; their other
  * shares wait too.
  *
- * @param deps - Same as {@link repaymentInvoice}.
+ * @param routeDeps - Same as {@link repaymentInvoice}.
  * @param c - Request.
  * @returns `{ bills, waiting }`, or an error.
  */
-export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promise<Response> {
+export async function repaymentDueBills(routeDeps: RepaymentDeps, c: Context): Promise<Response> {
+  const deps = withOneRate(routeDeps);
   const opened = await openCredit(deps, c);
   if (opened instanceof Response) {
     return opened;
@@ -1074,11 +1070,6 @@ async function repaymentDueBillsLocked(
   if (plan.due.length === 0) {
     return c.json({ bills: [], waiting: [] }, 200);
   }
-  const dueParts = unpaidSharesParts(plan.due);
-  const price = await sharePartsPricer(deps, opened.row, dueParts);
-  if (price === null || pricedSum(price, dueParts) === null) {
-    return c.json({ error: 'Ask amount is unavailable' }, 503);
-  }
   const fiat = isFiatCredit(opened.row);
   // One limiter hit per call, taken by the first bill that has to be minted.
   let minted: boolean | undefined;
@@ -1105,8 +1096,13 @@ async function repaymentDueBillsLocked(
     if (payable && bills.length >= REPAYMENT_BILLS_MAX) {
       continue;
     }
+    const shareParts = unpaidShareParts(share);
+    const price = await invoicePartsPricer(deps, opened.row, shareParts);
+    if (price === null) {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
+    }
+    const waitingSats = pricedSum(price, shareParts) as number;
     const waitingUnits = share.units - share.paidUnits;
-    const waitingSats = pricedSum(price, unpaidShareParts(share)) as number;
     const giver = await giverOf(share.accountId);
     const waitingLine = {
       dayIndex: share.dayIndex,
@@ -1260,20 +1256,13 @@ async function prepayPlan(
     maxParts,
   );
   const maximum = maximumAcceptedRepayment(remainingShares);
-  const waitingKeys = new Set(
-    allocation.waiting.map((share) => `${share.dayIndex}:${share.accountId}`),
-  );
-  const pricedParts = [
-    ...maximum.parts,
-    ...unpaidSharesParts(
-      remainingShares.filter((share) => waitingKeys.has(`${share.dayIndex}:${share.accountId}`)),
-    ),
-  ];
-  const price = await sharePartsPricer(deps, row, pricedParts);
-  if (price === null || pricedSum(price, pricedParts) === null) {
+  // Refusal reallocation can reach a blocking share and every share after it,
+  // so every still-open share must use this request's one validated pricer.
+  const pricedParts = unpaidSharesParts(remainingShares);
+  const price = await invoicePartsPricer(deps, row, pricedParts);
+  if (price === null) {
     return 'unavailable';
   }
-  // `maximum.parts` is a prefix of the successfully priced parts above.
   const maxSats = pricedSum(price, maximum.parts) as number;
   return {
     allocation,
@@ -1742,17 +1731,12 @@ async function openCredit(
  * @param deps - Store, auth, and optional spot store.
  * @param row - Funded credit note.
  * @param nowMs - Clock.
- * @param prepared - Optional plan snapshot and its already-read price function.
  * @returns The next payable share or the route error state.
  */
 async function nextShare(
   deps: RepaymentDeps,
   row: MessageRow,
   nowMs: number,
-  prepared?: {
-    plan: DuePlan | 'unavailable';
-    price: Awaited<ReturnType<typeof sharePricer>> | null;
-  },
 ): Promise<{
   daysDue: number;
   daysPaid: number;
@@ -1769,7 +1753,7 @@ async function nextShare(
   error: string | null;
   status: 400 | 503;
 }> {
-  const plan = prepared?.plan ?? (await duePlan(deps, row, nowMs));
+  const plan = await duePlan(deps, row, nowMs);
   if (plan === 'unavailable') {
     return {
       daysDue: dueDayCount(
@@ -1792,9 +1776,8 @@ async function nextShare(
   const dueParts = unpaidSharesParts(plan.due);
   // Every unreserved due unit needs a price, whether or not its giver can
   // receive. Fully reserved shares need no spot.
-  const price =
-    prepared === undefined ? await sharePartsPricer(deps, row, dueParts) : prepared.price;
-  if (price === null || pricedSum(price, dueParts) === null) {
+  const price = await invoicePartsPricer(deps, row, dueParts);
+  if (price === null) {
     return {
       daysDue,
       daysPaid,
@@ -1892,10 +1875,20 @@ async function sharePartsPricer(
   deps: RepaymentDeps,
   row: MessageRow,
   parts: readonly PricedSharePart[],
-): Promise<Awaited<ReturnType<typeof sharePricer>> | null> {
+): Promise<Awaited<ReturnType<typeof sharePricer>>> {
   return parts.some((part) => part.open !== true)
-    ? sharePricer(deps, row).catch(() => null)
-    : () => 0;
+    ? sharePricer(deps, row).catch(() => () => null)
+    : () => null;
+}
+
+/** Require every unreserved part to have a positive invoice price. */
+async function invoicePartsPricer(
+  deps: RepaymentDeps,
+  row: MessageRow,
+  parts: readonly PricedSharePart[],
+): Promise<Awaited<ReturnType<typeof sharePricer>> | null> {
+  const price = await sharePartsPricer(deps, row, parts);
+  return parts.some((part) => part.open !== true && (price(part.units) ?? 0) <= 0) ? null : price;
 }
 
 /**
@@ -1958,11 +1951,10 @@ async function loanRow(
       named.map((payer) => payer.accountId),
     );
     const payable = named.filter((payer) => receivers.get(payer.accountId) !== null);
-    // The rate is read only when there is a debt to price. A failing loader is 503; a missing rate leaves sats null.
-    const price = named.length === 0 ? undefined : await sharePricer(deps, row).catch(() => null);
-    if (price === null) {
-      return 'unavailable';
-    }
+    // The rate is read only when there is a debt to price. An unavailable
+    // rate leaves the affected sat fields null on this read path.
+    const price =
+      named.length === 0 ? undefined : await sharePricer(deps, row).catch(() => () => null);
     const maxUnits = payable.reduce((sum, payer) => sum + payer.units, 0n);
     const payableIds = new Set(payable.map((payer) => payer.accountId));
     const totalShares = repaymentSchedule(row.goalTermDays as number, named);
@@ -2008,13 +2000,10 @@ async function loanRow(
   if (open.length === 0) {
     return null;
   }
-  // Read the spot only when an unpaid unit is not covered by an open bill. A
-  // failing read is 503; a missing currency rate leaves new-unit sats null.
+  // Read the spot only when an unpaid unit is not covered by an open bill.
+  // An unavailable spot leaves the affected new-unit sat sums null.
   const openParts = unpaidSharesParts(open);
   const price = await sharePartsPricer(deps, row, openParts);
-  if (price === null) {
-    return 'unavailable';
-  }
   const paidParts = plan.parts;
   const partKeys = new Set(paidParts.map((part) => `${part.dayIndex}:${part.recipientAccountId}`));
   const legacyRepaidSats = plan.paid
@@ -2119,18 +2108,17 @@ async function lenderWaiting(
     }
     const mineParts = unpaidSharesParts(mine);
     const price = await sharePartsPricer(deps, row, mineParts);
-    if (price === null) {
-      return 'unavailable';
-    }
     shares += mine.length;
     loanSats.push(pricedSum(price, mineParts));
   }
+  const availableSats = loanSats.filter((sats): sats is number => sats !== null);
   return {
     shares,
     loans: loanSats.length,
-    sats: loanSats.includes(null)
-      ? null
-      : loanSats.reduce<number>((sum, sats) => sum + (sats as number), 0),
+    sats:
+      availableSats.length === loanSats.length
+        ? availableSats.reduce((sum, sats) => sum + sats, 0)
+        : null,
   };
 }
 

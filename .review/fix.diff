@@ -1,0 +1,1996 @@
+diff --git a/.review/pr-body.md b/.review/pr-body.md
+new file mode 100644
+index 00000000..00863351
+--- /dev/null
++++ b/.review/pr-body.md
+@@ -0,0 +1,25 @@
++Since 2026-11-11 gifts correctly store only their payment-time USD amount, so the latest gift day no longer carries a CHF, EUR or PHP proportion, fiat loan shares cannot be priced, and `GET /me/loans` returns null totals for every fiat loan (the app then cannot load any loan of that member).
++Not-yet-invoiced fiat share units are now priced in sats from the current spot, the source a forum ask already uses, read once per request.
++Stored invoices and settled parts keep their stored sats, gift rows are not touched, and an unavailable spot keeps today's null / 503 behaviour.
++
++<details>
++<summary>Details</summary>
++
++### Root cause
++
++The release that reached production on 2026-11-11 stopped deriving CHF, EUR and PHP for a payment from a daily close, as `docs/fiat-amounts.md` requires, so every outbound gift since then stores only USD. Fiat loan shares were priced through `goalRateDay` = `loadLatestGoalRateDay` (`src/routes/stats.ts`), which keeps a currency only when every gift of the latest day stored it. That is now never the case, so `sharePricer` (`src/routes/repayment.ts`) returns null for every fiat unit. In production 18 PHP loans are affected (15 funded).
++
++### Change
++
++- `sharePricer` (`src/routes/repayment.ts`) and the credit routes in `src/routes/messages.ts` price fiat units with the stored `FxSpotQuote` (`FxSpotStore.latest()`), wired in `src/server.ts` where `goalRateDay` was bound; `withOneRate` still reads it once per request.
++- `fiatToSats` (`src/lib/goal-rate.ts`) takes the spot quote.
++- `loadLatestGoalRateDay` and `bindGoalRateDay` are removed with their tests, catalog, handbook and CONTRIBUTING entries; nothing else used them.
++- `docs/fiat-amounts.md` ("What may use the rate of now") already allows the current spot to turn a fiat amount into sats for a payment about to be created; committed amounts are unchanged.
++
++An earlier version of this pull request recorded CHF/EUR/PHP on Fond payouts and backfilled gift rows; review showed that `docs/fiat-amounts.md` forbids both, so it was replaced by this change.
++
++### Verified
++
++Bun 1.4.4 with vitest under Node 22 (as CI): typecheck, lint, handbook check, e2e check, database change notice test, unit tests (9123 passed, 100% statements/branches/functions/lines), Postgres driver tests on Postgres 16 (140 passed), build, HTTP e2e suite (1065 passed).
++
++</details>
+diff --git a/.review/pr.diff b/.review/pr.diff
+new file mode 100644
+index 00000000..168ca5ed
+--- /dev/null
++++ b/.review/pr.diff
+@@ -0,0 +1,1485 @@
++diff --git a/CONCEPT.md b/CONCEPT.md
++index aad5de79..f654b40e 100644
++--- a/CONCEPT.md
+++++ b/CONCEPT.md
++@@ -941,6 +941,7 @@ welcome exception to the exact `verified` role.
++ 
++ | Date       | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
++ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+++| 2026-11-13 | Not-yet-invoiced fiat loan-share units are priced in sats from the current stored `FxSpotQuote`, read once per request through the existing `FxSpotStore`. Gift rows and their daily proportions are not a repayment pricing source. Open invoices, settled parts, frozen debt, and every other committed figure keep their stored values. A missing or failed spot read keeps the existing null / 503 unavailable behaviour; there is no fallback and no gift backfill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
++ | 2026-11-13 | Members may leave the grant program on their own (`POST /funding/withdraw`), so that someone else can be admitted. The stored status `withdrawn` frees an admitted place at once and ends every payout from the moment of the write. The member sees no grant (`none`); staff see `withdrawn`. The member may apply again, without priority and without a reserved place. The daily roster and loans are not changed. Every withdrawal stays in `db_change` after a new application; operators list them with `GET /funding/withdrawals`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
++ | 2026-11-13 | Wallet balances are identities, not accounts: current app reports and viewer observations carry the verified wallet key, the latest snapshot is retained per account, wallet key, and UTC day, and public totals carry each such wallet separately. Legacy null-key rows remain the account fallback while it has no visible keyed row and are not an additional wallet beside keyed rows. Account-scoped current-balance reads prefer the current verified key and use a legacy null-key app row only when that key has no row; a previous wallet can never replace the current balance. For a multi-party outgoing transfer, completion requires every receiver edge reached from that wallet's sender leaves to have SDK receiver status completed; a missing or unfinished receiver stays pending. A platform-note compose daily ping uses the payer's newest qualifying media note from today and sends nothing without one. The invoice welcome exception reuses the unchanged welcome-recipient rule exactly: role `verified`, not the platform account, and not welcomed before. This refines the broader “at least verified” wording in the following 2026-11-13 row without changing who receives a welcome gift.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
++ | 2026-11-13 | The Spark viewer requests every transfer type and persists explicit non-secret token facts as well as Bitcoin transfers; raw token rows, signatures, commitments, secret key material, and revocation secrets never enter wallet history or `db_change`. Multi-party transfer direction and amount are wallet-relative leaf sums, all outgoing recipients are retained, and the same transfer id may exist once per current or previous wallet. Incremental reads run every tick and a durable daily full reread repairs late indexing and unresolved counterparties; unresolved token inputs remain in the retry cursor, every unresolved page gets one bounded owner step, timeouts retain safe viewer progress, and a full pass is not marked complete while inputs remain unresolved. Durable input-resolution counts prevent a less-resolved observation from replacing a better direction, amount, or counterparty projection. Transfer update times are compared only with transfer update times, never poll time. Paging fails safely on a repeated cursor. UTC payout-day checks do not depend on the Postgres session time zone. As a refinement of the 2026-11-12 row, the one-time welcome exemption applies only when the account is at least `verified` and not welcomed yet, the comment is exactly `Welcome`, neither `messageId` nor `groupMessageId` is present, the normalized label is exactly USD `1.00`, and `amountMsat` is no more than the server's USD 1.00 spot conversion plus the fixed 10% tolerance; a missing or unusable spot fails closed. A roster `Welcome` with a message id or another amount remains shop-payment-required. The Fond is a 21.gifts application, so its activity and transactions are public; `GET /fond/summary` is the existing surface and a public transaction list is separate work.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
++diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
++index ebe29d52..72209997 100644
++--- a/CONTRIBUTING.md
+++++ b/CONTRIBUTING.md
++@@ -191,8 +191,6 @@ test asserts 409 `missing: ['lightning-address']`);
++ test still answers 409 `missing: ['lightning-address']`);
++ `freezePosFiatCrosses`, which prices the three untyped currencies of a till charge and of a fiat ask from the spot, and `serializePosFiat`, which formats a stored till charge. Both run only after a verified wallet resolves (`POST /pos` answers 400 `wallet_required` before the freeze and before `serializePosCharge`; their catalog
++ tests answer 401 without a bearer);
++-`loadLatestGoalRateDay` and `bindGoalRateDay`, which load the gift-day rate for a repayment share and are not called by a forum ask (their catalog
++-tests still answer 409 `missing: ['lightning-address']`);
++ `canonicalDecimal`, which `decimalAmount` and `btcAmount` also use on the shop payment surface (that surface answers the default 404 on the default boot);
++ `fiatToSats`, which prices a fiat repayment share and is not called by a forum ask (its catalog
++ test still answers 409 `missing: ['lightning-address']`);
++diff --git a/SPEC.md b/SPEC.md
++index 694d782e..317fe7e8 100644
++--- a/SPEC.md
+++++ b/SPEC.md
++@@ -10,6 +10,12 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
++ or a round trip through sats does not fill or replace it. This file does not
++ describe a backfill or a read that fills a committed figure that way.
++ 
+++**2026-11-13 decision:** Not-yet-invoiced fiat loan-share units are priced in
+++sats from the current stored `FxSpotQuote`, read once per request. Gift rows and
+++daily-rate proportions are not a repayment pricing source. An open invoice and
+++a settled part keep their stored sats; an unavailable spot keeps the existing
+++null / 503 behaviour.
+++
++ **Status**: living document. Last revised 2026-11-13 (`POST /funding/withdraw`: a member leaves the grant program on their own; the stored status `withdrawn` frees an admitted place at once, ends every payout from the moment of the write, reads as `none` on the owner wire and on `GET /invoices/eligible`, shows as `withdrawn` on the staff detail, and may apply again; operator-only `GET /funding/withdrawals` lists every withdrawal from `db_change`, also after a new application). Also 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit; terminal receiver-edge status, bounded/queued token-owner enrichment, independent catch-up retry, monotone viewer upserts, atomic welcome-invoice entitlement reservations, input-owned token direction and amounts, token invoice attachments, verified-only current-wallet counterparty ownership, and one About-me-inclusive daily-media definition). Before that, 2026-11-12 (encrypted deployment Spark viewer, direct current/previous-wallet transfer sync, admin wallet-table reads, the server-verified shop-payment grant condition, and the owner-facing single reason for today's grant payout). Earlier decisions remain documented in the Decisions Log and the endpoint sections below.
++ 
++ ---
++@@ -2963,7 +2969,7 @@ Success → **Response** `200`:
++ - `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. One read of legacy repayments and parts supplies the plan, `repaidSats`, every open remainder, and all derived totals. `repaidSats` adds exact `message_repayment_part.sats` and only legacy full-share rows with no parts, so every payment is counted once. `totalSats` is `repaidSats` plus every unpaid remainder in sats and never combines different settlement snapshots; sats with no account are not repaid and not counted.
++ - `due` covers every due, unpaid share. `payable*` are the shares whose lender can receive (the ones `POST /messages/:id/repayment/due` bills), `waiting*` the shares whose lender cannot. `*People` counts distinct lenders and `waitingShares` the waiting shares. `behindDays` is the number of due days before today that still have an unpaid share that is not waiting and did not fall due before its lender's wallet was verified (the rule of `daysPaid` in `GET /messages/:id/repayment`). `lastPayment` is true when paying `payable` would finish the loan.
++ - `next` is the next repayment day after the due days: `dueOn` (`YYYY-MM-DD` UTC), its sats, and its amount; null when no later day remains.
++-- `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, read once per request for every loan, and is `null` without a rate.
+++- `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan the not-yet-invoiced units within `totalSats`, `payableSats`, `waitingSats`, and `next.sats` are priced from the current stored `FxSpotQuote`, read once per request for every loan, and are `null` without that currency rate. Open invoices and settled parts keep their stored sats.
++ - `sundayRest` is true when the device `Time-Zone` names a zone that is in Sunday: the existing rule, under which repayments are refused today.
++ - `lenderWaiting` is the caller's side as a lender. While the caller cannot receive (no verified wallet), `shares` counts the due, unpaid shares owed to the caller on every live funded loan the caller gave to (found through the caller's in-app invoices, counted only when the caller is one of its givers), `loans` the loans they belong to, and `sats` their sum in sats (a fiat share priced like `waitingSats`; `null` when one has no rate). All zero when the caller can receive.
++ 
++@@ -7576,6 +7582,11 @@ otherwise **400** with that shop error and nothing is stored. A reply, and
++ a note that is not a shop, may still omit the pin.
++ An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
++ A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that for `goal_term_days` days, but for a credit outside the operator-approved exception never before 2026-11-16. A non-exempt credit that filled on or before 2026-11-15 starts on 2026-11-16. The three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c` are exempt from that minimum and start the day after they filled. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. A BTC `goalAmount` is the whole-sat canonical string: a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). A fiat `goalAmount` keeps the typed decimal after trim and a comma turned into a dot (`5.00` stays `5.00`, `1.0` stays `1.0`), and that string is also stored in `goal_amount_text`. A read uses `goal_amount_text` when it is a non-empty string, otherwise the numeric column. `goal_sats` is that integer for `BTC` (1..10_000_000; a missing spot quote does not reject it). For fiat, sats are half-up from the current spot rate of the typed currency (`round(typed * 1e8 / fiatPerBtc)`), and a positive amount that rounds to 0 becomes 1. Fiat needs a spot quote that prices the typed currency and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If the spot read throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the spot read throws or returns no quote. The typed currency's snapshot is the typed amount at two decimals, not a satoshi round trip. The other three currencies are frozen from that same spot quote and are null when their rate is missing. A BTC ask freezes each fiat snapshot from the spot, or leaves it null. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the stored typed string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
+++For repayment pricing, “the rate of the day it is paid” means the current
+++stored `FxSpotQuote` at invoice creation. The quote is read once per request.
+++Gift rows and their daily proportions are not read. Not-yet-invoiced units move
+++with the spot; an open invoice and a settled part keep their stored sats.
+++
++ Every public, debug, and hidden forum message JSON that can carry
++ `goalRepayable: true` also carries `goalClosedAt` as an ISO-8601 string when
++ `goal_closed_at` is set and omits `goalClosedAt` otherwise. This applies to
++@@ -8001,7 +8012,7 @@ Success → **Response** `200`:
++ 
++ `currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `closedAt` is ISO-8601 when the author ended collecting, else null. `paidSats` is the sats actually settled for that share so far (0 when none); `paidAmount` is the two-decimal settled amount for a fiat share, else null. A share is `paid` only when its remainder is zero; a partially paid share keeps `due` or `scheduled`, and `dueSats` is its remainder priced in sats. `startsOn` is the first repayment day as `YYYY-MM-DD` UTC (the `dueOn` of `dayIndex` 0), or null until then; it is the day after `fundedAt`, and for a credit outside the operator-approved exception never before 2026-11-16. The exception is the three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`: they start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` is null for bitcoin. On a fiat ask it is a two-decimal string in the ask currency: the sum, per giver, of the oldest indexed ingest line of each of that giver's receipts on this note, the amount fixed when it was paid, when every named giver has a parseable stored amount in that currency; otherwise the typed ask amount is split by sat weight. `amount` is a two-decimal string in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: the share in sats for a bitcoin loan, or for a fiat loan the share priced in sats at the rate `POST /messages/:id/repayment` would use now; it is `null` on every other line. The rate is read once per request, so `dueSats` and `next.sats` agree. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. `waiting` is true on a `due` line whose giver cannot receive, and `waitingShares` counts those lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share. A 1-sat or 1-cent gift is its own row.
++ 
++-Fiat amount or gift-day rate missing, or the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. This holds whenever a fiat share is due, also when every due share waits for a giver who cannot receive.
+++Fiat amount or current spot rate missing, or the spot cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. This holds whenever a fiat share is due, also when every due share waits for a giver who cannot receive. `dueSats` and `next.sats` use the same one spot read; open invoices and settled parts keep their stored sats.
++ 
++ ### `POST /messages/:id/repayment`
++ 
++@@ -8039,7 +8050,7 @@ Other payment start failure → **400** `{ "error": "Could not start the Bitcoin
++ Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
++ Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
++ Over-limit → **429** `{ "error": "Too many payments" }`.
++-Fiat share cannot be priced, including when the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. Any due share is priced first, so a fiat loan without a rate answers this 503 before the `cannot_receive` 400.
+++Not-yet-invoiced fiat share units cannot be priced, including when the spot cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. Any such due units are priced first, so a fiat loan without that currency's spot rate answers this 503 before the `cannot_receive` 400. An open invoice needs no new spot and keeps its stored sats.
++ Signing keys missing or the invoice attempt cannot be stored → **503** `{ "error": "Messages are unavailable" }`.
++ 
++ ### `POST /messages/:id/repayment/due`
++@@ -8086,7 +8097,7 @@ Unknown id, a non-UUID after a valid session, a note that is not a live repayabl
++ Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
++ Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
++ Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
++-Debt or a fiat share cannot be priced, including when the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`.
+++Debt or a fiat share cannot be priced, including when the current spot cannot be read → **503** `{ "error": "Ask amount is unavailable" }`.
++ Any other error of `POST /messages/:id/repayment` while making a bill (`This message cannot be paid yet`, a giver without a Nostr key, `A payment for this share is still open`, `Could not start the Bitcoin payment`, `Messages are unavailable`) answers the whole call with that status and body. Bills minted before it stay stored and are returned again on the next call.
++ 
++ ### `POST /messages/:id/repayment/close`
++diff --git a/docs/handbook/endpoints.md b/docs/handbook/endpoints.md
++index d3fa68be..af25720b 100644
++--- a/docs/handbook/endpoints.md
+++++ b/docs/handbook/endpoints.md
++@@ -552,10 +552,10 @@ debug list.
++ ## Endpoint: GET /me/loans
++ 
++ - **Purpose:** The signed-in member's own loans in one call. Bearer session. 200 `{ sundayRest, loans, lenderWaiting }`. `loans` lists the member's live repayable asks that are still collecting or not fully repaid, newest first; fully repaid loans are left out, as are hidden notes. Each loan has `messageId`, `text` (first 160 characters of the note), `createdAt`, `goalSats`, `sats`, `goalCurrency`, `goalAmount`, `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp`, `amountUsd` / `amountChf` / `amountEur` / `amountPhp`, `termDays`, `fundedAt` (null while collecting), `daysDue`, `daysPaid`, `repaidSats`, `totalSats`, `due`, and `next`.
++-- **Due and next:** `due` covers every due, unpaid share: `payableSats`, `payableAmount`, and `payablePeople` for lenders who can receive; `waitingSats`, `waitingAmount`, `waitingPeople`, and `waitingShares` for lenders who cannot; `behindDays` (due days before today that still have an unpaid share that is not waiting and did not fall due before its lender's wallet was verified, as `daysPaid` of `GET /messages/:id/repayment`); `lastPayment` (paying `payable` would finish the loan). `next` is the next repayment day after today `{ dueOn, sats, amount }`, or null. Amounts are two-decimal strings in the loan's currency for a fiat loan and null for bitcoin. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, read once per request for every loan, and is null without a rate. `sundayRest` is true when the device `Time-Zone` is in Sunday, the rule that refuses repayments today.
+++- **Due and next:** `due` covers every due, unpaid share: `payableSats`, `payableAmount`, and `payablePeople` for lenders who can receive; `waitingSats`, `waitingAmount`, `waitingPeople`, and `waitingShares` for lenders who cannot; `behindDays` (due days before today that still have an unpaid share that is not waiting and did not fall due before its lender's wallet was verified, as `daysPaid` of `GET /messages/:id/repayment`); `lastPayment` (paying `payable` would finish the loan). `next` is the next repayment day after today `{ dueOn, sats, amount }`, or null. Amounts are two-decimal strings in the loan's currency for a fiat loan and null for bitcoin. For a fiat loan the not-yet-invoiced units within `totalSats`, `payableSats`, `waitingSats`, and `next.sats` use the current stored `FxSpotQuote`, read once per request for every loan, and are null without that currency's spot rate. Settled parts and open invoices keep their stored sats. `sundayRest` is true when the device `Time-Zone` is in Sunday, the rule that refuses repayments today.
++ - **Maximum and paid total:** `closedAt` is the explicit close timestamp. On a funded loan, `maxSats` / `maxAmount` walk receivable remainders in allocation order and stop before the first legacy, oversized, or claim-only reservation that would return 409; a payable share after that blocker is excluded. While collecting they include the collected amount restricted to receiving givers. `maxSats` is the sum of each maximum bill's separately rounded sat price. `repaidSats` adds exact part sats and only legacy full rows that have no parts, so each payment is counted once.
++-- **Lender waiting:** `lenderWaiting` `{ shares, loans, sats }` is the caller's side as a lender: the due, unpaid shares owed to the caller while the caller cannot receive (no verified wallet), over every live funded loan the caller gave to. Candidate loans are found through the caller's in-app invoices after excluding both `repay:` and `repayp:` repayment markers, and counted only when the caller is one of their givers. `shares` counts them, `loans` the loans they belong to, and `sats` is their sum in sats (a fiat share priced like `waitingSats`; null when one has no rate). All zero when the caller can receive. The app shows it as a card that asks the lender to set up the wallet.
++-- **Errors:** 401 Unauthorized; 503 `{ error: 'Ask amount is unavailable' }` when the debt of a loan of the caller, or of a loan the caller gave to, cannot be computed, or the rate cannot be read; 503 `{ error: 'Messages are unavailable' }` when the store fails.
+++- **Lender waiting:** `lenderWaiting` `{ shares, loans, sats }` is the caller's side as a lender: the due, unpaid shares owed to the caller while the caller cannot receive (no verified wallet), over every live funded loan the caller gave to. Candidate loans are found through the caller's in-app invoices after excluding both `repay:` and `repayp:` repayment markers, and counted only when the caller is one of their givers. `shares` counts them, `loans` the loans they belong to, and `sats` is their sum in sats (a fiat share priced like `waitingSats`; null when its current spot rate is absent). All zero when the caller can receive. The app shows it as a card that asks the lender to set up the wallet.
+++- **Errors:** 401 Unauthorized; 503 `{ error: 'Ask amount is unavailable' }` when the debt of a loan of the caller, or of a loan the caller gave to, cannot be computed, or a required spot cannot be read; 503 `{ error: 'Messages are unavailable' }` when the store fails.
++ - **Auth:** `Authorization: Bearer` session. Read-only; not refused on Sunday.
++ - **Used by:** The loans card, the menu row, and the repayment screen.
++ 
++@@ -908,9 +908,9 @@ close timestamp is set and omits the key otherwise.
++ 
++ ## Endpoint: GET /messages/:id/repayment
++ 
++-- **Purpose:** Public read of a live repayable ask. No session. 404 unless the note is a live top-level credit with a term. 200 lists `givers` (account, name, username, `givenSats`, and `givenAmount` (null for bitcoin; on a fiat ask a two-decimal string in the goal currency: the sum, per giver, of the oldest indexed ingest line of each of that giver's receipts on this note, the amount fixed when it was paid, when every named giver has a parseable stored amount in that currency, otherwise the typed ask amount split by sat weight)) and `repayments`. Each repayment is one bitcoin payment: `dayIndex`, `dueOn` (`YYYY-MM-DD` UTC, or null until the credit is fully given), who receives it, `amount` (a two-decimal currency string such as `0.01`, or null for bitcoin), `sats` (the bitcoin share, or for fiat the sats of a paid share and null until it is paid), `status` `paid` | `due` | `scheduled`, `waiting` (true on a `due` line whose giver cannot receive), `via: lightning`, and `dueSats` (on a `due` line the share in sats: the bitcoin share, or a fiat share priced at the rate `POST /messages/:id/repayment` would use now, read once per request; null on any other line; a due fiat share without a rate makes the whole response 503 `Ask amount is unavailable`, also when every due giver waits). Each giver also carries `canReceive` (true when the giver has a receiving address, `receivingAddress(...) !== null`). A 1-sat or 1-cent gift is a row of its own. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `startsOn` is the first repayment day (`YYYY-MM-DD` UTC, same as day 0 `dueOn`) once the credit has filled, else null. The first day is the day after the credit filled, and for a credit outside the operator-approved exception it is never before 2026-11-16. The exception is the three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`: they start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. `waitingShares` counts the `waiting` lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share. 503 `{ error: 'Ask amount is unavailable' }` when a fiat amount or the gift-day rate is missing, or the rate cannot be read.
+++- **Purpose:** Public read of a live repayable ask. No session. 404 unless the note is a live top-level credit with a term. 200 lists `givers` (account, name, username, `givenSats`, and `givenAmount` (null for bitcoin; on a fiat ask a two-decimal string in the goal currency: the sum, per giver, of the oldest indexed ingest line of each of that giver's receipts on this note, the amount fixed when it was paid, when every named giver has a parseable stored amount in that currency, otherwise the typed ask amount split by sat weight)) and `repayments`. Each repayment is one bitcoin payment: `dayIndex`, `dueOn` (`YYYY-MM-DD` UTC, or null until the credit is fully given), who receives it, `amount` (a two-decimal currency string such as `0.01`, or null for bitcoin), `sats` (the bitcoin share, or for fiat the stored sats of a paid share and null until it is paid), `status` `paid` | `due` | `scheduled`, `waiting` (true on a `due` line whose giver cannot receive), `via: lightning`, and `dueSats` (on a `due` line the share in sats: the bitcoin share, or a not-yet-invoiced fiat remainder priced from the current stored `FxSpotQuote`, read once per request; null on any other line; a due fiat share without its spot rate makes the whole response 503 `Ask amount is unavailable`, also when every due giver waits). An open invoice keeps its stored sats when the spot moves. Each giver also carries `canReceive` (true when the giver has a receiving address, `receivingAddress(...) !== null`). A 1-sat or 1-cent gift is a row of its own. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `startsOn` is the first repayment day (`YYYY-MM-DD` UTC, same as day 0 `dueOn`) once the credit is fully given, else null. The first day is the day after the credit filled, and for a credit outside the operator-approved exception it is never before 2026-11-16. The exception is the three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`: they start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. `waitingShares` counts the `waiting` lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share.
++ - **Partial payments:** `paidSats` is the exact sats settled so far and `paidAmount` is settled loan-currency cents. `status` becomes `paid` only at the full share boundary; `dueSats` prices only the remainder. On fiat, `sats` remains null until that boundary.
++-- **Errors:** 404 Not found. 503 Ask amount is unavailable (a fiat amount or the gift-day rate is missing, or the rate cannot be read).
+++- **Errors:** 404 Not found. 503 Ask amount is unavailable (a fiat amount or its current spot rate is missing, or the spot cannot be read).
++ - **Auth:** none. A local Sunday does not refuse this read.
++ - **Used by:** Anyone opening the credit.
++ 
++@@ -934,7 +934,7 @@ close timestamp is set and omits the key otherwise.
++ 
++ - **Purpose:** Every payable repayment bill of one loan in one call. A partially paid share bills only its remainder and uses an exact part description; an open part is reused. `waiting` always reports the whole unpaid share remainder, even when a smaller bill is open. A still-payable legacy full-share bill after a part settled is 409 and blocks a new part until expiry. Under the common per-message lock, mint reservation rereads every settled and open part, reuses an exact description first, checks all reserved units against the share, and refuses a stale part plan. Settlement keeps the payment-hash claim and the immutable matching part row atomic. Legacy full shares settle in `message_repayment`; part-based shares settle only in `message_repayment_part`.
++ - **Bounds:** At most 60 bills per call; the remaining payable shares come on the next call. The repayment invoice limiter is asked once per call, by the first bill that has to be minted; reused bills do not ask it.
++-- **Errors:** 401 Unauthorized, including a non-UUID id with no session; 404 Not found after a valid session as for `POST /messages/:id/repayment`; 409 `missing_requirements`; 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday; 429 Too many payments (`Retry-After: 10`); 400 `This message cannot be paid yet`, `A giver has no Lightning address` (no Nostr key), or `Could not start the Bitcoin payment`; 409 `A payment for this share is still open`; 503 `Ask amount is unavailable` (the debt or a due fiat share cannot be priced, including when the rate loader fails) or `Messages are unavailable`. Such an error answers the whole call; bills minted before it stay stored and are reused on the next call.
+++- **Errors:** 401 Unauthorized, including a non-UUID id with no session; 404 Not found after a valid session as for `POST /messages/:id/repayment`; 409 `missing_requirements`; 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday; 429 Too many payments (`Retry-After: 10`); 400 `This message cannot be paid yet`, `A giver has no Lightning address` (no Nostr key), or `Could not start the Bitcoin payment`; 409 `A payment for this share is still open`; 503 `Ask amount is unavailable` (the debt or a due fiat share cannot be priced, including when the spot read fails) or `Messages are unavailable`. Such an error answers the whole call; bills minted before it stay stored with their sats and are reused on the next call.
++ - **Auth:** `Authorization: Bearer` session.
++ - **Used by:** The author's repayment screen, which pays every returned bill from the in-app wallet (`sparkInvoice` first, else `pr`).
++ 
++diff --git a/docs/handbook/functions.md b/docs/handbook/functions.md
++index 52aebda4..a009ab4d 100644
++--- a/docs/handbook/functions.md
+++++ b/docs/handbook/functions.md
++@@ -1543,7 +1543,7 @@
++ 
++ - **Purpose:** Wires CORS (`allowHeaders` includes `Time-Zone` and `X-App-Build`), requestLog, sundayRest, brand, health, info, auth, me, `/pictures`, `/banners`, `/view`, `/pay`, `/lnurl` (pay-request / invoice), lightning-address, `/debug/accounts`, `/debug/contacts`, `/debug/api-log`, `/diagnostics`, `/debug/diagnostics`, `/debug/db`, `/debug/external-pubkeys`, `/debug/messages`, `/debug/invoices`, `/debug/invoices/settle`, `/debug/zap-ingests`, `/debug/push-ping`, `/debug/push-broadcast` (`POST /` and `GET /:id`), `/debug/trust-edges`, `/debug/dump`, `/debug/logins` (GET / PUT, allowlist POST / DELETE) and `DELETE /debug/sessions` (`debugLoginsRoutes`, `DEBUG_TOKEN` only), `/trust-chain`, `/trust` (verify / propose-moderator / confirm-moderator / reject-moderator / appoint-moderator), `/funding` (apply / applications / trial / admit / reject / daily-roster / daily-roster/document), Web Push subscription routes, `GET /me/loans` (`myLoansRoutes`), `/gifts`, `/gifts/stats`, `/wallets/stats` (public wallet totals), `/fx` (`GET /fx/spot`), `/messages` (incl. invoice and `/messages/stats`), `GET /translate` (DeepL availability), `/members/:accountId`, `GET /mentions`, `GET /accounts/by-username/:username`, `/.well-known` NIP-05 `nostr.json` (CORS `*`), `/contact`, `/habits` (`memberHabitRoutes`), `/pos`, `/conversations`, `/notifications`, `/spend` (`POST /daily-instruction`), and invoices. When `resolveLnurlServerConfig(env)` is non-null, also mounts `lnurlServerRoutes` at `/`, enables `PUT /me/wallet`, passes `lnurlServer` into `wellKnownRoutes`, adds CORS `*` for `/lnurlp/*` and `/verify/*`, and extends allow-list CORS on `/lnurlpay/*` with `X-Breez-Signature` / `X-Breez-Timestamp`. Unset or blank `LNURL_SERVER_URL` leaves the wallet bind and the forwarded LNURL routes unmounted; no member can receive or newly verify a wallet, and only an account verified while the server was configured can still post.
++ - **Inputs:** Optional `AppDeps` (store, clock, fetch, cache, readBrand, origins, `debugToken`, optional `debugReadToken` (default `process.env.DEBUG_READ_TOKEN`), giftStore (gift statistics, and the once-per-account welcome check of the invoice, trust, me and messages routes), `giftRecorder`, `btcUsdRates`, `fiatRates`, optional `fxSpotStore` (default empty `InMemoryFxSpotStore`; boot injects the store its spot worker refreshes), optional `loginGateStore` (default empty `InMemoryLoginGateStore`; SQL boot injects `PostgresLoginGateStore`), `messageStore`, optional `translationStore` (default `InMemoryTranslationStore`; SQL boot injects `PostgresTranslationStore`), optional `conversationTranslationStore` (passed to `conversationRoutes.translationStore`; omitted so that factory constructs one `InMemoryTranslationStore`; SQL boot injects a second `PostgresTranslationStore` on `conversation_message_translation`, never the forum store), `contactStore`, optional `memberHabitStore` (default `InMemoryMemberHabitStore`; SQL boot injects `PostgresMemberHabitStore`), optional `conversationStore` (default `InMemoryConversationStore`), optional `notificationStore` (default `InMemoryNotificationStore`), optional `apiLogStore` (default `InMemoryApiLogStore`), optional `diagnosticStore` (default `InMemoryDiagnosticStore`), optional `debugDbStore` (omitted on a memory boot; `GET /debug/db` then 503 after the token matches), optional `mergeDb` (omitted on a memory boot; after a matching debug token and a valid body, `POST /debug/accounts/merge` is 503 `{ error: 'Merge is unavailable' }`; SQL boot injects it from `createBunDatabase`), `pushStore`, `trustStore`, optional `fundingStore` (default `InMemoryFundingStore`; also forwarded to `debugPaymentsRoutes`, which also receives `conversationStore`, `trustStore`, and `giftStore` for the window replay of `POST /debug/spend-ping`), optional `sparkInvoiceStore` (default `InMemorySparkInvoiceStore` when free in-app payments are on; boot injects `PostgresSparkInvoiceStore` when `DATABASE_URL` is set), optional `bannerStore` (default `InMemoryBannerStore`; SQL boot injects `PostgresBannerStore`; the About me photo is neither slot; mounted at `/pictures` and `/banners` and passed to the Nostr worker), optional `listDbChange`, `vapidPublicKey`, `nostrKek`, optional `nostrPublisher` (without `nostrKek` staff hide skips NIP-09), optional `env` (default `process.env`; relays / `PUBLIC_BASE_URL` / Cloudflare on `DELETE /messages/:id`; forwarded to `conversationRoutes` and `wellKnownRoutes` (`nostr.json` relays come from `resolveWriteSet(env)`); also forwarded to `lnurlRoutes`, which refuses the `PUBLIC_BASE_URL` host as a relay target), spendApiToken, `spendPing` (default `resolveSpendPing(env, fetchImpl, { gifts: giftStore, now, rosterStore, fondPayoutStore, accounts, lnurlServer })` with the auth store as `accounts` (the caller omits `lnurlServer` when it is null); unset/blank `SPEND_URL` or `SPEND_API_TOKEN` omits it; `POST /messages` still 200; daily calls `spendPing.ping(address, messageId, 'daily', effectiveStatus(grant, now))`; `conversationRoutes` gets the same `spendPing` and calls `spendPing.ping(address, created.id, 'moderator')`; forum `POST /messages` calls `spendPing.ping(address, messageId, 'daily', effectiveStatus(grant, now))`; a verified account with any live top-level photo or video, including About me, also calls `spendPing.ping(address, messageId, 'welcome')` even when the new row has no media; `spendPing` is also passed to `meRoutes` and, with `messages`, to `trustRoutes`; `fundingRoutes` receives the same optional `spendPing`), optional `welcomeSweep` (see **Welcome sweep**), optional `postLimiter` (default a new `PostRateLimiter`; passed to `messagesRoutes`; boot shares one instance with the Nostr worker), optional `replyLimiter` (default a new `PostRateLimiter` with `REPLY_POST_CAPS`; passed and shared the same way), optional `invoiceRateCaps` (default `resolveTestInvoiceRateCaps` on env; `null` keeps the process-wide gift and repayment limiters at 1 per second and 20 per hour; non-null builds one `InvoiceRateLimiter` each for gift and repayment invoices and logs a warning), invoiceStore, `webAuthnRpId`, `webAuthnRpName`, `passkeyCeremony`). `debugPaymentsRoutes` receives the same optional `spendPing`. Omitted `giftRecorder` → `invoiceRoutes` uses `NoopGiftRecorder`; omitted `messageStore` → `InMemoryMessageStore`; omitted `translationStore` → `InMemoryTranslationStore`; omitted `conversationTranslationStore` → `conversationRoutes` constructs one `InMemoryTranslationStore`; omitted `contactStore` → `InMemoryContactStore`; omitted `memberHabitStore` → `InMemoryMemberHabitStore`; omitted `posStore` → `InMemoryPosStore`; omitted `conversationStore` → `InMemoryConversationStore`; omitted `notificationStore` → `InMemoryNotificationStore`; omitted `pushStore` → `InMemoryPushStore`; omitted `trustStore` → `InMemoryTrustStore`; omitted `fundingStore` → `InMemoryFundingStore`; omitted `apiLogStore` → `InMemoryApiLogStore`; omitted `diagnosticStore` → `InMemoryDiagnosticStore`; omitted/blank `vapidPublicKey` → push HTTP 503 after session; omitted `nostrKek` → unsigned forum + invoice 503; SQL boot injects `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresTranslationStore`, a second `PostgresTranslationStore` on `conversation_message_translation`, `PostgresContactStore`, `PostgresMemberHabitStore`, `PostgresPosStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresBannerStore`, `PostgresApiLogStore`, `PostgresDiagnosticStore`, `PostgresDebugDbStore`, and parsed KEK. `messagesRoutes`, `meRoutes`, `invoiceRoutes`, and `trustRoutes` receive `conversationStore`. `fundingRoutes`, `invoiceRoutes`, `messagesRoutes`, `conversationRoutes`, `meRoutes`, `membersRoutes`, and auth finish receive `fundingStore`. `invoiceRoutes` also receives `gifts: giftStore`. `contactRoutes` and `conversationRoutes` receive `pushStore` plus `notificationStore`. Mounts `notificationRoutes` at `/notifications`. Does not take a push sender (worker owns delivery).
++-- **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. Default `fxSpotStore` is an empty `InMemoryFxSpotStore`, passed to `fxRoutes` at `/fx`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`, and the same `now` into `/mentions` and `/accounts`. Used by Bun.serve in `index.ts` and by tests via `app.request()`. Before routes mount, equal trimmed tokens throw `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and neither value is printed; an empty or missing read token does not fail boot. Builds one `LoginGate` from `loginGateStore` (default `InMemoryLoginGateStore`) and `resolveLoginsOpenDefault(env)`, passes it with `resolveRequiredAppBuild(env)` to `authRoutes`, and mounts `debugLoginsRoutes` at `/debug`. An unknown `LOGINS_OPEN_DEFAULT` throws before routes mount. `RECOVERY_SHARE_REQUIRED_FROM` is read once at boot (`resolveRecoveryShareRequiredFrom`) and passed to every route that decides a payout; a value that is not a calendar day also throws before routes mount.
+++- **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. Default `fxSpotStore` is an empty `InMemoryFxSpotStore`, passed to `fxRoutes` at `/fx`, `messagesRoutes`, and `myLoansRoutes`; asks and not-yet-invoiced fiat loan shares therefore read the same stored quote, while each repayment request memoizes its one read. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`, and the same `now` into `/mentions` and `/accounts`. Used by Bun.serve in `index.ts` and by tests via `app.request()`. Before routes mount, equal trimmed tokens throw `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and neither value is printed; an empty or missing read token does not fail boot. Builds one `LoginGate` from `loginGateStore` (default `InMemoryLoginGateStore`) and `resolveLoginsOpenDefault(env)`, passes it with `resolveRequiredAppBuild(env)` to `authRoutes`, and mounts `debugLoginsRoutes` at `/debug`. An unknown `LOGINS_OPEN_DEFAULT` throws before routes mount. `RECOVERY_SHARE_REQUIRED_FROM` is read once at boot (`resolveRecoveryShareRequiredFrom`) and passed to every route that decides a payout; a value that is not a calendar day also throws before routes mount.
++ - **Social recovery:** When both the auth store and the push store are the in-memory adapters (the `createApp` defaults or injected `InMemoryAuthStore` and `InMemoryPushStore`), `createApp` links them with `store.usePushStore(pushStore)`, so a recovery commit also deletes the account's push subscriptions. Optional `recoveryShareKek` (`RECOVERY_SHARE_KEK`, from `openBootStores`) is the key of the recovery share; memory boots omit it. `meRoutes` receives it with `fetchImpl` (the anonymous explorer balance of previous wallets); without it `PUT /me/recovery-share` answers 503. `authRoutes` receives `fetchImpl` and, when it resolves, `lnurlServer`, for the recovery begin's lookup; `lnurlServerRoutes` carries the address transfer and the recover pass-through of a pending recovery's new key.
++ - **Used by:** Boot path and every HTTP test.
++ - **Payment webhook:** When `resolvePaymentWebhookSecret(env)` returns a secret (`LNURL_WEBHOOK_SECRET`), `webhookRoutes` is mounted at `/webhooks` with the auth, push, and notification stores, `hasLiveDevice` = `accountHasLiveSubscription(pushStore, store, now(), accountId)`, `inboxUnreadCountFor(conversationStore, store)`, and the same `now`; otherwise `POST /webhooks/lnurl` answers 404.
++@@ -1738,7 +1738,7 @@
++ - **Sunday rest:** A `Time-Zone` header naming the device IANA zone makes `POST /`, staff `DELETE /:id`, `PATCH /:id/place`, `PATCH /:id/shop-account`, `PATCH /:id/text`, `PATCH /:id/photos`, `POST /:id/invoice`, `POST /:id/repayment`, and `POST /:id/repayment/due` return 403 `{ error: 'SUNDAY_REST' }` while that zone is in Sunday. `GET /:id/repayment` stays open. Pay links, the till, and private messages are not refused. Missing or invalid zone does not refuse.
++ - **External DELETE cascade:** When the target has `accountId === null` and a recorded `authorPubkey`, a successful `markDeleted` is followed by the single atomic `blockPubkeyAndHideRows` operation, which records the block and hides that pubkey's other live external rows. It logs `messages.external.blocked` with `{ messageId, hidden: cascaded + 1 }`; deleting a member row does not trigger this author-wide cascade.
++ 
++-- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `recoveryShareRequiredFrom` (payout gate), optional `nostrKek`, optional `nostrPublisher`, optional `env` (relays / `PUBLIC_BASE_URL` / Cloudflare / DeepL; default `{}` on the retract path), optional `translationStore` (default empty `InMemoryTranslationStore`), `fetchImpl`, `postLimiter` (top-level notes), `replyLimiter` (replies; default a process-wide `PostRateLimiter` with `REPLY_POST_CAPS`), `invoiceLimiter`, optional `repaymentLimiter` (test-only override passed to `repaymentInvoice`; omitted → the module limiter in `repayment.ts`), `heartLimiter` (default a process-wide `HeartRateLimiter`), optional `pushStore`, optional `spendPing`, optional `shopIdentities` and `shopKek` (default `nostrKek`; with a KEK, `ensureListed` after a committed `POST /`, `PATCH /:id/place`, `PATCH /:id/shop-account` or `PATCH /:id/text` creates a public shop's key; the response carries `shopNpub` only when the note is a listed shop, and otherwise `shopNpub` is null; a failure logs `shop.nostr_key.failed` and never fails the request; the OpenCryptoPay outboxes are queued by the store writes themselves, and the place sender decides from the note at send time: PUT for a listed shop, nothing for a public shop that is not listed, DELETE for a keyed shop that is no longer public, whether its tag was removed, its till account was cleared, or it was hidden or is gone), optional `fundingStore` (default empty `InMemoryFundingStore`), optional `giftStore` (a recorded `welcome` gift paid to the author's legacy external address, or one with description `21gifts welcome` under the author's username at or after its wallet verification, stops a second welcome ping), optional `notificationStore`, optional `conversationStore`, optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`), optional `fxSpot` (`createApp` passes the spot store; when omitted or `latest()` returns null a fiat ask is 400 `Ask amount is unavailable`, a throw is 503 for a fiat ask, and a BTC ask still stores the typed sats when the read throws or returns null), optional `goalRateDay` (`createApp` passes `bindGoalRateDay` for a fiat repayment share; an ask does not read it). Optional `debugToken` and `debugReadToken`: either one as Bearer reads `GET /hidden` and `GET /:id/edits` without a session (`isOperatorBearer`); every other route keeps its session rule.
+++- **Inputs:** `MessagesRouteDeps`: message `store`, shared `authStore`, `now`, optional `recoveryShareRequiredFrom` (payout gate), optional `nostrKek`, optional `nostrPublisher`, optional `env` (relays / `PUBLIC_BASE_URL` / Cloudflare / DeepL; default `{}` on the retract path), optional `translationStore` (default empty `InMemoryTranslationStore`), `fetchImpl`, `postLimiter` (top-level notes), `replyLimiter` (replies; default a process-wide `PostRateLimiter` with `REPLY_POST_CAPS`), `invoiceLimiter`, optional `repaymentLimiter` (test-only override passed to `repaymentInvoice`; omitted → the module limiter in `repayment.ts`), `heartLimiter` (default a process-wide `HeartRateLimiter`), optional `pushStore`, optional `spendPing`, optional `shopIdentities` and `shopKek` (default `nostrKek`; with a KEK, `ensureListed` after a committed `POST /`, `PATCH /:id/place`, `PATCH /:id/shop-account` or `PATCH /:id/text` creates a public shop's key; the response carries `shopNpub` only when the note is a listed shop, and otherwise `shopNpub` is null; a failure logs `shop.nostr_key.failed` and never fails the request; the OpenCryptoPay outboxes are queued by the store writes themselves, and the place sender decides from the note at send time: PUT for a listed shop, nothing for a public shop that is not listed, DELETE for a keyed shop that is no longer public, whether its tag was removed, its till account was cleared, or it was hidden or is gone), optional `fundingStore` (default empty `InMemoryFundingStore`), optional `giftStore` (a recorded `welcome` gift paid to the author's legacy external address, or one with description `21gifts welcome` under the author's username at or after its wallet verification, stops a second welcome ping), optional `notificationStore`, optional `conversationStore`, optional `waitSatsSleep` (test inject; default `defaultWaitSatsSleep`), optional `waitSatsTimeoutMs` (test inject; default `WAIT_SATS_TIMEOUT_MS`), optional `waitSatsPollMs` (test inject; default `WAIT_SATS_POLL_MS`), optional `fxSpot` (`createApp` passes the spot store; asks and not-yet-invoiced fiat repayment units use its current quote; each repayment request reads it at most once; when omitted or `latest()` returns null a fiat ask is 400 and a due fiat share is unavailable, a throw is 503 when that path needs the quote, and a BTC ask still stores the typed sats). Optional `debugToken` and `debugReadToken`: either one as Bearer reads `GET /hidden` and `GET /:id/edits` without a session (`isOperatorBearer`); every other route keeps its session rule.
++ - **Returns / side effects:** Hono app mounted at `/messages`. 401 without a live session on create/compose-target/DELETE/GET `/hidden`/invoice/POST `/:id/repayment`/POST `/:id/repayment/due`, and on the list except the unsigned `mode=active` window with no hashtag (that window is 200); 403 on DELETE and GET `/hidden` when not at least moderator and on unpaid text-only replies on a note the caller did not write and, after the account's free first post, unpaid text-only top-level posts from anyone below `verified` (a text reply on the caller's own note is free for every role); photo or video posts and replies from basis are allowed; 409 `{ error: 'A live note with this media already exists' }` when the same live media fingerprint has a different pin; 409 `{ error: 'missing_requirements', missing }` when action gates fail (GET `/hidden` and staff GET of a hidden permalink / replies / photo / video have no `forum.read` gate); 400 on bad body / invalid text / bad media / unpaid note / author's-wallet / LNURL failures / reply+goal field / non-integer multipart `goalSats` / currency-ask pair errors / `Ask amount is unavailable`; 404 for bad `inReplyTo` / missing rows / unsigned or non-staff GET of a hidden row; 204 empty body on successful DELETE (NIP-09 / purge / notification retract failure still 204); 200 staff hidden log `{ messages }` (no `forum.read`); 200 staff GET of a hidden permalink / replies / photo / video; 429 rate limits; 503 on store/KEK/sign failure. Live list, `GET /:id`, and replies include `accountId` whenever the stored author id is non-null, with or without a session, and omit it for an external row; create may include `accountId` for a 21.gifts author; live JSON omits `deletedAt` and `deletedBy`; staff hidden GET includes hide stamps and `accountId` for 21gifts authors. Post and reply notify call `notifyForumPost` / `notifyForumReply` best-effort (in-app rows for every account except the actor and except mention account ids on the created row (no-op when the actor is the official platform account), then filtered by each account's `notificationLevel`; Web Push for bell subscribers, same filter; failure still 200. `GET /:id/replies` returns `{ messages, hearts }`: `messages` keeps the same serialization and `heartStats`, while `hearts` is `heartSenders(id)` resolved through one `authStore.getAccounts` lookup, newest first with each sender's current `name`, optional `username`/`role`, exact `sats`, and ISO `createdAt` (a deleted account keeps the entry with `name: ""`); a `heartSenders` or lookup failure is the same 503. An operator `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` reads `GET /hidden` and `GET /:id/edits` without a session or role check.
++ 
++ - **Used by:** `createApp`.
++@@ -2035,7 +2035,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
++ 
++ ## Function: repaymentStatus
++ 
++-- **Purpose:** `GET /messages/:id/repayment` with no session. The public ledger of who gave and each repayment. Each giver carries `canReceive` (`receivingAddress(account, lnurlServer) !== null`; a missing account is false). Each line carries `waiting`, full-share `amount` / `sats`, settled `paidAmount` / `paidSats`, and remainder-based `dueSats`: on a `due` line only the unpaid remainder is priced in sats (bitcoin: remaining units; fiat: the current rate), and it is null on any other line. Part payments are read from canonical `message_repayment_part` rows; a genuine legacy full-share row counts only when that share has no canonical parts. The rate loader is read once per request (`dueSats` and `next.sats` share it); a due fiat remainder without a rate, or a rate loader that fails while one has to be priced, is 503 `Ask amount is unavailable`, also when every due giver waits. `next` is the oldest due, unpaid remainder whose giver can receive. `waitingShares` counts the `waiting` lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share.
+++- **Purpose:** `GET /messages/:id/repayment` with no session. The public ledger of who gave and each repayment. Each giver carries `canReceive` (`receivingAddress(account, lnurlServer) !== null`; a missing account is false). Each line carries `waiting`, full-share `amount` / `sats`, settled `paidAmount` / `paidSats`, and remainder-based `dueSats`: on a `due` line only the unpaid remainder is shown in sats (bitcoin: remaining units; fiat: stored sats for open invoices plus the current `FxSpotQuote` for not-yet-invoiced units), and it is null on any other line. Part payments are read from canonical `message_repayment_part` rows; a genuine legacy full-share row counts only when that share has no canonical parts. The spot store is read once per request (`dueSats` and `next.sats` share it); a due fiat remainder without its required spot rate, or a spot read that fails while one has to be priced, is 503 `Ask amount is unavailable`, also when every due giver waits. Stored settled parts and open invoices keep their stored sats and are not repriced. `next` is the oldest due, unpaid remainder whose giver can receive. `waitingShares` counts the `waiting` lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share.
++ - **Inputs:** Route deps and the request.
++ - **Returns / side effects:** The due schedule JSON, including loan-level `closedAt` and line-level `paidSats`, `paidAmount`, and remainder-based `dueSats`.
++ 
++@@ -2058,16 +2058,16 @@ Reads the country of a map pin from its coordinates with the offline boundary da
++ - **Purpose:** `POST /messages/:id/repayment/due`. Same author session and guards as `repaymentInvoice` (Bearer, `forum.pay`, a live funded repayable ask of the caller, Sunday rest through `sundayRest`, the repayment invoice limiter). Under one message lock it re-reads and authorizes the loan, computes the current giver schedule, and walks every due, unpaid remainder oldest first. A payable remainder gets a bill from the same locked helper as the single route: canonical partial reservations use `repayp:<day>:<accountId>:<partIndex>:<units>:<shareUnits>` and settle into `message_repayment_part`, while only a wholly unpaid legacy-compatible share uses `repay:`. Paid and open parts are revalidated against the current share boundary before reuse or mint; legacy, duplicate, oversized, repriced-BTC, claim-only (even expired), or otherwise inconsistent reservations return 409 without minting against a stale plan. A share whose giver cannot receive, or whose wallet refuses the zap (`cannot_receive`), is listed in `waiting` with no bill; a giver whose wallet refused is not asked again in the same call, and that giver's other due shares wait too. Each giver's name is read once per call.
++ - **Bounds and limits:** At most `REPAYMENT_BILLS_MAX` (60) bills per call; later payable shares come on the next call; they are not priced and get no bill, while deciding who can receive still reads each giver once per call. The repayment invoice limiter is asked once per call, by the first bill that has to be minted; reused bills do not ask it. A denied limiter answers 429 `Too many payments` with `Retry-After: 10`.
++ - **Inputs:** Route deps and the request.
++-- **Returns / side effects:** 200 `{ bills, waiting }`. A bill is `{ dayIndex, recipientAccountId, name, username, amountSats, amount, pr, sparkInvoice }`, a waiting line the same without `pr` and `sparkInvoice`. `amount` is the two-decimal billed remainder in the ask currency for a fiat loan, else null. Nothing due is 200 with both lists empty, without reading the rate. Any other bill error (an unsigned note, a giver without a Nostr key, a conflicting part reservation, a share still open on another address, an unreachable wallet, missing signing keys, a failed store write) is the single route's answer for the whole call; bills already minted stay stored and are reused on the next call. 503 `Ask amount is unavailable` when the debt or a fiat remainder cannot be priced, including when the rate loader fails while a due fiat remainder has to be priced. Successful part invoices settle canonically into `message_repayment_part` with their reserved units and sats.
+++- **Returns / side effects:** 200 `{ bills, waiting }`. A bill is `{ dayIndex, recipientAccountId, name, username, amountSats, amount, pr, sparkInvoice }`, a waiting line the same without `pr` and `sparkInvoice`. `amount` is the two-decimal billed remainder in the ask currency for a fiat loan, else null. Nothing due is 200 with both lists empty, without reading the spot. Any other bill error (an unsigned note, a giver without a Nostr key, a conflicting part reservation, a share still open on another address, an unreachable wallet, missing signing keys, a failed store write) is the single route's answer for the whole call; bills already minted stay stored and are reused on the next call with their stored sats. 503 `Ask amount is unavailable` when the debt or a fiat remainder cannot be priced, including when the spot read fails while a due fiat remainder has to be priced. Successful part invoices settle canonically into `message_repayment_part` with their reserved units and sats.
++ - **Used by:** `messagesRoutes`.
++ 
++ ## Function: myLoansRoutes
++ 
++ - **Purpose:** Hono sub-app for `GET /me/loans`, mounted at `/` by `createApp`. Bearer session required. Lists the caller's live (not hidden) top-level repayable asks with a term from `listAuthoredMessages`, newest first, that are still collecting or not fully repaid; a funded loan whose every scheduled share is paid is left out.
++ - **Per loan:** Includes `closedAt`, `maxSats`, and `maxAmount`. On funded loans, maximums walk receivable shares in allocation order and stop before the first legacy, oversized, or claim-only reservation that would return 409; later payable shares are excluded. While collecting, only givers who can currently receive contribute. `maxSats` sums each maximum bill's separately rounded sat price. `repaidSats` sums exact part sats plus only genuine legacy full-share rows, so a completed part-based share is not counted twice; `totalSats` adds the priced unpaid remainders.
++-- **Inputs:** `{ store, authStore, now, goalRateDay?, lnurlServer? }`.
++-- **Lender waiting:** `lenderWaiting` `{ shares, loans, sats }`: when the caller cannot receive (`receivingAddress` is null), the due, unpaid shares owed to the caller over every live funded repayable ask named by the caller's own invoice attempts (`listInvoiceAttemptsForPayer`, both `repay:` and `repayp:` attempts left out) whose `listCreditPayers` includes the caller, with the number of those loans and their sats (fiat priced at the same one rate read; null when one has no rate). All zero, without reading invoices, when the caller can receive.
++-- **Returns / side effects:** 200 `{ sundayRest, loans, lenderWaiting }`. `sundayRest` is `isSundayRestHeader(now, Time-Zone)`, the rule that refuses repayments today. 401 without a session; 503 `Ask amount is unavailable` when the debt of a loan of the caller, or of a loan the caller gave to, cannot be computed, or the rate loader fails; 503 `Messages are unavailable` and a `me.loans.failed` log line when the store throws. Read-only.
+++- **Inputs:** `{ store, authStore, now, fxSpot?, lnurlServer? }`; `fxSpot.latest()` is memoized once across every loan in one request.
+++- **Lender waiting:** `lenderWaiting` `{ shares, loans, sats }`: when the caller cannot receive (`receivingAddress` is null), the due, unpaid shares owed to the caller over every live funded repayable ask named by the caller's own invoice attempts (`listInvoiceAttemptsForPayer`, both `repay:` and `repayp:` attempts left out) whose `listCreditPayers` includes the caller, with the number of those loans and their sats (not-yet-invoiced fiat units use the same once-per-request spot read; open invoices keep their stored sats; null when a required currency rate is missing). All zero, without reading invoices, when the caller can receive.
+++- **Returns / side effects:** 200 `{ sundayRest, loans, lenderWaiting }`. `sundayRest` is `isSundayRestHeader(now, Time-Zone)`, the rule that refuses repayments today. 401 without a session; 503 `Ask amount is unavailable` when the debt of a loan of the caller, or of a loan the caller gave to, cannot be computed, or the spot read fails; 503 `Messages are unavailable` and a `me.loans.failed` log line when the store throws. Read-only.
++ - **Used by:** `createApp`.
++ 
++ ## Function: serializeMessage
++@@ -4374,8 +4374,8 @@ Builds the operator-only external-pubkey inspection route.
++ 
++ ## Function: fiatToSats
++ 
++-- **Purpose:** Convert a fiat amount to whole sats with the gift-day proportion (`Math.round(amount * day.sats / dayFiat)`). Amount 0 is 0. A product that rounds to 0 becomes 1. Unusable day or quote returns null. Not the spot BigInt helper.
++-- **Inputs:** Finite amount, gift-day or null, and `USD` / `CHF` / `EUR` / `PHP`.
+++- **Purpose:** Convert a fiat amount to whole sats with the current `FxSpotQuote` (`Math.round(amount * 1e8 / fiatPerBtc)`). Amount 0 is 0. A product that rounds to 0 becomes 1. A missing quote or currency rate returns null. This is the repayment share's Number helper; ask freezing keeps its precision-preserving BigInt helper.
+++- **Inputs:** Finite amount, `FxSpotQuote` or null, and `USD` / `CHF` / `EUR` / `PHP`.
++ - **Returns / side effects:** Whole sats, or `null` when unusable. No I/O.
++ - **Used by:** The repayment routes when pricing a fiat share in sats (`repaymentStatus` for `dueSats` and `next`, `repaymentInvoice`, `repaymentDueBills`, and `myLoansRoutes` for the sat figures of `GET /me/loans`). A forum ask does not call it.
++ 
++@@ -4391,7 +4391,7 @@ Builds the operator-only external-pubkey inspection route.
++ - **Purpose:** Build the same gift stats object as `GET /gifts/stats` for one row set. Amounts are the stored strings. The rate books and the clock are accepted and not read. A missing stored amount stays null and is never `fx-incomplete`.
++ - **Inputs:** Outbound `GiftRow[]`, BTC-USD book, fiat book, and `nowMs`. The books and the clock are not read.
++ - **Returns / side effects:** `{ ok: true, stats }`. No I/O to a rate book. Does not log `gifts.stats.fiat_failed`.
++-- **Used by:** `giftsStatsRoutes`, `loadLatestGoalRateDay`.
+++- **Used by:** `giftsStatsRoutes`.
++ 
++ ## Function: SHOP_DESCRIPTION_MIN
++ 
++@@ -4487,20 +4487,6 @@ A missing pin and an empty label tell the caller the same thing. The create and
++ - **Returns / side effects:** Calls `logEvent('ocp.activity.failed')` or `logEvent('ocp.activity.failed', fields)`. Does not throw.
++ - **Used by:** `pingShopActivity` for thrown fetches and `posRoutes` when `listLiveAssignedShops` throws.
++ 
++-## Function: loadLatestGoalRateDay
++-
++-- **Purpose:** Latest gift-day proportion for a fiat repayment share: last `spendOverTime` day with `sats > 0` from `loadGiftStatsSnapshot` (no recipient filter). Empty history is null. `sats` is that public day total. A currency field stays that public sum only when every outbound gift on that UTC day stored a string for it. If any gift on that day lacks the string, that field is null, even when the public series shows a partial sum. The public series is unchanged. Does not invent a rate.
++-- **Inputs:** `{ store, rates, fiatRates, now }` — the same collaborators as `GET /gifts/stats`.
++-- **Returns / side effects:** `{ sats, usd, chf, eur, php }` or `null`. A missing or incomplete currency is null and does not throw. The rate books are not read.
++-- **Used by:** `bindGoalRateDay`.
++-
++-## Function: bindGoalRateDay
++-
++-- **Purpose:** Return the `goalRateDay` callback `createApp` passes to `myLoansRoutes` and to `messagesRoutes` for a fiat repayment share. An ask does not read it.
++-- **Inputs:** `{ store, rates, fiatRates, now }` — the same collaborators as {@link loadLatestGoalRateDay}.
++-- **Returns / side effects:** A function that calls `loadLatestGoalRateDay` with those collaborators.
++-- **Used by:** `createApp`.
++-
++ ## Function: memberHabitRoutes
++ 
++ - **Purpose:** Hono routes `GET /habits` and `POST /habits` for member habits, comments, and a Lightning invoice. `deleteComment` requires at least `moderator` (`roleAtLeast(account.role, 'moderator')`); verified and basis are 403. `invoice` uses the same Sunday rest as `POST /messages/:id/invoice`: 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names a Sunday, before the amount check. A missing, blank, or invalid zone does not refuse. Success is `{ pr, amountSats }`. A missing, non-numeric, non-integer, or over-cap `amountSats` is 400 `{ error: 'Expected a JSON body with an integer "amountSats"' }` (ceiling 10_000_000). The limiter answer is 429 `{ error: 'Too many payments' }`. A failed mint, or a BOLT11 that does not decode to exactly `amountSats * 1000` millisatoshis, is 502 `{ error: 'Lightning Address could not be resolved' }`. A comment id that is not a UUID is 404 `{ error: 'Not found' }` on `deleteComment` and `invoice`, not 503. Does not pay. Add, edit, archive, and log stay open on Sunday. An edit whose current period is after `lastPeriod` is 409 `{ error: 'Period is closed' }` and does not change the stored wording. An edit of another member's habit is 404, including when that period is already closed.
++diff --git a/e2e/functions.spec.ts b/e2e/functions.spec.ts
++index 2418b033..78f1ae62 100644
++--- a/e2e/functions.spec.ts
+++++ b/e2e/functions.spec.ts
++@@ -1038,38 +1038,6 @@ async function verifiedAskSession(request: APIRequestContext): Promise<{ authori
++   return auth;
++ }
++ 
++-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
++-test('Function: loadLatestGoalRateDay — a fiat ask is 409 without a verified wallet', async ({
++-  request,
++-}) => {
++-  const auth = await verifiedAskSession(request);
++-  const res = await request.post('/messages', {
++-    headers: auth,
++-    data: { text: 'pesos', goalCurrency: 'PHP', goalAmount: '200' },
++-  });
++-  expect(res.status()).toBe(409);
++-  expect(await res.json()).toEqual({
++-    error: 'missing_requirements',
++-    missing: ['lightning-address'],
++-  });
++-});
++-
++-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
++-test('Function: bindGoalRateDay — a bitcoin ask is 409 without a verified wallet', async ({
++-  request,
++-}) => {
++-  const auth = await verifiedAskSession(request);
++-  const res = await request.post('/messages', {
++-    headers: auth,
++-    data: { text: 'sats', goalCurrency: 'BTC', goalAmount: '21' },
++-  });
++-  expect(res.status()).toBe(409);
++-  expect(await res.json()).toEqual({
++-    error: 'missing_requirements',
++-    missing: ['lightning-address'],
++-  });
++-});
++-
++ // Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
++ test('Function: canonicalDecimal — an ask with a decimal goalAmount is 409 without a verified wallet', async ({
++   request,
++diff --git a/src/__tests__/lib/goal-rate-day.test.ts b/src/__tests__/lib/goal-rate-day.test.ts
++deleted file mode 100644
++index bc4867f0..00000000
++--- a/src/__tests__/lib/goal-rate-day.test.ts
+++++ /dev/null
++@@ -1,266 +0,0 @@
++-import { describe, expect, it, vi } from 'vitest';
++-import { buildGiftStats, type GiftRow } from '@/lib/gift';
++-import { InMemoryBtcUsdStore } from '@/lib/btc-usd-store';
++-import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
++-import { InMemoryGiftStore } from '@/lib/gift-store';
++-import { bindGoalRateDay, loadLatestGoalRateDay } from '@/routes/stats';
++-
++-const priced = (day: string, sats: number): GiftRow => ({
++-  paidAt: new Date(`${day}T12:00:00.000Z`),
++-  amountSats: sats,
++-  kind: 'daily',
++-  recipientWosUser: 'ada',
++-  amountUsd: '1.00',
++-  amountChf: '0.90',
++-  amountEur: '0.80',
++-  amountPhp: '50.00',
++-});
++-
++-describe('loadLatestGoalRateDay', () => {
++-  it('binds the same loader createApp passes to messages', async () => {
++-    const day = await bindGoalRateDay({
++-      store: new InMemoryGiftStore(),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    })();
++-    expect(day).toBeNull();
++-  });
++-
++-  it('returns null when there are no gifts', async () => {
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore(),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    });
++-    expect(day).toBeNull();
++-  });
++-
++-  it('uses the last day with sats greater than zero', async () => {
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore([priced('2026-06-01', 1000), priced('2026-06-03', 0)]),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    });
++-    expect(day).toEqual({
++-      sats: 1000,
++-      usd: '1.00',
++-      chf: '0.90',
++-      eur: '0.80',
++-      php: '50.00',
++-    });
++-  });
++-
++-  it('returns null fiat for a legacy day that stored only sats', async () => {
++-    const legacy: GiftRow = {
++-      paidAt: new Date('2026-06-01T12:00:00.000Z'),
++-      amountSats: 1000,
++-      kind: 'daily',
++-      recipientWosUser: 'ada',
++-    };
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore([legacy]),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-01T00:00:00.000Z'),
++-    });
++-    expect(day).toEqual({
++-      sats: 1000,
++-      usd: null,
++-      chf: null,
++-      eur: null,
++-      php: null,
++-    });
++-  });
++-
++-  it('keeps the day when the fiat book throws', async () => {
++-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
++-    try {
++-      const legacy: GiftRow = {
++-        paidAt: new Date('2026-06-01T12:00:00.000Z'),
++-        amountSats: 1000,
++-        kind: 'daily',
++-        recipientWosUser: 'ada',
++-      };
++-      const day = await loadLatestGoalRateDay({
++-        store: new InMemoryGiftStore([legacy]),
++-        rates: new InMemoryBtcUsdStore({ '2026-06-01': '100000' }),
++-        fiatRates: {
++-          ensureDays: async () => {
++-            throw new Error('frankfurter down');
++-          },
++-        },
++-        now: () => Date.parse('2026-06-01T00:00:00.000Z'),
++-      });
++-      expect(day?.sats).toBe(1000);
++-      expect(day?.usd).toBeNull();
++-      expect(day?.chf).toBeNull();
++-      expect(day?.eur).toBeNull();
++-      expect(day?.php).toBeNull();
++-    } finally {
++-      warn.mockRestore();
++-    }
++-  });
++-
++-  it('nulls every currency when each gift stored a different one', async () => {
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore(SPLIT_USD_CHF),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    });
++-    expect(day).toEqual({
++-      sats: 2000,
++-      usd: null,
++-      chf: null,
++-      eur: null,
++-      php: null,
++-    });
++-  });
++-
++-  it('keeps a currency only when every gift that day stored a string', async () => {
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore([
++-        gift('2026-06-02', 1000, { amountUsd: '1.00', amountChf: '0.90' }),
++-        gift('2026-06-02', 1000, { amountUsd: '2.00', amountChf: '0.10' }),
++-      ]),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    });
++-    expect(day).toEqual({
++-      sats: 2000,
++-      usd: '3.00',
++-      chf: '1.00',
++-      eur: null,
++-      php: null,
++-    });
++-  });
++-
++-  it('nulls only the currency a sibling gift omitted', async () => {
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore([
++-        priced('2026-06-02', 1000),
++-        gift('2026-06-02', 1000, { amountUsd: '1.00', amountChf: '0.90', amountEur: '0.80' }),
++-      ]),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    });
++-    expect(day).toEqual({
++-      sats: 2000,
++-      usd: '2.00',
++-      chf: '1.80',
++-      eur: '1.60',
++-      php: null,
++-    });
++-  });
++-
++-  it('uses the later legacy day instead of an earlier complete day', async () => {
++-    const legacy: GiftRow = {
++-      paidAt: new Date('2026-06-02T12:00:00.000Z'),
++-      amountSats: 1000,
++-      kind: 'daily',
++-      recipientWosUser: 'ada',
++-    };
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore([priced('2026-06-01', 1000), legacy]),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    });
++-    expect(day).toEqual({
++-      sats: 1000,
++-      usd: null,
++-      chf: null,
++-      eur: null,
++-      php: null,
++-    });
++-  });
++-
++-  it('counts a zero-sat gift on that day as lacking every currency string', async () => {
++-    const zero: GiftRow = {
++-      paidAt: new Date('2026-06-02T18:00:00.000Z'),
++-      amountSats: 0,
++-      kind: 'daily',
++-      recipientWosUser: 'ada',
++-    };
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore([priced('2026-06-02', 1000), zero]),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    });
++-    expect(day).toEqual({
++-      sats: 1000,
++-      usd: null,
++-      chf: null,
++-      eur: null,
++-      php: null,
++-    });
++-  });
++-
++-  it('keeps the public partial sum while the ask rate is null', async () => {
++-    expect(buildGiftStats(SPLIT_USD_CHF, new Map()).spendOverTime).toMatchObject([
++-      {
++-        day: '2026-06-02',
++-        sats: 2000,
++-        usd: '1.00',
++-        chf: '0.90',
++-        eur: null,
++-        php: null,
++-      },
++-    ]);
++-    const day = await loadLatestGoalRateDay({
++-      store: new InMemoryGiftStore(SPLIT_USD_CHF),
++-      rates: new InMemoryBtcUsdStore(),
++-      fiatRates: new InMemoryFiatStore(),
++-      now: () => Date.parse('2026-06-04T00:00:00.000Z'),
++-    });
++-    expect(day).toEqual({
++-      sats: 2000,
++-      usd: null,
++-      chf: null,
++-      eur: null,
++-      php: null,
++-    });
++-  });
++-});
++-
++-const SPLIT_USD_CHF: GiftRow[] = [
++-  gift('2026-06-02', 1000, { amountUsd: '1.00' }),
++-  gift('2026-06-02', 1000, { amountChf: '0.90' }),
++-];
++-
++-function gift(
++-  day: string,
++-  sats: number,
++-  fiat: {
++-    amountUsd?: string;
++-    amountChf?: string;
++-    amountEur?: string;
++-    amountPhp?: string;
++-  },
++-): GiftRow {
++-  const row: GiftRow = {
++-    paidAt: new Date(`${day}T12:00:00.000Z`),
++-    amountSats: sats,
++-    kind: 'daily',
++-    recipientWosUser: 'ada',
++-  };
++-  if (typeof fiat.amountUsd === 'string') {
++-    row.amountUsd = fiat.amountUsd;
++-  }
++-  if (typeof fiat.amountChf === 'string') {
++-    row.amountChf = fiat.amountChf;
++-  }
++-  if (typeof fiat.amountEur === 'string') {
++-    row.amountEur = fiat.amountEur;
++-  }
++-  if (typeof fiat.amountPhp === 'string') {
++-    row.amountPhp = fiat.amountPhp;
++-  }
++-  return row;
++-}
++diff --git a/src/__tests__/lib/goal-rate.test.ts b/src/__tests__/lib/goal-rate.test.ts
++index 0cfdcffe..47550257 100644
++--- a/src/__tests__/lib/goal-rate.test.ts
+++++ b/src/__tests__/lib/goal-rate.test.ts
++@@ -5,6 +5,7 @@ import {
++   satsToFiatAmount,
++   type GoalRateDay,
++ } from '@/lib/goal-rate';
+++import type { FxSpotQuote } from '@/lib/fx-spot';
++ 
++ const DAY: GoalRateDay = {
++   sats: 100_000_000,
++@@ -14,6 +15,12 @@ const DAY: GoalRateDay = {
++   php: '0',
++ };
++ 
+++const SPOT: FxSpotQuote = {
+++  asOf: '2026-11-13T12:00:00.000Z',
+++  source: 'test',
+++  rates: { USD: '50000.00', CHF: '45000.00', PHP: '0' },
+++};
+++
++ describe('canonicalGoalAmount', () => {
++   it('canonicalizes comma, trailing zeros, and a trailing dot', () => {
++     expect(canonicalGoalAmount(' 00010.10 ')).toBe('10.1');
++@@ -33,29 +40,28 @@ describe('canonicalGoalAmount', () => {
++   });
++ });
++ 
++-describe('gift-day ask math', () => {
+++describe('fiat conversion math', () => {
++   it('converts one USD at 50000 per bitcoin to 2000 sats and back', () => {
++-    expect(fiatToSats(1, DAY, 'USD')).toBe(2000);
+++    expect(fiatToSats(1, SPOT, 'USD')).toBe(2000);
++     expect(satsToFiatAmount(2000, DAY, 'USD')).toBe('1.00');
++   });
++ 
++   it('returns 0 for a zero amount and 1 when the product rounds to 0', () => {
++-    expect(fiatToSats(0, DAY, 'USD')).toBe(0);
++-    expect(fiatToSats(0.00000001, { ...DAY, sats: 100, usd: '1000000' }, 'USD')).toBe(1);
+++    expect(fiatToSats(0, SPOT, 'USD')).toBe(0);
+++    expect(fiatToSats(0.00000001, { ...SPOT, rates: { USD: '1000000' } }, 'USD')).toBe(1);
++   });
++ 
++-  it('is unusable without a day, a positive finite sats total, or a usable quote', () => {
+++  it('is unusable without a spot or a usable currency rate', () => {
++     expect(fiatToSats(1, null, 'USD')).toBeNull();
++-    expect(fiatToSats(1, { ...DAY, sats: 0 }, 'USD')).toBeNull();
++-    expect(fiatToSats(1, { ...DAY, sats: Number.NaN }, 'USD')).toBeNull();
++-    expect(fiatToSats(Number.NaN, DAY, 'USD')).toBeNull();
++-    expect(fiatToSats(-1, DAY, 'USD')).toBeNull();
++-    expect(fiatToSats(1, DAY, 'EUR')).toBeNull();
++-    expect(fiatToSats(1, DAY, 'PHP')).toBeNull();
++-    expect(fiatToSats(1, { ...DAY, usd: 'nope' }, 'USD')).toBeNull();
+++    expect(fiatToSats(Number.NaN, SPOT, 'USD')).toBeNull();
+++    expect(fiatToSats(-1, SPOT, 'USD')).toBeNull();
+++    expect(fiatToSats(1, SPOT, 'EUR')).toBeNull();
+++    expect(fiatToSats(1, SPOT, 'PHP')).toBeNull();
+++    expect(fiatToSats(1, { ...SPOT, rates: { USD: 'nope' } }, 'USD')).toBeNull();
++     expect(satsToFiatAmount(-1, DAY, 'USD')).toBeNull();
++     expect(satsToFiatAmount(1, null, 'CHF')).toBeNull();
++     expect(satsToFiatAmount(2000, DAY, 'EUR')).toBeNull();
+++    expect(satsToFiatAmount(2000, DAY, 'PHP')).toBeNull();
++     expect(satsToFiatAmount(2000, DAY, 'CHF')).toBe('0.90');
++   });
++ });
++diff --git a/src/__tests__/routes/repayment.test.ts b/src/__tests__/routes/repayment.test.ts
++index 2b5d7f86..3a71aa7d 100644
++--- a/src/__tests__/routes/repayment.test.ts
+++++ b/src/__tests__/routes/repayment.test.ts
++@@ -2,15 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
++ import { Hono } from 'hono';
++ import { InMemoryAuthStore } from '@/lib/auth/store';
++ import { unsignedNostrDefaults } from '@/lib/message';
++-import { InMemoryMessageStore } from '@/lib/message-store';
+++import { InMemoryMessageStore, type MessageInvoiceAttempt } from '@/lib/message-store';
++ import { ensureAccountNostrKey } from '@/lib/nostr/keys';
++ import { parseNostrKek } from '@/lib/nostr/kek';
++ import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
++ import { messagesRoutes } from '@/routes/messages';
++ import { REPAYMENT_BILLS_MAX, myLoansRoutes } from '@/routes/repayment';
++-import type { GoalRateDay } from '@/lib/goal-rate';
+++import type { GoalFiatCode } from '@/lib/goal-rate';
+++import type { FxSpotQuote } from '@/lib/fx-spot';
+++import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
+++import { InMemoryGiftStore } from '@/lib/gift-store';
++ import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
++-import type { MessageInvoiceAttempt } from '@/lib/message-store';
++ import { resolveZapRelays } from '@/lib/nostr/relays';
++ import {
++   formatCents,
++@@ -18,6 +20,7 @@ import {
++   repaymentPartDescription,
++ } from '@/lib/credit-repayment';
++ import { bolt11ExpiresAtMs } from '@/lib/bolt11';
+++import { createApp } from '@/server';
++ import {
++   BOLT11,
++   LNURL_SERVER,
++@@ -32,6 +35,10 @@ const now = (): number => Date.UTC(2026, 10, 19, 12);
++ const CREDIT = '55555555-5555-4555-8555-555555555555';
++ const GIVER = '11111111-1111-4111-8111-111111111111';
++ 
+++function spot(rates: FxSpotQuote['rates']): FxSpotQuote {
+++  return { asOf: '2026-11-13T12:00:00.000Z', source: 'test', rates };
+++}
+++
++ async function readyCredit(options?: {
++   rules?: boolean;
++   eventId?: string | null;
++@@ -166,13 +173,9 @@ async function readyCredit(options?: {
++       ...(options?.kek === false ? {} : { nostrKek: kek }),
++       ...(options?.rate
++         ? {
++-            goalRateDay: async () => ({
++-              sats: 100_000_000,
++-              usd: options.rateUsd?.current ?? '100000.00',
++-              chf: null,
++-              eur: null,
++-              php: null,
++-            }),
+++            fxSpot: {
+++              latest: async () => spot({ USD: options.rateUsd?.current ?? '100000.00' }),
+++            },
++           }
++         : {}),
++       ...(options?.fetch === false ? {} : { fetchImpl }),
++@@ -1086,11 +1089,11 @@ describe('repayment from the in-app wallet', () => {
++     now?: number;
++     termDays?: number;
++     fundedAt?: Date | null;
++-    goalCurrency?: 'USD';
+++    goalCurrency?: GoalFiatCode;
++     goalAmount?: string | null;
++     rate?: boolean;
++-    /** Rate loader; overrides `rate`. */
++-    rates?: () => Promise<GoalRateDay | null>;
+++    /** Spot loader; overrides `rate`. */
+++    rates?: () => Promise<FxSpotQuote | null>;
++     eventId?: string | null;
++     rules?: boolean;
++     limiter?: InvoiceRateLimiter;
++@@ -1181,28 +1184,32 @@ describe('repayment from the in-app wallet', () => {
++         `r-${giver.id}`,
++         creditId,
++         giver.sats,
++-        options?.goalCurrency === 'USD' && giver.fiatAmount !== null
+++        options?.goalCurrency !== undefined && giver.fiatAmount !== null
++           ? {
++-              usd: giver.fiatAmount ?? formatCents(BigInt(giver.sats)),
++-              chf: null,
++-              eur: null,
++-              php: null,
+++              usd:
+++                options.goalCurrency === 'USD'
+++                  ? (giver.fiatAmount ?? formatCents(BigInt(giver.sats)))
+++                  : null,
+++              chf:
+++                options.goalCurrency === 'CHF'
+++                  ? (giver.fiatAmount ?? formatCents(BigInt(giver.sats)))
+++                  : null,
+++              eur:
+++                options.goalCurrency === 'EUR'
+++                  ? (giver.fiatAmount ?? formatCents(BigInt(giver.sats)))
+++                  : null,
+++              php:
+++                options.goalCurrency === 'PHP'
+++                  ? (giver.fiatAmount ?? formatCents(BigInt(giver.sats)))
+++                  : null,
++             }
++           : null,
++       );
++       await messages.updateZapReceiptGift(`r-${giver.id}`, { payerAccountId: giver.id });
++     }
++-    const goalRateDay =
+++    const latestSpot =
++       options?.rates ??
++-      (options?.rate === true
++-        ? async () => ({
++-            sats: 100_000_000,
++-            usd: '100000.00',
++-            chf: null,
++-            eur: null,
++-            php: null,
++-          })
++-        : async () => null);
+++      (options?.rate === true ? async () => spot({ USD: '100000.00' }) : async () => null);
++     const app = new Hono()
++       .route(
++         '/messages',
++@@ -1211,7 +1218,7 @@ describe('repayment from the in-app wallet', () => {
++           authStore: auth,
++           now,
++           nostrKek: kek,
++-          goalRateDay,
+++          fxSpot: { latest: latestSpot },
++           fetchImpl: anyWalletFetch({
++             seen: fetched,
++             ...(options?.allowsNostr === undefined ? {} : { allowsNostr: options.allowsNostr }),
++@@ -1238,7 +1245,7 @@ describe('repayment from the in-app wallet', () => {
++           store: messages,
++           authStore: auth,
++           now,
++-          goalRateDay,
+++          fxSpot: { latest: latestSpot },
++           lnurlServer: LNURL_SERVER,
++         }),
++       );
++@@ -1355,7 +1362,7 @@ describe('repayment from the in-app wallet', () => {
++     expect(body.next).toEqual({ dayIndex: 0, recipientAccountId: WALLET_GIVER, sats: 150 });
++   });
++ 
++-  it('leaves dueSats null on lines that are not due and refuses a due fiat share without a rate', async () => {
+++  it('leaves dueSats null on lines that are not due and refuses a due fiat share without a spot', async () => {
++     const early = await loanSetup({ now: Date.UTC(2027, 1, 27, 20) });
++     const scheduled = (await (await early.app.request(`/messages/${CREDIT}/repayment`)).json()) as {
++       repayments: { status: string; dueSats: number | null }[];
++@@ -1366,7 +1373,7 @@ describe('repayment from the in-app wallet', () => {
++       goalCurrency: 'USD',
++       givers: [{ id: NO_WALLET, sats: 500, wallet: false }],
++     });
++-    // Every due share waits for a giver without a wallet; the missing rate still answers 503.
+++    // Every due share waits for a giver without a wallet; the missing spot still answers 503.
++     const res = await fiat.app.request(`/messages/${CREDIT}/repayment`);
++     expect(res.status).toBe(503);
++     expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
++@@ -1384,18 +1391,26 @@ describe('repayment from the in-app wallet', () => {
++     expect(pricedBody.repayments[0]?.dueSats).toBe(4000);
++   });
++ 
++-  it('prices every figure of one response at one read of the rate', async () => {
+++  it('answers 503 when an amount repayment maximum has no spot price', async () => {
+++    const { app } = await loanSetup({
+++      goalCurrency: 'USD',
+++      givers: [{ id: WALLET_GIVER, sats: 500, wallet: true }],
+++    });
+++    const response = await app.request(`/messages/${CREDIT}/repayment`, {
+++      method: 'POST',
+++      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+++      body: JSON.stringify({ amount: '1.00' }),
+++    });
+++    expect(response.status).toBe(503);
+++    expect(await response.json()).toEqual({ error: 'Ask amount is unavailable' });
+++  });
+++
+++  it('prices every figure of one response at one read of the spot', async () => {
++     let reads = 0;
++     // Each read halves the rate, so a second read would show in the figures.
++-    const rates = async (): Promise<GoalRateDay> => {
+++    const rates = async (): Promise<FxSpotQuote> => {
++       reads += 1;
++-      return {
++-        sats: 100_000_000,
++-        usd: reads === 1 ? '100000.00' : '50000.00',
++-        chf: null,
++-        eur: null,
++-        php: null,
++-      };
+++      return spot({ USD: reads === 1 ? '100000.00' : '50000.00' });
++     };
++     const { app, messages } = await loanSetup({ goalCurrency: 'USD', rates });
++     const body = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as {
++@@ -1430,8 +1445,8 @@ describe('repayment from the in-app wallet', () => {
++     expect(reads).toBe(1);
++   });
++ 
++-  it('reads no rate when nothing needs pricing', async () => {
++-    const rates = async (): Promise<GoalRateDay> => {
+++  it('reads no spot when nothing needs pricing', async () => {
+++    const rates = async (): Promise<FxSpotQuote> => {
++       throw new Error('fx.rate.missing');
++     };
++     // Funding day: nothing is due yet.
++@@ -1496,8 +1511,8 @@ describe('repayment from the in-app wallet', () => {
++     ]);
++   });
++ 
++-  it('answers 503 when the rate loader fails while a due fiat share needs a price', async () => {
++-    const rates = async (): Promise<GoalRateDay> => {
+++  it('answers 503 when the spot store fails while a due fiat share needs a price', async () => {
+++    const rates = async (): Promise<FxSpotQuote> => {
++       throw new Error('fx.rate.missing');
++     };
++     const { app } = await loanSetup({ goalCurrency: 'USD', rates });
++@@ -2133,13 +2148,7 @@ describe('repayment from the in-app wallet', () => {
++   });
++ 
++   it('sums fiat maxSats from the separately rounded bills', async () => {
++-    const rates = async (): Promise<GoalRateDay> => ({
++-      sats: 100_000_000,
++-      usd: '300000.00',
++-      chf: null,
++-      eur: null,
++-      php: null,
++-    });
+++    const rates = async (): Promise<FxSpotQuote> => spot({ USD: '300000.00' });
++     const { app } = await loanSetup({
++       goalCurrency: 'USD',
++       goalAmount: '0.03',
++@@ -2346,6 +2355,44 @@ describe('repayment from the in-app wallet', () => {
++     });
++   });
++ 
+++  it('rejects a claimed fiat part without its settlement row', async () => {
+++    let reads = 0;
+++    const { app, messages, clock } = await loanSetup({
+++      goalCurrency: 'USD',
+++      goalAmount: '0.21',
+++      termDays: 1,
+++      rates: async () => {
+++        reads += 1;
+++        return spot({ USD: '100000.00' });
+++      },
+++      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true, fiatAmount: '0.21' }],
+++    });
+++    const paymentHash = 'ad'.repeat(32);
+++    await messages.recordInvoiceAttempt({
+++      ...openPartAttempt(21, 21n, 21n, new Date(clock.now - 30 * 86_400_000)),
+++      paymentHash,
+++    });
+++    await messages.claimZapPayment(paymentHash, 'claim-only-fiat-part', new Date(clock.now));
+++
+++    expect((await app.request(`/messages/${CREDIT}/repayment`)).status).toBe(200);
+++    expect((await loans(app)).status).toBe(200);
+++    const single = await post(app, `/messages/${CREDIT}/repayment`);
+++    const due = await post(app, `/messages/${CREDIT}/repayment/due`);
+++    const amount = await app.request(`/messages/${CREDIT}/repayment`, {
+++      method: 'POST',
+++      headers: {
+++        authorization: `Bearer ${AUTHOR}`,
+++        'content-type': 'application/json',
+++      },
+++      body: JSON.stringify({ amount: '0.21' }),
+++    });
+++    for (const response of [single, due, amount]) {
+++      expect(response.status).toBe(409);
+++      expect(await response.json()).toEqual({ error: 'A payment for this share is still open' });
+++    }
+++    expect(reads).toBe(4);
+++  });
+++
++   it('reuses a prepay Spark invoice and refuses an open bill for an old address', async () => {
++     await withNip57(async () => {
++       const reused = await loanSetup({
++@@ -3087,13 +3134,7 @@ describe('repayment from the in-app wallet', () => {
++       goalCurrency: 'USD',
++       goalAmount: '0.61',
++       fundedAt: null,
++-      rates: async () => ({
++-        sats: 100_000_000,
++-        usd: '300000.00',
++-        chf: null,
++-        eur: null,
++-        php: null,
++-      }),
+++      rates: async () => spot({ USD: '300000.00' }),
++       termDays: REPAYMENT_BILLS_MAX + 1,
++       givers: [
++         {
++@@ -3170,13 +3211,7 @@ describe('repayment from the in-app wallet', () => {
++       goalCurrency: 'USD',
++       goalAmount: '1.00',
++       termDays: 1,
++-      rates: async () => ({
++-        sats: 100_000_000,
++-        usd: rates.usd,
++-        chf: null,
++-        eur: null,
++-        php: null,
++-      }),
+++      rates: async () => spot({ USD: rates.usd }),
++       givers: [{ id: WALLET_GIVER, sats: 100, wallet: true, fiatAmount: '1.00' }],
++     });
++     await messages.recordInvoiceAttempt(openPartAttempt(200, 10n, 100n, new Date(clock.now)));
++@@ -3211,13 +3246,7 @@ describe('repayment from the in-app wallet', () => {
++         goalCurrency: 'USD',
++         goalAmount: '1.00',
++         termDays: 1,
++-        rates: async () => ({
++-          sats: 100_000_000,
++-          usd: rates.usd,
++-          chf: null,
++-          eur: null,
++-          php: null,
++-        }),
+++        rates: async () => spot({ USD: rates.usd }),
++         givers: [{ id: WALLET_GIVER, sats: 100, wallet: true, fiatAmount: '1.00' }],
++       });
++       await messages.recordInvoiceAttempt(openPartAttempt(200, 10n, 100n, new Date(clock.now)));
++@@ -3943,7 +3972,7 @@ describe('repayment from the in-app wallet', () => {
++     expect(loan).toMatchObject({ daysDue: 2, due: { behindDays: 2 } });
++   });
++ 
++-  it('gives fiat amounts and leaves sats null without a rate', async () => {
+++  it('gives fiat amounts and leaves sats null without a spot', async () => {
++     const unpriced = await loanSetup({ goalCurrency: 'USD' });
++     const loan = (
++       (await (await loans(unpriced.app)).json()) as { loans: Record<string, unknown>[] }
++@@ -3971,6 +4000,35 @@ describe('repayment from the in-app wallet', () => {
++     });
++   });
++ 
+++  it('prices a PHP loan from the spot when outbound gifts store only USD', async () => {
+++    const setup = await loanSetup({ goalCurrency: 'PHP' });
+++    const app = createApp({
+++      authStore: setup.auth,
+++      messageStore: setup.messages,
+++      giftStore: new InMemoryGiftStore([
+++        {
+++          paidAt: new Date('2026-11-12T12:00:00.000Z'),
+++          amountSats: 1000,
+++          amountUsd: '1.00',
+++          recipientWosUser: 'ada',
+++          kind: 'daily',
+++        },
+++      ]),
+++      fxSpotStore: new InMemoryFxSpotStore(spot({ USD: '100000', PHP: '5000000' })),
+++      now: () => setup.clock.now,
+++      env: {},
+++    });
+++
+++    const response = await loans(app);
+++    expect(response.status).toBe(200);
+++    const loan = ((await response.json()) as { loans: Array<Record<string, unknown>> }).loans[0];
+++    expect(loan).toMatchObject({ goalCurrency: 'PHP', totalSats: 160 });
+++    const totalSats = loan?.['totalSats'];
+++    const maxSats = loan?.['maxSats'];
+++    expect(typeof totalSats === 'number' && Number.isInteger(totalSats)).toBe(true);
+++    expect(typeof maxSats === 'number' && Number.isInteger(maxSats)).toBe(true);
+++  });
+++
++   it('uses exact collected payer cents for a collecting fiat loan maximum', async () => {
++     const collecting = await loanSetup({
++       goalCurrency: 'USD',
++@@ -4283,7 +4341,69 @@ describe('repayment from the in-app wallet', () => {
++     });
++   });
++ 
++-  it('leaves the lender sum null without a rate and answers 503 when a lent loan cannot be computed', async () => {
+++  it('loads the spot for lender reservations', async () => {
+++    const setup = async (
+++      rates: () => Promise<FxSpotQuote>,
+++      claimOnly: boolean,
+++    ): Promise<{ app: Hono; auth: InMemoryAuthStore; messages: InMemoryMessageStore }> => {
+++      const result = await loanSetup({
+++        goalCurrency: 'USD',
+++        goalAmount: '0.21',
+++        termDays: 1,
+++        rates,
+++        givers: [{ id: NO_WALLET, sats: 21, wallet: false, fiatAmount: '0.21' }],
+++      });
+++      await result.auth.createSession({
+++        token: NO_WALLET,
+++        accountId: NO_WALLET,
+++        createdAt: result.clock.now,
+++      });
+++      await result.messages.recordInvoiceAttempt(
+++        lenderInvoice(`funding-${claimOnly ? 'claimed' : 'open'}`, CREDIT, NO_WALLET),
+++      );
+++      const paymentHash = claimOnly ? 'ae'.repeat(32) : null;
+++      await result.messages.recordInvoiceAttempt({
+++        ...openPartAttempt(21, 21n, 21n, new Date(result.clock.now)),
+++        authorAccountId: NO_WALLET,
+++        lightningAddress: 'giver0@example.test',
+++        paymentHash,
+++        description: repaymentPartDescription(0, NO_WALLET, 0, 21n, 21n),
+++      });
+++      if (paymentHash !== null) {
+++        await result.messages.claimZapPayment(
+++          paymentHash,
+++          'claim-only-lender-part',
+++          new Date(result.clock.now),
+++        );
+++      }
+++      return result;
+++    };
+++    const request = (app: Hono): Promise<Response> =>
+++      Promise.resolve(
+++        app.request('/me/loans', { headers: { authorization: `Bearer ${NO_WALLET}` } }),
+++      );
+++
+++    const pricedRates = vi.fn<() => Promise<FxSpotQuote>>(async () => spot({ USD: '100000.00' }));
+++    const priced = await setup(pricedRates, true);
+++    expect((await request(priced.app)).status).toBe(200);
+++    expect(pricedRates).toHaveBeenCalledOnce();
+++
+++    const failingRates = vi.fn<() => Promise<FxSpotQuote>>(() =>
+++      Promise.reject(new Error('spot down')),
+++    );
+++    const failing = await setup(failingRates, true);
+++    const unavailable = await request(failing.app);
+++    expect(unavailable.status).toBe(503);
+++    expect(await unavailable.json()).toEqual({ error: 'Ask amount is unavailable' });
+++    expect(failingRates).toHaveBeenCalledOnce();
+++
+++    const fixedRates = vi.fn<() => Promise<FxSpotQuote>>(async () => spot({ USD: '100000.00' }));
+++    const fixed = await setup(fixedRates, false);
+++    expect((await request(fixed.app)).status).toBe(200);
+++    expect(fixedRates).toHaveBeenCalledOnce();
+++  });
+++
+++  it('leaves the lender sum null without a spot and answers 503 when a lent loan cannot be computed', async () => {
++     const fiat = await loanSetup({ goalCurrency: 'USD', termDays: 4 });
++     await fiat.auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: MONDAY });
++     await fiat.messages.recordInvoiceAttempt(lenderInvoice('inv-fiat', CREDIT, NO_WALLET));
++@@ -4339,8 +4459,8 @@ describe('repayment from the in-app wallet', () => {
++     });
++   });
++ 
++-  it('answers 503 Ask amount is unavailable when the rate cannot be read', async () => {
++-    const rates = (): Promise<GoalRateDay | null> => Promise.reject(new Error('rate down'));
+++  it('answers 503 Ask amount is unavailable when the spot cannot be read', async () => {
+++    const rates = (): Promise<FxSpotQuote | null> => Promise.reject(new Error('rate down'));
++     for (const fundedAt of [undefined, null]) {
++       const failing = await loanSetup({
++         goalCurrency: 'USD',
++diff --git a/src/lib/goal-rate.ts b/src/lib/goal-rate.ts
++index 5fbdbc2b..e04f0029 100644
++--- a/src/lib/goal-rate.ts
+++++ b/src/lib/goal-rate.ts
++@@ -1,13 +1,14 @@
++ /**
++- * Gift-day proportion used when a repayment share is priced.
+++ * Fiat conversion helpers used by asks and repayment shares.
++  *
++- * A forum ask does not freeze from this proportion. Same float math as the
++- * app composer (`Math.round`, not BigInt spot helpers). This module does not
++- * call Coinbase or fiatFromSats.
+++ * A forum ask uses its precision-preserving BigInt spot helper; a repayment
+++ * uses the same stored quote with `Math.round`. This module does not call a
+++ * provider or `fiatFromSats`.
++  */
++ 
++ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
++ import { canonicalDecimal } from '@/lib/decimal';
+++import type { FxSpotQuote } from '@/lib/fx-spot';
++ 
++ /** Whole-sat ceiling for a frozen ask (`GIFT_INVOICE_MAX_MSAT / 1000`). */
++ export const GOAL_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
++@@ -19,8 +20,8 @@ export type GoalFiatCode = 'USD' | 'CHF' | 'EUR' | 'PHP';
++ export type GoalCurrency = 'BTC' | GoalFiatCode;
++ 
++ /**
++- * Latest gift-day proportion used to freeze an ask. `usd` is `string | null`
++- * (a missing quote stays null; it does not invent a rate).
+++ * Historical gift-day proportion accepted by {@link satsToFiatAmount}.
+++ * `usd` is `string | null` (a missing quote stays null).
++  */
++ export interface GoalRateDay {
++   /** Sats paid that UTC day. */
++@@ -80,34 +81,34 @@ function dayFiat(day: GoalRateDay, currency: GoalFiatCode): number | null {
++ }
++ 
++ /**
++- * Convert a fiat amount to whole sats on a gift-day proportion.
+++ * Convert a fiat amount to whole sats on the current spot quote.
++  *
++- * Unusable day, non-finite amount, or amount `< 0` → unusable. Unusable
++- * currency field → unusable. Amount `0` → `0` sats. Otherwise
++- * `Math.round(amount * day.sats / dayFiat)`; a product that rounds to `0`
++- * becomes `1`.
+++ * Missing quote, non-finite amount, or amount `< 0` → unusable. Missing,
+++ * non-finite, or non-positive currency rate → unusable. Amount `0` → `0`
+++ * sats. Otherwise `Math.round(amount * 1e8 / fiatPerBtc)`; a product that
+++ * rounds to `0` becomes `1`.
++  *
++  * @param amount - Canonical amount as `Number(canonical)`.
++- * @param day - Latest gift-day, or `null`.
++- * @param currency - USD/CHF/EUR/PHP field on `day`.
+++ * @param quote - Current BTC spot quote, or `null`.
+++ * @param currency - USD/CHF/EUR/PHP field on `quote`.
++  * @returns Whole sats, or `null` when unusable.
++  */
++ export function fiatToSats(
++   amount: number,
++-  day: GoalRateDay | null,
+++  quote: FxSpotQuote | null,
++   currency: GoalFiatCode,
++ ): number | null {
++-  if (!dayIsUsable(day) || !Number.isFinite(amount) || amount < 0) {
+++  if (quote === null || !Number.isFinite(amount) || amount < 0) {
++     return null;
++   }
++-  const quote = dayFiat(day, currency);
++-  if (quote === null) {
+++  const rate = Number(quote.rates[currency]);
+++  if (!Number.isFinite(rate) || rate <= 0) {
++     return null;
++   }
++   if (amount === 0) {
++     return 0;
++   }
++-  const rounded = Math.round((amount * day.sats) / quote);
+++  const rounded = Math.round((amount * 100_000_000) / rate);
++   return rounded === 0 ? 1 : rounded;
++ }
++ 
++diff --git a/src/routes/messages.ts b/src/routes/messages.ts
++index 725e0b01..0a001368 100644
++--- a/src/routes/messages.ts
+++++ b/src/routes/messages.ts
++@@ -9,12 +9,7 @@ import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
++ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
++ import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
++ import type { FxSpotQuote } from '@/lib/fx-spot';
++-import {
++-  canonicalGoalAmount,
++-  type GoalCurrency,
++-  type GoalFiatCode,
++-  type GoalRateDay,
++-} from '@/lib/goal-rate';
+++import { canonicalGoalAmount, type GoalCurrency, type GoalFiatCode } from '@/lib/goal-rate';
++ import { effectiveStatus } from '@/lib/funding';
++ import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
++ import { loadPayoutEligibility } from '@/lib/payout-eligibility';
++@@ -392,16 +387,12 @@ export interface MessagesRouteDeps {
++   /** Poll interval for `sinceSats` (tests inject; default {@link WAIT_SATS_POLL_MS}). */
++   waitSatsPollMs?: number;
++   /**
++-   * Latest spot used to freeze a currency ask. Omitted or a null quote:
++-   * a BTC ask still posts; a fiat ask is 400. A throw is 503 for a fiat
++-   * ask; a BTC ask still stores the typed sats.
+++   * Latest spot used to freeze a currency ask and price not-yet-invoiced fiat
+++   * repayment units. Omitted or a null quote: a BTC ask still posts; a fiat
+++   * ask is 400 and a due fiat repayment is unavailable. A throw is 503 when
+++   * that path needs the quote; a BTC ask still stores the typed sats.
++    */
++   fxSpot?: { latest(): Promise<FxSpotQuote | null> };
++-  /**
++-   * Gift-day loader for a fiat repayment share. An ask does not read it.
++-   * Omitted → a fiat repayment share cannot be priced.
++-   */
++-  goalRateDay?: () => Promise<GoalRateDay | null>;
++   /** Operator write token. Unset → no operator read on the staff GET routes. */
++   debugToken?: string;
++   /** Operator read-only token. Unset → no operator read on the staff GET routes. */
++diff --git a/src/routes/repayment.ts b/src/routes/repayment.ts
++index 68267de2..8730ea03 100644
++--- a/src/routes/repayment.ts
+++++ b/src/routes/repayment.ts
++@@ -22,7 +22,8 @@ import {
++   type RepaymentSlice,
++ } from '@/lib/credit-repayment';
++ import type { LnurlServerConfig } from '@/lib/config';
++-import { fiatToSats, type GoalFiatCode, type GoalRateDay } from '@/lib/goal-rate';
+++import type { FxSpotQuote } from '@/lib/fx-spot';
+++import { fiatToSats, type GoalFiatCode } from '@/lib/goal-rate';
++ import { logEvent } from '@/lib/log';
++ import type { FetchFn } from '@/lib/lnurlp';
++ import { requestZapInvoice } from '@/lib/lnurl-pay';
++@@ -49,7 +50,8 @@ export interface RepaymentDeps {
++   now: () => number;
++   nostrKek?: Uint8Array;
++   fetchImpl?: FetchFn;
++-  goalRateDay?: () => Promise<GoalRateDay | null>;
+++  /** Last stored spot quote. Omitted or empty means fiat shares are unavailable. */
+++  fxSpot?: { latest(): Promise<FxSpotQuote | null> };
++   /** LNURL server; omitted when off. A giver with a verified wallet is repaid on it. */
++   lnurlServer?: LnurlServerConfig;
++   /** Issued Spark invoices; omitted when free in-app payments are off. */
++@@ -386,23 +388,25 @@ async function duePlan(
++ }
++ 
++ /**
++- * The deps with the rate loader read at most once, so every figure of one
++- * response is priced at the same rate.
+++ * The deps with the spot store read at most once, so every figure of one
+++ * response is priced at the same quote.
++  *
++- * @param deps - Deps with an optional rate loader.
++- * @returns The same deps, the loader memoized.
+++ * @param deps - Deps with an optional spot store.
+++ * @returns The same deps, the spot read memoized.
++  */
++-function withOneRate<D extends Pick<RepaymentDeps, 'goalRateDay'>>(deps: D): D {
++-  const load = deps.goalRateDay;
++-  if (load === undefined) {
+++function withOneRate<D extends Pick<RepaymentDeps, 'fxSpot'>>(deps: D): D {
+++  const store = deps.fxSpot;
+++  if (store === undefined) {
++     return deps;
++   }
++-  let day: Promise<GoalRateDay | null> | undefined;
+++  let quote: Promise<FxSpotQuote | null> | undefined;
++   return {
++     ...deps,
++-    goalRateDay: () => {
++-      day ??= load();
++-      return day;
+++    fxSpot: {
+++      latest: () => {
+++        quote ??= store.latest();
+++        return quote;
+++      },
++     },
++   };
++ }
++@@ -411,7 +415,7 @@ function withOneRate<D extends Pick<RepaymentDeps, 'goalRateDay'>>(deps: D): D {
++  * Prices shares of one credit in sats: a bitcoin share is its units, a fiat
++  * share is priced at the rate the pay route uses now. The rate is read once.
++  *
++- * @param deps - Optional rate loader.
+++ * @param deps - Optional spot store.
++  * @param row - Credit note.
++  * @returns Units → sats, or null when a fiat share has no rate.
++  */
++@@ -422,14 +426,14 @@ async function sharePricer(
++   if (!isFiatCredit(row)) {
++     return (units) => Number(units);
++   }
++-  const rateDay = deps.goalRateDay === undefined ? null : await deps.goalRateDay();
++-  return (units) => fiatToSats(Number(units) / 100, rateDay, row.goalCurrency as GoalFiatCode);
+++  const quote = deps.fxSpot === undefined ? null : await deps.fxSpot.latest();
+++  return (units) => fiatToSats(Number(units) / 100, quote, row.goalCurrency as GoalFiatCode);
++ }
++ 
++ /**
++  * Public ledger of one credit: who gave what, and each Lightning repayment.
++  *
++- * @param routeDeps - Store, auth, clock, and rate loader.
+++ * @param routeDeps - Store, auth, clock, and spot store.
++  * @param c - Request. No session is required.
++  * @returns The givers and the plan, or an error.
++  */
++@@ -1054,7 +1058,7 @@ async function repaymentDueBillsLocked(
++   if (plan.due.length === 0) {
++     return c.json({ bills: [], waiting: [] }, 200);
++   }
++-  // A rate loader that fails is the same 503 as a missing rate.
+++  // A spot read that fails is the same 503 as a missing rate.
++   const price = await sharePricer(deps, opened.row).catch(() => null);
++   if (price === null) {
++     return c.json({ error: 'Ask amount is unavailable' }, 503);
++@@ -1209,7 +1213,7 @@ interface PrepayPlan {
++ /**
++  * Read the current plan for a prepayment and allocate one amount.
++  *
++- * @param deps - Store, auth, rate loader, and optional LNURL server.
+++ * @param deps - Store, auth, spot store, and optional LNURL server.
++  * @param row - Funded credit.
++  * @param nowMs - Clock.
++  * @param amountUnits - Requested units.
++@@ -1697,10 +1701,10 @@ async function openCredit(
++ /**
++  * The oldest due, unpaid share whose giver can receive. Shares of a giver who
++  * cannot receive are skipped; `waiting` says some were. A due share that
++- * cannot be priced (a fiat loan with no rate, or a rate loader that fails) is
+++ * cannot be priced (a fiat loan with no spot, or a spot read that fails) is
++  * 503, whoever its giver is.
++  *
++- * @param deps - Store, auth, and optional rate loader.
+++ * @param deps - Store, auth, and optional spot store.
++  * @param row - Funded credit note.
++  * @param nowMs - Clock.
++  * @param prepared - Optional plan snapshot and its already-read price function.
++@@ -1750,8 +1754,8 @@ async function nextShare(
++   if (plan.due.length === 0) {
++     return { daysDue, daysPaid, share: null, waiting: false, error: null, status: 400 };
++   }
++-  // Every due share needs a price, whether or not its giver can receive. A rate
++-  // loader that fails is the same 503 as a missing rate.
+++  // Every due share needs a price, whether or not its giver can receive. A spot
+++  // read that fails is the same 503 as a missing rate.
++   const price =
++     prepared === undefined ? await sharePricer(deps, row).catch(() => null) : prepared.price;
++   if (price === null || plan.due.some((share) => price(share.units - share.paidUnits) === null)) {
++@@ -1802,7 +1806,7 @@ async function nextShare(
++ /** What `GET /me/loans` needs. */
++ export type MyLoansRouteDeps = Pick<
++   RepaymentDeps,
++-  'store' | 'authStore' | 'now' | 'goalRateDay' | 'lnurlServer'
+++  'store' | 'authStore' | 'now' | 'fxSpot' | 'lnurlServer'
++ >;
++ 
++ /**
++@@ -1830,7 +1834,7 @@ function pricedSum(
++ /**
++  * One row of `GET /me/loans`, or null when the loan is fully repaid.
++  *
++- * @param deps - Store, auth, rate loader, and the optional LNURL server.
+++ * @param deps - Store, auth, spot store, and the optional LNURL server.
++  * @param row - Live repayable ask of the caller.
++  * @param nowMs - Clock.
++  * @returns The row, null, or `unavailable` when the debt cannot be computed.
++@@ -1937,7 +1941,8 @@ async function loanRow(
++   if (open.length === 0) {
++     return null;
++   }
++-  // Read the rate only now: a repaid loan is left out without it. A failing loader is 503; a missing rate leaves sats null.
+++  // Read the spot only now: a repaid loan is left out without it. A failing
+++  // read is 503; a missing currency rate leaves sats null.
++   const price = await sharePricer(deps, row).catch(() => null);
++   if (price === null) {
++     return 'unavailable';
++@@ -2011,7 +2016,7 @@ async function loanRow(
++  * funded loan the caller gave to: found through the caller's in-app invoices,
++  * kept only when the caller is one of its payers.
++  *
++- * @param deps - Store, auth, rate loader, and the optional LNURL server.
+++ * @param deps - Store, auth, spot store, and the optional LNURL server.
++  * @param account - The caller.
++  * @param nowMs - Clock.
++  * @returns Share and loan counts and their sats (null when a fiat share has no
++@@ -2081,7 +2086,7 @@ async function lenderWaiting(
++  * `GET /me/loans`: the caller's live repayable asks that are still collecting
++  * or not fully repaid, newest first, with what is due now.
++  *
++- * @param deps - Store, auth, clock, rate loader, and the optional LNURL server.
+++ * @param deps - Store, auth, clock, spot store, and the optional LNURL server.
++  * @returns A Hono app with `GET /me/loans`.
++  */
++ export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
++diff --git a/src/routes/stats.ts b/src/routes/stats.ts
++index a027e96e..d3668e14 100644
++--- a/src/routes/stats.ts
+++++ b/src/routes/stats.ts
++@@ -1,15 +1,8 @@
++ import { Hono } from 'hono';
++-import {
++-  buildGiftStats,
++-  giftsForRecipient,
++-  utcDayFromPaidAt,
++-  type GiftRow,
++-  type GiftStats,
++-} from '@/lib/gift';
+++import { buildGiftStats, giftsForRecipient, type GiftRow, type GiftStats } from '@/lib/gift';
++ import type { GiftStore } from '@/lib/gift-store';
++ import type { BtcUsdRateBook } from '@/lib/btc-usd-store';
++ import type { FiatRateBook } from '@/lib/usd-fiat-store';
++-import type { GoalRateDay } from '@/lib/goal-rate';
++ import { logEvent } from '@/lib/log';
++ 
++ /** Collaborators the public gift-stats route needs. */
++@@ -49,57 +42,6 @@ export async function loadGiftStatsSnapshot(
++   return { ok: true, stats: buildGiftStats(rows, new Map()) };
++ }
++ 
++-/**
++- * Latest gift-day proportion for a fiat repayment share. Last `spendOverTime` day
++- * with `sats > 0` from {@link loadGiftStatsSnapshot} (no recipient filter).
++- * Empty history is `null`. `sats` is that public day total. A currency field
++- * stays that public sum only when every outbound gift on that UTC day stored
++- * a string for it. If any gift on that day lacks the string, that field is
++- * `null`, even when the public series shows a partial sum. The public series
++- * is unchanged. Does not invent a rate.
++- *
++- * @param deps - Gift store, both rate books, and the clock. The books are not read.
++- * @returns `{ sats, usd, chf, eur, php }`, or `null`. A missing or incomplete
++- * currency is `null` and does not throw.
++- */
++-export async function loadLatestGoalRateDay(deps: {
++-  store: GiftStore;
++-  rates: BtcUsdRateBook;
++-  fiatRates: FiatRateBook;
++-  now: () => number;
++-}): Promise<GoalRateDay | null> {
++-  const rows = await deps.store.listOutbound();
++-  const loaded = await loadGiftStatsSnapshot(rows, deps.rates, deps.fiatRates, deps.now());
++-  const day = [...loaded.stats.spendOverTime].reverse().find((item) => item.sats > 0);
++-  if (day === undefined) {
++-    return null;
++-  }
++-  const onDay = rows.filter((row) => utcDayFromPaidAt(row.paidAt) === day.day);
++-  return {
++-    sats: day.sats,
++-    usd: onDay.every((row) => typeof row.amountUsd === 'string') ? day.usd : null,
++-    chf: onDay.every((row) => typeof row.amountChf === 'string') ? day.chf : null,
++-    eur: onDay.every((row) => typeof row.amountEur === 'string') ? day.eur : null,
++-    php: onDay.every((row) => typeof row.amountPhp === 'string') ? day.php : null,
++-  };
++-}
++-
++-/**
++- * `goalRateDay` for a fiat repayment share on `myLoansRoutes` and
++- * `messagesRoutes`: one call of {@link loadLatestGoalRateDay}.
++- *
++- * @param deps - The same collaborators as {@link loadLatestGoalRateDay}.
++- * @returns A function that loads the latest gift-day on each call.
++- */
++-export function bindGoalRateDay(deps: {
++-  store: GiftStore;
++-  rates: BtcUsdRateBook;
++-  fiatRates: FiatRateBook;
++-  now: () => number;
++-}): () => Promise<GoalRateDay | null> {
++-  return () => loadLatestGoalRateDay(deps);
++-}
++-
++ /**
++  * Build the `/gifts/stats` route group.
++  *
++diff --git a/src/server.ts b/src/server.ts
++index 3a5ca3e3..4c95f710 100644
++--- a/src/server.ts
+++++ b/src/server.ts
++@@ -18,7 +18,7 @@ import { linksRoutes } from '@/routes/links';
++ import { viewRoutes } from '@/routes/view';
++ import { lightningAddressRoutes } from '@/routes/lightning-address';
++ import { debugRoutes } from '@/routes/debug';
++-import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
+++import { giftsStatsRoutes } from '@/routes/stats';
++ import { walletStatsRoutes } from '@/routes/wallets';
++ import { giftsRoutes } from '@/routes/gifts';
++ import { invoiceRoutes } from '@/routes/invoices';
++@@ -336,9 +336,9 @@ export interface AppDeps {
++    */
++   fiatRates?: FiatRateBook;
++   /**
++-   * Last good BTC spot quote for `GET /fx/spot` (default: empty
++-   * {@link InMemoryFxSpotStore} — answers `rates: {}`). Boot keeps it fresh
++-   * with the spot worker.
+++   * Last good BTC spot quote for `GET /fx/spot`, ask freezing, and fiat loan
+++   * share pricing (default: empty {@link InMemoryFxSpotStore} — answers
+++   * `rates: {}`). Boot keeps it fresh with the spot worker.
++    */
++   fxSpotStore?: FxSpotStore;
++   /**
++@@ -758,13 +758,6 @@ export function createApp(deps: AppDeps = {}): Hono {
++     })(c, next);
++   });
++   app.use('*', sundayRest(now));
++-  const goalRateDay = bindGoalRateDay({
++-    store: giftStore,
++-    rates: btcUsdRates,
++-    fiatRates,
++-    now,
++-  });
++-
++   app.route('/', brandRoutes({ read: readBrand }));
++   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
++   const webhookSecret = resolvePaymentWebhookSecret(env);
++@@ -802,7 +795,7 @@ export function createApp(deps: AppDeps = {}): Hono {
++       store: messageStore,
++       authStore: store,
++       now,
++-      goalRateDay,
+++      fxSpot: fxSpotStore,
++       ...receivingDeps,
++     }),
++   );
++@@ -1131,7 +1124,6 @@ export function createApp(deps: AppDeps = {}): Hono {
++       giftStore,
++       shopIdentities: shopIdentityStore,
++       fxSpot: fxSpotStore,
++-      goalRateDay,
++       ...(nostrKek === undefined ? {} : { nostrKek }),
++       ...(shopKek === undefined ? {} : { shopKek }),
++       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
+diff --git a/src/__tests__/routes/repayment.test.ts b/src/__tests__/routes/repayment.test.ts
+index 3a71aa7d..b47b9173 100644
+--- a/src/__tests__/routes/repayment.test.ts
++++ b/src/__tests__/routes/repayment.test.ts
+@@ -2390,7 +2390,7 @@ describe('repayment from the in-app wallet', () => {
+       expect(response.status).toBe(409);
+       expect(await response.json()).toEqual({ error: 'A payment for this share is still open' });
+     }
+-    expect(reads).toBe(4);
++    expect(reads).toBe(0);
+   });
+ 
+   it('reuses a prepay Spark invoice and refuses an open bill for an old address', async () => {
+@@ -3239,6 +3239,69 @@ describe('repayment from the in-app wallet', () => {
+     expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(1);
+   });
+ 
++  it('adds stored invoice sats to the spot price of only the unreserved remainder', async () => {
++    const rates = { usd: '50000.00' };
++    const { app, messages, clock } = await loanSetup({
++      goalCurrency: 'USD',
++      goalAmount: '1.00',
++      termDays: 2,
++      fundedAt: new Date(Date.UTC(2027, 1, 28, 12)),
++      rates: async () => spot({ USD: rates.usd }),
++      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true, fiatAmount: '1.00' }],
++    });
++    await messages.recordInvoiceAttempt(openPartAttempt(200, 10n, 50n, new Date(clock.now)));
++    await messages.recordInvoiceAttempt({
++      ...openPartAttempt(200, 10n, 50n, new Date(clock.now)),
++      description: repaymentPartDescription(1, WALLET_GIVER, 0, 10n, 50n),
++    });
++    rates.usd = '100000.00';
++
++    const loan = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
++      .loans[0];
++    expect(loan).toMatchObject({
++      totalSats: 1200,
++      maxSats: 1200,
++      due: { payableSats: 600 },
++      next: { sats: 600 },
++    });
++
++    const status = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as {
++      next: { sats: number };
++      repayments: Array<{ dayIndex: number; dueSats: number | null }>;
++    };
++    expect(status.next.sats).toBe(600);
++    expect(status.repayments.find((line) => line.dayIndex === 0)?.dueSats).toBe(600);
++  });
++
++  it('reuses a fully reserved fiat invoice when the spot is unavailable', async () => {
++    const rates = vi.fn<() => Promise<FxSpotQuote>>(() => Promise.reject(new Error('spot down')));
++    const { app, messages, clock } = await loanSetup({
++      goalCurrency: 'USD',
++      goalAmount: '0.21',
++      termDays: 1,
++      rates,
++      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true, fiatAmount: '0.21' }],
++    });
++    await messages.recordInvoiceAttempt(openPartAttempt(37, 21n, 21n, new Date(clock.now)));
++
++    const status = await app.request(`/messages/${CREDIT}/repayment`);
++    expect(status.status).toBe(200);
++    expect(await status.json()).toMatchObject({
++      next: { sats: 37 },
++      repayments: [{ dueSats: 37 }],
++    });
++    const listed = await loans(app);
++    expect(listed.status).toBe(200);
++    expect(await listed.json()).toMatchObject({
++      loans: [{ totalSats: 37, maxSats: 37, due: { payableSats: 37 } }],
++    });
++
++    const response = await post(app, `/messages/${CREDIT}/repayment`);
++    expect(response.status).toBe(200);
++    expect(await response.json()).toMatchObject({ amountSats: 37 });
++    expect(rates).not.toHaveBeenCalled();
++  });
++
+   it('keeps open fiat invoice sats fixed in every repayment maximum', async () => {
+     await withNip57(async () => {
+       const rates = { usd: '50000.00' };
+@@ -4341,7 +4404,7 @@ describe('repayment from the in-app wallet', () => {
+     });
+   });
+ 
+-  it('loads the spot for lender reservations', async () => {
++  it('does not load the spot for fully reserved lender shares', async () => {
+     const setup = async (
+       rates: () => Promise<FxSpotQuote>,
+       claimOnly: boolean,
+@@ -4385,22 +4448,26 @@ describe('repayment from the in-app wallet', () => {
+ 
+     const pricedRates = vi.fn<() => Promise<FxSpotQuote>>(async () => spot({ USD: '100000.00' }));
+     const priced = await setup(pricedRates, true);
+-    expect((await request(priced.app)).status).toBe(200);
+-    expect(pricedRates).toHaveBeenCalledOnce();
++    const claimed = await request(priced.app);
++    expect(claimed.status).toBe(200);
++    expect(await claimed.json()).toMatchObject({ lenderWaiting: { sats: 21 } });
++    expect(pricedRates).not.toHaveBeenCalled();
+ 
+     const failingRates = vi.fn<() => Promise<FxSpotQuote>>(() =>
+       Promise.reject(new Error('spot down')),
+     );
+     const failing = await setup(failingRates, true);
+-    const unavailable = await request(failing.app);
+-    expect(unavailable.status).toBe(503);
+-    expect(await unavailable.json()).toEqual({ error: 'Ask amount is unavailable' });
+-    expect(failingRates).toHaveBeenCalledOnce();
++    const available = await request(failing.app);
++    expect(available.status).toBe(200);
++    expect(await available.json()).toMatchObject({ lenderWaiting: { sats: 21 } });
++    expect(failingRates).not.toHaveBeenCalled();
+ 
+     const fixedRates = vi.fn<() => Promise<FxSpotQuote>>(async () => spot({ USD: '100000.00' }));
+     const fixed = await setup(fixedRates, false);
+-    expect((await request(fixed.app)).status).toBe(200);
+-    expect(fixedRates).toHaveBeenCalledOnce();
++    const open = await request(fixed.app);
++    expect(open.status).toBe(200);
++    expect(await open.json()).toMatchObject({ lenderWaiting: { sats: 21 } });
++    expect(fixedRates).not.toHaveBeenCalled();
+   });
+ 
+   it('leaves the lender sum null without a spot and answers 503 when a lent loan cannot be computed', async () => {
+diff --git a/src/routes/repayment.ts b/src/routes/repayment.ts
+index 8730ea03..e535f7b3 100644
+--- a/src/routes/repayment.ts
++++ b/src/routes/repayment.ts
+@@ -494,9 +494,14 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
+   let daysPaid = 0;
+   let next: { dayIndex: number; sats: number; recipientAccountId: string } | null = null;
+   let price: Awaited<ReturnType<typeof sharePricer>> | null = null;
++  let dueShares = new Map<string, ShareState>();
+   if (fundedAt !== null) {
+     const plan = await duePlan(deps, row, nowMs, { owed, paid, parts });
+-    price = plan.due.length > 0 ? await sharePricer(deps, row).catch(() => null) : null;
++    dueShares = new Map(
++      plan.due.map((share) => [`${share.dayIndex}:${share.accountId}`, share] as const),
++    );
++    price =
++      plan.due.length > 0 ? await sharePartsPricer(deps, row, unpaidSharesParts(plan.due)) : null;
+     const share = await nextShare(deps, row, nowMs, { plan, price });
+     if (share.error !== null) {
+       return c.json({ error: share.error }, share.status);
+@@ -505,11 +510,13 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
+     daysPaid = share.daysPaid;
+     if (share.share !== null) {
+       const nextShareState = share.share;
+-      const nextLine = lines.find(
+-        (line) =>
+-          line.dayIndex === nextShareState.dayIndex && line.accountId === nextShareState.accountId,
+-      ) as (typeof lines)[number];
+-      const unpaidSats = (price as (units: bigint) => number)(nextLine.units - nextLine.paidUnits);
++      const state = dueShares.get(
++        `${nextShareState.dayIndex}:${nextShareState.accountId}`,
++      ) as ShareState;
++      const unpaidSats = pricedSum(
++        price as Awaited<ReturnType<typeof sharePricer>>,
++        unpaidShareParts(state),
++      ) as number;
+       next = {
+         dayIndex: nextShareState.dayIndex,
+         sats: unpaidSats,
+@@ -565,7 +572,14 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
+           waiting: waits(line),
+           via: 'lightning',
+           dueSats:
+-            line.status === 'due' && price !== null && remainder > 0n ? price(remainder) : null,
++            line.status === 'due' && price !== null && remainder > 0n
++              ? pricedSum(
++                  price,
++                  unpaidShareParts(
++                    dueShares.get(`${line.dayIndex}:${line.accountId}`) as ShareState,
++                  ),
++                )
++              : null,
+         };
+       }),
+       next,
+@@ -993,10 +1007,12 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
+ function billableSharePart(share: ShareState): {
+   units: bigint;
+   description: string;
++  open?: true;
++  amountSats?: number;
+ } {
+   const open = share.openParts[0];
+   if (open !== undefined) {
+-    return { units: open.units, description: open.description };
++    return open;
+   }
+   const units = share.units - share.paidUnits;
+   return {
+@@ -1058,9 +1074,9 @@ async function repaymentDueBillsLocked(
+   if (plan.due.length === 0) {
+     return c.json({ bills: [], waiting: [] }, 200);
+   }
+-  // A spot read that fails is the same 503 as a missing rate.
+-  const price = await sharePricer(deps, opened.row).catch(() => null);
+-  if (price === null) {
++  const dueParts = unpaidSharesParts(plan.due);
++  const price = await sharePartsPricer(deps, opened.row, dueParts);
++  if (price === null || pricedSum(price, dueParts) === null) {
+     return c.json({ error: 'Ask amount is unavailable' }, 503);
+   }
+   const fiat = isFiatCredit(opened.row);
+@@ -1090,10 +1106,7 @@ async function repaymentDueBillsLocked(
+       continue;
+     }
+     const waitingUnits = share.units - share.paidUnits;
+-    const waitingSats = price(waitingUnits);
+-    if (waitingSats === null) {
+-      return c.json({ error: 'Ask amount is unavailable' }, 503);
+-    }
++    const waitingSats = pricedSum(price, unpaidShareParts(share)) as number;
+     const giver = await giverOf(share.accountId);
+     const waitingLine = {
+       dayIndex: share.dayIndex,
+@@ -1108,7 +1121,7 @@ async function repaymentDueBillsLocked(
+       continue;
+     }
+     const part = billableSharePart(share);
+-    const sats = price(part.units) as number;
++    const sats = pricedSum(price, [part]) as number;
+     const line = {
+       dayIndex: share.dayIndex,
+       recipientAccountId: share.accountId,
+@@ -1201,7 +1214,7 @@ interface PrepayPlan {
+   allocation: ReturnType<typeof allocateRepayment>;
+   /** Largest prefix that cannot hit an existing-payment conflict. */
+   maxUnits: bigint;
+-  maxSats: number | null;
++  maxSats: number;
+   maxAmount: string | null;
+   /** The accepted prefix ended because the next receivable share conflicts. */
+   stoppedAtBlockingShare: boolean;
+@@ -1247,11 +1260,21 @@ async function prepayPlan(
+     maxParts,
+   );
+   const maximum = maximumAcceptedRepayment(remainingShares);
+-  const price = maximum.usedUnits === 0n ? () => 0 : await sharePricer(deps, row).catch(() => null);
+-  if (price === null) {
++  const waitingKeys = new Set(
++    allocation.waiting.map((share) => `${share.dayIndex}:${share.accountId}`),
++  );
++  const pricedParts = [
++    ...maximum.parts,
++    ...unpaidSharesParts(
++      remainingShares.filter((share) => waitingKeys.has(`${share.dayIndex}:${share.accountId}`)),
++    ),
++  ];
++  const price = await sharePartsPricer(deps, row, pricedParts);
++  if (price === null || pricedSum(price, pricedParts) === null) {
+     return 'unavailable';
+   }
+-  const maxSats = pricedSum(price, maximum.parts);
++  // `maximum.parts` is a prefix of the successfully priced parts above.
++  const maxSats = pricedSum(price, maximum.parts) as number;
+   return {
+     allocation,
+     maxUnits: maximum.usedUnits,
+@@ -1435,9 +1458,6 @@ async function repaymentAmountLocked(
+   if (plan === 'unavailable') {
+     return c.json({ error: 'Ask amount is unavailable' }, 503);
+   }
+-  if (plan.maxSats === null) {
+-    return c.json({ error: 'Ask amount is unavailable' }, 503);
+-  }
+   if (plan.allocation.maxUnits === 0n) {
+     return c.json({ error: NOTHING_DUE_BODY }, 400);
+   }
+@@ -1526,7 +1546,7 @@ async function repaymentAmountLocked(
+     for (const part of allocation.parts) {
+       const key = partKey(part);
+       const share = shares.get(`${part.dayIndex}:${part.accountId}`) as ShareState;
+-      const sats = plan.price(part.units) as number;
++      const sats = pricedSum(plan.price, [part]) as number;
+       const giver = await giverOf(part.accountId);
+       const line = {
+         dayIndex: part.dayIndex,
+@@ -1638,16 +1658,30 @@ async function repaymentAmountLocked(
+   });
+   const bills = finalParts.map((part) => completed.get(partKey(part)) as Record<string, unknown>);
+   const waiting: Record<string, unknown>[] = [];
+-  for (const share of allocation.waiting) {
+-    const sats = plan.price(share.units) as number;
+-    const giver = await giverOf(share.accountId);
++  for (const waitingShare of allocation.waiting) {
++    const share = shares.get(`${waitingShare.dayIndex}:${waitingShare.accountId}`) as ShareState;
++    const completedIndexes = new Set(
++      [...completedParts.values()]
++        .filter(
++          (part) =>
++            part.dayIndex === waitingShare.dayIndex && part.accountId === waitingShare.accountId,
++        )
++        .map((part) => part.partIndex),
++    );
++    const remainder = {
++      ...share,
++      paidUnits: share.paidUnits + fixedUnitsForShare(share.dayIndex, share.accountId),
++      openParts: share.openParts.filter((part) => !completedIndexes.has(part.partIndex)),
++    };
++    const sats = pricedSum(plan.price, unpaidShareParts(remainder)) as number;
++    const giver = await giverOf(waitingShare.accountId);
+     waiting.push({
+-      dayIndex: share.dayIndex,
+-      recipientAccountId: share.accountId,
++      dayIndex: waitingShare.dayIndex,
++      recipientAccountId: waitingShare.accountId,
+       name: giver.name,
+       username: giver.username,
+       amountSats: sats,
+-      amount: plan.fiat ? formatCents(share.units) : null,
++      amount: plan.fiat ? formatCents(waitingShare.units) : null,
+     });
+   }
+   const amountSats = bills.reduce((sum, bill) => sum + Number(bill['amountSats']), 0);
+@@ -1701,8 +1735,9 @@ async function openCredit(
+ /**
+  * The oldest due, unpaid share whose giver can receive. Shares of a giver who
+  * cannot receive are skipped; `waiting` says some were. A due share that
+- * cannot be priced (a fiat loan with no spot, or a spot read that fails) is
+- * 503, whoever its giver is.
++ * has unreserved units that cannot be priced (a fiat loan with no spot, or a
++ * spot read that fails) is 503, whoever its giver is. Open bills use their
++ * stored sats without a spot.
+  *
+  * @param deps - Store, auth, and optional spot store.
+  * @param row - Funded credit note.
+@@ -1754,11 +1789,12 @@ async function nextShare(
+   if (plan.due.length === 0) {
+     return { daysDue, daysPaid, share: null, waiting: false, error: null, status: 400 };
+   }
+-  // Every due share needs a price, whether or not its giver can receive. A spot
+-  // read that fails is the same 503 as a missing rate.
++  const dueParts = unpaidSharesParts(plan.due);
++  // Every unreserved due unit needs a price, whether or not its giver can
++  // receive. Fully reserved shares need no spot.
+   const price =
+-    prepared === undefined ? await sharePricer(deps, row).catch(() => null) : prepared.price;
+-  if (price === null || plan.due.some((share) => price(share.units - share.paidUnits) === null)) {
++    prepared === undefined ? await sharePartsPricer(deps, row, dueParts) : prepared.price;
++  if (price === null || pricedSum(price, dueParts) === null) {
+     return {
+       daysDue,
+       daysPaid,
+@@ -1774,7 +1810,7 @@ async function nextShare(
+   }
+   const openPart = payable.openParts[0];
+   const units = openPart === undefined ? payable.units - payable.paidUnits : openPart.units;
+-  const sats = price(units) as number;
++  const sats = (openPart?.amountSats ?? price(units)) as number;
+   return {
+     daysDue,
+     daysPaid,
+@@ -1831,6 +1867,37 @@ function pricedSum(
+   return total;
+ }
+ 
++type PricedSharePart = { units: bigint; open?: boolean; amountSats?: number };
++
++/** Open bills at stored sats, followed by the unreserved remainder of one share. */
++function unpaidShareParts(
++  share: Pick<ShareState, 'units' | 'paidUnits' | 'openParts'>,
++): PricedSharePart[] {
++  const reservedUnits = share.openParts.reduce((sum, part) => sum + part.units, 0n);
++  const unreservedUnits = share.units - share.paidUnits - reservedUnits;
++  return unreservedUnits > 0n
++    ? [...share.openParts, { units: unreservedUnits }]
++    : [...share.openParts];
++}
++
++/** Flatten the stored and unreserved parts of several unpaid shares. */
++function unpaidSharesParts(
++  shares: readonly Pick<ShareState, 'units' | 'paidUnits' | 'openParts'>[],
++): PricedSharePart[] {
++  return shares.flatMap(unpaidShareParts);
++}
++
++/** Read a pricer only when at least one part has not already been invoiced. */
++async function sharePartsPricer(
++  deps: RepaymentDeps,
++  row: MessageRow,
++  parts: readonly PricedSharePart[],
++): Promise<Awaited<ReturnType<typeof sharePricer>> | null> {
++  return parts.some((part) => part.open !== true)
++    ? sharePricer(deps, row).catch(() => null)
++    : () => 0;
++}
++
+ /**
+  * One row of `GET /me/loans`, or null when the loan is fully repaid.
+  *
+@@ -1941,9 +2008,10 @@ async function loanRow(
+   if (open.length === 0) {
+     return null;
+   }
+-  // Read the spot only now: a repaid loan is left out without it. A failing
+-  // read is 503; a missing currency rate leaves sats null.
+-  const price = await sharePricer(deps, row).catch(() => null);
++  // Read the spot only when an unpaid unit is not covered by an open bill. A
++  // failing read is 503; a missing currency rate leaves new-unit sats null.
++  const openParts = unpaidSharesParts(open);
++  const price = await sharePartsPricer(deps, row, openParts);
+   if (price === null) {
+     return 'unavailable';
+   }
+@@ -1953,10 +2021,7 @@ async function loanRow(
+     .filter((item) => !partKeys.has(`${item.dayIndex}:${item.recipientAccountId}`))
+     .reduce((sum, item) => sum + item.dueSats, 0);
+   const repaidSats = paidParts.reduce((sum, part) => sum + part.sats, legacyRepaidSats);
+-  const openSats = pricedSum(
+-    price,
+-    open.map((share) => ({ units: share.units - share.paidUnits })),
+-  );
++  const openSats = pricedSum(price, openParts);
+   const payable = plan.due.filter((share) => share.canReceive);
+   const waiting = plan.due.filter((share) => !share.canReceive);
+   const remainderUnits = (shares: readonly ShareState[]): bigint =>
+@@ -1981,16 +2046,10 @@ async function loanRow(
+     maxSats: pricedSum(price, maximum.parts),
+     maxAmount: cents(maximum.usedUnits),
+     due: {
+-      payableSats: pricedSum(
+-        price,
+-        payable.map((share) => ({ units: share.units - share.paidUnits })),
+-      ),
++      payableSats: pricedSum(price, unpaidSharesParts(payable)),
+       payableAmount: cents(remainderUnits(payable)),
+       payablePeople: people(payable),
+-      waitingSats: pricedSum(
+-        price,
+-        waiting.map((share) => ({ units: share.units - share.paidUnits })),
+-      ),
++      waitingSats: pricedSum(price, unpaidSharesParts(waiting)),
+       waitingAmount: cents(remainderUnits(waiting)),
+       waitingPeople: people(waiting),
+       waitingShares: waiting.length,
+@@ -2002,10 +2061,7 @@ async function loanRow(
+         ? null
+         : {
+             dueOn: repaymentDueDate(fundedAt.getTime(), nextDay, row.id),
+-            sats: pricedSum(
+-              price,
+-              nextShares.map((share) => ({ units: share.units - share.paidUnits })),
+-            ),
++            sats: pricedSum(price, unpaidSharesParts(nextShares)),
+             amount: cents(remainderUnits(nextShares)),
+           },
+   };
+@@ -2061,17 +2117,13 @@ async function lenderWaiting(
+     if (mine.length === 0) {
+       continue;
+     }
+-    const price = await sharePricer(deps, row).catch(() => null);
++    const mineParts = unpaidSharesParts(mine);
++    const price = await sharePartsPricer(deps, row, mineParts);
+     if (price === null) {
+       return 'unavailable';
+     }
+     shares += mine.length;
+-    loanSats.push(
+-      pricedSum(
+-        price,
+-        mine.map((share) => ({ units: share.units - share.paidUnits })),
+-      ),
+-    );
++    loanSats.push(pricedSum(price, mineParts));
+   }
+   return {
+     shares,
