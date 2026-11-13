@@ -9,6 +9,7 @@ import { loadFundingPayoutToday, type FundingPayoutToday } from '@/lib/funding-p
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { encryptRecoveryShare, RECOVERY_SHARE_TEXT } from '@/lib/auth/recovery-share';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
+import { roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore, HeldShareBoxPutResult, PreviousWallet } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
@@ -391,7 +392,7 @@ async function ownerJson(
     );
     payoutReadFailed = true;
     ownerFundingReadFailed = true;
-    if (account.role !== 'basis') {
+    if (roleAtLeast(account.role, 'verified')) {
       owner = {
         ...owner,
         funding: {

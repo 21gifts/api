@@ -61,7 +61,7 @@ does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
 report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-01, a 21.gifts recovery share for the current verified wallet from `RECOVERY_SHARE_REQUIRED_FROM`, and a completed server-verified shop payment today or yesterday UTC);
-`POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when server-owned facts show that the account is at least `verified`, has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, and neither `messageId` nor `groupMessageId` is set. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
+`POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when server-owned facts show that the account is at least `verified`, has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
 Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
@@ -6137,7 +6137,11 @@ condition applies to posts, zap-paid notes, spend daily runs, spend invoices,
 operator replay, and moderator stipends. The one-time welcome gift is exempt
 only when server-owned facts show an account at least `verified` with no stored
 welcome, comment exactly `Welcome`, neither `messageId` nor `groupMessageId`,
-and a normalized exact USD `1.00`. The public body has no payout-kind override;
+and a normalized exact USD `1.00`, and `amountMsat` is at most the server's
+`usdToMsat("1.00", spot)` conversion plus the fixed 10% spot-drift tolerance.
+The conversion is the same whole-satoshi, half-up conversion used by Fond.
+Without a usable current spot, the exception fails closed and the recent shop
+payment is required. The public body has no payout-kind override;
 the internal `serverPayoutKind` cannot weaken these checks. Those facts are the
 welcome gift's own once-per-account conditions, so a caller can obtain at most
 that one entitlement. A roster `Welcome` with a message id or another amount

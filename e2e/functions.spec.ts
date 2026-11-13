@@ -1877,6 +1877,13 @@ test('Function: fetchBtcUsdSpot — empty stats skip USD conversion', async ({ r
   expect(body.totalUsd).toBe('0.00');
 });
 
+test('Function: usdToMsat — Fond conversion is off when its signer is unset', async ({
+  request,
+}) => {
+  const res = await request.post('/fond/payouts/00000000-0000-4000-8000-000000000001/invoice');
+  expect(res.status()).toBe(404);
+});
+
 test('Function: parseUsdPerBtc — empty stats skip USD conversion', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);

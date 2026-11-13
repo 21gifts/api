@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { earnsModeratorGroupPay, isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
+import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import {
   GIFT_INVOICE_MAX_MSAT,
   GIFT_INVOICE_MIN_MSAT,
@@ -24,7 +25,7 @@ import {
 } from '@/lib/receiving-address';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import { fiatFromUsd, normalizeAmountUsd, type FiatAmounts } from '@/lib/money';
+import { fiatFromUsd, normalizeAmountUsd, usdToMsat, type FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import { ownerFundingStatus } from '@/lib/funding';
@@ -147,6 +148,13 @@ const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
 
 /** Paying wallet label the legacy Spend bearer routes write. */
 const LIGHTNING_SPACE_SOURCE_WALLET = 'lightning.space';
+
+/**
+ * Maximum drift above the server's current USD 1.00 conversion that may still
+ * use the one-time welcome exception. This absorbs spot movement between the
+ * caller's conversion and the API's own lookup; a missing spot fails closed.
+ */
+const WELCOME_AMOUNT_SPOT_TOLERANCE_PERCENT = 10;
 
 const issueBodySchema = z.object({
   address: z.string(),
@@ -824,10 +832,27 @@ async function issueGiftInvoiceLocked(
     input.messageId === undefined &&
     input.groupMessageId === undefined &&
     amountUsd === '1.00';
-  const serverPayoutKind =
-    canonicalWelcomeRequest && roleAtLeast(account.role, 'verified') && !(await welcomeRefused())
-      ? (input.serverPayoutKind ?? 'welcome')
-      : undefined;
+  let serverPayoutKind: 'welcome' | undefined;
+  if (
+    canonicalWelcomeRequest &&
+    roleAtLeast(account.role, 'verified') &&
+    !(await welcomeRefused())
+  ) {
+    let spot: string | null;
+    try {
+      spot = await fetchBtcUsdSpot(deps.fetchImpl);
+    } catch {
+      spot = null;
+    }
+    const oneDollarMsat = spot === null ? null : usdToMsat('1.00', spot);
+    if (
+      oneDollarMsat !== null &&
+      BigInt(amountMsat) * 100n <=
+        BigInt(oneDollarMsat) * BigInt(100 + WELCOME_AMOUNT_SPOT_TOLERANCE_PERCENT)
+    ) {
+      serverPayoutKind = input.serverPayoutKind ?? 'welcome';
+    }
+  }
   const genuineWelcome = serverPayoutKind === 'welcome' && canonicalWelcomeRequest;
 
   const { eligible } = await loadPayoutEligibility(

@@ -118,6 +118,7 @@ const HASH = 'aa'.repeat(32);
 const PREIMAGE = '11'.repeat(32);
 const MATCHING_HASH = createHash('sha256').update(Buffer.from(PREIMAGE, 'hex')).digest('hex');
 const MAX_SENDABLE = 100_000_000_000;
+const ONE_USD_AT_100K_MSAT = 1_000_000;
 const POST_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NEWER_POST_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const OTHER_POST_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -1076,6 +1077,8 @@ describe('POST /invoices', () => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     mockedDecode.mockReset();
     mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 1000 });
+    mockedSpot.mockReset();
+    mockedSpot.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -4464,6 +4467,13 @@ describe('invoiceRoutes funding store fallback', () => {
 });
 
 describe('GET /invoices/eligible', () => {
+  beforeEach(() => {
+    mockedDecode.mockReset();
+    mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 1000 });
+    mockedSpot.mockReset();
+    mockedSpot.mockResolvedValue(null);
+  });
+
   it('returns 503 when the spend token is not configured', async () => {
     const res = await spendApp({ spendApiToken: '' }).request(
       `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
@@ -4628,6 +4638,11 @@ describe('GET /invoices/eligible', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    mockedDecode.mockReturnValueOnce({
+      paymentHash: HASH,
+      amountMsat: ONE_USD_AT_100K_MSAT,
+    });
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
@@ -4641,14 +4656,131 @@ describe('GET /invoices/eligible', () => {
         method: 'POST',
         body: JSON.stringify({
           address: ADDRESS,
-          amountMsat: 1000,
+          amountMsat: ONE_USD_AT_100K_MSAT,
           amountUsd: '1',
           comment: 'Welcome',
         }),
       }),
     );
     expect(res.status).toBe(200);
+    expect(mockedSpot).toHaveBeenCalledWith(fetchImpl);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows the one-dollar welcome at exactly ten percent above the server conversion', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const amountMsat = 1_100_000;
+    mockedSpot.mockResolvedValueOnce('100000');
+    mockedDecode.mockReturnValueOnce({ paymentHash: HASH, amountMsat });
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires a shop payment above the one-dollar spot tolerance', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 10_000_000_000,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('requires a shop payment when the one-dollar spot is unavailable', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fails the welcome exception closed when the spot lookup unexpectedly throws', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockRejectedValueOnce(new Error('down'));
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('requires a shop payment for a second canonical welcome request', async () => {
@@ -4751,6 +4883,11 @@ describe('GET /invoices/eligible', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    mockedDecode.mockReturnValueOnce({
+      paymentHash: HASH,
+      amountMsat: ONE_USD_AT_100K_MSAT,
+    });
     const result = await issueGiftInvoice(
       {
         walletTransfers: fakeWalletTransferStore(false),
@@ -4766,7 +4903,7 @@ describe('GET /invoices/eligible', () => {
       },
       {
         address: ADDRESS,
-        amountMsat: 1000,
+        amountMsat: ONE_USD_AT_100K_MSAT,
         amountUsd: '1.00',
         comment: 'Welcome',
         serverPayoutKind: 'welcome',
