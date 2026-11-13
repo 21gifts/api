@@ -9,12 +9,7 @@ import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import type { FxSpotQuote } from '@/lib/fx-spot';
-import {
-  canonicalGoalAmount,
-  type GoalCurrency,
-  type GoalFiatCode,
-  type GoalRateDay,
-} from '@/lib/goal-rate';
+import { canonicalGoalAmount, type GoalCurrency, type GoalFiatCode } from '@/lib/goal-rate';
 import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
@@ -392,16 +387,12 @@ export interface MessagesRouteDeps {
   /** Poll interval for `sinceSats` (tests inject; default {@link WAIT_SATS_POLL_MS}). */
   waitSatsPollMs?: number;
   /**
-   * Latest spot used to freeze a currency ask. Omitted or a null quote:
-   * a BTC ask still posts; a fiat ask is 400. A throw is 503 for a fiat
-   * ask; a BTC ask still stores the typed sats.
+   * Latest spot used to freeze a currency ask and price not-yet-invoiced fiat
+   * repayment units. Omitted or a null quote: a BTC ask still posts; a fiat
+   * ask is 400 and a due fiat repayment is unavailable. A throw is 503 when
+   * that path needs the quote; a BTC ask still stores the typed sats.
    */
   fxSpot?: { latest(): Promise<FxSpotQuote | null> };
-  /**
-   * Gift-day loader for a fiat repayment share. An ask does not read it.
-   * Omitted → a fiat repayment share cannot be priced.
-   */
-  goalRateDay?: () => Promise<GoalRateDay | null>;
   /** Operator write token. Unset → no operator read on the staff GET routes. */
   debugToken?: string;
   /** Operator read-only token. Unset → no operator read on the staff GET routes. */

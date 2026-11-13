@@ -22,7 +22,8 @@ import {
   type RepaymentSlice,
 } from '@/lib/credit-repayment';
 import type { LnurlServerConfig } from '@/lib/config';
-import { fiatToSats, type GoalFiatCode, type GoalRateDay } from '@/lib/goal-rate';
+import type { FxSpotQuote } from '@/lib/fx-spot';
+import { fiatToSats, type GoalFiatCode } from '@/lib/goal-rate';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -49,7 +50,8 @@ export interface RepaymentDeps {
   now: () => number;
   nostrKek?: Uint8Array;
   fetchImpl?: FetchFn;
-  goalRateDay?: () => Promise<GoalRateDay | null>;
+  /** Last stored spot quote. Omitted or empty means fiat shares are unavailable. */
+  fxSpot?: { latest(): Promise<FxSpotQuote | null> };
   /** LNURL server; omitted when off. A giver with a verified wallet is repaid on it. */
   lnurlServer?: LnurlServerConfig;
   /** Issued Spark invoices; omitted when free in-app payments are off. */
@@ -386,23 +388,25 @@ async function duePlan(
 }
 
 /**
- * The deps with the rate loader read at most once, so every figure of one
- * response is priced at the same rate.
+ * The deps with the spot store read at most once, so every figure of one
+ * response is priced at the same quote.
  *
- * @param deps - Deps with an optional rate loader.
- * @returns The same deps, the loader memoized.
+ * @param deps - Deps with an optional spot store.
+ * @returns The same deps, the spot read memoized.
  */
-function withOneRate<D extends Pick<RepaymentDeps, 'goalRateDay'>>(deps: D): D {
-  const load = deps.goalRateDay;
-  if (load === undefined) {
+function withOneRate<D extends Pick<RepaymentDeps, 'fxSpot'>>(deps: D): D {
+  const store = deps.fxSpot;
+  if (store === undefined) {
     return deps;
   }
-  let day: Promise<GoalRateDay | null> | undefined;
+  let quote: Promise<FxSpotQuote | null> | undefined;
   return {
     ...deps,
-    goalRateDay: () => {
-      day ??= load();
-      return day;
+    fxSpot: {
+      latest: () => {
+        quote ??= store.latest();
+        return quote;
+      },
     },
   };
 }
@@ -411,7 +415,7 @@ function withOneRate<D extends Pick<RepaymentDeps, 'goalRateDay'>>(deps: D): D {
  * Prices shares of one credit in sats: a bitcoin share is its units, a fiat
  * share is priced at the rate the pay route uses now. The rate is read once.
  *
- * @param deps - Optional rate loader.
+ * @param deps - Optional spot store.
  * @param row - Credit note.
  * @returns Units → sats, or null when a fiat share has no rate.
  */
@@ -422,14 +426,14 @@ async function sharePricer(
   if (!isFiatCredit(row)) {
     return (units) => Number(units);
   }
-  const rateDay = deps.goalRateDay === undefined ? null : await deps.goalRateDay();
-  return (units) => fiatToSats(Number(units) / 100, rateDay, row.goalCurrency as GoalFiatCode);
+  const quote = deps.fxSpot === undefined ? null : await deps.fxSpot.latest();
+  return (units) => fiatToSats(Number(units) / 100, quote, row.goalCurrency as GoalFiatCode);
 }
 
 /**
  * Public ledger of one credit: who gave what, and each Lightning repayment.
  *
- * @param routeDeps - Store, auth, clock, and rate loader.
+ * @param routeDeps - Store, auth, clock, and spot store.
  * @param c - Request. No session is required.
  * @returns The givers and the plan, or an error.
  */
@@ -1054,7 +1058,7 @@ async function repaymentDueBillsLocked(
   if (plan.due.length === 0) {
     return c.json({ bills: [], waiting: [] }, 200);
   }
-  // A rate loader that fails is the same 503 as a missing rate.
+  // A spot read that fails is the same 503 as a missing rate.
   const price = await sharePricer(deps, opened.row).catch(() => null);
   if (price === null) {
     return c.json({ error: 'Ask amount is unavailable' }, 503);
@@ -1209,7 +1213,7 @@ interface PrepayPlan {
 /**
  * Read the current plan for a prepayment and allocate one amount.
  *
- * @param deps - Store, auth, rate loader, and optional LNURL server.
+ * @param deps - Store, auth, spot store, and optional LNURL server.
  * @param row - Funded credit.
  * @param nowMs - Clock.
  * @param amountUnits - Requested units.
@@ -1697,10 +1701,10 @@ async function openCredit(
 /**
  * The oldest due, unpaid share whose giver can receive. Shares of a giver who
  * cannot receive are skipped; `waiting` says some were. A due share that
- * cannot be priced (a fiat loan with no rate, or a rate loader that fails) is
+ * cannot be priced (a fiat loan with no spot, or a spot read that fails) is
  * 503, whoever its giver is.
  *
- * @param deps - Store, auth, and optional rate loader.
+ * @param deps - Store, auth, and optional spot store.
  * @param row - Funded credit note.
  * @param nowMs - Clock.
  * @param prepared - Optional plan snapshot and its already-read price function.
@@ -1750,8 +1754,8 @@ async function nextShare(
   if (plan.due.length === 0) {
     return { daysDue, daysPaid, share: null, waiting: false, error: null, status: 400 };
   }
-  // Every due share needs a price, whether or not its giver can receive. A rate
-  // loader that fails is the same 503 as a missing rate.
+  // Every due share needs a price, whether or not its giver can receive. A spot
+  // read that fails is the same 503 as a missing rate.
   const price =
     prepared === undefined ? await sharePricer(deps, row).catch(() => null) : prepared.price;
   if (price === null || plan.due.some((share) => price(share.units - share.paidUnits) === null)) {
@@ -1802,7 +1806,7 @@ async function nextShare(
 /** What `GET /me/loans` needs. */
 export type MyLoansRouteDeps = Pick<
   RepaymentDeps,
-  'store' | 'authStore' | 'now' | 'goalRateDay' | 'lnurlServer'
+  'store' | 'authStore' | 'now' | 'fxSpot' | 'lnurlServer'
 >;
 
 /**
@@ -1830,7 +1834,7 @@ function pricedSum(
 /**
  * One row of `GET /me/loans`, or null when the loan is fully repaid.
  *
- * @param deps - Store, auth, rate loader, and the optional LNURL server.
+ * @param deps - Store, auth, spot store, and the optional LNURL server.
  * @param row - Live repayable ask of the caller.
  * @param nowMs - Clock.
  * @returns The row, null, or `unavailable` when the debt cannot be computed.
@@ -1937,7 +1941,8 @@ async function loanRow(
   if (open.length === 0) {
     return null;
   }
-  // Read the rate only now: a repaid loan is left out without it. A failing loader is 503; a missing rate leaves sats null.
+  // Read the spot only now: a repaid loan is left out without it. A failing
+  // read is 503; a missing currency rate leaves sats null.
   const price = await sharePricer(deps, row).catch(() => null);
   if (price === null) {
     return 'unavailable';
@@ -2011,7 +2016,7 @@ async function loanRow(
  * funded loan the caller gave to: found through the caller's in-app invoices,
  * kept only when the caller is one of its payers.
  *
- * @param deps - Store, auth, rate loader, and the optional LNURL server.
+ * @param deps - Store, auth, spot store, and the optional LNURL server.
  * @param account - The caller.
  * @param nowMs - Clock.
  * @returns Share and loan counts and their sats (null when a fiat share has no
@@ -2081,7 +2086,7 @@ async function lenderWaiting(
  * `GET /me/loans`: the caller's live repayable asks that are still collecting
  * or not fully repaid, newest first, with what is due now.
  *
- * @param deps - Store, auth, clock, rate loader, and the optional LNURL server.
+ * @param deps - Store, auth, clock, spot store, and the optional LNURL server.
  * @returns A Hono app with `GET /me/loans`.
  */
 export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {

@@ -18,7 +18,7 @@ import { linksRoutes } from '@/routes/links';
 import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
-import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
+import { giftsStatsRoutes } from '@/routes/stats';
 import { walletStatsRoutes } from '@/routes/wallets';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
@@ -336,9 +336,9 @@ export interface AppDeps {
    */
   fiatRates?: FiatRateBook;
   /**
-   * Last good BTC spot quote for `GET /fx/spot` (default: empty
-   * {@link InMemoryFxSpotStore} — answers `rates: {}`). Boot keeps it fresh
-   * with the spot worker.
+   * Last good BTC spot quote for `GET /fx/spot`, ask freezing, and fiat loan
+   * share pricing (default: empty {@link InMemoryFxSpotStore} — answers
+   * `rates: {}`). Boot keeps it fresh with the spot worker.
    */
   fxSpotStore?: FxSpotStore;
   /**
@@ -758,13 +758,6 @@ export function createApp(deps: AppDeps = {}): Hono {
     })(c, next);
   });
   app.use('*', sundayRest(now));
-  const goalRateDay = bindGoalRateDay({
-    store: giftStore,
-    rates: btcUsdRates,
-    fiatRates,
-    now,
-  });
-
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
   const webhookSecret = resolvePaymentWebhookSecret(env);
@@ -802,7 +795,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       store: messageStore,
       authStore: store,
       now,
-      goalRateDay,
+      fxSpot: fxSpotStore,
       ...receivingDeps,
     }),
   );
@@ -1131,7 +1124,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       giftStore,
       shopIdentities: shopIdentityStore,
       fxSpot: fxSpotStore,
-      goalRateDay,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),

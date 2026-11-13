@@ -1,13 +1,14 @@
 /**
- * Gift-day proportion used when a repayment share is priced.
+ * Fiat conversion helpers used by asks and repayment shares.
  *
- * A forum ask does not freeze from this proportion. Same float math as the
- * app composer (`Math.round`, not BigInt spot helpers). This module does not
- * call Coinbase or fiatFromSats.
+ * A forum ask uses its precision-preserving BigInt spot helper; a repayment
+ * uses the same stored quote with `Math.round`. This module does not call a
+ * provider or `fiatFromSats`.
  */
 
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { canonicalDecimal } from '@/lib/decimal';
+import type { FxSpotQuote } from '@/lib/fx-spot';
 
 /** Whole-sat ceiling for a frozen ask (`GIFT_INVOICE_MAX_MSAT / 1000`). */
 export const GOAL_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
@@ -19,8 +20,8 @@ export type GoalFiatCode = 'USD' | 'CHF' | 'EUR' | 'PHP';
 export type GoalCurrency = 'BTC' | GoalFiatCode;
 
 /**
- * Latest gift-day proportion used to freeze an ask. `usd` is `string | null`
- * (a missing quote stays null; it does not invent a rate).
+ * Historical gift-day proportion accepted by {@link satsToFiatAmount}.
+ * `usd` is `string | null` (a missing quote stays null).
  */
 export interface GoalRateDay {
   /** Sats paid that UTC day. */
@@ -80,34 +81,34 @@ function dayFiat(day: GoalRateDay, currency: GoalFiatCode): number | null {
 }
 
 /**
- * Convert a fiat amount to whole sats on a gift-day proportion.
+ * Convert a fiat amount to whole sats on the current spot quote.
  *
- * Unusable day, non-finite amount, or amount `< 0` → unusable. Unusable
- * currency field → unusable. Amount `0` → `0` sats. Otherwise
- * `Math.round(amount * day.sats / dayFiat)`; a product that rounds to `0`
- * becomes `1`.
+ * Missing quote, non-finite amount, or amount `< 0` → unusable. Missing,
+ * non-finite, or non-positive currency rate → unusable. Amount `0` → `0`
+ * sats. Otherwise `Math.round(amount * 1e8 / fiatPerBtc)`; a product that
+ * rounds to `0` becomes `1`.
  *
  * @param amount - Canonical amount as `Number(canonical)`.
- * @param day - Latest gift-day, or `null`.
- * @param currency - USD/CHF/EUR/PHP field on `day`.
+ * @param quote - Current BTC spot quote, or `null`.
+ * @param currency - USD/CHF/EUR/PHP field on `quote`.
  * @returns Whole sats, or `null` when unusable.
  */
 export function fiatToSats(
   amount: number,
-  day: GoalRateDay | null,
+  quote: FxSpotQuote | null,
   currency: GoalFiatCode,
 ): number | null {
-  if (!dayIsUsable(day) || !Number.isFinite(amount) || amount < 0) {
+  if (quote === null || !Number.isFinite(amount) || amount < 0) {
     return null;
   }
-  const quote = dayFiat(day, currency);
-  if (quote === null) {
+  const rate = Number(quote.rates[currency]);
+  if (!Number.isFinite(rate) || rate <= 0) {
     return null;
   }
   if (amount === 0) {
     return 0;
   }
-  const rounded = Math.round((amount * day.sats) / quote);
+  const rounded = Math.round((amount * 100_000_000) / rate);
   return rounded === 0 ? 1 : rounded;
 }
 
