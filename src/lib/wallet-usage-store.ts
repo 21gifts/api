@@ -39,19 +39,64 @@ export interface WalletUsageStore {
   shopCharges(sinceMs: number): Promise<WalletUsageChargeRow[]>;
 }
 
+/**
+ * Merged payment plus the hash and invoice a forum-gift match needs in memory.
+ * An explicit `isForumGift` wins; otherwise the store derives it.
+ */
+interface MemoryPaymentRow extends Omit<WalletUsagePaymentRow, 'isForumGift'> {
+  /** Forum-gift flag. Omitted means the store derives it. */
+  isForumGift?: boolean;
+  /** `wallet_payment.payment_hash`, or null. */
+  paymentHash?: string | null;
+  /** `wallet_payment.invoice`, or null. */
+  invoice?: string | null;
+}
+
+/** A claimed, successful forum invoice that can make a payment a forum gift or paid heart. */
+interface MemoryForumInvoice {
+  /** `message_invoice.payment_hash`, any case, or null. */
+  paymentHash: string | null;
+  /** `message_invoice.pr` (the BOLT11 the payer paid), or null. */
+  pr: string | null;
+  /** True when `conversation_id` is set. */
+  conversation: boolean;
+  /** True when `description` starts with `repay:` or `repayp:`. */
+  repayment: boolean;
+  /** True when the invoice's note has `message.deleted_at` set. */
+  hidden: boolean;
+  /** True when `nostr_zap_payment` has claimed `paymentHash`. */
+  claimed: boolean;
+}
+
+/**
+ * A claimed zap receipt gift or paid heart: its hash and its note's hidden
+ * state.
+ */
+interface MemoryZapGift {
+  /** Claimed payment hash, any case. */
+  paymentHash: string;
+  /** True when the receipt's note has `message.deleted_at` set. */
+  hidden: boolean;
+}
+
 /** Optional rows for {@link InMemoryWalletUsageStore}. */
 interface WalletUsageSeed {
   /** Completed payments. */
-  payments: readonly WalletUsagePaymentRow[];
+  payments: readonly MemoryPaymentRow[];
   /** Successful forum invoices. */
   forumInvoices: readonly WalletUsageForumRow[];
   /** Point-of-sale charges. */
   shopCharges: readonly WalletUsageChargeRow[];
+  /** Claimed forum invoices that can mark a payment `isForumGift`. Default none. */
+  forumGiftInvoices?: readonly MemoryForumInvoice[];
+  /** Claimed zap receipt gifts. Default none. */
+  zapGifts?: readonly MemoryZapGift[];
 }
 
 /**
  * Process-local usage reads for a boot without `DATABASE_URL`, and for tests.
- * The default seed is empty.
+ * The default seed is empty. `isForumGift` is derived from the seed's claimed
+ * forum invoices and zap gifts with the same rule as the Postgres statement.
  */
 export class InMemoryWalletUsageStore implements WalletUsageStore {
   readonly #payments: WalletUsagePaymentRow[];
@@ -68,7 +113,14 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
       this.#shopCharges = [];
       return;
     }
-    this.#payments = seed.payments.map(copyPayment);
+    const invoices = seed.forumGiftInvoices ?? [];
+    const gifts = seed.zapGifts ?? [];
+    this.#payments = seed.payments.map((row) =>
+      copyPayment({
+        ...row,
+        isForumGift: row.isForumGift ?? memoryIsForumGift(row, invoices, gifts),
+      }),
+    );
     this.#forumInvoices = seed.forumInvoices.map(copyForum);
     this.#shopCharges = seed.shopCharges.map(copyCharge);
   }
@@ -120,6 +172,7 @@ interface PaymentSqlRow {
   payer_party: string;
   payee_party: string;
   is_fund_payout: boolean | null;
+  is_forum_gift: boolean | null;
 }
 
 interface ForumSqlRow {
@@ -138,10 +191,19 @@ interface ChargeSqlRow {
  *
  * A row filter on `paid_at` would split a payment whose sides fall on either
  * side of the bound, so the bound is `min(paid_at)` of the whole group.
+ *
+ * `is_forum_gift` is a paid forum gift or paid heart: a claimed, successful
+ * invoice with no conversation and no `repay:` / `repayp:` description, on a
+ * note whose `deleted_at` is null, matching any row's `payment_hash` or
+ * `invoice`; or a claimed zap receipt gift or paid heart on such a note,
+ * unless the claimed hash belongs to a conversation or repayment invoice.
+ * `wallet_payment.category` alone is not enough, because it also covers
+ * conversation invoices, credit repayments, and any payment to the platform
+ * account.
  */
 const PAYMENTS_SQL = `WITH completed AS (
   SELECT payment_id, account_id, direction, amount_sats, fee_sats, paid_at,
-         category, counterparty_account_id, invoice
+         category, counterparty_account_id, payment_hash, invoice
   FROM wallet_payment
   WHERE status = 'completed'
 ),
@@ -189,6 +251,48 @@ fund_hits AS (
    AND completed.invoice <> ''
    AND (fond_payout.bolt11 = completed.invoice
         OR fond_payout.spark_invoice = completed.invoice)
+),
+forum_gifts AS (
+  SELECT DISTINCT completed.payment_id
+  FROM completed
+  JOIN message_invoice invoice
+    ON invoice.result = 'ok'
+   AND invoice.conversation_id IS NULL
+   AND coalesce(invoice.description, '') NOT LIKE 'repay:%'
+   AND coalesce(invoice.description, '') NOT LIKE 'repayp:%'
+   AND (
+     (completed.payment_hash IS NOT NULL
+      AND invoice.payment_hash IS NOT NULL
+      AND lower(invoice.payment_hash) = lower(completed.payment_hash))
+     OR (completed.invoice IS NOT NULL
+         AND invoice.pr IS NOT NULL
+         AND invoice.pr = completed.invoice)
+   )
+  JOIN message note ON note.id = invoice.message_id AND note.deleted_at IS NULL
+  WHERE EXISTS (
+    SELECT 1 FROM nostr_zap_payment z
+    WHERE z.payment_hash = lower(invoice.payment_hash)
+  )
+  UNION
+  SELECT DISTINCT completed.payment_id
+  FROM completed
+  JOIN nostr_zap_payment z
+    ON completed.payment_hash IS NOT NULL
+   AND z.payment_hash = lower(completed.payment_hash)
+  JOIN nostr_zap_receipt receipt ON receipt.event_id = z.receipt_event_id
+  JOIN message note ON note.id = receipt.message_id AND note.deleted_at IS NULL
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM message_invoice other_invoice
+    WHERE other_invoice.result = 'ok'
+      AND other_invoice.payment_hash IS NOT NULL
+      AND lower(other_invoice.payment_hash) = lower(completed.payment_hash)
+      AND (
+        other_invoice.conversation_id IS NOT NULL
+        OR coalesce(other_invoice.description, '') LIKE 'repay:%'
+        OR coalesce(other_invoice.description, '') LIKE 'repayp:%'
+      )
+  )
 )
 SELECT bounds.paid_at,
        bounds.amount_sats,
@@ -215,12 +319,14 @@ SELECT bounds.paid_at,
          WHEN payee.role = 'fond' THEN 'fund'
          ELSE 'members'
        END AS payee_party,
-       (fund_hits.payment_id IS NOT NULL) AS is_fund_payout
+       (fund_hits.payment_id IS NOT NULL) AS is_fund_payout,
+       (forum_gifts.payment_id IS NOT NULL) AS is_forum_gift
 FROM bounds
 LEFT JOIN outs ON outs.payment_id = bounds.payment_id
 LEFT JOIN ins ON ins.payment_id = bounds.payment_id
 LEFT JOIN fallback_category ON fallback_category.payment_id = bounds.payment_id
 LEFT JOIN fund_hits ON fund_hits.payment_id = bounds.payment_id
+LEFT JOIN forum_gifts ON forum_gifts.payment_id = bounds.payment_id
 LEFT JOIN account payer ON payer.id = outs.payer_account_id
 LEFT JOIN account payee
   ON payee.id = COALESCE(ins.payee_account_id, outs.counterparty_account_id)`;
@@ -232,18 +338,22 @@ LEFT JOIN account payee
  * `nostr_zap_payment` has claimed the hash. The claim matches
  * `PostgresMessageStore.heartSenders`: the stored hash equals
  * `lower(message_invoice.payment_hash)`. Conversation invoices and credit
- * repayments (`repay:` / `repayp:`) stay out.
+ * repayments (`repay:` / `repayp:`) stay out. The invoice's note must also be
+ * living (`message.deleted_at IS NULL`), joined through `message_invoice
+ * .message_id = message.id`; a gift or heart on a note hidden by staff is not
+ * public application data.
  */
-const FORUM_SQL = `SELECT created_at, amount_sats, COALESCE(heart, false) AS heart
-FROM message_invoice
-WHERE result = 'ok'
-  AND conversation_id IS NULL
-  AND coalesce(description, '') NOT LIKE 'repay:%'
-  AND coalesce(description, '') NOT LIKE 'repayp:%'
-  AND created_at >= $1
+const FORUM_SQL = `SELECT invoice.created_at, invoice.amount_sats, COALESCE(invoice.heart, false) AS heart
+FROM message_invoice invoice
+JOIN message note ON note.id = invoice.message_id AND note.deleted_at IS NULL
+WHERE invoice.result = 'ok'
+  AND invoice.conversation_id IS NULL
+  AND coalesce(invoice.description, '') NOT LIKE 'repay:%'
+  AND coalesce(invoice.description, '') NOT LIKE 'repayp:%'
+  AND invoice.created_at >= $1
   AND EXISTS (
     SELECT 1 FROM nostr_zap_payment z
-    WHERE z.payment_hash = lower(message_invoice.payment_hash)
+    WHERE z.payment_hash = lower(invoice.payment_hash)
   )`;
 
 const CHARGES_SQL = `SELECT created_at, status
@@ -298,8 +408,57 @@ export class PostgresWalletUsageStore implements WalletUsageStore {
   }
 }
 
-function copyPayment(row: WalletUsagePaymentRow): WalletUsagePaymentRow {
-  return { ...row, paidAt: new Date(row.paidAt.getTime()) };
+function copyPayment(row: MemoryPaymentRow): WalletUsagePaymentRow {
+  return {
+    paidAt: new Date(row.paidAt.getTime()),
+    amountSats: row.amountSats,
+    feeSats: row.feeSats,
+    category: row.category,
+    payerAccountId: row.payerAccountId,
+    payeeAccountId: row.payeeAccountId,
+    payerParty: row.payerParty,
+    payeeParty: row.payeeParty,
+    isFundPayout: row.isFundPayout,
+    isForumGift: row.isForumGift === true,
+  };
+}
+
+/**
+ * Same forum-gift rule as the Postgres `forum_gifts` CTE, over seeded rows.
+ *
+ * A payment is a forum gift when a claimed, successful, non-conversation,
+ * non-repayment invoice on a living note matches one of its hashes or its
+ * invoice; or when a claimed zap receipt gift or paid heart on a living note
+ * matches one of its hashes and no conversation or repayment invoice owns that
+ * hash.
+ */
+function memoryIsForumGift(
+  row: MemoryPaymentRow,
+  invoices: readonly MemoryForumInvoice[],
+  gifts: readonly MemoryZapGift[],
+): boolean {
+  const hashes = new Set<string>();
+  if (row.paymentHash !== null && row.paymentHash !== undefined) {
+    hashes.add(row.paymentHash.toLowerCase());
+  }
+  const invoice = row.invoice ?? null;
+  const giftInvoice = invoices.some((candidate) => {
+    if (candidate.conversation || candidate.repayment || candidate.hidden) {
+      return false;
+    }
+    if (!candidate.claimed) {
+      return false;
+    }
+    const hash = candidate.paymentHash === null ? null : candidate.paymentHash.toLowerCase();
+    if (hash !== null && hashes.has(hash)) {
+      return true;
+    }
+    return candidate.pr !== null && invoice !== null && candidate.pr === invoice;
+  });
+  if (giftInvoice) {
+    return true;
+  }
+  return gifts.some((gift) => !gift.hidden && hashes.has(gift.paymentHash.toLowerCase()));
 }
 
 function copyForum(row: WalletUsageForumRow): WalletUsageForumRow {
@@ -357,6 +516,9 @@ function mapPayment(row: PaymentSqlRow): WalletUsagePaymentRow {
   if (row.is_fund_payout !== true && row.is_fund_payout !== false) {
     throw new Error('wallet usage fund payout flag is invalid');
   }
+  if (row.is_forum_gift !== true && row.is_forum_gift !== false) {
+    throw new Error('wallet usage forum gift flag is invalid');
+  }
   return {
     paidAt: sqlInstant(row.paid_at),
     amountSats: sqlSats(row.amount_sats),
@@ -367,6 +529,7 @@ function mapPayment(row: PaymentSqlRow): WalletUsagePaymentRow {
     payerParty: sqlParty(row.payer_party),
     payeeParty: sqlParty(row.payee_party),
     isFundPayout: row.is_fund_payout,
+    isForumGift: row.is_forum_gift,
   };
 }
 
