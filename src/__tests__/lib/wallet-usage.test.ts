@@ -211,7 +211,7 @@ describe('buildWalletUsage', () => {
       receivingWalletCount: 3,
       topFiveSenderShare: 0.6116,
       heartCount: 1,
-      paidShopChargeCount: 1,
+      paidShopChargeCount: 2,
     });
     expect(body.days.map((day) => day.day)).toEqual([
       '2026-11-09',
@@ -409,7 +409,7 @@ describe('buildWalletUsage', () => {
     expect(body.flows[0]?.purpose).toBe('other');
   });
 
-  it('counts a payment before the release day in totals but not in the day series', () => {
+  it('skips a payment before the release in totals, buckets, hours, flows, days, and asOf', () => {
     const body = buildWalletUsage(
       {
         payments: [
@@ -428,21 +428,78 @@ describe('buildWalletUsage', () => {
       },
       NOW,
     );
-    expect(body.totals.paymentCount).toBe(1);
-    expect(body.totals.volumeSats).toBe(50);
-    expect(body.days.map((day) => day.day)).toEqual(dayKeys(WALLET_RELEASE_AT_MS, NOW));
-    expect(body.days.every((day) => day.purposes.transfer.count === 0)).toBe(true);
-    expect(body.flows).toEqual([
+    expect(body.totals).toEqual({
+      paymentCount: 0,
+      volumeSats: 0,
+      feeSats: 0,
+      medianSats: 0,
+      averageSats: 0,
+      activeWalletCount: 0,
+      sendingWalletCount: 0,
+      receivingWalletCount: 0,
+      topFiveSenderShare: 0,
+      heartCount: 0,
+      paidShopChargeCount: 0,
+    });
+    expect(body.amountBuckets.every((bucket) => bucket.count === 0 && bucket.sats === 0)).toBe(
+      true,
+    );
+    expect(body.hours.every((hour) => hour.count === 0)).toBe(true);
+    expect(body.flows).toEqual([]);
+    expect(body.days).toEqual(
+      dayKeys(WALLET_RELEASE_AT_MS, NOW).map((day) => ({
+        day,
+        purposes: purposes(),
+        activeWalletCount: 0,
+        sendingWalletCount: 0,
+        receivingWalletCount: 0,
+      })),
+    );
+    expect(body.asOf).toBeNull();
+  });
+
+  it('counts a shop-window paid charge and derives the total from daily cells', () => {
+    const body = buildWalletUsage(
       {
-        day: '2026-11-08',
-        from: 'members',
-        to: 'outside',
-        purpose: 'transfer',
-        count: 1,
-        sats: 50,
-        feeSats: 0,
+        payments: [],
+        forumInvoices: [],
+        shopCharges: [
+          { createdAt: new Date('2026-10-27T09:00:00.000Z'), status: 'paid' },
+          { createdAt: new Date('2026-11-08T09:00:00.000Z'), status: 'paid' },
+          { createdAt: new Date('2026-11-11T09:00:00.000Z'), status: 'paid' },
+          { createdAt: new Date('2026-11-12T09:00:00.000Z'), status: 'pending' },
+          { createdAt: new Date('2026-11-13T09:00:00.000Z'), status: 'paid' },
+          { createdAt: new Date('2026-09-01T09:00:00.000Z'), status: 'paid' },
+        ],
       },
-    ]);
+      NOW,
+    );
+    expect(body.shopCharges.find((row) => row.day === '2026-10-27')).toEqual({
+      day: '2026-10-27',
+      created: 1,
+      paid: 1,
+    });
+    expect(body.shopCharges.find((row) => row.day === '2026-11-08')).toEqual({
+      day: '2026-11-08',
+      created: 1,
+      paid: 1,
+    });
+    expect(body.shopCharges.find((row) => row.day === '2026-11-11')).toEqual({
+      day: '2026-11-11',
+      created: 1,
+      paid: 1,
+    });
+    expect(body.shopCharges.find((row) => row.day === '2026-11-12')).toEqual({
+      day: '2026-11-12',
+      created: 1,
+      paid: 0,
+    });
+    expect(body.shopCharges.some((row) => row.day === '2026-09-01')).toBe(false);
+    expect(body.shopCharges.some((row) => row.day === '2026-11-13')).toBe(false);
+    expect(body.totals.paidShopChargeCount).toBe(3);
+    expect(body.totals.paidShopChargeCount).toBe(
+      body.shopCharges.reduce((sum, row) => sum + row.paid, 0),
+    );
   });
 
   it('returns gap-free zeros when nothing has happened', () => {
@@ -512,15 +569,19 @@ describe('buildWalletUsage', () => {
     expect(body.days).toEqual([]);
     expect(body.forum).toEqual([]);
     expect(body.shopCharges).toEqual([]);
-    expect(body.totals.paymentCount).toBe(1);
-    expect(body.totals.volumeSats).toBe(5);
-    expect(body.totals.medianSats).toBe(5);
-    expect(body.totals.averageSats).toBe(5);
-    expect(body.totals.topFiveSenderShare).toBe(1);
+    expect(body.totals.paymentCount).toBe(0);
+    expect(body.totals.volumeSats).toBe(0);
+    expect(body.totals.medianSats).toBe(0);
+    expect(body.totals.averageSats).toBe(0);
+    expect(body.totals.topFiveSenderShare).toBe(0);
     expect(body.totals.heartCount).toBe(0);
     expect(body.totals.paidShopChargeCount).toBe(0);
-    expect(body.asOf).toBe('2026-10-01T00:00:00.000Z');
-    expect(body.flows).toHaveLength(1);
+    expect(body.asOf).toBeNull();
+    expect(body.flows).toEqual([]);
+    expect(body.amountBuckets.every((bucket) => bucket.count === 0 && bucket.sats === 0)).toBe(
+      true,
+    );
+    expect(body.hours.every((hour) => hour.count === 0)).toBe(true);
   });
 
   it('places every amount edge in the matching bucket and ignores 0', () => {
