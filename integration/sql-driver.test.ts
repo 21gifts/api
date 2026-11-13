@@ -8617,9 +8617,7 @@ describe('PostgresWalletUsageStore', () => {
            WHERE account_id = ANY($1::uuid[]) OR counterparty_account_id = ANY($1::uuid[])`,
           [idList],
         );
-        await client.execute(`DELETE FROM pos_charge WHERE account_id = ANY($1::uuid[])`, [
-          idList,
-        ]);
+        await client.execute(`DELETE FROM pos_charge WHERE account_id = ANY($1::uuid[])`, [idList]);
         await client.execute(
           `DELETE FROM message_invoice
            WHERE payer_account_id = ANY($1::uuid[]) OR author_account_id = ANY($1::uuid[])`,
@@ -8632,9 +8630,7 @@ describe('PostgresWalletUsageStore', () => {
         ]);
       }
       if (platformId !== undefined) {
-        await client.execute(`UPDATE account SET is_platform = false WHERE id = $1`, [
-          platformId,
-        ]);
+        await client.execute(`UPDATE account SET is_platform = false WHERE id = $1`, [platformId]);
       }
       if (previousPlatform !== undefined && previousPlatform !== platformId) {
         await client.execute(`UPDATE account SET is_platform = true WHERE id = $1`, [
