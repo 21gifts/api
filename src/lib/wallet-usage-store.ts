@@ -195,13 +195,15 @@ interface ChargeSqlRow {
  *
  * A row filter on `paid_at` would split a payment whose sides fall on either
  * side of the bound, so the bound is `min(paid_at)` of the whole group.
- * A completed group uses the bare `payment_id` only when that id has exactly
+ * A completed group uses `'pair:' || payment_id` only when that id has exactly
  * two completed rows, the id has exactly two rows overall, and the directions
  * and accounts differ, matching `pairFillSql` in `wallet-store.ts`. Every other
  * completed row is keyed by
- * `'row:' || account_id::text || ':' || payment_id`, so unrelated rows on
- * different accounts do not merge just because they share an id. The key stays
- * inside this statement and never reaches the response.
+ * `'row:' || account_id::text || ':' || payment_id`, so unrelated rows do not
+ * merge just because they share an id. The `pair:` and `row:` prefixes keep the
+ * two namespaces apart, and the unpaired key includes the account's UUID, so a
+ * paired id that begins with `row:` cannot collide with an unpaired row. The
+ * key stays inside this statement and never reaches the response.
  *
  * `is_forum_gift` is a paid forum gift or paid heart: a claimed, successful
  * invoice with no conversation and no `repay:` / `repayp:` description, on a
@@ -209,8 +211,9 @@ interface ChargeSqlRow {
  * `invoice`; or a claimed zap receipt gift or paid heart on such a note,
  * unless the claimed hash belongs to a conversation or repayment invoice.
  * `wallet_payment.category` alone is not enough, because it also covers
- * conversation invoices, credit repayments, and any payment to the platform
- * account.
+ * conversation invoices and credit repayments. A `gift` or `platform` category
+ * does not decide the flag, and the counterparty may be any account: the
+ * claimed living-note invoice or zap receipt decides it.
  */
 const PAYMENTS_SQL = `WITH id_totals AS (
   SELECT payment_id,
@@ -237,7 +240,7 @@ completed AS (
              AND id_totals.completed_count = 2
              AND id_totals.completed_account_count = 2
              AND id_totals.completed_direction_count = 2
-             THEN wallet_payment.payment_id
+             THEN 'pair:' || wallet_payment.payment_id
            ELSE 'row:' || wallet_payment.account_id::text || ':' || wallet_payment.payment_id
          END AS group_key
   FROM wallet_payment

@@ -174,7 +174,10 @@ export interface WalletUsage {
     topFiveSenderShare: number;
     /** Hearts with `createdAt` on or after release. */
     heartCount: number;
-    /** Charges with status `paid` and `createdAt` on or after release. */
+    /**
+     * Sum of `paid` in the published `shopCharges` days. Counts every paid
+     * charge in the whole shop window, including days before release.
+     */
     paidShopChargeCount: number;
   };
   /** Gap-free UTC days from the release day through today. */
@@ -415,11 +418,17 @@ interface FlowAcc {
 /**
  * Build the public usage body from already merged rows.
  *
- * Days are UTC. A row whose UTC day is after `nowMs` is ignored. Sat sums
- * that are not safe integers throw. Active, sending, and receiving wallet
- * counts use member and fund accounts only, both in the totals and per day.
- * `topFiveSenderShare` ranks those sending wallets by their counted sats and
- * divides by the counted payment volume.
+ * Days are UTC. A payment whose `paidAt` is before release or whose UTC day is
+ * after `nowMs` is ignored entirely: it does not enter totals, flows, amount
+ * buckets, hours, wallet counts, or `asOf`. Forum and shop rows use their own
+ * windows: a row whose UTC day is after `nowMs` is ignored, a heart or paid
+ * shop charge in the release total needs its instant on or after release, and
+ * every paid shop charge in the published shop series is counted.
+ * `paidShopChargeCount` is the sum of those published daily `paid` values.
+ * Sat sums that are not safe integers throw. Active, sending, and receiving
+ * wallet counts use member and fund accounts only, both in the totals and per
+ * day. `topFiveSenderShare` ranks those sending wallets by their counted sats
+ * and divides by the counted payment volume.
  *
  * @param input - Payments, forum invoices, and shop charges. Order is ignored.
  * @param nowMs - Clock in epoch milliseconds. Selects the last UTC day.
@@ -455,6 +464,9 @@ export function buildWalletUsage(input: WalletUsageInput, nowMs: number): Wallet
   }
 
   for (const row of input.payments) {
+    if (row.paidAt.getTime() < WALLET_RELEASE_AT_MS) {
+      continue;
+    }
     const day = utcDayKey(row.paidAt.getTime());
     if (day > endDay) {
       continue;
@@ -547,7 +559,6 @@ export function buildWalletUsage(input: WalletUsageInput, nowMs: number): Wallet
     }
   }
 
-  let paidShopChargeCount = 0;
   const shop = new Map<string, { created: number; paid: number }>();
   for (const day of dayKeys(since.shopCharges, endDay)) {
     shop.set(day, { created: 0, paid: 0 });
@@ -556,9 +567,6 @@ export function buildWalletUsage(input: WalletUsageInput, nowMs: number): Wallet
     const day = utcDayKey(row.createdAt.getTime());
     if (day > endDay) {
       continue;
-    }
-    if (row.status === 'paid' && row.createdAt.getTime() >= WALLET_RELEASE_AT_MS) {
-      paidShopChargeCount += 1;
     }
     const cell = shop.get(day);
     if (cell === undefined) {
@@ -597,7 +605,7 @@ export function buildWalletUsage(input: WalletUsageInput, nowMs: number): Wallet
       receivingWalletCount: receiving.size,
       topFiveSenderShare: topFiveSenderShare(sentByWallet, volume),
       heartCount,
-      paidShopChargeCount,
+      paidShopChargeCount: [...shop.values()].reduce((sum, cell) => sum + cell.paid, 0),
     },
     days: [...dayMap.entries()].map(([day, acc]) => ({
       day,
