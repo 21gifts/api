@@ -8543,16 +8543,32 @@ role `fond` is `fund`; every other account, including a shop, is `members`.
 
 Purpose, first match: a paid `fond_payout` whose `bolt11` or `spark_invoice`
 equals any row invoice is `fund_payout` (including a payout to a shop); a fund
-payee whose payer is not outside is `fund_deposit`; category `gift` or
-`platform` is `forum_gift`; `shop` is `shop_purchase`; `member` is `transfer`;
-`outside_lightning` or `onchain` is `deposit` when the payer is outside and
-`withdrawal` otherwise; anything else is `other`.
+payee whose payer is not outside is `fund_deposit`; a paid forum gift is
+`forum_gift`; `shop` is `shop_purchase`; `member` is `transfer`; category
+`gift` or `platform` that is not a paid forum gift is `transfer` when both
+parties are `members` and `other` otherwise; `outside_lightning` or `onchain`
+is `deposit` when the payer is outside and `withdrawal` otherwise; anything
+else is `other`.
+
+A paid forum gift means the payment's hash, or its invoice, matches a
+`message_invoice` with `result = 'ok'`, no `conversation_id`, a description
+that does not start with `repay:` or `repayp:`, a claimed
+`nostr_zap_payment` hash, and a note whose `message.deleted_at` is null; or a
+zap receipt gift or paid heart on such a note. A `gift` or `platform` category
+alone is not enough: conversation invoices, credit repayments, and any payment
+to the platform account are not forum gifts.
 
 `days` has every UTC day from the release day through today, and every purpose
 key. `flows` keeps only directions that occurred and is sorted by day, from,
-to, and purpose. `forum` starts 28 days before release (`gifts` are hearts that
-are false). The forum series and `totals.heartCount` include only paid forum
-gifts and hearts: no conversation invoices, no credit repayments, and no unpaid
+to, and purpose. `totals` also reports `activeWalletCount`,
+`sendingWalletCount`, and `receivingWalletCount`: distinct member-or-Fond
+wallets that paid or were paid, that paid, and that were paid. A sender in
+`topFiveSenderShare` is such a sending wallet, ranked by the sats it sent in
+counted payments, and the share divides the top five by `volumeSats`, with four
+decimal places and 0 when the volume is 0. `forum` starts 28 days before
+release (`gifts` are hearts that are false). The forum series and
+`totals.heartCount` include only paid forum gifts and hearts on living notes:
+no conversation invoices, no credit repayments, no hidden notes, and no unpaid
 invoices. `shopCharges` starts 14 days before release. A heart and a paid
 shop charge increment the release totals only when their own timestamp is on or
 after the release instant. A row after the current UTC day is ignored. 200

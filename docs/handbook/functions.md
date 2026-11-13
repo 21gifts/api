@@ -4751,7 +4751,7 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: WalletUsagePurpose
 
-- **Purpose:** Why a completed payment moved. `walletUsagePurpose` picks the first matching rule: fund payout, fund deposit, forum gift, shop purchase, member transfer, outside deposit or withdrawal, otherwise other.
+- **Purpose:** Why a completed payment moved. `walletUsagePurpose` picks the first matching rule: fund payout, fund deposit, paid forum gift (`isForumGift`), shop purchase, member transfer, outside deposit or withdrawal, otherwise other. A stored `gift` or `platform` category that is not a paid forum gift is `transfer` when both parties are `members`, otherwise `other`; the category alone never makes a `forum_gift`.
 - **Fields:** `deposit`, `withdrawal`, `shop_purchase`, `forum_gift`, `transfer`, `fund_deposit`, `fund_payout`, or `other`.
 - **Returns / side effects:** A type only. Every public day object carries all eight keys.
 - **Used by:** `buildWalletUsage` for `days`, `flows`, and the purpose totals.
@@ -4759,7 +4759,7 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 ## Function: WalletUsagePaymentRow
 
 - **Purpose:** One completed payment after its wallet rows are merged. `paidAt` is the earliest `paid_at`, `amountSats` the greatest `amount_sats`, and `feeSats` the sum of fees. The category prefers the outgoing row when that category is not `unknown`.
-- **Fields:** `paidAt`, `amountSats`, `feeSats`, `category`, `payerAccountId`, `payeeAccountId`, `payerParty`, `payeeParty`, and `isFundPayout`. A null account is the outside party. The payee is the incoming account, otherwise the outgoing counterparty.
+- **Fields:** `paidAt`, `amountSats`, `feeSats`, `category`, `payerAccountId`, `payeeAccountId`, `payerParty`, `payeeParty`, `isFundPayout`, and `isForumGift`. A null account is the outside party. The payee is the incoming account, otherwise the outgoing counterparty. `isForumGift` is a paid forum gift or paid heart: a claimed, successful `message_invoice` with no conversation and no `repay:` / `repayp:` description on a living note, matching any row's `payment_hash` or invoice; or a claimed zap receipt gift or paid heart on a living note. No hash or invoice leaves the store.
 - **Returns / side effects:** A type only. The ids are builder inputs and are not copied into `WalletUsage`.
 - **Used by:** `WalletUsageStore.payments` and `buildWalletUsage`.
 
@@ -4808,8 +4808,8 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 ## Function: WalletUsage
 
 - **Purpose:** The public `GET /wallets/usage` body. It holds aggregates only: no account id, username, payment id, payment hash, invoice, Lightning address, or node key.
-- **Fields:** `releasedAt`, `asOf`, `totals`, `days`, `flows`, `amountBuckets`, `hours`, `forum`, and `shopCharges`. `asOf` is the newest counted payment, or null. `days` run from the release's UTC day through today. `forum` starts 28 days earlier and `shopCharges` 14 days earlier. `hours` is all 24 UTC hours.
-- **Returns / side effects:** A type only. `totals.topFiveSenderShare` is from 0 to 1 with four decimal places. `totals.medianSats` rounds an even count down. `totals.averageSats` is `Math.round(volume / count)`.
+- **Fields:** `releasedAt`, `asOf`, `totals`, `days`, `flows`, `amountBuckets`, `hours`, `forum`, and `shopCharges`. `asOf` is the newest counted payment, or null. `totals` has `paymentCount`, `volumeSats`, `feeSats`, `medianSats`, `averageSats`, `activeWalletCount`, `sendingWalletCount`, `receivingWalletCount`, `topFiveSenderShare`, `heartCount`, and `paidShopChargeCount`. `days` run from the release's UTC day through today. `forum` starts 28 days earlier and `shopCharges` 14 days earlier. `hours` is all 24 UTC hours.
+- **Returns / side effects:** A type only. `totals.topFiveSenderShare` is the top five sending wallets' share of `volumeSats`, from 0 to 1 with four decimal places. `totals.medianSats` rounds an even count down. `totals.averageSats` is `Math.round(volume / count)`.
 - **Used by:** `buildWalletUsage` and `GET /wallets/usage`.
 
 ## Function: WalletUsageReadSince
@@ -4828,14 +4828,14 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: walletUsagePurpose
 
-- **Purpose:** Classify one merged payment. First match wins: `isFundPayout`; else payee `fund` with a payer that is not `outside` (`fund_deposit`); else category `gift` or `platform` (`forum_gift`); else `shop`; else `member` (`transfer`); else `outside_lightning` or `onchain` (`deposit` when the payer is `outside`, otherwise `withdrawal`); else `other`. A fund payout to a shop stays `fund_payout`.
+- **Purpose:** Classify one merged payment. First match wins: `isFundPayout`; else payee `fund` with a payer that is not `outside` (`fund_deposit`); else `isForumGift` (`forum_gift`); else `shop` (`shop_purchase`); else `member` (`transfer`); else category `gift` or `platform` (`transfer` when both parties are `members`, otherwise `other`); else `outside_lightning` or `onchain` (`deposit` when the payer is `outside`, otherwise `withdrawal`); else `other`. A fund payout to a shop stays `fund_payout`. A category `gift` or `platform` alone never yields `forum_gift`.
 - **Inputs:** A `WalletUsagePaymentRow`. Account ids are not read.
 - **Returns / side effects:** One `WalletUsagePurpose`. Pure; no I/O.
 - **Used by:** `buildWalletUsage`.
 
 ## Function: buildWalletUsage
 
-- **Purpose:** Turn merged payments, forum invoices, and shop charges into the public usage body. Days are UTC. A row after the current UTC day is ignored. Payments before the release day still count in the totals, flows, buckets, and hours, and are omitted from `days`. Hearts and paid shop charges count only when their instant is on or after release. Sat sums use `bigint` and throw `wallet sats total exceeds Number.MAX_SAFE_INTEGER` when a value is negative, not an integer, or not a safe integer. The median of an even count is the mean of the two middle amounts, rounded down. The average is the half-up quotient of the volume. `topFiveSenderShare` divides the five largest non-null payer totals by every non-null payer's volume.
+- **Purpose:** Turn merged payments, forum invoices, and shop charges into the public usage body. Days are UTC. A row after the current UTC day is ignored. Payments before the release day still count in the totals, flows, buckets, and hours, and are omitted from `days`. Hearts and paid shop charges count only when their instant is on or after release. Sat sums use `bigint` and throw `wallet sats total exceeds Number.MAX_SAFE_INTEGER` when a value is negative, not an integer, or not a safe integer. The median of an even count is the mean of the two middle amounts, rounded down. The average is the half-up quotient of the volume. `totals.activeWalletCount`, `totals.sendingWalletCount`, and `totals.receivingWalletCount` count distinct member or Fond wallets that paid or were paid, paid, and were paid. `topFiveSenderShare` ranks member or Fond sending wallets by the sats they sent in counted payments and divides the top five by `volumeSats`, with four decimal places and 0 when the volume is 0; the platform account and outside payers are not ranked.
 - **Inputs:** `WalletUsageInput` and `nowMs` in epoch milliseconds. Row order is ignored.
 - **Returns / side effects:** A `WalletUsage` value. Account ids are counted for the wallet totals and then dropped. No I/O.
 - **Used by:** `walletStatsRoutes` (`GET /wallets/usage`).
@@ -4849,14 +4849,14 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: InMemoryWalletUsageStore
 
-- **Purpose:** Process-local `WalletUsageStore` for a boot without `DATABASE_URL` and for tests. Without a seed every method returns an empty list. A seed is copied, including its dates, and each read returns a fresh copy of the rows whose time is on or after the bound.
-- **Inputs:** Optional `{ payments, forumInvoices, shopCharges }`. Each method takes `sinceMs`.
+- **Purpose:** Process-local `WalletUsageStore` for a boot without `DATABASE_URL` and for tests. Without a seed every method returns an empty list. A seed is copied, including its dates, and each read returns a fresh copy of the rows whose time is on or after the bound. An explicit `isForumGift` on a seeded payment wins; otherwise the store derives it from the seed's optional `forumGiftInvoices` and `zapGifts` with the same rule as the Postgres statement, so a `gift` or `platform` category alone is still not a forum gift.
+- **Inputs:** Optional `{ payments, forumInvoices, shopCharges, forumGiftInvoices?, zapGifts? }`. Each method takes `sinceMs`.
 - **Returns / side effects:** Promises of copied rows. Mutating a returned `Date` does not change the store. No I/O.
 - **Used by:** `createApp` when no usage store is injected, which is the default boot.
 
 ## Function: PostgresWalletUsageStore
 
-- **Purpose:** Postgres `WalletUsageStore`. `payments` runs one grouped statement over `wallet_payment` rows with `status = 'completed'`: a group is kept when `min(paid_at)` is on or after the bound, the amount is `max(amount_sats)`, the fee is `sum(coalesce(fee_sats, 0))`, the payer is the outgoing account, and the payee is the incoming account or else the outgoing counterparty. The category is the outgoing category when it is not `unknown`, else any other non-`unknown` category, else `unknown`. Party is `platform` for `is_platform`, else `fund` for role `fond`, else `members`, else `outside`. `isFundPayout` is true when any row invoice equals `bolt11` or `spark_invoice` of a `fond_payout` with status `paid`. `forumInvoices` reads paid forum gifts and hearts from `message_invoice`: `result = 'ok'`, `conversation_id` is null, `coalesce(description, '')` does not start with `repay:` or `repayp:`, and `nostr_zap_payment` has claimed the hash (`z.payment_hash = lower(message_invoice.payment_hash)`). The forum series and `totals.heartCount` include only those paid forum gifts and hearts: no conversation invoices, no credit repayments, and no unpaid invoices. `shopCharges` reads `pos_charge`. A null heart counts as false. A missing or unsafe amount throws.
+- **Purpose:** Postgres `WalletUsageStore`. `payments` runs one grouped statement over `wallet_payment` rows with `status = 'completed'`: a group is kept when `min(paid_at)` is on or after the bound, the amount is `max(amount_sats)`, the fee is `sum(coalesce(fee_sats, 0))`, the payer is the outgoing account, and the payee is the incoming account or else the outgoing counterparty. The category is the outgoing category when it is not `unknown`, else any other non-`unknown` category, else `unknown`. Party is `platform` for `is_platform`, else `fund` for role `fond`, else `members`, else `outside`. `isFundPayout` is true when any row invoice equals `bolt11` or `spark_invoice` of a `fond_payout` with status `paid`. `isForumGift` is computed in the same statement: a claimed, successful `message_invoice` (no `conversation_id`, no `repay:` / `repayp:` description) on a living note (`message.deleted_at IS NULL`) whose `payment_hash` or `pr` matches any row's `payment_hash` or `invoice`; or a claimed `nostr_zap_receipt` gift or paid heart on a living note whose hash is not a conversation or repayment invoice. `forumInvoices` reads paid forum gifts and hearts from `message_invoice`: `result = 'ok'`, `conversation_id` is null, `coalesce(description, '')` does not start with `repay:` or `repayp:`, the note is living (`message.deleted_at IS NULL`), and `nostr_zap_payment` has claimed the hash (`z.payment_hash = lower(invoice.payment_hash)`). The forum series and `totals.heartCount` include only those paid forum gifts and hearts: no conversation invoices, no credit repayments, no hidden notes, and no unpaid invoices. `shopCharges` reads `pos_charge`. A null heart counts as false. A missing or unsafe amount throws.
 - **Inputs:** Constructor takes a `SqlClient`. The tables already exist; this store does not migrate. Each method takes `sinceMs` and binds it as `$1`.
 - **Returns / side effects:** Mapped rows. One statement per method. Query failures propagate and `GET /wallets/usage` answers 503. Needs `DATABASE_URL`; not reached on the default boot.
 - **Used by:** `openBootStores` when a SQL client is open, then `createApp` and `GET /wallets/usage`.
