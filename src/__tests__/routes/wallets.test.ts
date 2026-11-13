@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_SATS } from '@/lib/wallet-report';
+import { buildWalletUsage, walletUsageReadSince } from '@/lib/wallet-usage';
+import { InMemoryWalletUsageStore, type WalletUsageStore } from '@/lib/wallet-usage-store';
 import { InMemoryWalletStore, type WalletStore } from '@/lib/wallet-store';
 import { createApp } from '@/server';
 
@@ -209,6 +211,133 @@ describe('GET /wallets/stats', () => {
     await expect(res.json()).resolves.toEqual({ error: 'Wallet stats are unavailable' });
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'wallets.stats.failed' }),
+    );
+  });
+});
+
+describe('GET /wallets/usage', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('returns the public aggregate and caches it for 60 seconds', async () => {
+    const nowMs = Date.parse('2026-11-12T15:51:00.000Z');
+    const since = walletUsageReadSince();
+    const seen = { payments: 0, forumInvoices: 0, shopCharges: 0 };
+    const inner = new InMemoryWalletUsageStore({
+      payments: [
+        {
+          paidAt: new Date('2026-11-11T12:00:00.000Z'),
+          amountSats: 21,
+          feeSats: 1,
+          category: 'gift',
+          payerAccountId: 'acct-route-payer',
+          payeeAccountId: 'acct-route-payee',
+          payerParty: 'members',
+          payeeParty: 'members',
+          isFundPayout: false,
+        },
+      ],
+      forumInvoices: [
+        { createdAt: new Date('2026-10-01T00:00:00.000Z'), amountSats: 9, heart: true },
+        { createdAt: new Date('2026-11-11T12:00:00.000Z'), amountSats: 5, heart: true },
+      ],
+      shopCharges: [
+        { createdAt: new Date('2026-10-01T00:00:00.000Z'), status: 'paid' },
+        { createdAt: new Date('2026-11-12T08:00:00.000Z'), status: 'paid' },
+      ],
+    });
+    const usageStore: WalletUsageStore = {
+      payments: (bound) => {
+        seen.payments = bound;
+        return inner.payments(bound);
+      },
+      forumInvoices: (bound) => {
+        seen.forumInvoices = bound;
+        return inner.forumInvoices(bound);
+      },
+      shopCharges: (bound) => {
+        seen.shopCharges = bound;
+        return inner.shopCharges(bound);
+      },
+    };
+    const res = await createApp({
+      usageStore,
+      now: () => nowMs,
+    }).request('/wallets/usage');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('public, max-age=60');
+    expect(seen).toEqual(since);
+    const filtered = {
+      payments: await inner.payments(since.payments),
+      forumInvoices: await inner.forumInvoices(since.forumInvoices),
+      shopCharges: await inner.shopCharges(since.shopCharges),
+    };
+    const body = (await res.json()) as { totals: { paymentCount: number } };
+    expect(body).toEqual(buildWalletUsage(filtered, nowMs));
+    expect(JSON.stringify(body)).not.toContain('acct-route-payer');
+    expect(JSON.stringify(body)).not.toContain('acct-route-payee');
+    const stats = await createApp({ usageStore, now: () => nowMs }).request('/wallets/stats');
+    expect(stats.status).toBe(200);
+  });
+
+  it('serves zeros from the default in-memory store', async () => {
+    const nowMs = Date.parse('2026-11-12T15:51:00.000Z');
+    const res = await createApp({ now: () => nowMs }).request('/wallets/usage');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('public, max-age=60');
+    expect(await res.json()).toEqual(
+      buildWalletUsage({ payments: [], forumInvoices: [], shopCharges: [] }, nowMs),
+    );
+  });
+
+  it('returns 503 without a cache header when the read fails', async () => {
+    const usageStore: WalletUsageStore = {
+      payments: () => Promise.reject(new Error('down')),
+      forumInvoices: () => Promise.resolve([]),
+      shopCharges: () => Promise.resolve([]),
+    };
+    const res = await createApp({ usageStore }).request('/wallets/usage');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('cache-control')).toBeNull();
+    await expect(res.json()).resolves.toEqual({ error: 'Wallet usage is unavailable' });
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'wallets.usage.failed' }),
+    );
+  });
+
+  it('returns 503 when the aggregate is not a safe integer', async () => {
+    const huge = Number.MAX_SAFE_INTEGER;
+    const usageStore = new InMemoryWalletUsageStore({
+      payments: [0, 1].map((index) => ({
+        paidAt: new Date(`2026-11-1${index}T00:00:00.000Z`),
+        amountSats: huge,
+        feeSats: 0,
+        category: 'member',
+        payerAccountId: null,
+        payeeAccountId: null,
+        payerParty: 'outside' as const,
+        payeeParty: 'outside' as const,
+        isFundPayout: false,
+      })),
+      forumInvoices: [],
+      shopCharges: [],
+    });
+    const res = await createApp({
+      usageStore,
+      now: () => Date.parse('2026-11-12T00:00:00.000Z'),
+    }).request('/wallets/usage');
+    expect(res.status).toBe(503);
+    expect(res.headers.get('cache-control')).toBeNull();
+    await expect(res.json()).resolves.toEqual({ error: 'Wallet usage is unavailable' });
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'wallets.usage.failed' }),
     );
   });
 });
