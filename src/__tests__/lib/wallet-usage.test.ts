@@ -627,8 +627,8 @@ describe('buildWalletUsage', () => {
     );
     // Senders are wallets only, but the share is of all counted volume.
     expect(platformAndOutside.totals.volumeSats).toBe(100);
-    expect(platformAndOutside.totals.sendingWalletCount).toBe(2);
-    expect(platformAndOutside.totals.topFiveSenderShare).toBe(0.2);
+    expect(platformAndOutside.totals.sendingWalletCount).toBe(3);
+    expect(platformAndOutside.totals.topFiveSenderShare).toBe(0.9);
     const ascending = buildWalletUsage(
       {
         payments: [

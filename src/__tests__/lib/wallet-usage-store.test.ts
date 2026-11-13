@@ -11,7 +11,7 @@ const AT = new Date('2026-11-11T12:00:00.000Z');
 const BEFORE = new Date(AT.getTime() - 1);
 const AFTER = new Date(AT.getTime() + 1);
 
-function payment(paidAt: Date, amountSats = 1): WalletUsagePaymentRow {
+function paymentFields(paidAt: Date, amountSats = 1): Omit<WalletUsagePaymentRow, 'isForumGift'> {
   return {
     paidAt,
     amountSats,
@@ -22,8 +22,11 @@ function payment(paidAt: Date, amountSats = 1): WalletUsagePaymentRow {
     payerParty: 'members',
     payeeParty: 'members',
     isFundPayout: false,
-    isForumGift: false,
   };
+}
+
+function payment(paidAt: Date, amountSats = 1): WalletUsagePaymentRow {
+  return { ...paymentFields(paidAt, amountSats), isForumGift: false };
 }
 
 class MockSql implements SqlClient {
@@ -188,6 +191,7 @@ describe('PostgresWalletUsageStore', () => {
         payer_party: 'outside',
         payee_party: 'members',
         is_fund_payout: false,
+        is_forum_gift: true,
       },
       {
         paid_at: '2026-11-12T00:00:00.000Z',
@@ -199,6 +203,7 @@ describe('PostgresWalletUsageStore', () => {
         payer_party: 'fund',
         payee_party: 'platform',
         is_fund_payout: true,
+        is_forum_gift: false,
       },
     ];
     const rows = await store.payments(0);
@@ -216,6 +221,7 @@ describe('PostgresWalletUsageStore', () => {
     });
     expect(rows[1]?.payerParty).toBe('fund');
     expect(rows[1]?.payeeParty).toBe('platform');
+    expect(rows[1]?.isForumGift).toBe(false);
     expect(rows[1]?.paidAt.toISOString()).toBe('2026-11-12T00:00:00.000Z');
     const returned = rows[0];
     if (returned === undefined) {
@@ -239,11 +245,10 @@ describe('PostgresWalletUsageStore', () => {
   });
 
   it('derives isForumGift in memory from claimed invoices, gifts, and paid hearts', async () => {
-    const basePayment = payment(AT, 1);
+    const basePayment = paymentFields(AT, 1);
     const seed = (paymentHash: string | null, invoice: string | null, isForumGift?: boolean) => {
-      const { isForumGift: _ignored, ...rest } = basePayment;
       return {
-        ...rest,
+        ...basePayment,
         paymentHash,
         invoice,
         ...(isForumGift === undefined ? {} : { isForumGift }),
@@ -376,6 +381,7 @@ describe('PostgresWalletUsageStore', () => {
       payer_party: 'members',
       payee_party: 'members',
       is_fund_payout: false,
+      is_forum_gift: false,
     };
     const rejects = async (row: unknown, message: string): Promise<void> => {
       sql.rows = [row];
@@ -390,6 +396,7 @@ describe('PostgresWalletUsageStore', () => {
     };
     await rejects({ ...base, is_fund_payout: null }, 'wallet usage fund payout flag is invalid');
     await rejects({ ...base, is_forum_gift: null }, 'wallet usage forum gift flag is invalid');
+    await rejects({ ...base, is_forum_gift: 'yes' }, 'wallet usage forum gift flag is invalid');
     await rejects({ ...base, paid_at: 'not-a-date' }, 'wallet usage time is invalid');
     await rejects({ ...base, paid_at: new Date('not-a-date') }, 'wallet usage time is invalid');
     await rejects({ ...base, amount_sats: null }, 'wallet usage sats are missing');
