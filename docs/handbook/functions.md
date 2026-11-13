@@ -155,17 +155,17 @@
 
 ## Function: buildGiftStats
 
-- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days and per-day `giftCount` plus `officialCount`, months with gap months, and `recipientCount`) including BTC strings. The object has no `byRecipient` key and no per-recipient amounts. `recipientCount` is the number of distinct stored handles (exact text, case-sensitive). `officialCount` is the distinct case-insensitive recipient handles that UTC day with kind `daily` or `welcome` (one person once; moderator excluded; gap days 0). `giftCount` remains every outbound row. Each currency is its own stored string. A missing USD does not discard a stored CHF, EUR, or PHP. A missing currency stays null. No daily close is read. One null does not null the day, the other currencies, or a later cumulative. A day where every row lacks a currency is null for that currency.
+- **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days and per-day `giftCount` plus `officialCount`, months with gap months, recipients) including BTC strings. `officialCount` is the distinct case-insensitive recipient handles that UTC day with kind `daily` or `welcome` (one person once; moderator excluded; gap days 0). `giftCount` remains every outbound row. Each currency is its own stored string. A missing USD does not discard a stored CHF, EUR, or PHP. A missing currency stays null. No daily close is read. One null does not null the day, the other currencies, or a later cumulative. A day where every row lacks a currency is null for that currency.
 - **Inputs:** `readonly GiftRow[]` (`paidAt`, `amountSats`, `recipientWosUser`, `kind`), ignored `ReadonlyMap<string, string>` of UTC day → USD-per-BTC, optional `ReadonlyMap` of UTC day → USD→CHF/EUR/PHP used only for `fx.quotes`. Empty rows need no rates.
-- **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `totalChf`/`totalEur`/`totalPhp`, `fx` (including `fx.quotes`), BTC/USD/fiat on the daily series and month buckets, and `spendOverTime[].officialCount` (not on month buckets). A missing stored amount is JSON `null`, never a throw. Gap days and gap months are zero sats/BTC/`officialCount` and `"0.00"` fiat and do not change a running cumulative. An empty selection stays zeros. No I/O.
+- **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `totalChf`/`totalEur`/`totalPhp`, `fx` (including `fx.quotes`), BTC/USD/fiat on series/buckets, and `spendOverTime[].officialCount` (not on recipient or month buckets). A missing stored amount is JSON `null`, never a throw. Gap days and gap months are zero sats/BTC/`officialCount` and `"0.00"` fiat and do not change a running cumulative. An empty selection stays zeros. No I/O.
 - **Used by:** `giftsStatsRoutes`.
 
 ## Function: giftsForRecipient
 
-- **Purpose:** Filter outbound gift rows to one recipient handle (the local part of the receiving address; case-insensitive).
+- **Purpose:** Filter outbound gift rows to one recipient handle (the local part of the receiving address; case-insensitive). Used by `GET /gifts/stats?recipient=` so stats reflect that handle's gifts only.
 - **Inputs:** `readonly GiftRow[]` and `recipient` string. Trims `recipient`; when `indexOf('@') > 0` compares the local-part before `@`, otherwise the whole trimmed string. Empty after trim matches nothing — never "all gifts".
 - **Returns / side effects:** Matching `GiftRow[]` in input order, or `[]`. No I/O.
-- **Used by:** `buildAccountActivity`.
+- **Used by:** `giftsStatsRoutes`.
 
 ## Function: giftsRoutes
 
@@ -190,9 +190,9 @@
 
 ## Function: giftsStatsRoutes
 
-- **Purpose:** Hono sub-app for `GET /gifts/stats`. Every outbound row is aggregated. A `recipient` query parameter is ignored. Amounts are the stored strings. A missing stored amount stays null. The rate books are not read. A missing stored amount is never 503.
-- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; fiatRates?: FiatRateBook; now?: () => number }`. The rate books and the clock are accepted and not read.
-- **Returns / side effects:** Hono app mounted at `/gifts/stats`. No outbound gifts is empty stats 200 without Coinbase or Frankfurter. A store throw logs `gifts.stats.failed` and answers 503. No I/O to a rate book.
+- **Purpose:** Hono sub-app for `GET /gifts/stats`. Optional `?recipient=` filters via `giftsForRecipient` before aggregation. Amounts are the stored strings. A missing stored amount stays null. The rate books are not read. A missing stored amount is never 503.
+- **Inputs:** `{ store: GiftStore; rates?: BtcUsdRateBook; fiatRates?: FiatRateBook; now?: () => number }`. The rate books and the clock are accepted and not read. Query `recipient` is optional (missing/blank = unfiltered).
+- **Returns / side effects:** Hono app mounted at `/gifts/stats`. Empty selection (no gifts, or unknown handle) is empty stats 200 without Coinbase or Frankfurter. A store throw logs `gifts.stats.failed` and answers 503. No I/O to a rate book.
 - **Used by:** `createApp`.
 
 ## Function: isUtcDay
