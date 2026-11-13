@@ -6569,8 +6569,11 @@ note never become `messageId`. A text-only newest row can still pair with
 
 ### `POST /invoices`
 
-Spend-worker invoice fetch. After address and amount validation, the api
-requires a 21.gifts member whose wallet-backed address is `address`
+Spend-worker invoice fetch. After id, address, and amount validation, the api
+loads a supplied `messageId` under that message's lock. A live note whose
+`goalClosedAt` is set is refused immediately with **409** `credit_closed`,
+before recipient address, passkey, funding, welcome, media, account-association,
+and platform-account gates. Otherwise the api requires a 21.gifts member whose wallet-backed address is `address`
 (`<username>@<host of PUBLIC_BASE_URL>`, case-insensitive, verified wallet;
 a member there with a passkey but no verified wallet is **403**
 `Wallet required`; any other domain or no such member is **403**
@@ -6622,7 +6625,8 @@ with `messageId` (both set → **400**). Invalid UUID on either field → **400*
 `messageId` is set, the post must be that address's live top-level note,
 including the About-me profile note, **and** have a photo or video (else
 **403** `Forum post required` before LNURL). A text-only profile note stays
-**403**. Omitted `messageId` stays any live top-level non-profile post (no
+**403**, unless it is a live closed credit, which was already refused with
+`credit_closed`. Omitted `messageId` stays any live top-level non-profile post (no
 media requirement). Missing
 `isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
 (no LNURL). With `comment` exactly `Welcome` (with or without `messageId`),
@@ -6662,6 +6666,15 @@ Bad JSON, `amountMsat` outside `1000..10000000000`, `comment` longer than
 
 Invalid Lightning Address → **400**
 `{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
+
+A supplied `messageId` resolves under its message lock to a live note whose
+`goalClosedAt` is set → **409** before recipient address, passkey, funding,
+welcome, media, account-association, and platform-account checks (no LNURL fetch;
+no invoice is stored):
+
+```json
+{ "error": "This credit no longer collects", "code": "credit_closed" }
+```
 
 `address` is the wallet-backed address of a member who has a passkey but no
 verified wallet yet → **403** (checked first; before any LNURL fetch; no
@@ -7768,7 +7781,7 @@ still unavailable after that second check, the response is **503**
 
 Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. Unknown id, a non-UUID after a valid session, a note that is not a live repayable top-level ask with a term, or a caller who is not the author → **404** `{ "error": "Not found" }`. Author missing `forum.pay` → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 
-After close, every route that mints a gift or zap invoice for that note answers **409** `{ "error": "This credit no longer collects", "code": "credit_closed" }` and mints nothing. A loan that filled on its own keeps accepting gifts.
+After close, every route that mints a gift or zap invoice for that note answers **409** `{ "error": "This credit no longer collects", "code": "credit_closed" }` and mints nothing. `POST /invoices` makes that decision from the live row loaded under the message lock before recipient and payout gates. The shared Fond invoice path therefore marks its payout terminally `failed` with this refusal even when a missing passkey, funding grant, media/account association, or platform account would otherwise refuse invoice issue. A loan that filled on its own keeps accepting gifts.
 
 ### `POST /messages/:id/repayment` — optional amount body
 

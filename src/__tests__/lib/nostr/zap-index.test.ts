@@ -3633,6 +3633,65 @@ describe('indexZapReceipt', () => {
     expect((await store.listZapIngests(1))[0]?.reason).toBe('settled');
   });
 
+  it('returns false for rejected settlements with and without a locked payer id', async () => {
+    const results: boolean[] = [];
+
+    for (const [index, lockedPayerAccountId] of ['locked-payer', undefined].entries()) {
+      const store = new InMemoryMessageStore();
+      const messageId = `m-rejected-locked-payer-${index}`;
+      const paymentHash = `${27 + index}`.repeat(32);
+      await store.create({
+        id: messageId,
+        accountId: 'author',
+        name: 'Ada',
+        text: 'hi',
+        createdAt: new Date('2026-11-13T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      });
+      if (lockedPayerAccountId !== undefined) {
+        await store.recordInvoiceAttempt({
+          id: 'inv-rejected-locked-payer',
+          createdAt: new Date('2026-11-13T00:00:00.000Z'),
+          messageId,
+          payerAccountId: lockedPayerAccountId,
+          authorAccountId: 'author',
+          amountSats: 21,
+          lightningAddress: null,
+          zapRequest: null,
+          result: 'ok',
+          httpStatus: 200,
+          pr: 'lnbc-rejected-locked-payer',
+          paymentHash,
+          description: null,
+          descriptionHash: null,
+          isNip57Invoice: true,
+          lnurlResponse: null,
+        });
+      }
+      await store.claimZapPayment(paymentHash, 'another-receipt', new Date(0));
+
+      results.push(
+        await indexZapReceipt({
+          store,
+          messageId,
+          receipt: {
+            id: `r-rejected-locked-payer-${index}`,
+            pubkey: PROVIDER_PUBKEY,
+            tags: [],
+          },
+          providerPubkey: PROVIDER_PUBKEY,
+          amountSats: 21,
+          paymentHash,
+          fiat: null,
+          rereadInvoice: true,
+        }),
+      );
+    }
+
+    expect(results).toEqual([false, false]);
+  });
+
   it('adds sats when the provider pubkey matches', async () => {
     const store = new InMemoryMessageStore();
     const row = await store.create({
@@ -10450,6 +10509,115 @@ describe('indexOpenZapReceipts', () => {
         name: 'Survivor',
       }),
     ]);
+  });
+
+  it('uses a heart found only by the locked invoice reread for every later effect', async () => {
+    class LockedHeartStore extends InMemoryMessageStore {
+      inMessageLock = false;
+      prelockLookups = 0;
+      lockedLookups = 0;
+
+      override async withMessageLock<T>(
+        messageId: string,
+        run: (store: MessageStore) => Promise<T>,
+      ): Promise<T> {
+        return super.withMessageLock(messageId, async (lockedStore) => {
+          this.inMessageLock = true;
+          try {
+            return await run(lockedStore);
+          } finally {
+            this.inMessageLock = false;
+          }
+        });
+      }
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        if (!this.inMessageLock) {
+          this.prelockLookups += 1;
+          return Promise.reject(new Error('pre-lock invoice lookup failed'));
+        }
+        this.lockedLookups += 1;
+        return super.findOkInvoiceByPaymentHash(...args);
+      }
+    }
+    const store = new LockedHeartStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'locked-heart-author',
+      lightningAddress: 'locked-heart@example.com',
+      messageId: 'locked-heart-message',
+    });
+    await auth.createAccount({
+      id: 'locked-heart-payer',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('locked-heart-payer'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const paymentHash = 'd2'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'locked-heart-invoice',
+      createdAt: new Date('2026-11-13T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'locked-heart-payer',
+      authorAccountId: 'locked-heart-author',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-locked-heart',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'locked-heart-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-locked-heart'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+
+    expect(store.prelockLookups).toBeGreaterThan(0);
+    expect(store.lockedLookups).toBe(1);
+    expect(await notifications.listByRecipient('locked-heart-author', 10)).toEqual([
+      expect.objectContaining({
+        type: 'heart',
+        actorAccountId: 'locked-heart-payer',
+      }),
+    ]);
+    expect(await store.listReplies(parentId)).toEqual([]);
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
   });
 
   it('credits a heart when notifyHearts is false and does not notify', async () => {

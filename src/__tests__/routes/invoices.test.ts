@@ -282,6 +282,27 @@ async function uuidMediaPostStore(): Promise<InMemoryMessageStore> {
   return store;
 }
 
+function closedCreditStore(): InMemoryMessageStore {
+  return new InMemoryMessageStore([
+    {
+      id: POST_ID,
+      accountId: 'acc-alice',
+      name: 'Ada',
+      text: 'closed credit',
+      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      hasPhoto: false,
+      hasVideo: true,
+      videoContentType: 'video/mp4',
+      ...unsignedNostrDefaults(),
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 2,
+      goalFundedAt: new Date('2026-08-02T00:00:00.000Z'),
+      goalClosedAt: new Date('2026-08-03T00:00:00.000Z'),
+    },
+  ]);
+}
+
 async function liveMediaPostStore(accountId: string = 'acc-alice'): Promise<InMemoryMessageStore> {
   const store = new InMemoryMessageStore();
   await store.create(
@@ -1385,6 +1406,99 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('refuses a closed credit before the recipient passkey gate', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: closedCreditStore(),
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses a closed credit before the recipient funding gate', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: closedCreditStore(),
+      fundingStore: new InMemoryFundingStore(),
+      fetchImpl,
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses a closed credit before the platform-account gate', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: closedCreditStore(),
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
+      }),
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('locks an uppercase gift body id until mint storage finishes before close', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
@@ -2143,7 +2257,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when messageId is another account's closed post", async () => {
+  it("returns credit_closed before associating another account's closed post", async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     await authStore.createAccount({
@@ -2195,12 +2309,15 @@ describe('POST /invoices', () => {
         }),
       }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when messageId is a closed top-level text-only post', async () => {
+  it('returns credit_closed before the media gate for a closed text-only post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
@@ -2232,9 +2349,37 @@ describe('POST /invoices', () => {
         }),
       }),
     );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.credit_closed')).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not expose credit_closed for a soft-deleted closed post', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const messageStore = closedCreditStore();
+    await messageStore.markDeleted(POST_ID, new Date('2026-08-04T00:00:00.000Z'), 'moderator');
+
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
+      }),
+    );
+
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Forum post required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

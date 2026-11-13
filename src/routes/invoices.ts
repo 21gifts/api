@@ -697,8 +697,9 @@ async function finishPaid(
 
 /**
  * Issue one gift invoice from a request body, exactly as `POST /invoices`
- * did before the extraction. Validation, passkey/funding/post/welcome gates,
- * LNURL-pay fetch, BOLT11 check, and invoice persistence stay in this order.
+ * did before the extraction. After validation, a locked live top-level closed
+ * credit is refused before passkey/funding/welcome/post/platform gates.
+ * LNURL-pay fetch, BOLT11 check, and invoice persistence follow those gates.
  *
  * @param deps - Action collaborators.
  * @param input - Request fields.
@@ -755,6 +756,20 @@ async function issueGiftInvoiceLocked(
 
   const forumMessage =
     input.messageId === undefined ? undefined : await deps.messageStore.getById(input.messageId);
+  if (
+    forumMessage !== undefined &&
+    forumMessage.deletedAt === null &&
+    forumMessage.parentId === null &&
+    forumMessage.goalClosedAt instanceof Date
+  ) {
+    logEvent('invoice.credit_closed', { messageId: forumMessage.id });
+    return {
+      ok: false,
+      status: 409,
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    };
+  }
 
   const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
   if (receiver === undefined && (await passkeyWithoutWallet(deps, address))) {
@@ -819,15 +834,6 @@ async function issueGiftInvoiceLocked(
     const platform = accounts.find((item) => item.isPlatform === true);
     if (platform === undefined) {
       return { ok: false, status: 503, error: 'Platform account is not configured' };
-    }
-    if (message.goalClosedAt instanceof Date) {
-      logEvent('invoice.credit_closed', { messageId: message.id });
-      return {
-        ok: false,
-        status: 409,
-        error: 'This credit no longer collects',
-        code: 'credit_closed',
-      };
     }
   } else {
     const hasPosted = await accountHasPosted(deps.messageStore, account);

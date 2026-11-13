@@ -1715,7 +1715,7 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'failed' });
   });
 
-  it('refuses a closed credit before minting either fond invoice', async () => {
+  it('refuses a closed credit before the missing platform gate and fails the payout', async () => {
     const fetchImpl = vi.fn<FetchFn>(async () => {
       throw new Error('LNURL must not be called');
     });
@@ -1747,7 +1747,6 @@ describe('POST /fond/payouts/:id/invoice', () => {
       fetchImpl,
       fundingStore,
       messageStore: messages,
-      seedPlatform: true,
       seedRecipient: true,
       freePayments: true,
     });
