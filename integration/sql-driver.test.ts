@@ -9395,23 +9395,13 @@ describe('PostgresWalletUsageStore', () => {
       const forumPr = `${run}-forum-pr`;
       const invoiceOnlyPr = `${run}-invoice-only-pr`;
 
-      const insertNote = async (
-        accountId: string,
-        hidden: boolean,
-      ): Promise<string> => {
+      const insertNote = async (accountId: string, hidden: boolean): Promise<string> => {
         const id = crypto.randomUUID();
         messageIds.push(id);
         await client.execute(
           `INSERT INTO message (id, account_id, name, text, created_at, deleted_at)
            VALUES ($1,$2,$3,$4,$5,$6)`,
-          [
-            id,
-            accountId,
-            'Usage note',
-            `${run} note`,
-            at(0),
-            hidden ? at(5) : null,
-          ],
+          [id, accountId, 'Usage note', `${run} note`, at(0), hidden ? at(5) : null],
         );
         return id;
       };
