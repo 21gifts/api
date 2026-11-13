@@ -18,6 +18,13 @@ const ADMITTED: FundingGrant = {
   note: null,
 };
 
+const WITHDRAWN: FundingGrant = {
+  ...ADMITTED,
+  status: 'withdrawn',
+  decidedBy: 'account',
+  admittedAt: null,
+};
+
 type ScenarioOptions = {
   gifts?: readonly GiftRow[];
   role?: Account['role'];
@@ -142,6 +149,12 @@ describe('loadFundingPayoutToday', () => {
     {
       name: 'admission',
       options: { grant: undefined },
+      reason: 'admission',
+      reads: ['gifts', 'funding'],
+    },
+    {
+      name: 'admission after withdrawal',
+      options: { grant: WITHDRAWN },
       reason: 'admission',
       reads: ['gifts', 'funding'],
     },

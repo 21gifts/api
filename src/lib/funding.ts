@@ -66,8 +66,8 @@ export interface FundingWithdrawal {
 
 /** Owner-facing funding JSON on `GET /me` / passkey finish (`role !== 'basis'`). */
 export interface OwnerFundingJson {
-  /** Effective status; `'unknown'` only when the owner grant read failed. */
-  status: EffectiveFundingStatus | 'unknown';
+  /** Owner status; `'none'` for no row or withdrawn, `'unknown'` only when the read failed. */
+  status: OwnerFundingStatus | 'unknown';
   /** Trial UTC day when effective status is `trial`, else `null`. */
   trialUtcDate: string | null;
   /** Admission time when effective status is `admitted`, else `null`. */
@@ -294,8 +294,9 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
  * living-room post still gate issue). From that UTC day, true iff
  * {@link inGrantProgramToday} and, once
  * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
- * rejected, and missing grants are then false, and so is a grant without a
- * required share or without a completed shop payment today or yesterday.
+ * rejected, withdrawn, and missing grants are then false, and so is a grant
+ * without a required share or without a completed shop payment today or
+ * yesterday.
  *
  * @param role - Live account role.
  * @param grant - Stored grant, or `undefined` when no row.

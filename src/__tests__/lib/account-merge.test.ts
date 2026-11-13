@@ -1402,9 +1402,7 @@ describe('mergeAccounts', () => {
       ok: false,
       error: 'welcome_invoice_open',
     });
-    const check = queries.find((query) =>
-      query.text.includes('FROM welcome_invoice_reservation'),
-    );
+    const check = queries.find((query) => query.text.includes('FROM welcome_invoice_reservation'));
     expect(check?.text).toContain('expires_at > now()');
     expect(check?.text).toContain('FOR UPDATE');
     expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);

@@ -5198,10 +5198,10 @@ describe('Postgres welcome reservation account merge', () => {
         ].sort((left, right) => left.account_id.localeCompare(right.account_id)),
       );
       await expect(
-        client.query<{ id: string }>(
-          'SELECT id FROM account WHERE id IN ($1, $2) ORDER BY id',
-          [fromId, intoId],
-        ),
+        client.query<{ id: string }>('SELECT id FROM account WHERE id IN ($1, $2) ORDER BY id', [
+          fromId,
+          intoId,
+        ]),
       ).resolves.toEqual([{ id: fromId }, { id: intoId }].sort((a, b) => a.id.localeCompare(b.id)));
     } finally {
       await client.execute('DELETE FROM welcome_invoice_reservation WHERE account_id IN ($1, $2)', [

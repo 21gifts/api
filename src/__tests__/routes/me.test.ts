@@ -527,6 +527,8 @@ describe('GET /me', () => {
       admittedAt: null,
       reviewedByName: null,
       dailyPayoutStoppedNotice: false,
+      shopPaymentDue: false,
+      payoutToday: { state: 'blocked', reason: 'admission' },
     });
   });
 

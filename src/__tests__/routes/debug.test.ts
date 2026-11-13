@@ -85,9 +85,11 @@ function mergeDbForStore(
             ] as T[];
           }
           if (text.includes('FROM welcome_invoice_reservation')) {
-            return (options.welcomeInvoiceOpen === true
-              ? [{ account_id: MERGE_FROM }, { account_id: MERGE_INTO }]
-              : []) as T[];
+            return (
+              options.welcomeInvoiceOpen === true
+                ? [{ account_id: MERGE_FROM }, { account_id: MERGE_INTO }]
+                : []
+            ) as T[];
           }
           if (text.includes('FOR UPDATE')) {
             const rows: Array<{

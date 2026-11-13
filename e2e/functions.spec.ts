@@ -3494,6 +3494,8 @@ test('Function: ownerFundingStatus — GET /me reads none and POST /funding/with
     admittedAt: null,
     reviewedByName: null,
     dailyPayoutStoppedNotice: false,
+    shopPaymentDue: false,
+    payoutToday: { state: 'blocked', reason: 'admission' },
   });
   const none = await request.post('/funding/withdraw', { headers, data: { accountId: member.id } });
   expect(none.status()).toBe(409);

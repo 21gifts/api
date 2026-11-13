@@ -1,11 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import {
-  earnsModeratorGroupPay,
-  isModeratorGroupMember,
-  roleAtLeast,
-} from '@/lib/auth/roles';
+import { earnsModeratorGroupPay, isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';

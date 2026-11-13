@@ -1,10 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
-import {
-  runWalletTransferTick,
-  type WalletTransferWorkerDeps,
-} from '@/lib/wallet-transfer-worker';
+import { runWalletTransferTick, type WalletTransferWorkerDeps } from '@/lib/wallet-transfer-worker';
 
 const sdk = vi.hoisted(() => {
   const publicBytes = new Uint8Array([2, ...Array<number>(32).fill(7)]);
@@ -1169,6 +1166,106 @@ describe('Spark viewer SDK value mapping', () => {
         (call) => (call[0] as { outputIds?: string[] }).outputIds !== undefined,
       ).length,
     ).toBeLessThanOrEqual(2 * 129 + 127);
+  });
+
+  it('replaces a waiting lookup when the same cursor returns a different page', async () => {
+    const previousHash = new Uint8Array(32).fill(0x55);
+    const unresolvedPage = (hashByte: number) => ({
+      transactions: [
+        {
+          tokenTransactionHash: new Uint8Array(32).fill(hashByte),
+          status: 2,
+          tokenTransaction: {
+            tokenInputs: {
+              $case: 'transferInput',
+              transferInput: {
+                outputsToSpend: [
+                  { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 0 },
+                ],
+              },
+            },
+            tokenOutputs: [],
+          },
+          confirmationMetadata: {
+            spentTokenOutputsMetadata: [{ outputId: `output-${String(hashByte)}` }],
+          },
+        },
+      ],
+      pageResponse: null,
+    });
+    let waitingPageCalls = 0;
+    getTokenTransactions.mockImplementation(async (input) => {
+      const request = input as {
+        sparkAddresses?: string[];
+        outputIds?: string[];
+      };
+      const address = request.sparkAddresses?.[0];
+      if (address === 'spark-waiting') {
+        waitingPageCalls += 1;
+        return unresolvedPage(waitingPageCalls === 1 ? 201 : 202);
+      }
+      if (address !== undefined) {
+        const suffix = Number(address.slice('spark-active-'.length));
+        return unresolvedPage(suffix + 1);
+      }
+      const outputId = request.outputIds?.[0] ?? '';
+      if (outputId === 'output-1') throw new Error('release active resolution');
+      return {
+        transactions: [
+          {
+            tokenTransactionHash: previousHash,
+            status: 2,
+            tokenTransaction: {
+              tokenOutputs: [
+                {
+                  id: outputId,
+                  ownerPublicKey: PUBLIC_BYTES,
+                  tokenAmount: Uint8Array.of(100),
+                },
+              ],
+            },
+          },
+        ],
+        pageResponse: null,
+      };
+    });
+    const opened = await ensureSparkViewer(undefined, undefined);
+    const firstActive = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark-active-0',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+      cursor: 'same',
+    });
+    for (let index = 1; index < 128; index += 1) {
+      await opened.viewer.tokenTransactions({
+        sparkAddress: `spark-active-${String(index)}`,
+        walletPubkey: PUBLIC_KEY,
+        pageSize: 100,
+        cursor: 'same',
+      });
+    }
+    const firstWaiting = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark-waiting',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+      cursor: 'same',
+    });
+    expect(firstWaiting.ownerResolution).toBeUndefined();
+
+    await expect(firstActive.ownerResolution!.next()).rejects.toThrow('release active resolution');
+    const changedPage = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark-waiting',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+      cursor: 'same',
+    });
+
+    expect(changedPage.ownerResolution).toBeDefined();
+    await expect(changedPage.ownerResolution!.next()).resolves.toMatchObject({ done: true });
+    expect(getTokenTransactions.mock.calls.at(-1)?.[0]).toMatchObject({
+      outputIds: ['output-202'],
+      direction: 'NEXT',
+    });
   });
 
   it('reuses an unfinished resolution when the primary page hash changes', async () => {

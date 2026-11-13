@@ -4556,6 +4556,32 @@ describe('GET /invoices/eligible', () => {
     expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
   });
 
+  it('reports a withdrawn grant as not eligible with status none', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc-alice',
+        status: 'withdrawn',
+        appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+        decidedAt: GATE_MS - 1,
+        decidedBy: 'acc-alice',
+        trialUtcDate: null,
+        admittedAt: null,
+        note: null,
+      },
+    ]);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore,
+      walletTransferStore: fakeWalletTransferStore(),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
+  });
+
   it('keeps an unwelcomed verified member eligible for the welcome preflight without a shop payment', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
