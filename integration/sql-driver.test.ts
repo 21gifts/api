@@ -3515,6 +3515,122 @@ describe('PostgresWalletStore', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('lists completed payments with an exclusive (paidAt, paymentId) keyset', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateWalletSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const accountId = crypto.randomUUID();
+      const otherId = crypto.randomUUID();
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      for (const [id, username] of [
+        [accountId, `payments_${accountId.slice(0, 8)}`],
+        [otherId, `payments_${otherId.slice(0, 8)}`],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+
+      const store = new PostgresWalletStore(client);
+      const paidAt = new Date('2026-11-11T13:31:01.000Z');
+      const olderPaidAt = new Date('2026-11-11T13:30:01.000Z');
+      const row = (
+        account: string,
+        paymentId: string,
+        status: 'pending' | 'completed',
+        when = paidAt,
+      ): WalletPaymentRecord => ({
+        accountId: account,
+        paymentId,
+        direction: 'in',
+        status,
+        amountSats: 1,
+        feeSats: 0,
+        paidAt: when,
+        method: 'spark',
+        paymentHash: null,
+        invoice: null,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'unknown',
+        counterpartyAccountId: null,
+        firstSeenAt: paidAt,
+        updatedAt: paidAt,
+      });
+      const completedIds = Array.from(
+        { length: 51 },
+        (_, index) => `p-${String(index).padStart(2, '0')}`,
+      );
+      await store.upsertPayments([
+        ...completedIds.map((id) => row(accountId, id, 'completed')),
+        row(accountId, 'pending', 'pending'),
+        row(accountId, 'older', 'completed', olderPaidAt),
+        row(otherId, 'other', 'completed'),
+      ]);
+
+      const completedDescending = [...completedIds].reverse();
+      const first = await store.listPayments(accountId, 51, undefined, {
+        status: 'completed',
+      });
+      expect(first.map((item) => item.paymentId)).toEqual(completedDescending);
+      const tail = await store.listPayments(
+        accountId,
+        51,
+        { paidAt, paymentId: 'p-00' },
+        { status: 'completed' },
+      );
+      expect(tail.map((item) => item.paymentId)).toEqual(['older']);
+      const second = await store.listPayments(
+        accountId,
+        51,
+        { paidAt, paymentId: 'p-01' },
+        { status: 'completed' },
+      );
+      expect(second.map((item) => item.paymentId)).toEqual(['p-00', 'older']);
+      const exactPaidAt = await store.listPayments(accountId, 100, undefined, { paidAt });
+      expect(exactPaidAt.map((item) => item.paymentId)).toEqual([
+        'pending',
+        ...completedDescending,
+      ]);
+      const exactPaidAtAfter = await store.listPayments(
+        accountId,
+        100,
+        { paidAt, paymentId: 'pending' },
+        { paidAt },
+      );
+      expect(exactPaidAtAfter.map((item) => item.paymentId)).toEqual(completedDescending);
+      const exactCompleted = await store.listPayments(accountId, 100, undefined, {
+        status: 'completed',
+        paidAt,
+      });
+      expect(exactCompleted.map((item) => item.paymentId)).toEqual(completedDescending);
+      const exactCompletedAfter = await store.listPayments(
+        accountId,
+        100,
+        { paidAt, paymentId: 'p-01' },
+        { status: 'completed', paidAt },
+      );
+      expect(exactCompletedAfter.map((item) => item.paymentId)).toEqual(['p-00']);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 describe('PostgresFondPayoutStore', () => {
@@ -3582,6 +3698,105 @@ describe('PostgresFondPayoutStore', () => {
         return BigInt(whole) * 100n + BigInt(frac.padEnd(2, '0'));
       };
       expect(cents(after.payoutsPaidUsd) - cents(before.payoutsPaidUsd)).toBe(350n);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresFondPayoutStore paid USD by payment hash or invoice', () => {
+  test('reads only paid rows matching a requested hash, Spark invoice, or BOLT11', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateFondPayoutSchema(client);
+      const store = new PostgresFondPayoutStore(client);
+      const stamp = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const hashA = `a${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const hashB = `b${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const hashInvalid = `i${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const hashOpen = `c${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0');
+      const sparkA = `spark1a_${stamp}`;
+      const sparkB = `spark1b_${stamp}`;
+      const sparkInvalid = `spark1invalid_${stamp}`;
+      const boltA = `lnbc1a_${stamp}`;
+      const boltB = `lnbc1b_${stamp}`;
+      const boltInvalid = `lnbc1invalid_${stamp}`;
+      const sparkOpen = `spark1open_${stamp}`;
+      const boltOpen = `lnbc1open_${stamp}`;
+      const paid = async (
+        suffix: string,
+        amountUsd: string,
+        paymentHash: string,
+        bolt11: string,
+        sparkInvoice: string | null,
+      ): Promise<void> => {
+        const row: FondPayoutEnqueue = {
+          id: crypto.randomUUID(),
+          utcDay: '2099-01-01',
+          kind: 'welcome',
+          address: `paid_usd_${suffix}_${stamp}@example.com`,
+          amountUsd,
+          comment: 'stored usd',
+          messageId: null,
+          groupMessageId: null,
+        };
+        await store.enqueue(row);
+        await store.claimForInvoice(row.id, row.utcDay);
+        await store.setInvoiced(row.id, {
+          invoiceId: `inv-${row.id}`,
+          paymentHash,
+          bolt11,
+          sparkInvoice,
+          amountMsat: 1_000_000,
+        });
+        await store.claimSettlement(row.id);
+        await store.markPaid(row.id);
+      };
+      await paid('a', '1', hashA, boltA, sparkA);
+      await paid('b', '2.5', hashB, boltB, sparkB);
+      await paid('invalid', '1.000', hashInvalid, boltInvalid, sparkInvalid);
+      const open: FondPayoutEnqueue = {
+        id: crypto.randomUUID(),
+        utcDay: '2099-01-01',
+        kind: 'welcome',
+        address: `paid_usd_open_${stamp}@example.com`,
+        amountUsd: '9.99',
+        comment: 'still invoiced',
+        messageId: null,
+        groupMessageId: null,
+      };
+      await store.enqueue(open);
+      await store.claimForInvoice(open.id, open.utcDay);
+      await store.setInvoiced(open.id, {
+        invoiceId: `inv-${open.id}`,
+        paymentHash: hashOpen,
+        bolt11: boltOpen,
+        sparkInvoice: sparkOpen,
+        amountMsat: 1_000_000,
+      });
+
+      const found = await store.paidUsdByPaymentHashOrInvoice(
+        [
+          hashA,
+          hashB,
+          hashInvalid,
+          hashOpen,
+          `d${crypto.randomUUID().replaceAll('-', '')}`.padEnd(64, '0'),
+          hashA,
+        ],
+        [sparkA, boltB, sparkInvalid, sparkOpen, boltOpen, 'unknown-invoice'],
+      );
+      expect(found.size).toBe(4);
+      expect(found.get(hashA)).toBe('1');
+      expect(found.get(hashB)).toBe('2.5');
+      expect(found.get(sparkA)).toBe('1');
+      expect(found.get(boltB)).toBe('2.5');
+      expect(found.has(hashInvalid)).toBe(false);
+      expect(found.has(sparkInvalid)).toBe(false);
+      expect(found.has(hashOpen)).toBe(false);
+      expect(found.has(sparkOpen)).toBe(false);
+      expect(found.has(boltOpen)).toBe(false);
+      expect(await store.paidUsdByPaymentHashOrInvoice([], [])).toEqual(new Map());
     } finally {
       await closeIfPossible(sql);
     }

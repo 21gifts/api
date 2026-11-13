@@ -4,8 +4,8 @@
  *
  * `GET /health` is public and unauthenticated. It reports whether queued
  * payouts are being paid. `GET /summary` is public and reads the Fond
- * account's completed wallet totals, latest balance snapshot, and paid
- * payouts. The other routes are the member session of the single `fond`
+ * account's completed wallet totals, latest balance snapshot, paid payouts,
+ * and completed payment list. The other routes are the member session of the single `fond`
  * account that pays the queued instructions from its own in-app wallet. The
  * API decides every payout in the ping path. Those routes only request the
  * recipient invoice and convert the stored USD amount at the current spot.
@@ -13,6 +13,7 @@
  * payment hashes, BOLT11, or Spark invoices.
  */
 
+import { createHmac } from 'node:crypto';
 import { Hono } from 'hono';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { canSignFondPayouts } from '@/lib/auth/roles';
@@ -31,7 +32,7 @@ import { addUtcDays } from '@/lib/member-habit';
 import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import { normalizeUuid } from '@/lib/uuid';
-import type { WalletStore } from '@/lib/wallet-store';
+import type { WalletPaymentRecord, WalletStore } from '@/lib/wallet-store';
 import { bearerToken } from '@/routes/me';
 import {
   issueGiftInvoice,
@@ -51,6 +52,8 @@ export interface FondRouteDeps {
   payoutSigner: PayoutSigner;
   /** `FOND_USERNAME`; the one account allowed on the surface. */
   fondUsername: string;
+  /** Secret key for public payment ids; the payment list is unavailable without it. */
+  spendApiToken: string | undefined;
   /** Clock, epoch milliseconds. */
   now: () => number;
   /** Injected fetch for the BTC/USD spot and LNURL-pay. */
@@ -89,11 +92,179 @@ export const FOND_ONLY = 'Fond only';
 /** `503` body when a payout store read or transition throws. */
 const PAYOUTS_UNAVAILABLE = 'Payouts are unavailable';
 
-/** `Cache-Control` for the public Fond probe and summary. Neither may be cached. */
+/** `Cache-Control` for the public Fond probe, summary, and payment list. */
 const FOND_NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
 /** `503` body when the Fond summary reads throw or a sat sum is not safely representable. */
 const SUMMARY_UNAVAILABLE = 'Fond summary is unavailable';
+
+/** `503` body when the Fond payment list or its counterparty lookup throws. */
+const PAYMENTS_UNAVAILABLE = 'Fond payments are unavailable';
+
+/** Completed payments in one `GET /fond/payments` page. */
+const PAYMENTS_PAGE_SIZE = 50;
+
+/** Canonical unpadded base64url text. */
+const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+
+/** Public payment id: first 16 lowercase hex characters of its HMAC-SHA-256 digest. */
+const PUBLIC_PAYMENT_ID_RE = /^[0-9a-f]{16}$/;
+
+/** Exclusive `(paidAt, public id)` position of a `GET /fond/payments` page. */
+interface FondPaymentsCursor {
+  paidAt: Date;
+  id: string;
+}
+
+/** Known account on the other side of a Fond payment. */
+interface FondPaymentCounterparty {
+  accountId: string;
+  username: string | null;
+  name: string | null;
+}
+
+/** Fiat amount fixed when a matching paid Fond payout was created. */
+interface FondPaymentStoredFiat {
+  currency: 'USD';
+  amount: string;
+}
+
+/** One public `GET /fond/payments` row. */
+interface FondPaymentListRow {
+  id: string;
+  direction: 'in' | 'out';
+  amountSats: number;
+  paidAt: string;
+  counterparty: FondPaymentCounterparty | null;
+  storedFiat: FondPaymentStoredFiat | null;
+}
+
+/**
+ * Encode the last row of a page as an opaque cursor.
+ * Unlike `encodeWalletPaymentCursor` / `decodeWalletPaymentCursor` in `src/routes/debug-wallet.ts`, this carries the keyed public id, never the stored payment id.
+ *
+ * @param row - Last returned payment.
+ * @param key - Server secret used to derive the public id.
+ * @returns Canonical unpadded base64url JSON `{ paidAt, id }` with only the public id.
+ */
+function encodeFondPaymentsCursor(row: WalletPaymentRecord, key: string): string {
+  return Buffer.from(
+    JSON.stringify({
+      paidAt: row.paidAt.toISOString(),
+      id: publicPaymentId(row.paymentId, key),
+    }),
+    'utf8',
+  ).toString('base64url');
+}
+
+/**
+ * Decode a `before` cursor, rejecting malformed text and non-canonical payloads.
+ *
+ * @param raw - `before` query value, or `undefined` when omitted.
+ * @returns The exclusive cursor, `null` for the first page, or `false` when invalid.
+ */
+function decodeFondPaymentsCursor(raw: string | undefined): FondPaymentsCursor | null | false {
+  if (raw === undefined) {
+    return null;
+  }
+  if (!BASE64URL_RE.test(raw)) {
+    return false;
+  }
+  const decoded = Buffer.from(raw, 'base64url');
+  if (decoded.toString('base64url') !== raw) {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decoded.toString('utf8'));
+  } catch {
+    return false;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return false;
+  }
+  if (
+    Object.keys(parsed).length !== 2 ||
+    !Object.hasOwn(parsed, 'paidAt') ||
+    !Object.hasOwn(parsed, 'id')
+  ) {
+    return false;
+  }
+  const record = parsed as Record<string, unknown>;
+  const paidAtText = record['paidAt'];
+  const id = record['id'];
+  if (
+    typeof paidAtText !== 'string' ||
+    paidAtText.length !== 24 ||
+    typeof id !== 'string' ||
+    !PUBLIC_PAYMENT_ID_RE.test(id)
+  ) {
+    return false;
+  }
+  const paidAt = new Date(paidAtText);
+  if (Number.isNaN(paidAt.getTime()) || paidAt.toISOString() !== paidAtText) {
+    return false;
+  }
+  return { paidAt, id };
+}
+
+/**
+ * Stable public React key for a wallet payment without exposing its stored id.
+ *
+ * @param paymentId - Stored wallet payment id.
+ * @param key - Server secret used as the HMAC key.
+ * @returns First 16 lowercase hex characters of its HMAC-SHA-256 digest.
+ */
+function publicPaymentId(paymentId: string, key: string): string {
+  return createHmac('sha256', key)
+    .update(`fond-payment-id:${paymentId}`, 'utf8')
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/** The completed payment whose public id a cursor names, if any. */
+function cursorPayment(
+  rows: readonly WalletPaymentRecord[],
+  id: string,
+  key: string,
+): WalletPaymentRecord | null {
+  return rows.find((row) => publicPaymentId(row.paymentId, key) === id) ?? null;
+}
+
+/**
+ * Project a stored payment to the public Fond list row.
+ *
+ * @param row - Completed stored payment.
+ * @param counterparties - Known non-platform accounts by id.
+ * @param paidUsd - Stored USD amount of each outgoing row's paid payout, by hash or invoice.
+ * @param publicIdKey - Server secret used to derive the public id.
+ * @returns Only the public id, direction, amount, time, counterparty, and stored fiat.
+ */
+function publicPaymentRow(
+  row: WalletPaymentRecord,
+  counterparties: ReadonlyMap<string, FondPaymentCounterparty>,
+  paidUsd: ReadonlyMap<string, string>,
+  publicIdKey: string,
+): FondPaymentListRow {
+  // Only a member-to-member transfer or a direct member payout names the other account.
+  // A gift category can come from a conversation invoice, whose payer stays private.
+  const counterpartyAccountId = row.category === 'member' ? row.counterpartyAccountId : null;
+  const counterparty =
+    counterpartyAccountId === null ? null : (counterparties.get(counterpartyAccountId) ?? null);
+  const amountUsd =
+    row.direction === 'out'
+      ? ((row.paymentHash === null ? undefined : paidUsd.get(row.paymentHash)) ??
+        (row.invoice === null ? undefined : paidUsd.get(row.invoice)))
+      : undefined;
+  return {
+    id: publicPaymentId(row.paymentId, publicIdKey),
+    direction: row.direction,
+    amountSats: row.amountSats,
+    paidAt: row.paidAt.toISOString(),
+    counterparty,
+    storedFiat: amountUsd === undefined ? null : { currency: 'USD', amount: amountUsd },
+  };
+}
 
 /** Convert a non-negative bigint sat total to a JSON-safe number. */
 function safeSats(value: bigint): number {
@@ -282,14 +453,15 @@ async function payoutSparkInvoice(
 /**
  * Build the `/fond` route group.
  *
- * `GET /health` and `GET /summary` are public and do not read a session. The
- * other routes are the fond payer's session routes.
+ * `GET /health`, `GET /summary`, and `GET /payments` are public and do not
+ * read a session. The other routes are the fond payer's session routes.
  *
  * @param deps - Auth, queue, wallet, switch, username, clock, fetch, LNURL
  *   config, free-payment switch, and the extracted issue collaborators.
  * @returns Hono app mounted at `/fond`.
  */
 export function fondRoutes(deps: FondRouteDeps): Hono {
+  const publicPaymentIdKey = deps.spendApiToken?.trim() ?? '';
   const authGate = async (
     header: string | undefined,
   ): Promise<{ status: 401 | 403; error: string } | null> => {
@@ -373,6 +545,123 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       } catch {
         logEvent('fond.summary.failed');
         return c.json({ error: SUMMARY_UNAVAILABLE }, 503, FOND_NO_STORE);
+      }
+    })
+    .get('/payments', async (c) => {
+      /**
+       * Public by Core Principle 9, “Public applications, private wallet” (CONCEPT.md:129), and
+       * CONTRIBUTING.md:334-336: “The 21.gifts applications are public. The forum and its notes,
+       * gifts, hearts, credit requests and their repayments, shops, and the Fond are public. Anyone
+       * can see every such activity and every transaction that belongs to it.” CONTRIBUTING.md:355
+       * says, “A payment that belongs to a
+       * 21.gifts activity (for example a gift to a note or a credit repayment) is public as part of
+       * that activity,” and CONTRIBUTING.md:360 says, “The Fond account is a 21.gifts application,
+       * not a member, so its wallet totals are public (`GET /fond/summary`).” A member's transfer to
+       * or from the Fond belongs to the Fond. No fee is returned: it is not part of the Fond's public
+       * transaction record, and CONTRIBUTING.md:348 protects “wallet data of an individual member,”
+       * expressly including “a fee.”
+       */
+      if (deps.payoutSigner !== 'fond') {
+        return c.json({ error: 'Not found' }, 404, FOND_NO_STORE);
+      }
+      if (publicPaymentIdKey === '') {
+        logEvent('fond.payments.failed');
+        return c.json({ error: PAYMENTS_UNAVAILABLE }, 503, FOND_NO_STORE);
+      }
+      const decodedBefore = decodeFondPaymentsCursor(c.req.query('before'));
+      if (decodedBefore === false) {
+        return c.json({ error: 'Invalid cursor' }, 400, FOND_NO_STORE);
+      }
+      const before: FondPaymentsCursor | null = decodedBefore;
+      try {
+        const account = await deps.authStore.getAccountByUsername(deps.fondUsername);
+        if (account === undefined || !canSignFondPayouts(account, deps.fondUsername)) {
+          return c.json({ payments: [], next: null }, 200, FOND_NO_STORE);
+        }
+        let keyset: { paidAt: Date; paymentId: string } | undefined;
+        if (before !== null) {
+          const matching = await deps.walletStore.listPayments(
+            account.id,
+            Number.MAX_SAFE_INTEGER,
+            undefined,
+            { status: 'completed', paidAt: before.paidAt },
+          );
+          const cursorRow = cursorPayment(matching, before.id, publicPaymentIdKey);
+          if (cursorRow === null) {
+            return c.json({ error: 'Invalid cursor' }, 400, FOND_NO_STORE);
+          }
+          keyset = { paidAt: cursorRow.paidAt, paymentId: cursorRow.paymentId };
+        }
+        const rows = await deps.walletStore.listPayments(
+          account.id,
+          PAYMENTS_PAGE_SIZE + 1,
+          keyset,
+          { status: 'completed' },
+        );
+        const hasMore = rows.length > PAYMENTS_PAGE_SIZE;
+        const page = rows.slice(0, PAYMENTS_PAGE_SIZE);
+        const counterpartyIds = [
+          ...new Set(
+            page
+              .filter((row) => row.category === 'member')
+              .map((row) => row.counterpartyAccountId)
+              .filter((id): id is string => id !== null),
+          ),
+        ];
+        const counterparties = new Map<string, FondPaymentCounterparty>();
+        if (counterpartyIds.length > 0) {
+          for (const account of await deps.authStore.getAccounts(counterpartyIds)) {
+            if (account.isPlatform !== true) {
+              counterparties.set(account.id, {
+                accountId: account.id,
+                username: account.username ?? null,
+                name: account.name,
+              });
+            }
+          }
+        }
+        const outgoingHashes = [
+          ...new Set(
+            page
+              .filter((row) => row.direction === 'out')
+              .map((row) => row.paymentHash)
+              .filter((hash): hash is string => hash !== null),
+          ),
+        ];
+        const outgoingInvoices = [
+          ...new Set(
+            page
+              .filter((row) => row.direction === 'out')
+              .map((row) => row.invoice)
+              .filter((invoice): invoice is string => invoice !== null),
+          ),
+        ];
+        const paidUsd =
+          outgoingHashes.length === 0 && outgoingInvoices.length === 0
+            ? new Map<string, string>()
+            : await deps.fondPayoutStore.paidUsdByPaymentHashOrInvoice(
+                outgoingHashes,
+                outgoingInvoices,
+              );
+        const next = hasMore
+          ? encodeFondPaymentsCursor(
+              page[page.length - 1] as WalletPaymentRecord,
+              publicPaymentIdKey,
+            )
+          : null;
+        return c.json(
+          {
+            payments: page.map((row) =>
+              publicPaymentRow(row, counterparties, paidUsd, publicPaymentIdKey),
+            ),
+            next,
+          },
+          200,
+          FOND_NO_STORE,
+        );
+      } catch {
+        logEvent('fond.payments.failed');
+        return c.json({ error: PAYMENTS_UNAVAILABLE }, 503, FOND_NO_STORE);
       }
     })
     .get('/payouts', async (c) => {

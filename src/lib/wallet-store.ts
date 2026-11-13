@@ -55,6 +55,14 @@ export interface WalletPaymentCursor {
   paymentId: string;
 }
 
+/** Optional filters for {@link WalletStore.listPayments}. */
+export interface WalletPaymentFilter {
+  /** Restricts to one stored status. */
+  status?: WalletPaymentStatus;
+  /** Keeps only rows paid at exactly that instant. */
+  paidAt?: Date;
+}
+
 /** Persistence contract for wallet report data. */
 export interface WalletStore {
   /**
@@ -105,12 +113,14 @@ export interface WalletStore {
    * @param accountId - Reporting account id.
    * @param limit - Maximum rows.
    * @param after - Optional keyset position; only rows strictly after it are returned.
+   * @param filter - Optional stored-status and exact-paid-instant filters.
    * @returns Caller-owned payment rows.
    */
   listPayments(
     accountId: string,
     limit: number,
     after?: WalletPaymentCursor,
+    filter?: WalletPaymentFilter,
   ): Promise<WalletPaymentRecord[]>;
 }
 
@@ -416,17 +426,23 @@ export class InMemoryWalletStore implements WalletStore {
    * @param accountId - Reporting account id.
    * @param limit - Maximum rows.
    * @param after - Optional keyset position after the last row of the previous page.
+   * @param filter - Optional stored-status and exact-paid-instant filters.
    * @returns Sorted payment copies.
    */
   listPayments(
     accountId: string,
     limit: number,
     after?: WalletPaymentCursor,
+    filter?: WalletPaymentFilter,
   ): Promise<WalletPaymentRecord[]> {
     return Promise.resolve(
       [...this.#payments.values()]
         .map((entry) => entry.row)
         .filter((row) => row.accountId === accountId)
+        .filter((row) => filter?.status === undefined || row.status === filter.status)
+        .filter(
+          (row) => filter?.paidAt === undefined || row.paidAt.getTime() === filter.paidAt.getTime(),
+        )
         .filter(
           (row) =>
             after === undefined ||
@@ -519,8 +535,8 @@ function mapPayment(row: WalletPaymentSqlRow): WalletPaymentRecord {
   };
 }
 
-const PAYMENT_COLUMNS = `account_id, payment_id, direction, status, amount_sats, fee_sats,
-paid_at, method, payment_hash, invoice, destination, description, lnurl_comment, category,
+const PAYMENT_COLUMNS = `account_id, payment_id, direction, status, amount_sats, fee_sats, paid_at,
+method, payment_hash, invoice, destination, description, lnurl_comment, category,
 counterparty_account_id, first_seen_at, updated_at`;
 
 /** Payments written at the same time by one `upsertPayments` call. */
@@ -529,7 +545,7 @@ const UPSERT_CONCURRENCY = 8;
 /** A later row with only a fallback category keeps the stored resolved category and counterparty. */
 const KEEP_RESOLVED_CATEGORY = `(EXCLUDED.category IN ('outside_lightning', 'onchain', 'unknown') AND wallet_payment.category NOT IN ('outside_lightning', 'onchain', 'unknown'))`;
 
-/** Whether the incoming row changes any stored value (after coalescing details and keeping resolved categories). */
+/** Whether the incoming row changes a mutable value after detail and category preservation. */
 const PAYMENT_VALUES_CHANGE = `(wallet_payment.direction, wallet_payment.status, wallet_payment.amount_sats,
        wallet_payment.fee_sats, wallet_payment.paid_at, wallet_payment.method,
        wallet_payment.payment_hash, wallet_payment.invoice, wallet_payment.destination,
@@ -789,12 +805,14 @@ GROUP BY direction`,
    * @param accountId - Reporting account id (`$1`).
    * @param limit - Maximum rows (`$2`).
    * @param after - Optional keyset position after the last row of the previous page.
+   * @param filter - Optional stored-status and exact-paid-instant filters.
    * @returns Mapped payment rows.
    */
   async listPayments(
     accountId: string,
     limit: number,
     after?: WalletPaymentCursor,
+    filter?: WalletPaymentFilter,
   ): Promise<WalletPaymentRecord[]> {
     const keyset =
       after === undefined
@@ -804,10 +822,19 @@ GROUP BY direction`,
     if (after !== undefined) {
       params.push(after.paidAt, after.paymentId);
     }
+    let filters = '';
+    if (filter?.status !== undefined) {
+      params.push(filter.status);
+      filters += ` AND status = $${params.length}`;
+    }
+    if (filter?.paidAt !== undefined) {
+      params.push(filter.paidAt);
+      filters += ` AND paid_at = $${params.length}`;
+    }
     const rows = await this.sql.query<WalletPaymentSqlRow>(
       `SELECT ${PAYMENT_COLUMNS}
 FROM wallet_payment
-WHERE account_id = $1${keyset}
+WHERE account_id = $1${keyset}${filters}
 ORDER BY paid_at DESC, payment_id COLLATE "C" DESC
 LIMIT $2`,
       params,

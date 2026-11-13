@@ -1253,6 +1253,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       walletStore,
       payoutSigner,
       fondUsername,
+      spendApiToken,
       now,
       fetchImpl,
       ...receivingDeps,

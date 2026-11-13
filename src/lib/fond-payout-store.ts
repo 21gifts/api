@@ -10,6 +10,7 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 import { fiatAmountToCents, formatCents } from '@/lib/credit-repayment';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** How long an `issuing` or `settling` claim is trusted before restart recovery. */
 export const FOND_CLAIM_LEASE_MS = 120_000;
@@ -136,6 +137,17 @@ export interface FondPayoutStore {
    * @returns Count and exact two-decimal USD sum.
    */
   paidTotals(): Promise<FondPayoutTotals>;
+
+  /**
+   * Stored USD amounts of paid rows by payment hash or invoice.
+   *
+   * @param hashes - Wallet payment hashes of one page.
+   * @param invoices - Wallet invoices of one page, matched against `spark_invoice` or `bolt11`.
+   * @returns The stored `amount_usd` string by every requested hash or invoice of each matched
+   *   paid row, or no entry when the stored amount is not a valid non-negative USD amount with at
+   *   most two decimals; an empty map without a read when both inputs are empty.
+   */
+  paidUsdByPaymentHashOrInvoice(hashes: string[], invoices: string[]): Promise<Map<string, string>>;
 
   /**
    * Rows of `utcDay` with status `owed`, `issuing`, `invoiced`, or `settling`,
@@ -314,6 +326,20 @@ function copyRow(row: FondPayoutRow): FondPayoutRow {
   };
 }
 
+/** Exact cents of a stored USD string, or a hard failure for a corrupt paid row. */
+function storedUsdCents(amountUsd: string): bigint {
+  const cents = fiatAmountToCents(amountUsd);
+  if (cents === null) {
+    throw new Error('invalid stored payout amount');
+  }
+  return cents;
+}
+
+/** The stored USD text when it is a valid non-negative amount with at most two decimals. */
+function storedUsdAmount(amountUsd: string): string | null {
+  return /^(0|[1-9]\d*)(\.\d{1,2})?$/.test(amountUsd) ? amountUsd : null;
+}
+
 /** Process-local {@link FondPayoutStore}; starts empty. */
 export class InMemoryFondPayoutStore implements FondPayoutStore {
   readonly #rows = new Map<string, FondPayoutRow>();
@@ -371,13 +397,55 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
         continue;
       }
       payoutsPaid += 1;
-      const rowCents = fiatAmountToCents(row.amountUsd);
-      if (rowCents === null) {
-        throw new Error('invalid stored payout amount');
-      }
-      cents += rowCents;
+      cents += storedUsdCents(row.amountUsd);
     }
     return { payoutsPaid, payoutsPaidUsd: formatCents(cents) };
+  }
+
+  /**
+   * Stored USD amounts of paid rows by payment hash or invoice.
+   *
+   * @param hashes - Wallet payment hashes of one page.
+   * @param invoices - Wallet invoices of one page.
+   * @returns The stored `amountUsd` string by every requested hash or invoice of each matched
+   *   paid row, or no entry when the stored amount is not a valid non-negative USD amount with at
+   *   most two decimals.
+   */
+  async paidUsdByPaymentHashOrInvoice(
+    hashes: string[],
+    invoices: string[],
+  ): Promise<Map<string, string>> {
+    const paid = new Map<string, string>();
+    if (hashes.length + invoices.length === 0) {
+      return paid;
+    }
+    const wantedHashes = new Set(hashes);
+    const wantedInvoices = new Set(invoices);
+    for (const row of this.#rows.values()) {
+      if (row.status !== 'paid') {
+        continue;
+      }
+      const matchedKeys: string[] = [];
+      if (row.paymentHash !== null && wantedHashes.has(row.paymentHash)) {
+        matchedKeys.push(row.paymentHash);
+      }
+      for (const invoice of [row.sparkInvoice, row.bolt11]) {
+        if (invoice !== null && wantedInvoices.has(invoice)) {
+          matchedKeys.push(invoice);
+        }
+      }
+      if (matchedKeys.length === 0) {
+        continue;
+      }
+      const amountUsd = storedUsdAmount(row.amountUsd);
+      if (amountUsd === null) {
+        continue;
+      }
+      for (const key of matchedKeys) {
+        paid.set(key, amountUsd);
+      }
+    }
+    return paid;
   }
 
   /**
@@ -642,6 +710,13 @@ interface FondPayoutTotalsSqlRow {
   payouts_paid_usd: number | string | bigint | null;
 }
 
+interface FondPayoutPaidUsdSqlRow {
+  payment_hash: string | null;
+  spark_invoice: string | null;
+  bolt11: string | null;
+  amount_usd: string;
+}
+
 const FOND_PAYOUT_SELECT = `id, utc_day, kind, address, amount_usd, comment, message_id,
   group_message_id, status, failure, invoice_id, payment_hash, bolt11, spark_invoice, amount_msat,
   claimed_at, created_at, updated_at`;
@@ -765,6 +840,50 @@ WHERE status = 'paid'`,
       payoutsPaid: Number(row?.payouts_paid ?? 0),
       payoutsPaidUsd: formatCents(cents),
     };
+  }
+
+  /**
+   * Stored USD amounts of paid rows by payment hash or invoice in one read.
+   *
+   * @param hashes - Wallet payment hashes of one page.
+   * @param invoices - Wallet invoices of one page.
+   * @returns The stored `amount_usd` string by every requested hash or invoice of each matched
+   *   paid row, or no entry when the stored amount is not a valid non-negative USD amount with at
+   *   most two decimals; an empty map without a query when both inputs are empty.
+   * @throws Propagates SQL failures.
+   */
+  async paidUsdByPaymentHashOrInvoice(
+    hashes: string[],
+    invoices: string[],
+  ): Promise<Map<string, string>> {
+    const paid = new Map<string, string>();
+    if (hashes.length + invoices.length === 0) {
+      return paid;
+    }
+    const wantedHashes = new Set(hashes);
+    const wantedInvoices = new Set(invoices);
+    const rows = await this.#sql.query<FondPayoutPaidUsdSqlRow>(
+      `SELECT payment_hash, spark_invoice, bolt11, amount_usd
+FROM fond_payout
+WHERE status = 'paid' AND (payment_hash = ANY($1::text[]) OR spark_invoice = ANY($2::text[]) OR bolt11 = ANY($2::text[]))`,
+      [postgresTextArrayLiteral(hashes), postgresTextArrayLiteral(invoices)],
+    );
+    for (const row of rows) {
+      const amountUsd = storedUsdAmount(row.amount_usd);
+      if (amountUsd === null) {
+        continue;
+      }
+      if (row.payment_hash !== null && wantedHashes.has(row.payment_hash)) {
+        paid.set(row.payment_hash, amountUsd);
+      }
+      if (row.spark_invoice !== null && wantedInvoices.has(row.spark_invoice)) {
+        paid.set(row.spark_invoice, amountUsd);
+      }
+      if (row.bolt11 !== null && wantedInvoices.has(row.bolt11)) {
+        paid.set(row.bolt11, amountUsd);
+      }
+    }
+    return paid;
   }
 
   /**
