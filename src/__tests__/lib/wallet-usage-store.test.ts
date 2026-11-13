@@ -148,6 +148,28 @@ describe('PostgresWalletUsageStore', () => {
     expect(payments.text).toContain('payee.is_platform');
     expect(payments.text).toContain("payee.role = 'fond'");
     expect(payments.text).toContain('HAVING min(paid_at) >= $1');
+    expect(payments.text).toContain('AS group_key');
+    expect(payments.text).toContain('FROM wallet_payment');
+    expect(payments.text).toContain('id_totals.row_count = 2');
+    expect(payments.text).toContain('id_totals.completed_count = 2');
+    expect(payments.text).toContain('id_totals.completed_account_count = 2');
+    expect(payments.text).toContain('id_totals.completed_direction_count = 2');
+    expect(payments.text).toContain(
+      "'row:' || wallet_payment.account_id::text || ':' || wallet_payment.payment_id",
+    );
+    expect(payments.text).toContain('GROUP BY group_key');
+    expect(payments.text).toContain('ORDER BY group_key, account_id');
+    expect(payments.text).toContain('LEFT JOIN outs ON outs.group_key = bounds.group_key');
+    expect(payments.text).toContain('LEFT JOIN ins ON ins.group_key = bounds.group_key');
+    expect(payments.text).toContain(
+      'LEFT JOIN fallback_category ON fallback_category.group_key = bounds.group_key',
+    );
+    expect(payments.text).toContain(
+      'LEFT JOIN fund_hits ON fund_hits.group_key = bounds.group_key',
+    );
+    expect(payments.text).toContain(
+      'LEFT JOIN forum_gifts ON forum_gifts.group_key = bounds.group_key',
+    );
     expect(payments.text).toContain('payment_hash');
     expect(payments.text).toContain('AS is_forum_gift');
     expect(payments.text).not.toContain('invoice.heart IS FALSE');
@@ -366,6 +388,44 @@ describe('PostgresWalletUsageStore', () => {
       ],
     });
     expect((await explicit.payments(0)).map((row) => row.isForumGift)).toEqual([true, false]);
+  });
+
+  it('rejects a zap gift when a conversation or repayment invoice owns its hash', async () => {
+    const basePayment = paymentFields(AT, 1);
+    const seed = (paymentHash: string) => ({ ...basePayment, paymentHash, invoice: null });
+    const memoryInvoice = (
+      paymentHash: string,
+      kind: 'conversation' | 'repayment',
+      claimed: boolean,
+    ) => ({
+      paymentHash,
+      pr: null,
+      conversation: kind === 'conversation',
+      repayment: kind === 'repayment',
+      hidden: false,
+      claimed,
+    });
+    const store = new InMemoryWalletUsageStore({
+      payments: [seed('AA11'), seed('BB22'), seed('CC33'), seed('dd44')],
+      forumInvoices: [],
+      shopCharges: [],
+      forumGiftInvoices: [
+        memoryInvoice('aa11', 'conversation', false),
+        memoryInvoice('bb22', 'repayment', true),
+        memoryInvoice('zz99', 'conversation', true),
+      ],
+      zapGifts: [
+        { paymentHash: 'aa11', hidden: false },
+        { paymentHash: 'bb22', hidden: false },
+        { paymentHash: 'cc33', hidden: false },
+      ],
+    });
+    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([
+      false,
+      false,
+      true,
+      false,
+    ]);
   });
 
   it('rejects rows the driver did not shape as usage data', async () => {

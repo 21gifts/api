@@ -17,7 +17,8 @@ export interface WalletUsageStore {
   /**
    * Completed payments whose earliest `paid_at` is on or after `sinceMs`.
    *
-   * Both wallet sides of one `payment_id` are already merged.
+   * A transfer pair is already merged. Unrelated completed rows that share a
+   * `payment_id` but do not form a pair stay separate.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns Merged payments. Order is not significant.
@@ -52,7 +53,10 @@ interface MemoryPaymentRow extends Omit<WalletUsagePaymentRow, 'isForumGift'> {
   invoice?: string | null;
 }
 
-/** A claimed, successful forum invoice that can make a payment a forum gift or paid heart. */
+/**
+ * A seeded forum invoice that can make a payment a forum gift or paid heart,
+ * or exclude a zap receipt with the same hash.
+ */
 interface MemoryForumInvoice {
   /** `message_invoice.payment_hash`, any case, or null. */
   paymentHash: string | null;
@@ -87,7 +91,7 @@ interface WalletUsageSeed {
   forumInvoices: readonly WalletUsageForumRow[];
   /** Point-of-sale charges. */
   shopCharges: readonly WalletUsageChargeRow[];
-  /** Claimed forum invoices that can mark a payment `isForumGift`. Default none. */
+  /** Seeded forum invoices that can mark or exclude a payment. Default none. */
   forumGiftInvoices?: readonly MemoryForumInvoice[];
   /** Claimed zap receipt gifts. Default none. */
   zapGifts?: readonly MemoryZapGift[];
@@ -191,6 +195,13 @@ interface ChargeSqlRow {
  *
  * A row filter on `paid_at` would split a payment whose sides fall on either
  * side of the bound, so the bound is `min(paid_at)` of the whole group.
+ * A completed group uses the bare `payment_id` only when that id has exactly
+ * two completed rows, the id has exactly two rows overall, and the directions
+ * and accounts differ, matching `pairFillSql` in `wallet-store.ts`. Every other
+ * completed row is keyed by
+ * `'row:' || account_id::text || ':' || payment_id`, so unrelated rows on
+ * different accounts do not merge just because they share an id. The key stays
+ * inside this statement and never reaches the response.
  *
  * `is_forum_gift` is a paid forum gift or paid heart: a claimed, successful
  * invoice with no conversation and no `repay:` / `repayp:` description, on a
@@ -201,49 +212,75 @@ interface ChargeSqlRow {
  * conversation invoices, credit repayments, and any payment to the platform
  * account.
  */
-const PAYMENTS_SQL = `WITH completed AS (
-  SELECT payment_id, account_id, direction, amount_sats, fee_sats, paid_at,
-         category, counterparty_account_id, payment_hash, invoice
+const PAYMENTS_SQL = `WITH id_totals AS (
+  SELECT payment_id,
+         count(*) AS row_count,
+         count(*) FILTER (WHERE status = 'completed') AS completed_count,
+         count(DISTINCT account_id) FILTER (WHERE status = 'completed') AS completed_account_count,
+         count(DISTINCT direction) FILTER (WHERE status = 'completed') AS completed_direction_count
   FROM wallet_payment
-  WHERE status = 'completed'
+  GROUP BY payment_id
+),
+completed AS (
+  SELECT wallet_payment.payment_id,
+         wallet_payment.account_id,
+         wallet_payment.direction,
+         wallet_payment.amount_sats,
+         wallet_payment.fee_sats,
+         wallet_payment.paid_at,
+         category,
+         counterparty_account_id,
+         payment_hash,
+         invoice,
+         CASE
+           WHEN id_totals.row_count = 2
+             AND id_totals.completed_count = 2
+             AND id_totals.completed_account_count = 2
+             AND id_totals.completed_direction_count = 2
+             THEN wallet_payment.payment_id
+           ELSE 'row:' || wallet_payment.account_id::text || ':' || wallet_payment.payment_id
+         END AS group_key
+  FROM wallet_payment
+  JOIN id_totals ON id_totals.payment_id = wallet_payment.payment_id
+  WHERE wallet_payment.status = 'completed'
 ),
 bounds AS (
-  SELECT payment_id,
+  SELECT group_key,
          min(paid_at) AS paid_at,
          max(amount_sats)::bigint AS amount_sats,
          sum(coalesce(fee_sats, 0))::bigint AS fee_sats
   FROM completed
-  GROUP BY payment_id
+  GROUP BY group_key
   HAVING min(paid_at) >= $1
 ),
 outs AS (
-  SELECT DISTINCT ON (payment_id)
-         payment_id,
+  SELECT DISTINCT ON (group_key)
+         group_key,
          account_id AS payer_account_id,
          category AS out_category,
          counterparty_account_id
   FROM completed
   WHERE direction = 'out'
-  ORDER BY payment_id, account_id
+  ORDER BY group_key, account_id
 ),
 ins AS (
-  SELECT DISTINCT ON (payment_id)
-         payment_id,
+  SELECT DISTINCT ON (group_key)
+         group_key,
          account_id AS payee_account_id
   FROM completed
   WHERE direction = 'in'
-  ORDER BY payment_id, account_id
+  ORDER BY group_key, account_id
 ),
 fallback_category AS (
-  SELECT DISTINCT ON (payment_id)
-         payment_id,
+  SELECT DISTINCT ON (group_key)
+         group_key,
          category AS fallback_category
   FROM completed
   WHERE category <> 'unknown'
-  ORDER BY payment_id, CASE WHEN direction = 'out' THEN 0 ELSE 1 END, account_id
+  ORDER BY group_key, CASE WHEN direction = 'out' THEN 0 ELSE 1 END, account_id
 ),
 fund_hits AS (
-  SELECT DISTINCT completed.payment_id
+  SELECT DISTINCT completed.group_key
   FROM completed
   JOIN fond_payout
     ON fond_payout.status = 'paid'
@@ -253,7 +290,7 @@ fund_hits AS (
         OR fond_payout.spark_invoice = completed.invoice)
 ),
 forum_gifts AS (
-  SELECT DISTINCT completed.payment_id
+  SELECT DISTINCT completed.group_key
   FROM completed
   JOIN message_invoice invoice
     ON invoice.result = 'ok'
@@ -274,7 +311,7 @@ forum_gifts AS (
     WHERE z.payment_hash = lower(invoice.payment_hash)
   )
   UNION
-  SELECT DISTINCT completed.payment_id
+  SELECT DISTINCT completed.group_key
   FROM completed
   JOIN nostr_zap_payment z
     ON completed.payment_hash IS NOT NULL
@@ -319,14 +356,14 @@ SELECT bounds.paid_at,
          WHEN payee.role = 'fond' THEN 'fund'
          ELSE 'members'
        END AS payee_party,
-       (fund_hits.payment_id IS NOT NULL) AS is_fund_payout,
-       (forum_gifts.payment_id IS NOT NULL) AS is_forum_gift
+       (fund_hits.group_key IS NOT NULL) AS is_fund_payout,
+       (forum_gifts.group_key IS NOT NULL) AS is_forum_gift
 FROM bounds
-LEFT JOIN outs ON outs.payment_id = bounds.payment_id
-LEFT JOIN ins ON ins.payment_id = bounds.payment_id
-LEFT JOIN fallback_category ON fallback_category.payment_id = bounds.payment_id
-LEFT JOIN fund_hits ON fund_hits.payment_id = bounds.payment_id
-LEFT JOIN forum_gifts ON forum_gifts.payment_id = bounds.payment_id
+LEFT JOIN outs ON outs.group_key = bounds.group_key
+LEFT JOIN ins ON ins.group_key = bounds.group_key
+LEFT JOIN fallback_category ON fallback_category.group_key = bounds.group_key
+LEFT JOIN fund_hits ON fund_hits.group_key = bounds.group_key
+LEFT JOIN forum_gifts ON forum_gifts.group_key = bounds.group_key
 LEFT JOIN account payer ON payer.id = outs.payer_account_id
 LEFT JOIN account payee
   ON payee.id = COALESCE(ins.payee_account_id, outs.counterparty_account_id)`;
@@ -429,8 +466,8 @@ function copyPayment(row: MemoryPaymentRow): WalletUsagePaymentRow {
  * A payment is a forum gift when a claimed, successful, non-conversation,
  * non-repayment invoice on a living note matches one of its hashes or its
  * invoice; or when a claimed zap receipt gift or paid heart on a living note
- * matches one of its hashes and no conversation or repayment invoice owns that
- * hash.
+ * matches one of its hashes and no seeded conversation or repayment invoice
+ * owns that hash, compared case-insensitively.
  */
 function memoryIsForumGift(
   row: MemoryPaymentRow,
@@ -458,7 +495,16 @@ function memoryIsForumGift(
   if (giftInvoice) {
     return true;
   }
-  return gifts.some((gift) => !gift.hidden && hashes.has(gift.paymentHash.toLowerCase()));
+  const ownedByConversationOrRepayment = invoices.some(
+    (candidate) =>
+      candidate.paymentHash !== null &&
+      (candidate.conversation || candidate.repayment) &&
+      hashes.has(candidate.paymentHash.toLowerCase()),
+  );
+  return (
+    !ownedByConversationOrRepayment &&
+    gifts.some((gift) => !gift.hidden && hashes.has(gift.paymentHash.toLowerCase()))
+  );
 }
 
 function copyForum(row: WalletUsageForumRow): WalletUsageForumRow {
