@@ -361,6 +361,14 @@ The wallet rule in detail:
     totals are public (`GET /fond/summary`).
   - `GET /wallets/stats` publishes totals over all wallets that never name or
     single out one account.
+  - `GET /wallets/usage` publishes usage aggregates over all wallets since the
+    wallet release, without any account, person, or payment identifier: counts
+    and sats per UTC day and purpose; counts, sats, and fees per UTC day, party
+    pair, and purpose; counts and sats per amount bucket; counts per UTC hour;
+    the payment count, volume, fees, median, and average; the number of active,
+    sending, and receiving wallets in total and per UTC day; the share of the
+    five largest senders in the volume; and the time of the newest counted
+    payment.
   - The owner's previous-wallet lookup (`GET /me/previous-wallets`) reads only
     what a public Spark explorer already shows and returns it only to the
     owner.
