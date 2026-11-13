@@ -8486,12 +8486,14 @@ point-of-sale charges. The body contains only aggregates: no account id,
 username, name, payment id, payment hash, invoice, Lightning address, or node
 key. `GET /wallets/stats` is unchanged.
 
-A completed payment is one `payment_id` whose earliest `paid_at` is on or after
-the release. Its amount is the greatest `amount_sats` and its fee is the sum of
-`fee_sats`. The payer is the outgoing account, or outside when there is no
-outgoing row. The payee is the incoming account, otherwise the outgoing row's
-counterparty, otherwise outside. An account with `is_platform` is `platform`;
-role `fond` is `fund`; every other account, including a shop, is `members`.
+A completed payment is a `payment_id` with exactly two completed rows, of
+opposite direction on two accounts, whose earliest `paid_at` is on or after the
+release. It counts once. Every other completed row counts on its own. The
+amount is the greatest `amount_sats` and the fee is the sum of `fee_sats`. The
+payer is the outgoing account, or outside when there is no outgoing row. The
+payee is the incoming account, otherwise the outgoing row's counterparty,
+otherwise outside. An account with `is_platform` is `platform`; role `fond` is
+`fund`; every other account, including a shop, is `members`.
 
 Purpose, first match: a paid `fond_payout` whose `bolt11` or `spark_invoice`
 equals any row invoice is `fund_payout` (including a payout to a shop); a fund
@@ -8507,8 +8509,10 @@ A paid forum gift means the payment's hash, or its invoice, matches a
 that does not start with `repay:` or `repayp:`, a claimed
 `nostr_zap_payment` hash, and a note whose `message.deleted_at` is null; or a
 zap receipt gift or paid heart on such a note. A `gift` or `platform` category
-alone is not enough: conversation invoices, credit repayments, and any payment
-to the platform account are not forum gifts.
+alone does not make a forum gift, and the counterparty does not decide it: a
+payment that matches a claimed forum gift or heart invoice on a note not hidden
+by staff is a forum gift, whoever the counterparty is. Conversation invoices
+and credit repayments are not forum gifts.
 
 `days` has every UTC day from the release day through today, and every purpose
 key. `flows` keeps only directions that occurred and is sorted by day, from,
@@ -8521,10 +8525,13 @@ decimal places and 0 when the volume is 0. `forum` starts 28 days before
 release (`gifts` are hearts that are false). The forum series and
 `totals.heartCount` include only paid forum gifts and hearts on living notes:
 no conversation invoices, no credit repayments, no hidden notes, and no unpaid
-invoices. `shopCharges` starts 14 days before release. A heart and a paid
-shop charge increment the release totals only when their own timestamp is on or
-after the release instant. A row after the current UTC day is ignored. 200
-sends `Cache-Control: public, max-age=60`.
+invoices. `shopCharges` starts 14 days before release. A heart increments the
+release total only when its own timestamp is on or after the release instant.
+`totals.paidShopChargeCount` is the sum of `paid` in the published
+`shopCharges` days, so it covers the whole shop window and is derivable from
+those daily cells. A payment whose `paid_at` is before the release instant and
+a row after the current UTC day are ignored. 200 sends
+`Cache-Control: public, max-age=60`.
 
 **Response** `503`: `{ "error": "Wallet usage is unavailable" }` when a read
 fails or a sat total is not a safe integer. The failure logs

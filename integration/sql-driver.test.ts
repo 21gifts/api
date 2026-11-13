@@ -10054,6 +10054,49 @@ describe('PostgresWalletUsageStore', () => {
         paymentHash: null,
         invoice: null,
       });
+      // A paired id that starts with `row:<account uuid>:` must not collide
+      // with that account's unpaired row whose bare payment id is the suffix.
+      const rowPrefixedUnpairedId = `${run}-row-prefixed`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: rowPrefixedUnpairedId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 64,
+        feeSats: 0,
+        paidAt: at(904),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: null,
+      });
+      const rowPrefixedPairId = `row:${memberA}:${rowPrefixedUnpairedId}`;
+      await insertPayment({
+        accountId: memberB,
+        paymentId: rowPrefixedPairId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 65,
+        feeSats: 2,
+        paidAt: at(905),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: rowPrefixedPairId,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 65,
+        feeSats: 0,
+        paidAt: at(906),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
 
       const shopPaidAt = at(15);
       const shopPendingAt = at(25);
@@ -10090,11 +10133,28 @@ describe('PostgresWalletUsageStore', () => {
       expect(
         ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
       ).toEqual([
-        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 61, 62, 63, 150, 500, 1000, 12321, 69089, 293955,
+        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 61, 62, 63, 64, 65, 150, 500, 1000, 12321, 69089,
+        293955,
       ]);
       const pair = ours.filter((row) => row.amountSats === 63);
       expect(pair).toHaveLength(1);
       expect(pair[0]?.feeSats).toBe(1);
+      expect(byAmount(64)).toMatchObject({
+        feeSats: 0,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(byAmount(65)).toMatchObject({
+        feeSats: 2,
+        payerAccountId: memberB,
+        payeeAccountId: shop,
+      });
+      expect(
+        ours
+          .filter((row) => row.amountSats === 64 || row.amountSats === 65)
+          .map((row) => row.amountSats)
+          .sort((left, right) => left - right),
+      ).toEqual([64, 65]);
       expect(byAmount(61)).toMatchObject({
         feeSats: 0,
         payerAccountId: memberA,
