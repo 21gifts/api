@@ -124,7 +124,7 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `PostgresContactStore`, `migrateContactSchema`,
 `PostgresPosStore`, `migratePosSchema`, `paymentHashLockKey`,
 `PostgresShopPaymentStore`, `migrateShopPaymentSchema`,
-`PostgresWalletStore`, `migrateWalletSchema`, `repairWalletPaymentPairs`,
+`PostgresWalletStore`, `PostgresWalletUsageStore`, `migrateWalletSchema`, `repairWalletPaymentPairs`,
 `PostgresWalletTransferStore`,
 `PostgresWelcomeInvoiceReservationStore`, `migrateWelcomeInvoiceReservationSchema`,
 `migrateSparkViewerSchema`, `runWalletTransferTick`, and
