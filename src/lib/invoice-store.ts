@@ -40,6 +40,8 @@ export interface GiftInvoice {
    * Absent when the issue request did not send `amountUsd`.
    */
   amountUsd?: string;
+  /** Internal durable welcome-exception lease owner; never accepted from HTTP. */
+  welcomeReservationAccountId?: string;
 }
 
 /**

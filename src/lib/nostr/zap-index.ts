@@ -38,8 +38,10 @@ import {
 } from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { effectiveStatus } from '@/lib/funding';
+import { latestTodayMediaPostId } from '@/lib/funding-ping';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { notifyForumPost, notifyForumReply, notifyHeart, notifyZap } from '@/lib/notification';
 import { forumRateLimitExempt, type PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { SpendPing } from '@/lib/spend-ping';
@@ -621,6 +623,7 @@ export async function settleInvoiceManually(args: {
   postLimiter?: PostRateLimiter;
   replyLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   recoveryShareRequiredFrom?: string | null;
   conversations?: ConversationStore;
   lnurlServer?: LnurlServerConfig;
@@ -917,6 +920,7 @@ export async function settleInvoiceManually(args: {
         ...(args.postLimiter === undefined ? {} : { postLimiter: args.postLimiter }),
         ...(args.replyLimiter === undefined ? {} : { replyLimiter: args.replyLimiter }),
         ...(args.fundingStore === undefined ? {} : { fundingStore: args.fundingStore }),
+        ...(args.walletTransfers === undefined ? {} : { walletTransfers: args.walletTransfers }),
         ...(args.recoveryShareRequiredFrom === undefined
           ? {}
           : { recoveryShareRequiredFrom: args.recoveryShareRequiredFrom }),
@@ -1367,6 +1371,7 @@ export async function indexOpenZapReceipts(args: {
   replyLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   recoveryShareRequiredFrom?: string | null;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
@@ -1495,6 +1500,7 @@ async function queryAndIngestZapReceipts(
     postLimiter?: PostRateLimiter;
     replyLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
+    walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
     recoveryShareRequiredFrom?: string | null;
     fiatRates?: FiatRateBook;
     /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
@@ -1611,6 +1617,7 @@ async function ingestOneReceipt(
     postLimiter?: PostRateLimiter;
     replyLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
+    walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
     recoveryShareRequiredFrom?: string | null;
     /** Optional crosses. Absent means the spot snapshot uses empty crosses. */
     fiatRates?: FiatRateBook;
@@ -2397,6 +2404,7 @@ interface BaseGiftReplyDeps {
   postLimiter?: PostRateLimiter;
   replyLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   recoveryShareRequiredFrom?: string | null;
   lnurlServer?: LnurlServerConfig;
 }
@@ -2846,7 +2854,9 @@ async function insertExternalGiftReply(
  * including a reply target reset to top-level; `replyLimiter` when it is a
  * reply; neither for a {@link forumRateLimitExempt} payer), then `notifyForumPost` / `notifyForumReply` (not `notifyZap`)
  * and a top-level `spendPing` only when `eligibleToday` (same gate as
- * `POST /messages`; otherwise `spend.ping.skipped` / `not_eligible`). When
+ * `POST /messages`) and today's newest media note exists; that media note id
+ * is sent, never the created text-only compose id. Otherwise logs
+ * `spend.ping.skipped` with `not_eligible` or `media_post`. When
  * the parent is itself a reply, sets `payerAccountId`
  * to null and returns without `store.create` so the receipt never occupies
  * the awaiting-gift-reply queue.
@@ -2962,22 +2972,28 @@ async function insertGiftReply(
   const spendAddress = receivingAddress(args.payer, args.lnurlServer)?.address ?? null;
   if (parentId === null && spendAddress !== null && args.spendPing !== undefined) {
     try {
-      const { grant, eligible } = await loadPayoutEligibility(
+      const { grant, eligible, reason } = await loadPayoutEligibility(
         args.fundingStore ?? new InMemoryFundingStore(),
         args.auth,
         args.payer,
         args.now(),
         args.recoveryShareRequiredFrom ?? null,
+        args.walletTransfers,
       );
       if (!eligible) {
-        logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+        logEvent('spend.ping.skipped', { reason: reason ?? 'not_eligible' });
       } else {
-        await args.spendPing.ping(
-          spendAddress,
-          created.id,
-          'daily',
-          effectiveStatus(grant, args.now()),
-        );
+        const mediaPostId = await latestTodayMediaPostId(args.store, args.payer.id, args.now());
+        if (mediaPostId === null) {
+          logEvent('spend.ping.skipped', { reason: 'media_post' });
+        } else {
+          await args.spendPing.ping(
+            spendAddress,
+            mediaPostId,
+            'daily',
+            effectiveStatus(grant, args.now()),
+          );
+        }
       }
     } catch {
       logEvent('spend.ping.failed');

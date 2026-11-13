@@ -1176,7 +1176,6 @@ test('GET /gifts/stats is empty without a database', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
   const body = await res.json();
-  expect(body).not.toHaveProperty('byRecipient');
   expect(body).toEqual({
     totalSats: 0,
     totalBtc: '0.00000000',
@@ -1189,6 +1188,7 @@ test('GET /gifts/stats is empty without a database', async ({ request }) => {
     firstPaidAt: null,
     lastPaidAt: null,
     spendOverTime: [],
+    byRecipient: [],
     byMonth: [],
     fx: {
       quote: 'BTC-USD',
@@ -1199,12 +1199,31 @@ test('GET /gifts/stats is empty without a database', async ({ request }) => {
   });
 });
 
-test('GET /gifts/stats?recipient=alice matches the unfiltered totals', async ({ request }) => {
-  const plain = await request.get('/gifts/stats');
-  const named = await request.get('/gifts/stats?recipient=alice');
-  expect(plain.status()).toBe(200);
-  expect(named.status()).toBe(200);
-  expect(await named.json()).toEqual(await plain.json());
+test('GET /gifts/stats?recipient=alice is empty without a database', async ({ request }) => {
+  const res = await request.get('/gifts/stats?recipient=alice');
+  expect(res.status()).toBe(200);
+  const body = await res.json();
+  expect(body).toEqual({
+    totalSats: 0,
+    totalBtc: '0.00000000',
+    totalUsd: '0.00',
+    totalChf: '0.00',
+    totalEur: '0.00',
+    totalPhp: '0.00',
+    giftCount: 0,
+    recipientCount: 0,
+    firstPaidAt: null,
+    lastPaidAt: null,
+    spendOverTime: [],
+    byRecipient: [],
+    byMonth: [],
+    fx: {
+      quote: 'BTC-USD',
+      dayBasis: 'utc',
+      source: 'coinbase-exchange-daily-close',
+      quotes: [{ code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' }],
+    },
+  });
 });
 
 test('GET /gifts?day=2026-06-01 is empty without a database', async ({ request }) => {
@@ -1498,6 +1517,23 @@ test('POST /trust/appoint-moderator without bearer is 401', async ({ request }) 
 test('POST /funding/apply without bearer is 401', async ({ request }) => {
   const res = await request.post('/funding/apply');
   expect(res.status()).toBe(401);
+});
+
+test('POST /funding/withdraw without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/withdraw');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('GET /funding/withdrawals is operator-only', async ({ request }) => {
+  const none = await request.get('/funding/withdrawals');
+  expect(none.status()).toBe(401);
+  expect(await none.json()).toEqual({ error: 'Unauthorized' });
+  const operator = await request.get('/funding/withdrawals', { headers: DEBUG });
+  expect(operator.status()).toBe(200);
+  expect(Array.isArray(((await operator.json()) as { withdrawals: unknown }).withdrawals)).toBe(
+    true,
+  );
 });
 
 test('GET /funding/applications without bearer is 401', async ({ request }) => {

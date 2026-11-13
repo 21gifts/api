@@ -41,6 +41,17 @@ interface WelcomeLedger {
   legacyAccountIds: ReadonlySet<string>;
 }
 
+/**
+ * The welcome recipient is an eligibility class, not a ranked permission, so
+ * this deliberately matches exactly `verified` non-platform accounts.
+ *
+ * @param account - Account role and platform flag.
+ * @returns `true` for an exactly `verified` non-platform account.
+ */
+export function isWelcomeRecipient(account: Pick<Account, 'role' | 'isPlatform'>): boolean {
+  return account.role === 'verified' && account.isPlatform !== true;
+}
+
 /** Gift store reads behind the welcome check. */
 type WelcomeGifts = Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
 
@@ -131,9 +142,9 @@ export async function accountWelcomed(args: {
 }
 
 /**
- * The welcome ping `account` is owed: a `verified` account with a receiving
- * address and a live top-level photo or video that has not received the
- * welcome gift.
+ * The welcome ping `account` is owed: an exactly `verified` non-platform
+ * account with a receiving address and a live top-level photo or video
+ * that has not received the welcome gift.
  *
  * @param ledger - The welcome ledger.
  * @param messages - Forum store.
@@ -149,7 +160,7 @@ async function welcomeOwed(
   lnurlServer: LnurlServerConfig | undefined,
 ): Promise<WelcomeSweepCandidate | 'welcomed' | null> {
   const address = receivingAddress(account, lnurlServer)?.address ?? null;
-  if (account.role !== 'verified' || address === null) {
+  if (!isWelcomeRecipient(account) || address === null) {
     return null;
   }
   const messageId = await messages.latestLiveTopLevelMediaId(account.id);
@@ -168,10 +179,10 @@ async function welcomeOwed(
 }
 
 /**
- * Every account the welcome sweep would ping now: `verified`, with a receiving
- * address (a verified wallet and the LNURL server on) and a live top-level
- * photo or video, and not welcomed before (see {@link accountWelcomed}). Reads
- * only; pings nobody. Read failures reject.
+ * Every account the welcome sweep would ping now: exactly `verified` and
+ * non-platform, with a receiving address (a verified wallet and the LNURL
+ * server on) and a live top-level photo or video, and not welcomed before (see
+ * {@link accountWelcomed}). Reads only; pings nobody. Read failures reject.
  *
  * @param args - Auth store, forum store, optional gift store, and LNURL server
  *   config.
@@ -196,19 +207,19 @@ export async function welcomeSweepCandidates(args: {
 }
 
 /**
- * Tell spend a verified account is owed the one-time welcome gift.
+ * Tell spend an eligible account is owed the one-time welcome gift.
  *
  * Pass `account` after a new top-level post, an About-me save, or a
  * verification. Omit `account` for the sweep, which pings every account
  * {@link welcomeSweepCandidates} would list, and only while `sweep.enabled`
  * is true: an omitted or off switch pings nobody, and a switch turned off
  * during a sweep stops it before its next ping. Omitted spend ping, a role
- * other than `verified`, no receiving address (no verified wallet, or the
- * LNURL server off), no photo/video, or a welcome gift already paid to the
- * account ({@link accountWelcomed}) is a no-op. The gift is once per account,
- * not once per address. A failing account or ledger read pings nobody; a
- * failing check or ping of one account skips only that account. Failures are
- * logged; does not throw.
+ * other than exactly `verified`, a platform account, no receiving address (no
+ * verified wallet, or the LNURL server off), no photo/video, or a welcome gift
+ * already paid to the account ({@link accountWelcomed}) is a no-op. The gift is
+ * once per account, not once per address. A failing account or ledger read
+ * pings nobody; a failing check or ping of one account skips only that account.
+ * Failures are logged; does not throw.
  *
  * @param args - Spend ping, forum store, auth store, optional gift store,
  *   optional LNURL server config, optionally one account, and the sweep switch.

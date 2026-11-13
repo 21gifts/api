@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { earnsModeratorGroupPay, isModeratorGroupMember } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
+import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import {
   GIFT_INVOICE_MAX_MSAT,
   GIFT_INVOICE_MIN_MSAT,
@@ -24,12 +25,13 @@ import {
 } from '@/lib/receiving-address';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import { fiatFromUsd, normalizeAmountUsd, type FiatAmounts } from '@/lib/money';
+import { fiatFromUsd, normalizeAmountUsd, usdToMsat, type FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
-import { effectiveStatus } from '@/lib/funding';
+import { ownerFundingStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import { welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
 import {
@@ -38,7 +40,11 @@ import {
   type GiftRecorder,
 } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
-import { accountWelcomed } from '@/lib/welcome-media';
+import { accountWelcomed, isWelcomeRecipient } from '@/lib/welcome-media';
+import {
+  InMemoryWelcomeInvoiceReservationStore,
+  type WelcomeInvoiceReservationStore,
+} from '@/lib/welcome-reservation';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
@@ -56,10 +62,14 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /** Collaborators the invoice routes need. */
 export interface InvoiceRouteDeps {
+  /** Server-verified wallet transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** `SPEND_API_TOKEN` (blank/undefined → 503). */
   spendApiToken: string | undefined;
   /** Issued-invoice store. */
   store: InvoiceStore;
+  /** Atomic welcome-exception entitlement leases. */
+  welcomeReservations?: WelcomeInvoiceReservationStore;
   /**
    * Auth store for receiving address → account (by username), passkey,
    * platform, custodial pubkey, and recovery share lookup. Distinct from
@@ -144,6 +154,13 @@ const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
 
 /** Paying wallet label the legacy Spend bearer routes write. */
 const LIGHTNING_SPACE_SOURCE_WALLET = 'lightning.space';
+
+/**
+ * Maximum drift above the server's current USD 1.00 conversion that may still
+ * use the one-time welcome exception. This absorbs spot movement between the
+ * caller's conversion and the API's own lookup; a missing spot fails closed.
+ */
+const WELCOME_AMOUNT_SPOT_TOLERANCE_PERCENT = 10;
 
 const issueBodySchema = z.object({
   address: z.string(),
@@ -334,6 +351,62 @@ async function welcomePostedFields(
 }
 
 /**
+ * Whether this account is still owed its one welcome gift. This is deliberately
+ * derived from server-owned account and gift-ledger facts, never a request flag.
+ */
+async function welcomeGiftOwed(
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
+  account: Account,
+): Promise<boolean> {
+  return (
+    isWelcomeRecipient(account) &&
+    !(await accountWelcomed({
+      auth: deps.authStore,
+      messages: deps.messageStore,
+      gifts: deps.giftStore,
+      account,
+    }))
+  );
+}
+
+type WelcomeExceptionRequest = Pick<
+  IssueGiftInvoiceInput,
+  'amountMsat' | 'amountUsd' | 'comment' | 'messageId' | 'groupMessageId'
+>;
+
+function canonicalWelcomeRequest(input: WelcomeExceptionRequest): boolean {
+  return (
+    input.comment === 'Welcome' &&
+    input.messageId === undefined &&
+    input.groupMessageId === undefined &&
+    input.amountUsd === '1.00'
+  );
+}
+
+/** Shared fail-closed shop-payment exception for welcome preflight and issue. */
+async function welcomeShopPaymentException(
+  fetchImpl: FetchFn,
+  welcomeOwed: () => Promise<boolean>,
+  input?: WelcomeExceptionRequest,
+): Promise<boolean> {
+  if (input !== undefined && !canonicalWelcomeRequest(input)) return false;
+  if (!(await welcomeOwed())) return false;
+  let spot: string | null;
+  try {
+    spot = await fetchBtcUsdSpot(fetchImpl);
+  } catch {
+    spot = null;
+  }
+  const oneDollarMsat = spot === null ? null : usdToMsat('1.00', spot);
+  if (oneDollarMsat === null) return false;
+  return (
+    input === undefined ||
+    BigInt(input.amountMsat) * 100n <=
+      BigInt(oneDollarMsat) * BigInt(100 + WELCOME_AMOUNT_SPOT_TOLERANCE_PERCENT)
+  );
+}
+
+/**
  * Whether an account has at least one live top-level forum row that is not
  * the auto-created profile note. Replies do not count.
  *
@@ -350,8 +423,12 @@ async function accountHasPosted(
 
 /** Collaborators of the extracted issue and proof actions. */
 export interface GiftActionDeps {
+  /** Server-verified wallet transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Issued-invoice store. */
   store: InvoiceStore;
+  /** Atomic welcome-exception entitlement leases. */
+  welcomeReservations?: WelcomeInvoiceReservationStore;
   /** Auth store for receiving address, passkey, platform, and recovery lookups. */
   authStore: InvoiceRouteDeps['authStore'];
   /** Forum store for post, media, gift-reply, and group lookups. */
@@ -390,12 +467,16 @@ export interface IssueGiftInvoiceInput {
   amountMsat: number;
   /** Optional LUD-12 comment. */
   comment?: string;
-  /** Daily/welcome trigger post id. */
+  /** Daily trigger post id; canonical welcome payouts deliberately omit it. */
   messageId?: string;
   /** Moderator trigger message id. */
   groupMessageId?: string;
   /** Raw USD amount string. */
   amountUsd?: string;
+  /** Server-decided payout provenance; never copied from the public request body. */
+  serverPayoutKind?: 'welcome';
+  /** Trusted booked UTC payout day for the shop-payment window. */
+  shopPaymentUtcDay?: string;
 }
 
 /** Issue action result: an invoice, or the HTTP error the spend route returned. */
@@ -407,6 +488,20 @@ export type IssueGiftInvoiceResult =
 export type ProveGiftInvoiceResult =
   | { ok: true; body: { status: 'paid'; id: string; paymentHash: string } }
   | { ok: false; status: 400 | 404 | 409; error: string };
+
+const inMemoryWelcomeReservations = new WeakMap<
+  InvoiceStore,
+  InMemoryWelcomeInvoiceReservationStore
+>();
+
+function welcomeReservationsFor(deps: GiftActionDeps): WelcomeInvoiceReservationStore {
+  if (deps.welcomeReservations !== undefined) return deps.welcomeReservations;
+  const existing = inMemoryWelcomeReservations.get(deps.store);
+  if (existing !== undefined) return existing;
+  const created = new InMemoryWelcomeInvoiceReservationStore();
+  inMemoryWelcomeReservations.set(deps.store, created);
+  return created;
+}
 
 /**
  * One payment-time snapshot for the gift, the forum credit, and the group row.
@@ -782,179 +877,231 @@ async function issueGiftInvoiceLocked(
   }
   const account = receiver.account;
 
-  const { eligible } = await loadPayoutEligibility(
-    fundingStore,
-    deps.authStore,
-    account,
-    deps.now(),
-    deps.recoveryShareRequiredFrom ?? null,
-  );
-  if (!eligible) {
-    logEvent('invoice.funding_required', { address });
-    return { ok: false, status: 403, error: 'Funding grant required' };
-  }
-
-  const welcomeRefused = async (): Promise<boolean> =>
-    input.comment === 'Welcome' &&
-    (await accountWelcomed({
+  let welcomed: Promise<boolean> | undefined;
+  const welcomeRefused = (): Promise<boolean> => {
+    if (input.comment !== 'Welcome') return Promise.resolve(false);
+    welcomed ??= accountWelcomed({
       auth: deps.authStore,
       messages: deps.messageStore,
       gifts: deps.giftStore,
       account,
-    }));
-  // With a groupMessageId the check waits until it is resolved: a resolved
-  // moderator payout is recorded as `moderator`, not as a welcome.
-  if (input.groupMessageId === undefined && (await welcomeRefused())) {
-    logEvent('invoice.welcome_already_paid', { address });
-    return { ok: false, status: 409, error: 'Welcome gift already paid' };
-  }
-
-  let resolvedGroupMessageId: string | undefined;
-  if (input.messageId !== undefined) {
-    const message = forumMessage;
-    if (
-      message === undefined ||
-      message.deletedAt !== null ||
-      message.parentId !== null ||
-      message.accountId === null ||
-      message.accountId !== account.id
-    ) {
-      logEvent('invoice.forum_post_required', { address });
-      return { ok: false, status: 403, error: 'Forum post required' };
-    }
-    if (
-      message.hasPhoto !== true &&
-      message.hasVideo !== true &&
-      !(Number(message.photoCount) > 0)
-    ) {
-      logEvent('invoice.forum_post_required', { address });
-      return { ok: false, status: 403, error: 'Forum post required' };
-    }
-    const accounts = await deps.authStore.listAccounts();
-    const platform = accounts.find((item) => item.isPlatform === true);
-    if (platform === undefined) {
-      return { ok: false, status: 503, error: 'Platform account is not configured' };
-    }
-  } else {
-    const hasPosted = await accountHasPosted(deps.messageStore, account);
-    if (!hasPosted) {
-      logEvent('invoice.forum_post_required', { address });
-      return { ok: false, status: 403, error: 'Forum post required' };
-    }
-    if (input.groupMessageId !== undefined) {
-      // Display only: a failing lookup must never block the payout.
-      try {
-        const conversationStore = deps.conversationStore;
-        const row =
-          conversationStore === undefined
-            ? undefined
-            : await conversationStore.getMessageById(input.groupMessageId);
-        const thread =
-          conversationStore === undefined || row === undefined
-            ? undefined
-            : await conversationStore.getById(row.conversationId);
-        const accounts = await deps.authStore.listAccounts();
-        const platform = accounts.find((item) => item.isPlatform === true);
-        if (
-          conversationStore !== undefined &&
-          row !== undefined &&
-          thread !== undefined &&
-          thread.kind === 'moderator_group' &&
-          row.senderAccountId === account.id &&
-          !(isModeratorGroupMember(account) && !earnsModeratorGroupPay(account)) &&
-          platform !== undefined
-        ) {
-          resolvedGroupMessageId = input.groupMessageId;
-        }
-      } catch {
-        resolvedGroupMessageId = undefined;
-      }
-      if (resolvedGroupMessageId === undefined) {
-        logEvent('invoice.group_message_ignored', { address });
-      }
-    }
-  }
-
-  if (
-    input.groupMessageId !== undefined &&
-    resolvedGroupMessageId === undefined &&
-    (await welcomeRefused())
-  ) {
-    logEvent('invoice.welcome_already_paid', { address });
-    return { ok: false, status: 409, error: 'Welcome gift already paid' };
-  }
-
-  if (
-    input.comment !== 'Welcome' &&
-    resolvedGroupMessageId === undefined &&
-    deps.gifts !== undefined
-  ) {
-    let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
-    try {
-      outbound = await deps.gifts.listOutbound();
-    } catch {
-      return { ok: false, status: 503, error: 'Gift ledger unreadable' };
-    }
-    if (
-      welcomeGiftPaidOnUtcDay(outbound, address, new Date(deps.now()).toISOString().slice(0, 10))
-    ) {
-      logEvent('invoice.welcome_paid', { address });
-      return { ok: false, status: 403, error: 'Welcome gift already paid' };
-    }
-  }
-
-  const fetchArgs: {
-    address: string;
-    amountMsat: number;
-    comment?: string;
-    fetchImpl: FetchFn;
-  } = {
-    address: receiver.receiving.address,
-    amountMsat,
-    fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
+    });
+    return welcomed;
   };
-  if (input.comment !== undefined) {
-    fetchArgs.comment = input.comment;
-  }
-  const fetched = await requestGiftInvoice(fetchArgs);
-  if (!fetched.ok) {
-    logEvent('invoice.issue_failed', { address });
-    return { ok: false, status: 502, error: ISSUE_ERROR };
-  }
-
-  const decoded = decodeBolt11(fetched.pr);
-  if (decoded === null || decoded.amountMsat !== amountMsat) {
-    logEvent('invoice.issue_failed', { address });
-    return { ok: false, status: 502, error: ISSUE_ERROR };
-  }
-
-  const now = deps.now();
-  const id = newInvoiceId();
-  const invoice: GiftInvoice = {
-    id,
-    address: receiver.receiving.address,
-    pr: fetched.pr,
-    paymentHash: decoded.paymentHash,
+  const welcomeRequest: WelcomeExceptionRequest = {
     amountMsat,
-    createdAt: now,
-    expiresAt: now + GIFT_INVOICE_TTL_MS,
-    ...(input.comment === undefined ? {} : { comment: input.comment }),
-    ...(input.messageId === undefined
-      ? {}
-      : { messageId: input.messageId, comment: input.comment ?? '' }),
-    ...(resolvedGroupMessageId === undefined
-      ? {}
-      : { groupMessageId: resolvedGroupMessageId, comment: input.comment ?? '' }),
-    ...(input.comment === 'Welcome' &&
-    input.messageId === undefined &&
-    resolvedGroupMessageId === undefined
-      ? { comment: 'Welcome' }
-      : {}),
     ...(amountUsd === undefined ? {} : { amountUsd }),
+    ...(input.comment === undefined ? {} : { comment: input.comment }),
+    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+    ...(input.groupMessageId === undefined ? {} : { groupMessageId: input.groupMessageId }),
   };
-  deps.store.put(invoice);
-  logEvent('invoice.issued', { id, address, amountMsat });
-  return { ok: true, invoice };
+  const canonicalWelcome = canonicalWelcomeRequest(welcomeRequest);
+  const welcomeReservations = welcomeReservationsFor(deps);
+  const reservedAt = deps.now();
+  const reservationId = newInvoiceId();
+  let welcomeReservationAccountId: string | undefined;
+  let serverPayoutKind: 'welcome' | undefined;
+  if (
+    await welcomeShopPaymentException(
+      deps.fetchImpl,
+      async () => isWelcomeRecipient(account) && !(await welcomeRefused()),
+      welcomeRequest,
+    )
+  ) {
+    try {
+      const reserved = await welcomeReservations.reserve(
+        account.id,
+        reservationId,
+        new Date(reservedAt),
+        new Date(reservedAt + GIFT_INVOICE_TTL_MS),
+      );
+      if (!reserved) {
+        return { ok: false, status: 409, error: 'Welcome invoice already open' };
+      }
+      welcomeReservationAccountId = account.id;
+      serverPayoutKind = input.serverPayoutKind ?? 'welcome';
+    } catch {
+      return { ok: false, status: 503, error: 'Welcome invoice reservation unavailable' };
+    }
+  }
+  const genuineWelcome = serverPayoutKind === 'welcome' && canonicalWelcome;
+  let keepWelcomeReservation = false;
+
+  try {
+    const { eligible } = await loadPayoutEligibility(
+      fundingStore,
+      deps.authStore,
+      account,
+      deps.now(),
+      deps.recoveryShareRequiredFrom ?? null,
+      genuineWelcome ? undefined : deps.walletTransfers,
+      input.shopPaymentUtcDay,
+    );
+    if (!eligible) {
+      logEvent('invoice.funding_required', { address });
+      return { ok: false, status: 403, error: 'Funding grant required' };
+    }
+
+    // With a groupMessageId the check waits until it is resolved: a resolved
+    // moderator payout is recorded as `moderator`, not as a welcome.
+    if (input.groupMessageId === undefined && (await welcomeRefused())) {
+      logEvent('invoice.welcome_already_paid', { address });
+      return { ok: false, status: 409, error: 'Welcome gift already paid' };
+    }
+
+    let resolvedGroupMessageId: string | undefined;
+    if (input.messageId !== undefined) {
+      const message = forumMessage;
+      if (
+        message === undefined ||
+        message.deletedAt !== null ||
+        message.parentId !== null ||
+        message.accountId === null ||
+        message.accountId !== account.id
+      ) {
+        logEvent('invoice.forum_post_required', { address });
+        return { ok: false, status: 403, error: 'Forum post required' };
+      }
+      if (
+        message.hasPhoto !== true &&
+        message.hasVideo !== true &&
+        !(Number(message.photoCount) > 0)
+      ) {
+        logEvent('invoice.forum_post_required', { address });
+        return { ok: false, status: 403, error: 'Forum post required' };
+      }
+      const accounts = await deps.authStore.listAccounts();
+      const platform = accounts.find((item) => item.isPlatform === true);
+      if (platform === undefined) {
+        return { ok: false, status: 503, error: 'Platform account is not configured' };
+      }
+    } else {
+      const hasPosted = await accountHasPosted(deps.messageStore, account);
+      if (!hasPosted) {
+        logEvent('invoice.forum_post_required', { address });
+        return { ok: false, status: 403, error: 'Forum post required' };
+      }
+      if (input.groupMessageId !== undefined) {
+        // Display only: a failing lookup must never block the payout.
+        try {
+          const conversationStore = deps.conversationStore;
+          const row =
+            conversationStore === undefined
+              ? undefined
+              : await conversationStore.getMessageById(input.groupMessageId);
+          const thread =
+            conversationStore === undefined || row === undefined
+              ? undefined
+              : await conversationStore.getById(row.conversationId);
+          const accounts = await deps.authStore.listAccounts();
+          const platform = accounts.find((item) => item.isPlatform === true);
+          if (
+            conversationStore !== undefined &&
+            row !== undefined &&
+            thread !== undefined &&
+            thread.kind === 'moderator_group' &&
+            row.senderAccountId === account.id &&
+            !(isModeratorGroupMember(account) && !earnsModeratorGroupPay(account)) &&
+            platform !== undefined
+          ) {
+            resolvedGroupMessageId = input.groupMessageId;
+          }
+        } catch {
+          resolvedGroupMessageId = undefined;
+        }
+        if (resolvedGroupMessageId === undefined) {
+          logEvent('invoice.group_message_ignored', { address });
+        }
+      }
+    }
+
+    if (
+      input.groupMessageId !== undefined &&
+      resolvedGroupMessageId === undefined &&
+      (await welcomeRefused())
+    ) {
+      logEvent('invoice.welcome_already_paid', { address });
+      return { ok: false, status: 409, error: 'Welcome gift already paid' };
+    }
+
+    if (
+      input.comment !== 'Welcome' &&
+      resolvedGroupMessageId === undefined &&
+      deps.gifts !== undefined
+    ) {
+      let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
+      try {
+        outbound = await deps.gifts.listOutbound();
+      } catch {
+        return { ok: false, status: 503, error: 'Gift ledger unreadable' };
+      }
+      if (
+        welcomeGiftPaidOnUtcDay(outbound, address, new Date(deps.now()).toISOString().slice(0, 10))
+      ) {
+        logEvent('invoice.welcome_paid', { address });
+        return { ok: false, status: 403, error: 'Welcome gift already paid' };
+      }
+    }
+
+    const fetchArgs: {
+      address: string;
+      amountMsat: number;
+      comment?: string;
+      fetchImpl: FetchFn;
+    } = {
+      address: receiver.receiving.address,
+      amountMsat,
+      fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
+    };
+    if (input.comment !== undefined) {
+      fetchArgs.comment = input.comment;
+    }
+    const fetched = await requestGiftInvoice(fetchArgs);
+    if (!fetched.ok) {
+      logEvent('invoice.issue_failed', { address });
+      return { ok: false, status: 502, error: ISSUE_ERROR };
+    }
+
+    const decoded = decodeBolt11(fetched.pr);
+    if (decoded === null || decoded.amountMsat !== amountMsat) {
+      logEvent('invoice.issue_failed', { address });
+      return { ok: false, status: 502, error: ISSUE_ERROR };
+    }
+
+    const now = genuineWelcome ? reservedAt : deps.now();
+    const id = genuineWelcome ? reservationId : newInvoiceId();
+    const invoice: GiftInvoice = {
+      id,
+      address: receiver.receiving.address,
+      pr: fetched.pr,
+      paymentHash: decoded.paymentHash,
+      amountMsat,
+      createdAt: now,
+      expiresAt: now + GIFT_INVOICE_TTL_MS,
+      ...(input.comment === undefined ? {} : { comment: input.comment }),
+      ...(input.messageId === undefined
+        ? {}
+        : { messageId: input.messageId, comment: input.comment ?? '' }),
+      ...(resolvedGroupMessageId === undefined
+        ? {}
+        : { groupMessageId: resolvedGroupMessageId, comment: input.comment ?? '' }),
+      ...(input.comment === 'Welcome' &&
+      input.messageId === undefined &&
+      resolvedGroupMessageId === undefined
+        ? { comment: 'Welcome' }
+        : {}),
+      ...(amountUsd === undefined ? {} : { amountUsd }),
+      ...(welcomeReservationAccountId === undefined ? {} : { welcomeReservationAccountId }),
+    };
+    deps.store.put(invoice);
+    keepWelcomeReservation = true;
+    logEvent('invoice.issued', { id, address, amountMsat });
+    return { ok: true, invoice };
+  } finally {
+    if (welcomeReservationAccountId !== undefined && !keepWelcomeReservation) {
+      await welcomeReservations.release(welcomeReservationAccountId, reservationId);
+    }
+  }
 }
 
 /**
@@ -999,6 +1146,9 @@ export async function proveGiftInvoice(
     };
   }
   if (now >= invoice.expiresAt) {
+    if (invoice.welcomeReservationAccountId !== undefined) {
+      await welcomeReservationsFor(deps).release(invoice.welcomeReservationAccountId, invoice.id);
+    }
     return { ok: false, status: 409, error: 'Invoice expired' };
   }
   return { ok: false, status: 400, error: GIFT_PROOF_MISMATCH };
@@ -1051,14 +1201,18 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ eligible: false, status: 'none' }, 200);
       }
       const nowMs = deps.now();
+      const welcomeException = await welcomeShopPaymentException(deps.fetchImpl, () =>
+        welcomeGiftOwed(deps, account),
+      );
       const { grant, eligible } = await loadPayoutEligibility(
         fundingStore,
         deps.authStore,
         account,
         nowMs,
         deps.recoveryShareRequiredFrom ?? null,
+        welcomeException ? undefined : deps.walletTransfers,
       );
-      return c.json({ eligible, status: effectiveStatus(grant, nowMs) }, 200);
+      return c.json({ eligible, status: ownerFundingStatus(grant, nowMs) }, 200);
     })
     .get('/posted', async (c) => {
       const denied = authGate(

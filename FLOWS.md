@@ -237,7 +237,7 @@ HTTP cited: `/lightning-address`, `/gifts/stats`, `/gifts?day=` (see `SPEC.md`).
 Public gift totals are **Shipped** as `GET /gifts/stats` (sats, BTC,
 historical USD at each gift's UTC-day Coinbase BTC-USD close, and
 CHF/EUR/PHP = USD × that UTC day's ECB rate, last business day if closed;
-UTC spend-over-time, recipient count, per month). Individual gifts for one UTC day
+UTC spend-over-time, per person, per month). Individual gifts for one UTC day
 are **Shipped** as `GET /gifts?day=YYYY-MM-DD`. No invoices. The app
 statistics page and `/stats/{day}` consume those routes.
 
@@ -264,7 +264,8 @@ media (else 403 `Forum post required`); omitted
 `POST /invoices` 403s
 `Funding grant required` when not eligible. `GET /invoices/eligible?address=`
 is the spend lookup and returns 200 `{ eligible, status }` (`status` is
-`effectiveStatus`; unknown/`basis` are `{ eligible: false, status: "none" }`).
+`ownerFundingStatus`, so a withdrawn grant reads `none`; unknown/`basis` are
+`{ eligible: false, status: "none" }`).
 `POST /invoices/proof` does not check the grant.
 Every spend lookup and `POST /invoices` match `address` only as a member's
 wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive,
@@ -286,19 +287,20 @@ a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 `{ address, messageId }`, `address` being the author's wallet address, and Bearer `SPEND_API_TOKEN`) only when the author
 is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
-`not_eligible` or `no_media` and still 200; when `role === 'verified'` and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
+`not_eligible` or `no_media` and still 200; when the author is an exactly `verified` non-platform account and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 the welcome gift is once per account: an account that already has a
 platform `Welcome` reply under one of its notes, a recorded `welcome` gift paid to its legacy
 external address, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification, is not pinged again; becoming
-verified and saving About me while verified also welcome-ping; while an operator has turned
+exactly `verified` while non-platform and saving About me while welcome-eligible also welcome-ping; while an operator has turned
 the welcome sweep on (`PUT /debug/welcome-sweep`; it starts off on every boot, so the run at
-boot pings nobody), a 15-minute timer welcome-pings every verified account that already has a
+boot pings nobody), a 15-minute timer welcome-pings every exactly `verified` non-platform account that already has a
 photo or video post;
-replies and any role other than `verified` do not welcome-ping); replies and media replay do
-not ping; unset/blank env skips the ping and still returns 200;
+replies, every role other than exactly `verified`, and the platform account do
+not welcome-ping); replies and media replay do not ping; unset/blank env skips
+the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
 snapshotted at post, `sats`, `payable`, `authorCanReceive`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter **and** a best-effort NIP-09 (`kind: 5`, signed with the note author's custodial nsec) on the durability relay plus the public relay list, plus a best-effort Cloudflare purge of public photo/video URLs. Unsigned/public GET of a hidden row stays 404. A founder/moderator session may GET the hidden row (and photo/video) so the app can show who hid it and when. Hiding a note also retracts in-app notifications whose parent or reply is that note or a direct child. `GET /notifications` drops remaining rows whose parent or reply message is missing or hidden. Operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. Restore does not undelete Nostr. The shipped UI

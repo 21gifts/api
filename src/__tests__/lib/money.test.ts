@@ -13,7 +13,24 @@ import {
   satsToUsdCents,
   usdCentsToFiatCents,
   usdCentsToString,
+  usdToMsat,
 } from '@/lib/money';
+
+describe('usdToMsat', () => {
+  it('uses the Fond whole-satoshi half-up conversion', () => {
+    expect(usdToMsat('1.00', '100000')).toBe(1_000_000);
+    expect(usdToMsat('1.005', '67000000')).toBe(2000);
+    expect(usdToMsat('0.004', '100000')).toBe(4000);
+  });
+
+  it('returns null for unusable, non-positive, or overflowing values', () => {
+    expect(usdToMsat('nope', '100000')).toBeNull();
+    expect(usdToMsat('1.00', 'nope')).toBeNull();
+    expect(usdToMsat('0', '100000')).toBeNull();
+    expect(usdToMsat('1.00', '0')).toBeNull();
+    expect(usdToMsat('999999999999999999', '0.000000000001')).toBeNull();
+  });
+});
 
 describe('normalizeAmountUsd', () => {
   it('normalizes integer-cent USD values and rejects unusable values', () => {

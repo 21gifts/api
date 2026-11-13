@@ -34,11 +34,13 @@ async function authStore(): Promise<InMemoryAuthStore> {
     linkingKey: null,
     role: 'verified',
     name: 'Ada',
+    username: 'ada',
     location: null,
     forumLawsDismissed: false,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: 1,
+    walletRequired: true,
   });
   await store.createSession({ token: TOKEN, accountId: ACCOUNT, createdAt: START });
   return store;
@@ -166,7 +168,7 @@ describe('POST /me/wallet/report', () => {
     const response = await post(app, body({ payments: [reported(), { id: 'bad' }] }));
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ acknowledgedIds: ['p1'] });
-    expect(await walletStore.latestBalance(ACCOUNT)).toMatchObject({
+    expect(await walletStore.latestBalance(ACCOUNT, null)).toMatchObject({
       accountId: ACCOUNT,
       balanceSats: 100,
       syncedAt: new Date(START),
@@ -175,6 +177,21 @@ describe('POST /me/wallet/report', () => {
     expect(await walletStore.listPayments(ACCOUNT, 10)).toEqual([
       expect.objectContaining({ paymentId: 'p1', category: 'unknown' }),
     ]);
+  });
+
+  it('associates a report with the session account current verified wallet', async () => {
+    const auth = await authStore();
+    const walletPubkey = `02${'b'.repeat(64)}`;
+    await auth.claimSparkPubkey(ACCOUNT, walletPubkey);
+    await auth.markSparkPubkeyVerified(ACCOUNT, walletPubkey, 'ada', START);
+    const walletStore = new InMemoryWalletStore();
+    const { app } = await mount({ auth, walletStore });
+    expect((await post(app, body())).status).toBe(200);
+    await expect(walletStore.latestBalance(ACCOUNT, walletPubkey)).resolves.toMatchObject({
+      accountId: ACCOUNT,
+      walletPubkey,
+      balanceSats: 100,
+    });
   });
 
   it('idempotently changes pending to completed while keeping firstSeenAt', async () => {
@@ -209,7 +226,9 @@ describe('POST /me/wallet/report', () => {
         updatedAt: new Date(START + 1),
       }),
     ]);
-    expect((await walletStore.latestBalance(ACCOUNT))?.receivedAt).toEqual(new Date(START + 1));
+    expect((await walletStore.latestBalance(ACCOUNT, null))?.receivedAt).toEqual(
+      new Date(START + 1),
+    );
   });
 
   it('keeps the observation clock per account and drops idle accounts after the window', async () => {
@@ -234,13 +253,13 @@ describe('POST /me/wallet/report', () => {
     expect((await post(app, body({ payments: [reported()] }))).status).toBe(200);
     expect((await post(app, body({ payments: [reported()] }), otherAuth)).status).toBe(200);
     // Another account in the same millisecond is not pushed forward.
-    expect((await walletStore.latestBalance(other))?.receivedAt).toEqual(new Date(START));
+    expect((await walletStore.latestBalance(other, null))?.receivedAt).toEqual(new Date(START));
     now = START + 30_000;
     expect((await post(app, body({ payments: [reported()] }), otherAuth)).status).toBe(200);
     now = START + 61_000;
     // The sweep drops the first account (idle for a full window) and keeps the second.
     expect((await post(app, body({ payments: [reported()] }))).status).toBe(200);
-    expect((await walletStore.latestBalance(ACCOUNT))?.receivedAt).toEqual(
+    expect((await walletStore.latestBalance(ACCOUNT, null))?.receivedAt).toEqual(
       new Date(START + 61_000),
     );
   });

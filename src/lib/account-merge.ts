@@ -51,6 +51,7 @@ type MergeResult =
         | 'platform'
         | 'both_grants'
         | 'shop_payment_open'
+        | 'welcome_invoice_open'
         | 'repayment_unavailable';
     };
 
@@ -192,7 +193,9 @@ function quoteIdentifier(identifier: string): string {
 /**
  * Fold one account into another on one reserved transaction connection.
  *
- * Under both account row locks it refuses with `shop_payment_open`, before
+ * Under both account row locks it refuses with `welcome_invoice_open`, before
+ * any write, while both accounts have an unexpired welcome-invoice lease. It
+ * refuses with `shop_payment_open`, also before
  * any write, while the merged account has a shop payment that is neither
  * paid nor closed, or has an unexpired pending charge while the surviving
  * account has no unexpired pending charge and has an `open` shop payment.
@@ -229,6 +232,13 @@ function quoteIdentifier(identifier: string): string {
  * loan schedule and converted to canonical parts. A schedule that cannot be
  * reconstructed refuses the merge without writes. Parts from both identities
  * are then moved without changing their immutable part indexes.
+ * Viewer-sourced histories follow `wallet_payment`: duplicate transfer ids or
+ * token hashes for the same wallet reconcile the earliest first observation
+ * with the mutable state from the latest observation, and duplicate sync rows
+ * keep the latest full-sync time,
+ * transfer self-counterparty account caches are cleared while the attributed
+ * public-key list (including a self-transfer's own key) is retained, and every
+ * remaining history and full-sync row moves to the surviving account.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -332,6 +342,17 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     );
     if (grants.length >= 2) {
       return { ok: false, error: 'both_grants' };
+    }
+
+    const welcomeReservations = await tx.query<{ account_id: string }>(
+      `SELECT account_id FROM welcome_invoice_reservation
+       WHERE account_id IN ($1, $2) AND expires_at > now()
+       ORDER BY account_id
+       FOR UPDATE`,
+      accountParams,
+    );
+    if (welcomeReservations.length >= 2) {
+      return { ok: false, error: 'welcome_invoice_open' };
     }
 
     // A shop payment's BOLT11 pays the merged account's wallet, which the merge
@@ -1060,9 +1081,225 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          )`,
       accountParams,
     );
+    await tx.query(
+      `WITH duplicate AS (
+         SELECT src.*,
+                CASE
+                  WHEN src.transfer_updated_at IS NOT NULL
+                   AND dst.transfer_updated_at IS NOT NULL
+                    THEN src.transfer_updated_at > dst.transfer_updated_at
+                  WHEN src.transfer_updated_at IS NOT NULL THEN true
+                  WHEN dst.transfer_updated_at IS NOT NULL THEN false
+                  WHEN src.status = 'completed'
+                   AND src.direction = 'out'
+                   AND src.type = 'transfer'
+                   AND dst.status = 'completed'
+                   AND dst.direction = 'out'
+                   AND dst.type = 'transfer'
+                   AND src_shop.present <> dst_shop.present
+                    THEN src_shop.present
+                  WHEN src.status = 'completed'
+                   AND src.direction = 'out'
+                   AND src.type = 'transfer'
+                   AND NOT (
+                     dst.status = 'completed'
+                     AND dst.direction = 'out'
+                     AND dst.type = 'transfer'
+                   ) THEN true
+                  WHEN dst.status = 'completed'
+                   AND dst.direction = 'out'
+                   AND dst.type = 'transfer'
+                   AND NOT (
+                     src.status = 'completed'
+                     AND src.direction = 'out'
+                     AND src.type = 'transfer'
+                   ) THEN false
+                  WHEN src.status <> 'pending' AND dst.status = 'pending' THEN true
+                  WHEN src.status = 'pending' AND dst.status <> 'pending' THEN false
+                  ELSE src.last_seen_at > dst.last_seen_at
+                END AS state_from_src
+         FROM wallet_transfer AS src
+         JOIN wallet_transfer AS dst
+           ON dst.account_id = $2
+          AND dst.wallet_pubkey = src.wallet_pubkey
+          AND dst.transfer_id = src.transfer_id
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(src.transfer_updated_at, src.transfer_created_at) IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(src.counterparty_pubkeys) AS counterparty(pubkey)
+                JOIN LATERAL (
+                  SELECT COALESCE(
+                    (SELECT id FROM account
+                     WHERE spark_pubkey = counterparty.pubkey
+                       AND spark_pubkey_verified_at IS NOT NULL
+                     ORDER BY id LIMIT 1),
+                    (SELECT account_id FROM previous_wallet
+                     WHERE spark_pubkey = counterparty.pubkey
+                     ORDER BY replaced_at DESC, account_id LIMIT 1)
+                  ) AS account_id
+                ) AS resolved ON resolved.account_id IS NOT NULL
+                JOIN message AS shop
+                  ON shop.shop_account_id = resolved.account_id
+                 AND shop.parent_id IS NULL
+                 AND shop.deleted_at IS NULL
+                 AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
+                WHERE resolved.account_id NOT IN ($1, $2)
+              ) AS present
+         ) AS src_shop
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(dst.transfer_updated_at, dst.transfer_created_at) IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(dst.counterparty_pubkeys) AS counterparty(pubkey)
+                JOIN LATERAL (
+                  SELECT COALESCE(
+                    (SELECT id FROM account
+                     WHERE spark_pubkey = counterparty.pubkey
+                       AND spark_pubkey_verified_at IS NOT NULL
+                     ORDER BY id LIMIT 1),
+                    (SELECT account_id FROM previous_wallet
+                     WHERE spark_pubkey = counterparty.pubkey
+                     ORDER BY replaced_at DESC, account_id LIMIT 1)
+                  ) AS account_id
+                ) AS resolved ON resolved.account_id IS NOT NULL
+                JOIN message AS shop
+                  ON shop.shop_account_id = resolved.account_id
+                 AND shop.parent_id IS NULL
+                 AND shop.deleted_at IS NULL
+                 AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
+                WHERE resolved.account_id NOT IN ($1, $2)
+              ) AS present
+         ) AS dst_shop
+         WHERE src.account_id = $1
+       )
+       UPDATE wallet_transfer AS dst
+       SET direction = CASE WHEN src.state_from_src THEN src.direction ELSE dst.direction END,
+           type = CASE WHEN src.state_from_src THEN src.type ELSE dst.type END,
+           status = CASE WHEN src.state_from_src THEN src.status ELSE dst.status END,
+           amount_sats = CASE WHEN src.state_from_src THEN src.amount_sats ELSE dst.amount_sats END,
+           counterparty_pubkey = CASE WHEN src.state_from_src THEN src.counterparty_pubkey ELSE dst.counterparty_pubkey END,
+           counterparty_pubkeys = CASE WHEN src.state_from_src THEN src.counterparty_pubkeys ELSE dst.counterparty_pubkeys END,
+           counterparty_account_id = CASE WHEN src.state_from_src THEN src.counterparty_account_id ELSE dst.counterparty_account_id END,
+           spark_invoice = CASE WHEN src.state_from_src THEN src.spark_invoice ELSE dst.spark_invoice END,
+           transfer_created_at = CASE WHEN src.state_from_src THEN src.transfer_created_at ELSE dst.transfer_created_at END,
+           transfer_updated_at = CASE WHEN src.state_from_src THEN src.transfer_updated_at ELSE dst.transfer_updated_at END,
+           first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at),
+           last_seen_at = GREATEST(src.last_seen_at, dst.last_seen_at)
+       FROM duplicate AS src
+       WHERE dst.account_id = $2
+         AND dst.wallet_pubkey = src.wallet_pubkey
+         AND dst.transfer_id = src.transfer_id`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM wallet_transfer AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM wallet_transfer AS dst
+           WHERE dst.account_id = $2
+             AND dst.wallet_pubkey = src.wallet_pubkey
+             AND dst.transfer_id = src.transfer_id
+         )`,
+      accountParams,
+    );
+    await tx.query(
+      `WITH duplicate AS (
+         SELECT src.*,
+                CASE
+                  WHEN src.resolved_input_count IS NULL AND dst.resolved_input_count IS NULL
+                    THEN src.last_seen_at > dst.last_seen_at
+                  WHEN dst.resolved_input_count IS NULL
+                    THEN src.resolved_input_count = src.input_count
+                  WHEN src.resolved_input_count IS NULL THEN false
+                  WHEN src.resolved_input_count <> dst.resolved_input_count
+                    THEN src.resolved_input_count > dst.resolved_input_count
+                  ELSE src.last_seen_at > dst.last_seen_at
+                END AS projection_from_src
+         FROM wallet_token_transaction AS src
+         JOIN wallet_token_transaction AS dst
+           ON dst.account_id = $2
+          AND dst.wallet_pubkey = src.wallet_pubkey
+          AND dst.transaction_hash = src.transaction_hash
+         WHERE src.account_id = $1
+       )
+       UPDATE wallet_token_transaction AS dst
+       SET token_identifier = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.token_identifier ELSE dst.token_identifier END,
+           direction = CASE WHEN src.projection_from_src THEN src.direction ELSE dst.direction END,
+           amount = CASE WHEN src.projection_from_src THEN src.amount ELSE dst.amount END,
+           counterparty_pubkeys = CASE WHEN src.projection_from_src THEN src.counterparty_pubkeys ELSE dst.counterparty_pubkeys END,
+           input_count = CASE WHEN src.projection_from_src THEN src.input_count ELSE dst.input_count END,
+           resolved_input_count = CASE WHEN src.projection_from_src THEN src.resolved_input_count ELSE dst.resolved_input_count END,
+           spark_invoices = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.spark_invoices ELSE dst.spark_invoices END,
+           type = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.type ELSE dst.type END,
+           status = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END,
+           transaction_created_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transaction_created_at ELSE dst.transaction_created_at END,
+           transaction_expiry_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transaction_expiry_at ELSE dst.transaction_expiry_at END,
+           first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at),
+           last_seen_at = GREATEST(src.last_seen_at, dst.last_seen_at)
+       FROM duplicate AS src
+       WHERE dst.account_id = $2
+         AND dst.wallet_pubkey = src.wallet_pubkey
+         AND dst.transaction_hash = src.transaction_hash`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM wallet_token_transaction AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM wallet_token_transaction AS dst
+           WHERE dst.account_id = $2
+             AND dst.wallet_pubkey = src.wallet_pubkey
+             AND dst.transaction_hash = src.transaction_hash
+         )`,
+      accountParams,
+    );
+    await tx.query(
+      `UPDATE wallet_transfer_sync AS dst
+       SET last_full_sync_at = GREATEST(src.last_full_sync_at, dst.last_full_sync_at)
+       FROM wallet_transfer_sync AS src
+       WHERE src.account_id = $1 AND dst.account_id = $2
+         AND dst.wallet_pubkey = src.wallet_pubkey`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM wallet_transfer_sync AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM wallet_transfer_sync AS dst
+           WHERE dst.account_id = $2 AND dst.wallet_pubkey = src.wallet_pubkey
+         )`,
+      accountParams,
+    );
+    // Drop the losing row before the catalog foreign-key pass moves the
+    // source row. `reservation_id` is immediately unique, so copying it onto
+    // the destination while the source still exists cannot be used as a swap.
+    await tx.query(
+      `DELETE FROM welcome_invoice_reservation AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM welcome_invoice_reservation AS dst
+           WHERE dst.account_id = $2 AND src.expires_at <= dst.expires_at
+         )`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM welcome_invoice_reservation AS dst
+       WHERE dst.account_id = $2
+         AND EXISTS (
+           SELECT 1 FROM welcome_invoice_reservation AS src
+           WHERE src.account_id = $1 AND src.expires_at > dst.expires_at
+         )`,
+      accountParams,
+    );
     // A payment between the two accounts would point at its own account after the merge.
     await tx.query(
       `UPDATE wallet_payment SET counterparty_account_id = NULL
+       WHERE account_id IN ($1, $2) AND counterparty_account_id IN ($1, $2)`,
+      accountParams,
+    );
+    await tx.query(
+      `UPDATE wallet_transfer SET counterparty_account_id = NULL
        WHERE account_id IN ($1, $2) AND counterparty_account_id IN ($1, $2)`,
       accountParams,
     );

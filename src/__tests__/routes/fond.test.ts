@@ -21,6 +21,7 @@ import {
   type WalletPaymentRecord,
   type WalletStore,
 } from '@/lib/wallet-store';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { fondRoutes } from '@/routes/fond';
 import { issueGiftInvoice } from '@/routes/invoices';
 
@@ -187,6 +188,7 @@ interface AppOptions {
   actionsStore?: InMemoryInvoiceStore;
   payoutStore?: InMemoryFondPayoutStore;
   walletStore?: WalletStore;
+  walletTransferStore?: Pick<WalletTransferStore, 'hasShopPayment'>;
   messageStore?: InMemoryMessageStore;
   fundingStore?: InMemoryFundingStore;
   fetchImpl?: FetchFn;
@@ -252,6 +254,9 @@ async function makeApp(options: AppOptions = {}): Promise<{
         now,
         fetchImpl,
         fundingStore: options.fundingStore ?? new InMemoryFundingStore(),
+        ...(options.walletTransferStore === undefined
+          ? {}
+          : { walletTransfers: options.walletTransferStore }),
         lnurlServer: LNURL,
       },
     }),
@@ -879,7 +884,12 @@ describe('GET /fond/summary', () => {
   });
 
   it('sums completed movements, latest balance, and paid payouts', async () => {
-    const { app, payouts, walletStore } = await makeApp();
+    const { app, auth, payouts, walletStore } = await makeApp({ seedFond: false });
+    const currentWallet = `02${'d'.repeat(64)}`;
+    const previousWallet = `02${'e'.repeat(64)}`;
+    await fondAccount(auth, { walletRequired: true });
+    await auth.claimSparkPubkey('fond-account', currentWallet);
+    await auth.markSparkPubkeyVerified('fond-account', currentWallet, FOND, 1);
     await walletStore.upsertPayments([
       walletPayment({ paymentId: 'in-1', amountSats: 1_000 }),
       walletPayment({ paymentId: 'in-2', amountSats: 250 }),
@@ -892,6 +902,7 @@ describe('GET /fond/summary', () => {
     await walletStore.recordBalance({
       id: 'old',
       accountId: 'fond-account',
+      walletPubkey: currentWallet,
       balanceSats: 10,
       syncedAt: new Date('2026-11-10T09:00:00.000Z'),
       receivedAt: new Date('2026-11-10T09:00:00.000Z'),
@@ -899,9 +910,18 @@ describe('GET /fond/summary', () => {
     await walletStore.recordBalance({
       id: 'new',
       accountId: 'fond-account',
+      walletPubkey: currentWallet,
       balanceSats: 1_209,
       syncedAt: new Date('2026-11-10T10:00:00.000Z'),
       receivedAt: new Date('2026-11-10T10:00:00.000Z'),
+    });
+    await walletStore.recordBalance({
+      id: 'previous-wallet-newer',
+      accountId: 'fond-account',
+      walletPubkey: previousWallet,
+      balanceSats: 9_999,
+      syncedAt: new Date('2026-11-10T11:00:00.000Z'),
+      receivedAt: new Date('2026-11-10T11:00:00.000Z'),
     });
     await paidRow(payouts, 'aaaa', '1.00');
     await paidRow(payouts, 'bbbb', '2.50');
@@ -919,6 +939,30 @@ describe('GET /fond/summary', () => {
       balanceSyncedAt: '2026-11-10T10:00:00.000Z',
       payoutsPaid: 2,
       payoutsPaidUsd: '3.50',
+    });
+  });
+
+  it('falls back to the Fond legacy balance when its verified wallet has no keyed snapshot', async () => {
+    const { app, auth, walletStore } = await makeApp({ seedFond: false });
+    const currentWallet = `02${'d'.repeat(64)}`;
+    await fondAccount(auth, { walletRequired: true });
+    await auth.claimSparkPubkey('fond-account', currentWallet);
+    await auth.markSparkPubkeyVerified('fond-account', currentWallet, FOND, 1);
+    await walletStore.recordBalance({
+      id: 'legacy',
+      accountId: 'fond-account',
+      walletPubkey: null,
+      balanceSats: 77,
+      syncedAt: new Date('2026-11-10T10:00:00.000Z'),
+      receivedAt: new Date('2026-11-10T10:00:00.000Z'),
+    });
+
+    const res = await app.request('/fond/summary');
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      balanceSats: 77,
+      balanceSyncedAt: '2026-11-10T10:00:00.000Z',
     });
   });
 
@@ -1052,6 +1096,35 @@ describe('POST /fond/payouts/:id/invoice', () => {
     });
     expect(res.status).toBe(200);
     expect(get).toHaveBeenCalledWith(LETTERED_ROW_ID);
+  });
+
+  it("does not mark a daily roster comment 'Welcome' as the welcome exception", async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ comment: 'Welcome' }));
+    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice({ comment: 'Welcome' }) });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIssue.mock.calls[0]?.[1]).not.toHaveProperty('serverPayoutKind');
+  });
+
+  it('marks the genuine one-dollar welcome row with server provenance', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ kind: 'welcome', comment: 'Welcome', amountUsd: '1.00' }));
+    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice({ comment: 'Welcome' }) });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIssue.mock.calls[0]?.[1]).toMatchObject({
+      comment: 'Welcome',
+      amountUsd: '1.00',
+      serverPayoutKind: 'welcome',
+    });
+    expect(mockedIssue.mock.calls[0]?.[1]).not.toHaveProperty('messageId');
   });
 
   it('returns 409 Not payable for another-day owed, paid, or failed rows', async () => {
@@ -1206,6 +1279,66 @@ describe('POST /fond/payouts/:id/invoice', () => {
       sparkInvoice: null,
     });
     expect(mockedIssue).toHaveBeenCalledTimes(1);
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', claimedAt: null });
+  });
+
+  it('uses the booked payout day after a stale issuing lease crosses midnight', async () => {
+    let clock = Date.parse('2026-11-09T23:58:00.000Z');
+    const hasShopPayment = vi.fn(
+      async (_accountId: string, fromUtcDay: string, toUtcDay: string) =>
+        fromUtcDay === YESTERDAY && toUtcDay === TODAY,
+    );
+    const paymentHash = 'cd'.repeat(32);
+    const invoicePr = bolt11ForSats(1000, paymentHash);
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/ada')) {
+        return jsonResponse({
+          callback: `${LNURL.baseUrl}/lnurlp/ada/invoice`,
+          minSendable: 1000,
+          maxSendable: 100_000_000,
+          commentAllowed: 255,
+        });
+      }
+      return jsonResponse({ pr: invoicePr });
+    };
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'ada',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 1,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 1,
+        note: null,
+      },
+    ]);
+    const messageStore = new InMemoryMessageStore([
+      post({ accountId: 'ada', hasVideo: true, videoContentType: 'video/mp4' }),
+    ]);
+    const { app, payouts } = await makeApp({
+      now: () => clock,
+      seedPlatform: true,
+      seedRecipient: true,
+      fundingStore,
+      messageStore,
+      walletTransferStore: { hasShopPayment },
+      fetchImpl,
+    });
+    const actual = await vi.importActual<typeof import('@/routes/invoices')>('@/routes/invoices');
+    mockedIssue.mockImplementation(actual.issueGiftInvoice);
+    await payouts.enqueue(rowInput({ address: 'ada@gifts.test' }));
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+
+    clock += 120_001;
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(hasShopPayment).toHaveBeenCalledWith('ada', YESTERDAY, TODAY);
+    expect(hasShopPayment).toHaveBeenCalledOnce();
     expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', claimedAt: null });
   });
 
@@ -1498,6 +1631,7 @@ describe('POST /fond/payouts/:id/invoice', () => {
         comment: 'thanks',
         messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         amountUsd: '1.00',
+        shopPaymentUtcDay: TODAY,
       }),
     );
     expect(await payouts.get(ROW_ID)).toMatchObject({

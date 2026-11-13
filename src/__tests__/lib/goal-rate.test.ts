@@ -1,17 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import {
-  canonicalGoalAmount,
-  fiatToSats,
-  satsToFiatAmount,
-  type GoalRateDay,
-} from '@/lib/goal-rate';
+import { canonicalGoalAmount, fiatToSats } from '@/lib/goal-rate';
+import type { FxSpotQuote } from '@/lib/fx-spot';
 
-const DAY: GoalRateDay = {
-  sats: 100_000_000,
-  usd: '50000.00',
-  chf: '45000.00',
-  eur: null,
-  php: '0',
+const SPOT: FxSpotQuote = {
+  asOf: '2026-11-13T12:00:00.000Z',
+  source: 'test',
+  rates: { USD: '50000.00', CHF: '45000.00', PHP: '0' },
 };
 
 describe('canonicalGoalAmount', () => {
@@ -33,29 +27,22 @@ describe('canonicalGoalAmount', () => {
   });
 });
 
-describe('gift-day ask math', () => {
-  it('converts one USD at 50000 per bitcoin to 2000 sats and back', () => {
-    expect(fiatToSats(1, DAY, 'USD')).toBe(2000);
-    expect(satsToFiatAmount(2000, DAY, 'USD')).toBe('1.00');
+describe('fiat conversion math', () => {
+  it('converts one USD at 50000 per bitcoin to 2000 sats', () => {
+    expect(fiatToSats(1, SPOT, 'USD')).toBe(2000);
   });
 
   it('returns 0 for a zero amount and 1 when the product rounds to 0', () => {
-    expect(fiatToSats(0, DAY, 'USD')).toBe(0);
-    expect(fiatToSats(0.00000001, { ...DAY, sats: 100, usd: '1000000' }, 'USD')).toBe(1);
+    expect(fiatToSats(0, SPOT, 'USD')).toBe(0);
+    expect(fiatToSats(0.00000001, { ...SPOT, rates: { USD: '1000000' } }, 'USD')).toBe(1);
   });
 
-  it('is unusable without a day, a positive finite sats total, or a usable quote', () => {
+  it('is unusable without a spot or a usable currency rate', () => {
     expect(fiatToSats(1, null, 'USD')).toBeNull();
-    expect(fiatToSats(1, { ...DAY, sats: 0 }, 'USD')).toBeNull();
-    expect(fiatToSats(1, { ...DAY, sats: Number.NaN }, 'USD')).toBeNull();
-    expect(fiatToSats(Number.NaN, DAY, 'USD')).toBeNull();
-    expect(fiatToSats(-1, DAY, 'USD')).toBeNull();
-    expect(fiatToSats(1, DAY, 'EUR')).toBeNull();
-    expect(fiatToSats(1, DAY, 'PHP')).toBeNull();
-    expect(fiatToSats(1, { ...DAY, usd: 'nope' }, 'USD')).toBeNull();
-    expect(satsToFiatAmount(-1, DAY, 'USD')).toBeNull();
-    expect(satsToFiatAmount(1, null, 'CHF')).toBeNull();
-    expect(satsToFiatAmount(2000, DAY, 'EUR')).toBeNull();
-    expect(satsToFiatAmount(2000, DAY, 'CHF')).toBe('0.90');
+    expect(fiatToSats(Number.NaN, SPOT, 'USD')).toBeNull();
+    expect(fiatToSats(-1, SPOT, 'USD')).toBeNull();
+    expect(fiatToSats(1, SPOT, 'EUR')).toBeNull();
+    expect(fiatToSats(1, SPOT, 'PHP')).toBeNull();
+    expect(fiatToSats(1, { ...SPOT, rates: { USD: 'nope' } }, 'USD')).toBeNull();
   });
 });

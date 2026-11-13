@@ -48,6 +48,10 @@ function isLater(candidate: WalletBalanceSnapshot, current: WalletBalanceSnapsho
   return byTime > 0 || (byTime === 0 && byteOrder(candidate.id, current.id) > 0);
 }
 
+function walletIdentity(row: WalletBalanceSnapshot): string {
+  return `${row.accountId}\u0000${row.walletPubkey ?? ''}`;
+}
+
 function safeSatsTotal(total: bigint): number {
   const value = Number(total);
   if (!Number.isSafeInteger(value)) {
@@ -68,14 +72,16 @@ function emptyWalletStats(): WalletStats {
 }
 
 /**
- * Build public wallet totals from the visible snapshots of each account and UTC day.
+ * Build public wallet totals from the visible snapshots of each wallet identity and UTC day.
  *
- * An account's balance carries forward over days without a report. A wallet
- * exists from its first snapshot day onward. A balance of 0 stays in
- * `walletCount` but not in `fundedWalletCount`. Snapshots after the current UTC
- * day are ignored by both the series and the headline values.
+ * A `(accountId, walletPubkey)` balance carries forward over days without a report. Legacy
+ * null-key rows represent the account only while it has no visible keyed row; they are a
+ * migration fallback, not an additional wallet beside keyed rows. A wallet exists from its
+ * first snapshot day onward. A balance of 0 stays in `walletCount` but not in
+ * `fundedWalletCount`. Snapshots after the current UTC day are ignored by both the series and
+ * the headline values.
  *
- * @param rows - Last snapshots per account and UTC day. Order is ignored.
+ * @param rows - Last snapshots per account, wallet key, and UTC day. Order is ignored.
  * @param nowMs - Clock returning epoch milliseconds.
  * @returns Empty stats when no row is visible; otherwise a gap-free series through today.
  * @throws If a current or daily total exceeds `Number.MAX_SAFE_INTEGER`.
@@ -89,24 +95,30 @@ export function buildWalletStats(
   if (visibleRows.length === 0) {
     return emptyWalletStats();
   }
+  const accountsWithKeyedRows = new Set(
+    visibleRows.filter((row) => typeof row.walletPubkey === 'string').map((row) => row.accountId),
+  );
+  const selectedRows = visibleRows.filter(
+    (row) => typeof row.walletPubkey === 'string' || !accountsWithKeyedRows.has(row.accountId),
+  );
 
-  const byAccountDay = new Map<string, WalletBalanceSnapshot>();
+  const byWalletDay = new Map<string, WalletBalanceSnapshot>();
   let firstDay: string | undefined;
   let latestVisibleRow: WalletBalanceSnapshot | undefined;
-  for (const row of visibleRows) {
+  for (const row of selectedRows) {
     const day = utcDayKey(row.receivedAt.getTime());
     firstDay = firstDay === undefined || day < firstDay ? day : firstDay;
     latestVisibleRow =
       latestVisibleRow === undefined || isLater(row, latestVisibleRow) ? row : latestVisibleRow;
-    const dayKey = `${row.accountId}\u0000${day}`;
-    const currentDay = byAccountDay.get(dayKey);
+    const dayKey = `${walletIdentity(row)}\u0000${day}`;
+    const currentDay = byWalletDay.get(dayKey);
     if (currentDay === undefined || isLater(row, currentDay)) {
-      byAccountDay.set(dayKey, row);
+      byWalletDay.set(dayKey, row);
     }
   }
 
   const snapshotsByDay = new Map<string, WalletBalanceSnapshot[]>();
-  for (const row of byAccountDay.values()) {
+  for (const row of byWalletDay.values()) {
     const day = utcDayKey(row.receivedAt.getTime());
     const rowsOnDay = snapshotsByDay.get(day) ?? [];
     rowsOnDay.push(row);
@@ -117,7 +129,7 @@ export function buildWalletStats(
   const first = firstDay as string;
   for (let day = first; day <= endDay; day = addUtcDays(day, 1)) {
     for (const row of snapshotsByDay.get(day) ?? []) {
-      balances.set(row.accountId, row.balanceSats);
+      balances.set(walletIdentity(row), row.balanceSats);
     }
     let dayTotalSats = 0n;
     let dayFunded = 0;

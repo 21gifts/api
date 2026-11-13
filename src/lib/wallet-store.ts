@@ -19,6 +19,8 @@ export interface WalletBalanceSnapshot {
   id: string;
   /** Reporting account id. */
   accountId: string;
+  /** Spark identity key whose owned balance was observed, or null for a legacy app report. */
+  walletPubkey?: string | null;
   /** Balance in whole sats. */
   balanceSats: number;
   /** Client-reported sync instant. */
@@ -77,17 +79,21 @@ export interface WalletStore {
   upsertPayments(rows: readonly WalletPaymentRecord[]): Promise<void>;
 
   /**
-   * Return the newest received balance snapshot for an account.
+   * Return the newest snapshot for the current wallet, with legacy null-key fallback.
    *
    * @param accountId - Reporting account id.
+   * @param walletPubkey - Current verified wallet key, or null when none is verified.
    * @returns A caller-owned snapshot, or `undefined`.
    */
-  latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined>;
+  latestBalance(
+    accountId: string,
+    walletPubkey: string | null,
+  ): Promise<WalletBalanceSnapshot | undefined>;
 
   /**
-   * Return the newest received balance snapshot of every account and UTC day.
+   * Return the newest received balance snapshot of every account, wallet key, and UTC day.
    *
-   * @returns One caller-owned snapshot per account and UTC day, ordered by account then time.
+   * @returns One caller-owned snapshot per account, wallet key, and UTC day.
    */
   dailyBalances(): Promise<WalletBalanceSnapshot[]>;
 
@@ -114,7 +120,7 @@ export interface WalletStore {
   ): Promise<WalletPaymentRecord[]>;
 }
 
-/** Idempotent DDL for wallet balance snapshots and reported payments. */
+/** Idempotent DDL for balances, app reports, viewer transfers/tokens, and sync state. */
 export const WALLET_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS wallet_balance_snapshot (
   id uuid PRIMARY KEY,
@@ -123,6 +129,9 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   synced_at timestamptz NOT NULL,
   received_at timestamptz NOT NULL
 )`,
+  `ALTER TABLE wallet_balance_snapshot ADD COLUMN IF NOT EXISTS wallet_pubkey text`,
+  `ALTER TABLE wallet_balance_snapshot DROP CONSTRAINT IF EXISTS wallet_balance_snapshot_wallet_pubkey_chk`,
+  `ALTER TABLE wallet_balance_snapshot ADD CONSTRAINT wallet_balance_snapshot_wallet_pubkey_chk CHECK (wallet_pubkey IS NULL OR wallet_pubkey ~ '^0[23][0-9a-f]{64}$')`,
   `CREATE INDEX IF NOT EXISTS wallet_balance_snapshot_account_received_idx ON wallet_balance_snapshot (account_id, received_at DESC, id DESC)`,
   `CREATE TABLE IF NOT EXISTS wallet_payment (
   account_id uuid NOT NULL REFERENCES account (id),
@@ -148,6 +157,102 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC)`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)`,
+  `CREATE TABLE IF NOT EXISTS wallet_transfer (
+  account_id uuid NOT NULL REFERENCES account (id),
+  wallet_pubkey text NOT NULL CHECK (wallet_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  transfer_id text NOT NULL CHECK (transfer_id <> ''),
+  direction text NOT NULL CHECK (direction IN ('in', 'out')),
+  type text NOT NULL CHECK (type IN ('preimage_swap', 'cooperative_exit', 'transfer', 'utxo_swap', 'primary_swap_v3', 'counter_swap_v3', 'swap', 'counter_swap', 'unrecognized')),
+  status text NOT NULL CHECK (status IN ('pending', 'completed', 'cancelled', 'expired', 'returned')),
+  amount_sats bigint NOT NULL CHECK (amount_sats >= 0),
+  counterparty_pubkey text NOT NULL CHECK (counterparty_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  counterparty_pubkeys text[] NOT NULL,
+  counterparty_account_id uuid REFERENCES account (id),
+  spark_invoice text,
+  transfer_created_at timestamptz,
+  transfer_updated_at timestamptz,
+  first_seen_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, wallet_pubkey, transfer_id)
+)`,
+  `DO $wallet_transfer_primary_key$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'wallet_transfer'::regclass
+      AND contype = 'p'
+      AND pg_get_constraintdef(oid) = 'PRIMARY KEY (account_id, transfer_id)'
+  ) THEN
+    ALTER TABLE wallet_transfer DROP CONSTRAINT wallet_transfer_pkey;
+    ALTER TABLE wallet_transfer ADD CONSTRAINT wallet_transfer_pkey
+      PRIMARY KEY (account_id, wallet_pubkey, transfer_id);
+  END IF;
+END;
+$wallet_transfer_primary_key$`,
+  `ALTER TABLE wallet_transfer ADD COLUMN IF NOT EXISTS counterparty_pubkeys text[]`,
+  `UPDATE wallet_transfer SET counterparty_pubkeys = ARRAY[counterparty_pubkey] WHERE counterparty_pubkeys IS NULL`,
+  `ALTER TABLE wallet_transfer ALTER COLUMN counterparty_pubkeys SET NOT NULL`,
+  `ALTER TABLE wallet_transfer DROP CONSTRAINT IF EXISTS wallet_transfer_status_check`,
+  `ALTER TABLE wallet_transfer ADD CONSTRAINT wallet_transfer_status_check CHECK (status IN ('pending', 'completed', 'cancelled', 'expired', 'returned'))`,
+  `CREATE INDEX IF NOT EXISTS wallet_transfer_wallet_created_idx ON wallet_transfer (account_id, wallet_pubkey, transfer_created_at DESC, transfer_id)`,
+  `CREATE INDEX IF NOT EXISTS wallet_transfer_pending_idx ON wallet_transfer (account_id, wallet_pubkey, transfer_created_at) WHERE status = 'pending'`,
+  `DROP INDEX IF EXISTS wallet_transfer_shop_payment_idx`,
+  `CREATE INDEX wallet_transfer_shop_payment_idx ON wallet_transfer (account_id, COALESCE(transfer_updated_at, transfer_created_at)) WHERE direction = 'out' AND status = 'completed' AND type = 'transfer'`,
+  `CREATE INDEX IF NOT EXISTS wallet_transfer_counterparty_idx ON wallet_transfer (counterparty_account_id) WHERE counterparty_account_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS wallet_transfer_sync (
+  account_id uuid NOT NULL REFERENCES account (id),
+  wallet_pubkey text NOT NULL CHECK (wallet_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  last_full_sync_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, wallet_pubkey)
+)`,
+  `CREATE TABLE IF NOT EXISTS wallet_token_transaction (
+  account_id uuid NOT NULL REFERENCES account (id),
+  wallet_pubkey text NOT NULL CHECK (wallet_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  transaction_hash text NOT NULL CHECK (transaction_hash ~ '^[0-9a-f]{64}$'),
+  token_identifier text,
+  direction text NOT NULL CHECK (direction IN ('in', 'out')),
+  amount numeric(39, 0) NOT NULL CHECK (amount >= 0),
+  counterparty_pubkeys text[] NOT NULL,
+  input_count integer,
+  resolved_input_count integer,
+  spark_invoices text[] NOT NULL DEFAULT ARRAY[]::text[],
+  type text NOT NULL CHECK (type IN ('create', 'mint', 'transfer', 'unknown')),
+  status text NOT NULL CHECK (status IN ('started', 'signed', 'revealed', 'finalized', 'cancelled', 'unknown')),
+  transaction_created_at timestamptz,
+  transaction_expiry_at timestamptz,
+  first_seen_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, wallet_pubkey, transaction_hash)
+)`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS input_count integer`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS resolved_input_count integer`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS token_identifier text`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS direction text`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS amount numeric(39, 0)`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS counterparty_pubkeys text[]`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS spark_invoices text[] NOT NULL DEFAULT ARRAY[]::text[]`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS type text`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS transaction_expiry_at timestamptz`,
+  `UPDATE wallet_token_transaction SET direction = 'in', amount = 0, counterparty_pubkeys = ARRAY[]::text[], type = 'unknown' WHERE direction IS NULL OR amount IS NULL OR counterparty_pubkeys IS NULL OR type IS NULL`,
+  `ALTER TABLE wallet_token_transaction ALTER COLUMN direction SET NOT NULL`,
+  `ALTER TABLE wallet_token_transaction ALTER COLUMN amount SET NOT NULL`,
+  `ALTER TABLE wallet_token_transaction ALTER COLUMN counterparty_pubkeys SET NOT NULL`,
+  `ALTER TABLE wallet_token_transaction ALTER COLUMN type SET NOT NULL`,
+  `ALTER TABLE wallet_token_transaction DROP COLUMN IF EXISTS payload`,
+  `ALTER TABLE wallet_token_transaction DROP CONSTRAINT IF EXISTS wallet_token_transaction_direction_check`,
+  `ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_direction_check CHECK (direction IN ('in', 'out'))`,
+  `ALTER TABLE wallet_token_transaction DROP CONSTRAINT IF EXISTS wallet_token_transaction_amount_check`,
+  `ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_amount_check CHECK (amount >= 0)`,
+  `ALTER TABLE wallet_token_transaction DROP CONSTRAINT IF EXISTS wallet_token_transaction_input_resolution_check`,
+  `ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_input_resolution_check CHECK (
+  (input_count IS NULL AND resolved_input_count IS NULL)
+  OR (input_count IS NOT NULL AND input_count >= 0
+      AND (resolved_input_count IS NULL
+           OR (resolved_input_count >= 0 AND resolved_input_count <= input_count)))
+  )`,
+  `ALTER TABLE wallet_token_transaction DROP CONSTRAINT IF EXISTS wallet_token_transaction_type_check`,
+  `ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_type_check CHECK (type IN ('create', 'mint', 'transfer', 'unknown'))`,
+  `CREATE INDEX IF NOT EXISTS wallet_token_transaction_wallet_created_idx ON wallet_token_transaction (account_id, wallet_pubkey, transaction_created_at DESC, transaction_hash)`,
 ];
 
 /**
@@ -345,15 +450,29 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
-   * Return the newest snapshot by receive time and id.
+   * Return the newest current-wallet snapshot, or the newest legacy null-key row when absent.
    *
    * @param accountId - Reporting account id.
+   * @param walletPubkey - Current verified wallet key, or null when none is verified.
    * @returns A snapshot copy, or `undefined`.
    */
-  latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined> {
+  latestBalance(
+    accountId: string,
+    walletPubkey: string | null,
+  ): Promise<WalletBalanceSnapshot | undefined> {
     const row = this.#balances
-      .filter((candidate) => candidate.accountId === accountId)
+      .filter((candidate) => {
+        const candidateKey = candidate.walletPubkey ?? null;
+        return (
+          candidate.accountId === accountId &&
+          (candidateKey === walletPubkey || candidateKey === null)
+        );
+      })
       .sort((a, b) => {
+        const byWallet =
+          Number((b.walletPubkey ?? null) === walletPubkey) -
+          Number((a.walletPubkey ?? null) === walletPubkey);
+        if (byWallet !== 0) return byWallet;
         const byTime = b.receivedAt.getTime() - a.receivedAt.getTime();
         return byTime === 0 ? b.id.localeCompare(a.id) : byTime;
       })[0];
@@ -361,25 +480,31 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
-   * Return the newest snapshot of every account and UTC day.
+   * Return the newest snapshot of every account, wallet key, and UTC day.
    *
-   * @returns One snapshot copy per account and UTC day, oldest received time first per account.
+   * @returns One snapshot copy per wallet and UTC day, ordered by account, key, then time.
    */
   dailyBalances(): Promise<WalletBalanceSnapshot[]> {
-    const byAccountDay = new Map<string, WalletBalanceSnapshot>();
+    const byWalletDay = new Map<string, WalletBalanceSnapshot>();
     for (const row of this.#balances) {
-      const key = `${row.accountId}\u0000${utcDayKey(row.receivedAt.getTime())}`;
-      const current = byAccountDay.get(key);
+      const key = `${row.accountId}\u0000${row.walletPubkey ?? ''}\u0000${utcDayKey(
+        row.receivedAt.getTime(),
+      )}`;
+      const current = byWalletDay.get(key);
       if (current === undefined || isLaterBalance(row, current)) {
-        byAccountDay.set(key, row);
+        byWalletDay.set(key, row);
       }
     }
     return Promise.resolve(
-      [...byAccountDay.values()]
+      [...byWalletDay.values()]
         .sort((left, right) => {
           const byAccount = left.accountId.localeCompare(right.accountId);
           if (byAccount !== 0) {
             return byAccount;
+          }
+          const byWallet = (left.walletPubkey ?? '').localeCompare(right.walletPubkey ?? '');
+          if (byWallet !== 0) {
+            return byWallet;
           }
           return left.receivedAt.getTime() - right.receivedAt.getTime();
         })
@@ -452,6 +577,7 @@ function isLaterBalance(candidate: WalletBalanceSnapshot, current: WalletBalance
 interface WalletBalanceSqlRow {
   id: string;
   account_id: string;
+  wallet_pubkey: string | null;
   balance_sats: number | string | bigint;
   synced_at: Date | string;
   received_at: Date | string;
@@ -491,6 +617,7 @@ function mapBalance(row: WalletBalanceSqlRow): WalletBalanceSnapshot {
   return {
     id: row.id,
     accountId: row.account_id,
+    walletPubkey: row.wallet_pubkey,
     balanceSats: Number(row.balance_sats),
     syncedAt: sqlDate(row.synced_at),
     receivedAt: sqlDate(row.received_at),
@@ -563,7 +690,7 @@ const PAIRED_CATEGORY = `CASE
     SELECT 1 FROM message AS m
     WHERE m.parent_id IS NULL AND m.deleted_at IS NULL
       AND m.shop_account_id = s.account_id
-      AND m.text ~* '#21GiftsShop(?![A-Za-z0-9_])'
+      AND m.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
   ) THEN 'shop'
   ELSE 'member'
 END`;
@@ -632,11 +759,12 @@ export class PostgresWalletStore implements WalletStore {
    */
   async recordBalance(snapshot: WalletBalanceSnapshot): Promise<void> {
     await this.sql.execute(
-      `INSERT INTO wallet_balance_snapshot (id, account_id, balance_sats, synced_at, received_at)
-VALUES ($1,$2,$3,$4,$5)`,
+      `INSERT INTO wallet_balance_snapshot (id, account_id, wallet_pubkey, balance_sats, synced_at, received_at)
+VALUES ($1,$2,$3,$4,$5,$6)`,
       [
         snapshot.id,
         snapshot.accountId,
+        snapshot.walletPubkey ?? null,
         snapshot.balanceSats,
         snapshot.syncedAt,
         snapshot.receivedAt,
@@ -718,39 +846,43 @@ WHERE EXCLUDED.last_observed_at >= ${OBSERVED_WATERMARK}
   }
 
   /**
-   * Read the latest balance snapshot for an account.
+   * Read the latest current-wallet snapshot, with legacy null-key fallback.
    *
    * @param accountId - Reporting account id (`$1`).
+   * @param walletPubkey - Current verified wallet key (`$2`), or null.
    * @returns A mapped snapshot, or `undefined`.
    */
-  async latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined> {
+  async latestBalance(
+    accountId: string,
+    walletPubkey: string | null,
+  ): Promise<WalletBalanceSnapshot | undefined> {
     const rows = await this.sql.query<WalletBalanceSqlRow>(
-      `SELECT id, account_id, balance_sats, synced_at, received_at
+      `SELECT id, account_id, wallet_pubkey, balance_sats, synced_at, received_at
 FROM wallet_balance_snapshot
-WHERE account_id = $1
-ORDER BY received_at DESC, id DESC
+WHERE account_id = $1 AND (wallet_pubkey = $2 OR wallet_pubkey IS NULL)
+ORDER BY CASE WHEN wallet_pubkey IS NOT DISTINCT FROM $2 THEN 0 ELSE 1 END,
+  received_at DESC, id DESC
 LIMIT 1`,
-      [accountId],
+      [accountId, walletPubkey],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapBalance(row);
   }
 
   /**
-   * Read the last snapshot of every account and UTC day in one query.
+   * Read the last snapshot of every account, wallet key, and UTC day in one query.
    *
-   * The existing `(account_id, received_at DESC, id DESC)` index supplies the
-   * account and received-time order. The derived day can still need a sort, but
-   * the query returns only one row per account and day, never the whole table.
+   * The query returns only one row per account, wallet key, and day, never the
+   * whole table.
    *
-   * @returns Mapped snapshots, at most one per account and UTC day.
+   * @returns Mapped snapshots, at most one per account, wallet key, and UTC day.
    */
   async dailyBalances(): Promise<WalletBalanceSnapshot[]> {
     const rows = await this.sql.query<WalletBalanceSqlRow>(
-      `SELECT DISTINCT ON (account_id, ((received_at AT TIME ZONE 'UTC')::date))
-id, account_id, balance_sats, synced_at, received_at
+      `SELECT DISTINCT ON (account_id, wallet_pubkey, ((received_at AT TIME ZONE 'UTC')::date))
+id, account_id, wallet_pubkey, balance_sats, synced_at, received_at
 FROM wallet_balance_snapshot
-ORDER BY account_id, ((received_at AT TIME ZONE 'UTC')::date), received_at DESC, id DESC`,
+ORDER BY account_id, wallet_pubkey NULLS FIRST, ((received_at AT TIME ZONE 'UTC')::date), received_at DESC, id DESC`,
     );
     return rows.map(mapBalance);
   }
