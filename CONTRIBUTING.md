@@ -191,12 +191,8 @@ test asserts 409 `missing: ['lightning-address']`);
 test still answers 409 `missing: ['lightning-address']`);
 `freezePosFiatCrosses`, which prices the three untyped currencies of a till charge and of a fiat ask from the spot, and `serializePosFiat`, which formats a stored till charge. Both run only after a verified wallet resolves (`POST /pos` answers 400 `wallet_required` before the freeze and before `serializePosCharge`; their catalog
 tests answer 401 without a bearer);
-`loadLatestGoalRateDay` and `bindGoalRateDay`, which load the gift-day rate for a repayment share and are not called by a forum ask (their catalog
-tests still answer 409 `missing: ['lightning-address']`);
 `canonicalDecimal`, which `decimalAmount` and `btcAmount` also use on the shop payment surface (that surface answers the default 404 on the default boot);
 `fiatToSats`, which prices a fiat repayment share and is not called by a forum ask (its catalog
-test still answers 409 `missing: ['lightning-address']`);
-`satsToFiatAmount`, which has no production caller (the unit tests cover it; its catalog
 test still answers 409 `missing: ['lightning-address']`);
 `receivingAddress` and `lnurlServerFetch` past the account lookup, which need a member with a
 verified wallet and therefore `LNURL_SERVER_URL` (their tests assert `GET /pay/:username` 404);

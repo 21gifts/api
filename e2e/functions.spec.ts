@@ -1046,38 +1046,6 @@ async function verifiedAskSession(request: APIRequestContext): Promise<{ authori
 }
 
 // Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: loadLatestGoalRateDay — a fiat ask is 409 without a verified wallet', async ({
-  request,
-}) => {
-  const auth = await verifiedAskSession(request);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'pesos', goalCurrency: 'PHP', goalAmount: '200' },
-  });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
-  });
-});
-
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: bindGoalRateDay — a bitcoin ask is 409 without a verified wallet', async ({
-  request,
-}) => {
-  const auth = await verifiedAskSession(request);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'sats', goalCurrency: 'BTC', goalAmount: '21' },
-  });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
-  });
-});
-
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
 test('Function: canonicalDecimal — an ask with a decimal goalAmount is 409 without a verified wallet', async ({
   request,
 }) => {
@@ -1114,22 +1082,6 @@ test('Function: fiatToSats — an ask is 409 without a verified wallet', async (
   const res = await request.post('/messages', {
     headers: auth,
     data: { text: 'both', goalSats: 21, goalCurrency: 'USD', goalAmount: '1' },
-  });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
-  });
-});
-
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: satsToFiatAmount — a bitcoin ask is 409 without a verified wallet', async ({
-  request,
-}) => {
-  const auth = await verifiedAskSession(request);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'freeze', goalCurrency: 'BTC', goalAmount: '21' },
   });
   expect(res.status()).toBe(409);
   expect(await res.json()).toEqual({
