@@ -1,4 +1,5 @@
 import type { SqlClient } from '@/lib/auth/sql';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /**
  * Operator read of every ordinary table in schema `public`.
@@ -18,6 +19,7 @@ export const DEBUG_DB_SECRET_COLUMNS: readonly string[] = [
   'token',
   'challenge',
   'nostr_nsec_ciphertext',
+  'viewer_mnemonic_ciphertext',
   'nonce',
   'view_key',
   'endpoint',
@@ -71,7 +73,7 @@ export interface DebugDbStore {
    *
    * @returns Names that match a safe identifier, with `count(*)`.
    */
-  listTables(): Promise<DebugDbTable[]>;
+  listTables(allowlist?: readonly string[]): Promise<DebugDbTable[]>;
   /**
    * One page of `table`, or `undefined` when it is not an ordinary public table.
    *
@@ -80,7 +82,11 @@ export interface DebugDbStore {
    * @returns The page, or `undefined` when the table is unknown.
    * @throws DebugDbCursorError when `cursor` is not a cursor for this table's key.
    */
-  readPage(table: string, cursor: string | null): Promise<DebugDbPage | undefined>;
+  readPage(
+    table: string,
+    cursor: string | null,
+    allowlist?: readonly string[],
+  ): Promise<DebugDbPage | undefined>;
 }
 
 const IDENT = /^[a-z_][a-z0-9_]*$/;
@@ -91,6 +97,13 @@ const TABLE_NAMES_SQL = `SELECT c.relname AS name
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relkind = 'r'
+ORDER BY c.relname`;
+
+const ALLOWED_TABLE_NAMES_SQL = `SELECT c.relname AS name
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public' AND c.relkind = 'r'
+  AND c.relname = ANY($1::text[])
 ORDER BY c.relname`;
 
 const COLUMNS_SQL = `SELECT a.attname AS name, t.typname AS type
@@ -173,8 +186,8 @@ export class PostgresDebugDbStore implements DebugDbStore {
    *
    * @returns Safe names, sorted by the catalog query.
    */
-  async listTables(): Promise<DebugDbTable[]> {
-    const names = await this.#tableNames();
+  async listTables(allowlist?: readonly string[]): Promise<DebugDbTable[]> {
+    const names = await this.#tableNames(allowlist);
     const tables: DebugDbTable[] = [];
     for (const name of names) {
       const rows = await this.#sql.query<{ n: number | string | bigint | null }>(
@@ -198,11 +211,15 @@ export class PostgresDebugDbStore implements DebugDbStore {
    * @returns The page, or `undefined` when `table` is not listed.
    * @throws DebugDbCursorError when `cursor` does not match the key.
    */
-  async readPage(table: string, cursor: string | null): Promise<DebugDbPage | undefined> {
+  async readPage(
+    table: string,
+    cursor: string | null,
+    allowlist?: readonly string[],
+  ): Promise<DebugDbPage | undefined> {
     if (!IDENT.test(table)) {
       return undefined;
     }
-    const names = await this.#tableNames();
+    const names = await this.#tableNames(allowlist);
     if (!names.includes(table)) {
       return undefined;
     }
@@ -273,11 +290,21 @@ export class PostgresDebugDbStore implements DebugDbStore {
    *
    * @returns Identifier-safe names in catalog order.
    */
-  async #tableNames(): Promise<string[]> {
-    const rows = await this.#sql.query<{ name: unknown }>(TABLE_NAMES_SQL);
+  async #tableNames(allowlist?: readonly string[]): Promise<string[]> {
+    const allowed =
+      allowlist === undefined ? undefined : new Set(allowlist.filter((name) => IDENT.test(name)));
+    if (allowed !== undefined && allowed.size === 0) return [];
+    const rows = await this.#sql.query<{ name: unknown }>(
+      allowed === undefined ? TABLE_NAMES_SQL : ALLOWED_TABLE_NAMES_SQL,
+      allowed === undefined ? [] : [postgresTextArrayLiteral([...allowed])],
+    );
     const names: string[] = [];
     for (const row of rows) {
-      if (typeof row.name === 'string' && IDENT.test(row.name)) {
+      if (
+        typeof row.name === 'string' &&
+        IDENT.test(row.name) &&
+        (allowed === undefined || allowed.has(row.name))
+      ) {
         names.push(row.name);
       }
     }

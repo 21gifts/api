@@ -123,6 +123,18 @@ describe('syncWelcomePing', () => {
       auth: NO_PLATFORM,
       account: account({ id: 'acc', role: 'founder', profileMessageId: PHOTO_ID }),
     });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing,
+      messages,
+      auth: NO_PLATFORM,
+      account: account({
+        id: 'acc',
+        role: 'verified',
+        isPlatform: true,
+        profileMessageId: PHOTO_ID,
+      }),
+    });
     expect(ping).not.toHaveBeenCalled();
   });
 

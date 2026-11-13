@@ -839,19 +839,17 @@ describe('decideCliDailyInstruction', () => {
     });
   });
 
-  it('omits messageId when it is null', () => {
+  it('returns no_media when messageId is null', () => {
     expect(decideCliDailyInstruction({ ...base, messageId: null })).toEqual({
-      action: 'pay',
-      amountUsd: 2,
-      comment: 'thanks',
+      action: 'skip',
+      reason: 'no_media',
     });
   });
 
-  it('omits messageId when it is empty', () => {
+  it('returns no_media when messageId is empty', () => {
     expect(decideCliDailyInstruction({ ...base, messageId: '' })).toEqual({
-      action: 'pay',
-      amountUsd: 2,
-      comment: 'thanks',
+      action: 'skip',
+      reason: 'no_media',
     });
   });
 
@@ -995,10 +993,10 @@ describe('stored roster rows by account', () => {
         hasPosted: true,
         hasMedia: true,
         eligible: true,
-        messageId: null,
+        messageId: 'post-ada',
         roster,
         grantStatus: 'none',
       }),
-    ).toEqual({ action: 'pay', amountUsd: 3, comment: 'thanks' });
+    ).toEqual({ action: 'pay', amountUsd: 3, comment: 'thanks', messageId: 'post-ada' });
   });
 });

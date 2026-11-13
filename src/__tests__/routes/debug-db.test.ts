@@ -7,6 +7,7 @@ import {
   type DebugDbTable,
 } from '@/lib/debug-db';
 import { debugDbRoutes } from '@/routes/debug-db';
+import { InMemoryAuthStore } from '@/lib/auth/store';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -64,6 +65,14 @@ describe('debugDbRoutes', () => {
   it('returns 401 when the bearer does not match', async () => {
     const res = await app({ store: store(), debugToken: 'secret' }).request('/debug/db', {
       headers: { authorization: 'Bearer other' },
+    });
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 401 when the bearer token is empty', async () => {
+    const res = await app({ store: store(), debugToken: 'secret' }).request('/debug/db', {
+      headers: { authorization: 'Bearer \u00a0' },
     });
     expect(res.status).toBe(401);
     await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
@@ -130,6 +139,118 @@ describe('debugDbRoutes', () => {
     }).request('/debug/db', { headers: { authorization: 'Bearer read-secret' } });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ tables });
+  });
+
+  it('limits a software-developer session to the four wallet history tables', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: '00000000-0000-4000-8000-000000000001',
+      linkingKey: null,
+      role: 'software_developer',
+      name: 'Dev',
+      forumLawsDismissed: true,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    });
+    await authStore.createSession({
+      token: 'member-session',
+      accountId: '00000000-0000-4000-8000-000000000001',
+      createdAt: 1,
+    });
+    const listTables = vi.fn((allowlist?: readonly string[]) =>
+      Promise.resolve(
+        [
+          { name: 'account', rowCount: 1 },
+          { name: 'wallet_balance_snapshot', rowCount: 2 },
+          { name: 'wallet_payment', rowCount: 3 },
+          { name: 'wallet_transfer', rowCount: 4 },
+          { name: 'wallet_token_transaction', rowCount: 5 },
+        ].filter((table) => allowlist === undefined || allowlist.includes(table.name)),
+      ),
+    );
+    const readPage = vi.fn(store().readPage);
+    const debugStore = store({ listTables, readPage });
+    const client = new Hono().route(
+      '/debug/db',
+      debugDbRoutes({
+        store: debugStore,
+        debugToken: 'operator',
+        authStore,
+        now: () => 1,
+      }),
+    );
+    const listed = await client.request('/debug/db', {
+      headers: { authorization: 'Bearer member-session' },
+    });
+    expect((await listed.json()) as unknown).toEqual({
+      tables: [
+        { name: 'wallet_balance_snapshot', rowCount: 2 },
+        { name: 'wallet_payment', rowCount: 3 },
+        { name: 'wallet_transfer', rowCount: 4 },
+        { name: 'wallet_token_transaction', rowCount: 5 },
+      ],
+    });
+    expect(listTables).toHaveBeenCalledWith([
+      'wallet_balance_snapshot',
+      'wallet_payment',
+      'wallet_transfer',
+      'wallet_token_transaction',
+    ]);
+    const refused = await client.request('/debug/db?table=account', {
+      headers: { authorization: 'Bearer member-session' },
+    });
+    expect(refused.status).toBe(404);
+    const wallet = await client.request('/debug/db?table=wallet_transfer', {
+      headers: { authorization: 'Bearer member-session' },
+    });
+    expect(wallet.status).toBe(200);
+    expect(readPage).toHaveBeenCalledWith('wallet_transfer', null, [
+      'wallet_balance_snapshot',
+      'wallet_payment',
+      'wallet_transfer',
+      'wallet_token_transaction',
+    ]);
+  });
+
+  it('rejects lower member roles, expired sessions, and non-GET member access', async () => {
+    const authStore = new InMemoryAuthStore();
+    const now = Date.now();
+    for (const [id, role, token] of [
+      ['00000000-0000-4000-8000-000000000002', 'verified', 'verified-session'],
+      ['00000000-0000-4000-8000-000000000003', 'software_developer', 'dev-session'],
+    ] as const) {
+      await authStore.createAccount({
+        id,
+        linkingKey: null,
+        role,
+        name: role,
+        forumLawsDismissed: true,
+        location: null,
+        viewKey: role === 'verified' ? 'b'.repeat(64) : 'c'.repeat(64),
+        createdAt: now,
+        rulesAgreedAt: now,
+      });
+      await authStore.createSession({ token, accountId: id, createdAt: now });
+    }
+    const client = new Hono().route(
+      '/debug/db',
+      debugDbRoutes({ store: store(), debugToken: 'operator', authStore }),
+    );
+    const lower = await client.request('/debug/db', {
+      headers: { authorization: 'Bearer verified-session' },
+    });
+    expect(lower.status).toBe(401);
+    const missing = await client.request('/debug/db', {
+      headers: { authorization: 'Bearer missing-session' },
+    });
+    expect(missing.status).toBe(401);
+    const head = await client.request('/debug/db', {
+      method: 'HEAD',
+      headers: { authorization: 'Bearer dev-session' },
+    });
+    expect(head.status).toBe(401);
   });
 
   it('returns 401 when only the read token is set and the bearer does not match', async () => {

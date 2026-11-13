@@ -88,12 +88,12 @@ export function decideSpendInstruction(input: {
 
 /**
  * Decide whether the spend worker should pay a daily gift from already-known
- * facts: passkey, post, media, eligibility, and the live roster.
+ * facts: passkey, post, today's media, eligibility, and the live roster.
  *
  * @param input - Recipient address, the recipient's account id when known,
- *   passkey / post / media / funding facts, roster JSON, optional daily grant
+ *   passkey / post / today's-media / funding facts, roster JSON, optional daily grant
  *   status, and optional same-UTC-day welcome flag.
- * @returns A skip reason, or the amount, comment, and optional message id.
+ * @returns A skip reason, or the amount, comment, and required today's-media id.
  */
 export function decideCliDailyInstruction(input: {
   address: string;
@@ -119,14 +119,16 @@ export function decideCliDailyInstruction(input: {
         | 'undecided'
         | 'welcome_paid';
     }
-  | { action: 'pay'; amountUsd: number; comment: string; messageId?: string } {
+  | { action: 'pay'; amountUsd: number; comment: string; messageId: string } {
   if (!input.hasPasskey) {
     return { action: 'skip', reason: 'no_passkey' };
   }
   if (!input.hasPosted) {
     return { action: 'skip', reason: 'no_post' };
   }
-  if (!input.hasMedia) {
+  const messageId =
+    typeof input.messageId === 'string' && input.messageId !== '' ? input.messageId : null;
+  if (!input.hasMedia || messageId === null) {
     return { action: 'skip', reason: 'no_media' };
   }
   if (!input.eligible) {
@@ -145,18 +147,11 @@ export function decideCliDailyInstruction(input: {
   if ('skip' in decided) {
     return { action: 'skip', reason: decided.skip };
   }
-  if (typeof input.messageId === 'string' && input.messageId !== '') {
-    return {
-      action: 'pay',
-      amountUsd: decided.amountUsd,
-      comment: decided.comment,
-      messageId: input.messageId,
-    };
-  }
   return {
     action: 'pay',
     amountUsd: decided.amountUsd,
     comment: decided.comment,
+    messageId,
   };
 }
 

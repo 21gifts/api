@@ -226,7 +226,10 @@ export function debugWalletRoutes(deps: DebugWalletRouteDeps): Hono {
     }
     try {
       const [balance, rows] = await Promise.all([
-        deps.walletStore.latestBalance(id),
+        deps.walletStore.latestBalance(
+          id,
+          typeof account.sparkPubkeyVerifiedAt === 'number' ? account.sparkPubkey! : null,
+        ),
         deps.walletStore.listPayments(id, limit + 1, after),
       ]);
       const page = rows.slice(0, limit);

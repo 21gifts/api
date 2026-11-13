@@ -1239,6 +1239,12 @@ const SCRATCH_NOSTR_KEK = '0'.repeat(64);
 /** Throwaway 64-hex recovery share KEK, distinct from {@link SCRATCH_NOSTR_KEK}. */
 const SCRATCH_RECOVERY_SHARE_KEK = '1'.repeat(64);
 
+/** Keep a rejection handler on the driver query. The caller still sees the rejection. */
+function retain<T>(pending: Promise<T>): Promise<T> {
+  void pending.catch(() => undefined);
+  return pending;
+}
+
 /**
  * Builds schema reference pages against a scratch database migrated by boot stores.
  * Network fetches and zap relays are disabled so generation stays offline.
@@ -1254,6 +1260,19 @@ export async function generate(adminUrl: string): Promise<Map<string, string>> {
       },
       async execute(text: string, params: readonly unknown[] = []): Promise<void> {
         await sql.unsafe(text, [...params]);
+      },
+      async transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T> {
+        return retain(
+          sql.begin(async (tx) =>
+            run({
+              query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+                (await retain(tx.unsafe(text, [...params]))) as R[],
+              execute: async (text: string, params: readonly unknown[] = []): Promise<void> => {
+                await retain(tx.unsafe(text, [...params]));
+              },
+            }),
+          ),
+        );
       },
     };
     // Boot requires both KEKs (exactly 64 lowercase hex characters, parseKekHex)

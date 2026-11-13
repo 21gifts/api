@@ -14,7 +14,7 @@ what must be true on release day for that to hold.
   not set up social recovery once its start day has come (`RECOVERY_SHARE_REQUIRED_FROM`,
   unset until an operator picks the day). All 58 people paid from
   2026-10-13 to 2026-10-15 keep being paid without a gap on every day they are
-  eligible for a grant, when these six conditions hold:
+  eligible for a grant, when these eight conditions hold:
   1. The API release includes the roster account link at boot, so listed
      amounts and moderator stipends keep matching.
   2. The API and the app go live together.
@@ -36,6 +36,18 @@ what must be true on release day for that to hold.
      the member has stored the 21.gifts recovery share of their current verified
      wallet. From that day a member in the grant program without it is not paid
      until they set up social recovery (see [Result](#result)).
+  7. From deployment of the Spark viewer change, the member's own wallet has
+     at least one completed server-verified payment to a live 21.gifts shop on
+     the payout UTC day or the day before. There is no start-date setting for
+     this condition. It applies to daily grants and moderator stipends. It is
+     omitted for the one-time welcome gift only when the server sees an account
+     at least verified and not welcomed before, normalized USD `1.00`, comment
+     `Welcome`, no `messageId` or `groupMessageId`, and `amountMsat` no greater
+     than `usdToMsat("1.00", spot)` plus 10 percent. Without a usable spot, the
+     shop payment remains required.
+  8. For a daily grant, the member has a live top-level photo or video posted
+     on that payout UTC day. The spend daily run uses this same fact and sends
+     that post id; an older live media post is not enough.
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
   before. One of the 58 members first confirms a passkey renew dialog once.
@@ -82,17 +94,23 @@ The rest of this document is the evidence.
 
 A daily payout or stipend is not paid on a timer. It follows the member's own forum post or moderator-group message, a staff decision on a `pending` grant, or spend's daily run. The one-time welcome gift and an operator replay are listed too:
 
-| Payout            | Trigger                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Code (staging)                                                                                                                                                                                                                                                               |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daily grant       | The member publishes a top-level forum post with a photo or video (`POST /messages`), or a top-level note that is paid through a zap (no media check on that path). The API pings spend with the member's receiving address. When staff move a `pending` grant to `trial` or `admitted`, the API pings spend for the member's newest live top-level media post of that UTC day (for a member who was still `pending` when posting, this is the first ping); a move from an active `trial` to `admitted` does not ping. The first recovery share of the current wallet (`PUT /me/recovery-share`) sends the same ping.                                                                                                                                                                                                                                         | `src/routes/messages.ts` (spend ping after `POST /messages`), `src/lib/nostr/zap-index.ts` (zap-paid note), `src/routes/funding.ts` (trial and admit ping), `src/routes/me.ts` (first recovery share), `src/lib/funding-ping.ts` (`pingTodayMedia`), `src/lib/spend-ping.ts` |
-| Moderator stipend | A moderator sends a message in the moderator group conversation and has a live public top-level post on that UTC day. The API pings spend with `kind: "moderator"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `src/routes/conversations.ts` (`hasLivingRoomPostOnUtcDay`), `src/lib/spend-ping.ts`                                                                                                                                                                                         |
-| Daily run (spend) | Spend asks `POST /spend/daily-instruction` for each roster row's payout address. The API pays only a member with a passkey, a live media post, and eligibility.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `src/routes/spend-instruction-route.ts`, `src/lib/spend-instruction.ts`                                                                                                                                                                                                      |
-| Welcome gift      | Once per `verified` account: when it has a live top-level photo or video (including About me) and no welcome yet, the API pings spend with `kind: "welcome"` on a new top-level post, an About-me save, a verification by a moderator, and, every 15 minutes while an operator has turned the welcome sweep on (`PUT /debug/welcome-sweep`; it starts off on every boot, so the run at boot pings nobody). A platform `Welcome` reply under one of its notes, a welcome gift paid to its legacy external address, or a welcome gift with description `21gifts welcome` recorded under its username at or after its wallet verification, counts as received. Spend pays 1 USD while `payments_enabled` is on. A daily payout on the same UTC day is then skipped (`welcome_paid`) unless the roster comment is `Welcome`; moderator stipends are not affected. | `src/lib/welcome-media.ts`, `src/routes/messages.ts`, `src/routes/me.ts`, `src/routes/trust.ts`, `src/index.ts` (`welcomeCatchUp`), `src/lib/spend-instruction.ts`                                                                                                           |
-| Operator replay   | Not a member trigger: an operator with `DEBUG_TOKEN` books the daily ping for a live top-level media post on that post's UTC day (`POST /debug/spend-ping` with `messageId`), or replays every live top-level media post, moderator-group message, `/trial`, `/admit`, and welcome trigger of a time window: each daily payout and moderator stipend on the event's own UTC day, once per member, kind, and day, and each welcome through the welcome path, once per account (`POST /debug/spend-ping` with `from`, `to`, and optional `dryRun`).                                                                                                                                                                                                                                                                                                             | `src/routes/debug-payments.ts` (`pingOnDay`), `src/lib/cutover-replay.ts`                                                                                                                                                                                                    |
+| Payout            | Trigger                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Code (staging)                                                                                                                                                                                                                                                                                                                            |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daily grant       | The member publishes a top-level forum post with a photo or video (`POST /messages`), or a top-level note that is paid through a zap (no media check on that path). The API pings spend with the member's receiving address only after the recent verified shop-payment condition is met. When staff move a `pending` grant to `trial` or `admitted`, the API pings spend for the member's newest live top-level media post of that UTC day, including About me (for a member who was still `pending` when posting, this is the first ping); a move from an active `trial` to `admitted` does not ping. The first recovery share of the current wallet (`PUT /me/recovery-share`) sends the same ping. If the member posts before paying a shop, every viewer-worker tick level-checks the D-1..D payment, eligibility, today's media, and the absence of today's daily or welcome payout; failed catch-up sends enter backoff, skipped sends retry on a later tick without error backoff, and only an accepted account/day is remembered in process. | `src/routes/messages.ts` (spend ping after `POST /messages`), `src/lib/nostr/zap-index.ts` (zap-paid note), `src/routes/funding.ts` (trial and admit ping), `src/routes/me.ts` (first recovery share), `src/lib/wallet-transfer-worker.ts` (shop-payment catch-up), `src/lib/funding-ping.ts` (`pingTodayMedia`), `src/lib/spend-ping.ts` |
+| Moderator stipend | A moderator sends a message in the moderator group conversation and has a live public top-level post on that UTC day. The API pings spend with `kind: "moderator"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `src/routes/conversations.ts` (`hasLivingRoomPostOnUtcDay`), `src/lib/spend-ping.ts`                                                                                                                                                                                                                                                      |
+| Daily run (spend) | Spend asks `POST /spend/daily-instruction` for each roster row's payout address. The API pays only a member with a passkey, eligibility, and the same live top-level photo or video posted today UTC that owner `payoutToday` and `pingTodayMedia` use; About me is included, and that post is the instruction's `messageId`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `src/routes/spend-instruction-route.ts`, `src/lib/spend-instruction.ts`                                                                                                                                                                                                                                                                   |
+| Welcome gift      | Once per `verified` account: when it has a live top-level photo or video (including About me) and no welcome yet, the API pings spend with `kind: "welcome"` on a new top-level post, an About-me save, a verification by a moderator, and, every 15 minutes while an operator has turned the welcome sweep on (`PUT /debug/welcome-sweep`; it starts off on every boot, so the run at boot pings nobody). A platform `Welcome` reply under one of its notes, a welcome gift paid to its legacy external address, or a welcome gift with description `21gifts welcome` recorded under its username at or after its wallet verification, counts as received. Spend pays 1 USD while `payments_enabled` is on. A daily payout on the same UTC day is then skipped (`welcome_paid`) unless the roster comment is `Welcome`; moderator stipends are not affected.                                                                                                                                                                                         | `src/lib/welcome-media.ts`, `src/routes/messages.ts`, `src/routes/me.ts`, `src/routes/trust.ts`, `src/index.ts` (`welcomeCatchUp`), `src/lib/spend-instruction.ts`                                                                                                                                                                        |
+| Operator replay   | Not a member trigger: an operator with `DEBUG_TOKEN` books the daily ping for a live top-level media post on that post's UTC day (`POST /debug/spend-ping` with `messageId`), or replays every live top-level media post, moderator-group message, `/trial`, `/admit`, and welcome trigger of a time window: each daily payout and moderator stipend on the event's own UTC day, once per member, kind, and day, and each welcome through the welcome path, once per account (`POST /debug/spend-ping` with `from`, `to`, and optional `dryRun`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `src/routes/debug-payments.ts` (`pingOnDay`), `src/lib/cutover-replay.ts`                                                                                                                                                                                                                                                                 |
 
 The amount comes from the daily roster when the account is listed there, and
 from `DAILY_ROSTER_DEFAULT_AMOUNT_USD` (1 USD) for an unlisted admitted or
 trial grant. Moderator stipends are paid only to listed moderator rows.
+
+The viewer-worker catch-up treats either a same-day `daily` gift or a same-day
+`welcome` gift as an already recorded payout and sends no catch-up ping. For
+operator replay, grant and recovery-share eligibility is evaluated at replay
+time, but the shop-payment window is always the payout's booked UTC day and
+its preceding day, never the replay clock's day.
 
 The API roster (`daily_roster`, `daily_roster_entry`) is the master copy.
 Spend's `POST /funding/daily-roster/document` import writes only when the
@@ -302,8 +320,8 @@ and leaves 1 recipient row without an account.
 
 ## Result
 
-The wallet change does not change who is eligible; social recovery adds one
-condition (below). `eligibleToday`
+The wallet release moved payout addresses; social recovery and the later
+server-verified shop-payment rule add payout conditions (below). `eligibleToday`
 (`src/lib/funding.ts`) was identical on `main` and `staging` on 2026-10-16: a
 payout needs a role other than `basis`, and an `admitted` grant or a `trial`
 grant on the current UTC day. The grant requirement has applied since
@@ -321,6 +339,29 @@ grant; the staff trial and admit pings are skipped too. From that day, storing t
 share of the current wallet pings that UTC day's newest media post, so later
 triggers that day pay as usual.
 
+The member's own grant page receives one server-computed explanation for
+today, never a list of simultaneous reasons. A recorded daily gift today is
+shown as paid first; if none exists, a same-day welcome gift is shown as paid
+because it replaces that day's daily payout. Otherwise the payout conditions
+are checked lazily in this fixed order:
+
+1. The member must be confirmed in real life: the live role is not `basis`
+   (`verify`).
+2. The member must be admitted, or on trial on today's UTC day
+   (`admission`).
+3. The member must have a verified in-app wallet (`wallet`).
+4. On a day `recoveryShareRequired` applies, the current verified wallet must
+   have its stored 21.gifts recovery share (`recovery_share`).
+5. The member's wallet must have a completed server-verified payment to a live
+   21.gifts shop today or yesterday UTC (`shop_payment`).
+6. The member must have a live top-level photo or video note on today's UTC
+   day (`media_post`).
+
+When all six hold and no payout is recorded yet, the result is due. Its only
+possible reason is `payments_paused` when `daily_roster.payments_enabled` is
+off; otherwise the reason is null. A store failure makes the explanation
+unknown (`null`) without failing the rest of `GET /me`.
+
 ### The recovery share period
 
 `RECOVERY_SHARE_REQUIRED_FROM` (ISO date, UTC) is read at boot in each environment.
@@ -337,9 +378,10 @@ only: a verified wallet and the grant program stay required every day.
 | First-share ping of `PUT /me/recovery-share` (`src/routes/me.ts`)                                                      | Not sent: the share made nobody payable, and the post was pinged | Sent                                           |
 | `POST /debug/spend-ping` (`src/routes/debug-payments.ts`, `src/lib/cutover-replay.ts`), judged on the clock of the run | Paid; a window replay never reports `no_recovery_share`          | 403 `Not eligible`; `no_recovery_share`        |
 
-The API returns no field that says a missing share blocks a payout.
-`socialRecoverySetUp` (owner account JSON) only says whether the share is
-stored, and it stays as it is. During the period the app still shows its
+The owner JSON now returns the first blocking payout condition in
+`funding.payoutToday` (or top-level `grantPayoutToday` for `basis`), so a
+required missing share is `recovery_share`. `socialRecoverySetUp` still only
+says whether the share is stored. During the period the app still shows its
 dialog on `/welcome` to a grant member without the share. The dialog text
 `socialRecoveryPrompt.body` says grant payouts need Social Recovery (all four
 locales), and `socialRecoveryPrompt.title` names the grant; before the start
@@ -388,6 +430,15 @@ they are eligible, on the in-app wallet only, when all of these hold:
    until they set up social recovery; storing the first share pings that UTC
    day's newest media post. Read the value on release day: unset keeps paying
    members without a share.
+7. From deployment of the viewer rule, the member's wallet has a completed
+   server-verified payment to a live 21.gifts shop on that payout UTC day or
+   the day before. There is no configured start day. This applies to daily
+   grants and moderator stipends, but not the one-time welcome gift when the
+   server sees an account at least verified, not welcomed before, normalized
+   USD `1.00`, comment `Welcome`, no `messageId` or `groupMessageId`, and
+   `amountMsat` no greater than `usdToMsat("1.00", spot)` plus 10 percent.
+   Without a usable spot, the shop payment remains required. Those are the
+   gift's own once-per-account facts, not a public payout-kind override.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under
