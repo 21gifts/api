@@ -46,6 +46,24 @@ export interface FundingGrant {
   note: string | null;
 }
 
+/** Stored status a member can withdraw from. */
+export type WithdrawableFundingStatus = 'pending' | 'trial' | 'admitted';
+
+/**
+ * One withdrawal from the grant program, kept after a later application
+ * overwrites the row (`GET /funding/withdrawals`).
+ */
+export interface FundingWithdrawal {
+  /** Account that withdrew. */
+  accountId: string;
+  /** Withdrawal time (epoch ms): the withdrawn row's `decidedAt`. */
+  withdrawnAt: number;
+  /** Stored status right before the withdrawal. */
+  from: WithdrawableFundingStatus;
+  /** Admission time from the row before the withdrawal, or `null`. */
+  admittedAt: number | null;
+}
+
 /** Owner-facing funding JSON on `GET /me` / passkey finish (`role !== 'basis'`). */
 export interface OwnerFundingJson {
   /** Effective status; never omit. `'none'` when there is no row or the grant is withdrawn. */

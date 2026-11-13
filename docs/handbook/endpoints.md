@@ -1342,6 +1342,13 @@ close timestamp is set and omits the key otherwise.
 - **Used by:** The app grant screen, for a member who gives up the place.
 - **Auth:** `Authorization: Bearer` session. Not `basis`.
 
+## Endpoint: GET /funding/withdrawals
+
+- **Purpose:** Operator only. Every withdrawal from the grant program, newest first (then `accountId`), also after the member applied again and the row was overwritten. JSON `{ withdrawals: [{ accountId, name, withdrawnAt, from, admittedAt, reapplied }] }`. With `DATABASE_URL` read from the append-only `db_change` log (`funding_grant` UPDATE rows whose after status is `withdrawn` and before status `pending`, `trial`, or `admitted`); without a database the in-memory store records those writes itself. `withdrawnAt` is the withdrawn row's `decidedAt` (epoch ms), `from` the stored status before, `admittedAt` the admission time before or null, `name` the live display name or null, `reapplied` true when the current grant exists and is not `withdrawn`. Logs `funding.withdrawals.listed` `{ count }`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` for no bearer, any non-operator bearer, and every session (moderator and above included), as on `GET /funding/daily-roster/links`; 503 `{ error: 'Funding is unavailable' }` (`funding.list.failed`).
+- **Used by:** Operators (`DEBUG_TOKEN`, `DEBUG_READ_TOKEN`) who need to see who left the program and when.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` (`isOperatorBearer`) only.
+
 ## Endpoint: GET /funding/daily-roster
 
 - **Purpose:** Bearer session, at least initiator only; moderator and software developer are 403; or an operator `DEBUG_TOKEN` / `DEBUG_READ_TOKEN` without a session. Reads the API daily payout roster. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. Each row is a listed account: `accountId`, its trimmed lower-case `username` or null, its trimmed display `name` or null, and `address`, the row's edit key (`<username>@<host of PUBLIC_BASE_URL>`, the bare username when the LNURL server is off, or the account id without a username; not a payout address). `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients` and are returned on `moderators`.

@@ -92,9 +92,9 @@ export interface FundingRouteDeps {
   gifts: GiftStore;
   /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
   grantRound?: GrantRound;
-  /** Operator write token. Unset → no operator read on the staff GET routes or `GET /daily-roster/links`. */
+  /** Operator write token. Unset → no operator read on the staff GET routes, `GET /daily-roster/links`, or `GET /withdrawals`. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes or `GET /daily-roster/links`. */
+  /** Operator read-only token. Unset → no operator read on the staff GET routes, `GET /daily-roster/links`, or `GET /withdrawals`. */
   debugReadToken?: string;
 }
 
@@ -565,7 +565,8 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  *
  * Mounted at `/funding` so the public paths are `POST /funding/apply`,
  * `GET /funding/places`,
- * `GET /funding/applications`, `GET /funding/applications/:accountId`,
+ * `GET /funding/applications`, `GET /funding/withdrawals`,
+ * `GET /funding/applications/:accountId`,
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
  * `POST /funding/withdraw`, `GET /funding/payout-days`, `GET /funding/daily-roster`,
  * `GET /funding/daily-roster/links`,
@@ -602,6 +603,12 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * effective `pending`, `trial`, or `admitted` grant becomes `withdrawn`
  * (compare-and-set on the status read, log `funding.withdrawn`); any other
  * status is 409 `{ error: 'Conflict' }`. `basis` is 403 Forbidden.
+ *
+ * `GET /withdrawals` (operator `DEBUG_TOKEN` / `DEBUG_READ_TOKEN` only, like
+ * `GET /daily-roster/links`; any session is 401) lists every
+ * withdrawal ever written, newest first, from
+ * {@link FundingStore.listWithdrawals}, with the live name and whether the
+ * account's current grant is no longer `withdrawn` (`reapplied`).
  *
  * `GET /places` needs no session and returns the current round's places
  * count, or 503 `{ error: 'Funding is unavailable' }`. `POST /admit` admits
@@ -711,6 +718,37 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         }
         logEvent('funding.applications.listed', { count: applications.length });
         return c.json({ applications }, 200);
+      } catch {
+        logEvent('funding.list.failed');
+        return c.json({ error: 'Funding is unavailable' }, 503);
+      }
+    })
+    .get('/withdrawals', async (c) => {
+      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      try {
+        const rows = await deps.fundingStore.listWithdrawals();
+        const names = new Map<string, string | null>();
+        const reapplied = new Map<string, boolean>();
+        for (const row of rows) {
+          if (!names.has(row.accountId)) {
+            const account = await deps.authStore.getAccount(row.accountId);
+            const current = await deps.fundingStore.getByAccountId(row.accountId);
+            names.set(row.accountId, account?.name ?? null);
+            reapplied.set(row.accountId, current !== undefined && current.status !== 'withdrawn');
+          }
+        }
+        const withdrawals = rows.map((row) => ({
+          accountId: row.accountId,
+          name: names.get(row.accountId) ?? null,
+          withdrawnAt: row.withdrawnAt,
+          from: row.from,
+          admittedAt: row.admittedAt,
+          reapplied: reapplied.get(row.accountId) === true,
+        }));
+        logEvent('funding.withdrawals.listed', { count: withdrawals.length });
+        return c.json({ withdrawals }, 200);
       } catch {
         logEvent('funding.list.failed');
         return c.json({ error: 'Funding is unavailable' }, 503);
