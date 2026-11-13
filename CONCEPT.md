@@ -188,8 +188,13 @@ a stored 21.gifts recovery share for the account's current verified wallet
 (social recovery, below). They also require a server-verified completed
 payment from that member's wallet to a live 21.gifts shop on the payout's UTC
 day or the day before. This shop-payment rule applies from deployment, with no
-start date; it covers moderator stipends and does not cover the one-time
-welcome gift.
+start date; it covers moderator stipends. The one-time welcome gift is exempt
+only when server-owned facts show an account at least `verified` with no stored
+welcome, comment exactly `Welcome`, neither `messageId` nor `groupMessageId`,
+and a normalized exact USD `1.00`, and `amountMsat` is at most the server's
+`usdToMsat("1.00", spot)` conversion plus the fixed 10% spot-drift tolerance.
+Without a usable current spot, the exception fails closed and the recent shop
+payment is required.
 A **moderator** is proposed by
 an existing moderator and confirmed by a **different** staff
 member, or appointed directly by a founder. Those grants persist as trust
