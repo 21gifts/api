@@ -75,7 +75,7 @@ function payment(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord 
 
 describe('wallet schema', () => {
   it('contains the exact idempotent tables, migration order, and mirrored documentation', async () => {
-    expect(WALLET_SCHEMA_SQL).toHaveLength(44);
+    expect(WALLET_SCHEMA_SQL).toHaveLength(48);
     expect(WALLET_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/);
     expect(WALLET_SCHEMA_SQL[1]).toBe(
       'ALTER TABLE wallet_balance_snapshot ADD COLUMN IF NOT EXISTS wallet_pubkey text',
@@ -124,15 +124,26 @@ describe('wallet schema', () => {
       true,
     );
     expect(WALLET_SCHEMA_SQL.some((sql) => sql.includes('transaction_expiry_at'))).toBe(true);
-    expect(WALLET_SCHEMA_SQL[27]).toBe(
+    expect(WALLET_SCHEMA_SQL[29]).toBe(
       'ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS counterparty_pubkeys text[]',
     );
-    expect(WALLET_SCHEMA_SQL[28]).toBe(
+    expect(WALLET_SCHEMA_SQL[30]).toBe(
       'ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS spark_invoices text[] NOT NULL DEFAULT ARRAY[]::text[]',
     );
-    expect(WALLET_SCHEMA_SQL[29]).toBe(
+    expect(WALLET_SCHEMA_SQL[31]).toBe(
       'ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS type text',
     );
+    expect(WALLET_SCHEMA_SQL).toContain(
+      'ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS input_count integer',
+    );
+    expect(WALLET_SCHEMA_SQL).toContain(
+      'ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS resolved_input_count integer',
+    );
+    expect(
+      WALLET_SCHEMA_SQL.some((sql) =>
+        sql.includes('wallet_token_transaction_input_resolution_check'),
+      ),
+    ).toBe(true);
     expect(
       WALLET_SCHEMA_SQL.some((sql) => sql.includes('wallet_token_transaction_wallet_created_idx')),
     ).toBe(true);

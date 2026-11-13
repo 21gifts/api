@@ -100,16 +100,14 @@ describe('runWalletTransferTick', () => {
         direction: 'in' as const,
         amount: '0',
         counterpartyPubkeys: [],
+        inputCount: 0,
+        resolvedInputCount: 0,
         sparkInvoices: [],
         type: 'unknown' as const,
       })),
       hasNextPage: false,
       nextCursor: null,
       rawCount: 100,
-      ownerResolution: {
-        next: async () => ({ transactions: [], done: true }),
-        discard: vi.fn(),
-      },
     }));
     const recordBalance = vi.fn(async () => undefined);
     const ping = vi.fn(async () => undefined);
@@ -219,7 +217,7 @@ describe('runWalletTransferTick', () => {
     expect(tokenTransactions).toHaveBeenCalledTimes(2);
   });
 
-  it('stores the token page and completes wallet sync when owner enrichment times out', async () => {
+  it('keeps unresolved owner progress on timeout and withholds the full-sync watermark', async () => {
     vi.useFakeTimers();
     const upsertTokenTransaction = vi.fn(async () => undefined);
     const markFullSync = vi.fn(async () => undefined);
@@ -227,61 +225,51 @@ describe('runWalletTransferTick', () => {
     const recordBalance = vi.fn(async () => undefined);
     const balance = vi.fn(async () => 34);
     const ping = vi.fn(async () => undefined);
-    const discard = vi.fn();
-    const retryNext = vi.fn<() => Promise<SparkViewerTokenOwnerPage>>(async () => ({
-      transactions: [],
-      done: true,
-    }));
+    const baseTransaction = {
+      hash: '11'.repeat(32),
+      tokenIdentifier: null,
+      direction: 'in' as const,
+      amount: '21',
+      counterpartyPubkeys: [] as string[],
+      inputCount: 2,
+      resolvedInputCount: 0,
+      sparkInvoices: [] as string[],
+      type: 'transfer' as const,
+      status: 2,
+      createdTime: undefined,
+      expiryTime: undefined,
+    };
+    const resolvedTransaction = {
+      ...baseTransaction,
+      direction: 'out' as const,
+      amount: '5',
+      counterpartyPubkeys: [SHOP],
+      resolvedInputCount: 2,
+    };
+    let lateResolved = false;
+    let finishLate = (_page: SparkViewerTokenOwnerPage): void => undefined;
+    const late = new Promise<SparkViewerTokenOwnerPage>((resolve) => {
+      finishLate = resolve;
+    }).then((page) => {
+      lateResolved = true;
+      return page;
+    });
     const next = vi
       .fn<() => Promise<SparkViewerTokenOwnerPage>>()
       .mockResolvedValueOnce({
-        transactions: [
-          {
-            hash: '11'.repeat(32),
-            tokenIdentifier: null,
-            direction: 'out',
-            amount: '5',
-            counterpartyPubkeys: [SHOP],
-            sparkInvoices: [],
-            type: 'transfer',
-            status: 2,
-            createdTime: undefined,
-            expiryTime: undefined,
-          },
-        ],
+        transactions: [{ ...baseTransaction, resolvedInputCount: 1 }],
         done: false,
       })
-      .mockImplementation(
-        () =>
-          new Promise<{ transactions: []; done: boolean }>(() => {
-            // A stuck owner lookup must not hold the rest of the wallet sync.
-          }),
-      );
+      .mockImplementation(() => late);
     const deps: WalletTransferWorkerDeps = {
       viewer: {
         transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
         tokenTransactions: async () => ({
-          transactions: [
-            {
-              hash: '11'.repeat(32),
-              tokenIdentifier: null,
-              direction: 'in',
-              amount: '21',
-              counterpartyPubkeys: [],
-              sparkInvoices: [],
-              type: 'transfer',
-              status: 2,
-              createdTime: undefined,
-              expiryTime: undefined,
-            },
-          ],
+          transactions: [lateResolved ? resolvedTransaction : baseTransaction],
           hasNextPage: false,
           nextCursor: null,
           rawCount: 1,
-          ownerResolution:
-            discard.mock.calls.length === 0
-              ? { next, discard }
-              : { next: retryNext, discard: vi.fn() },
+          ...(lateResolved ? {} : { ownerResolution: { next } }),
         }),
         balance,
       },
@@ -348,31 +336,118 @@ describe('runWalletTransferTick', () => {
 
     expect((await runWalletTransferTick(deps)).size).toBe(0);
     expect(upsertTokenTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ direction: 'in', amount: '21' }),
+      expect.objectContaining({ direction: 'in', amount: '21', resolvedInputCount: 0 }),
     );
     expect(upsertTokenTransaction).toHaveBeenCalledWith(
-      expect.objectContaining({ direction: 'out', amount: '5' }),
+      expect.objectContaining({ resolvedInputCount: 1 }),
     );
     expect(next).toHaveBeenCalledTimes(1);
     expect(balance).toHaveBeenCalledOnce();
-    expect(markFullSync).toHaveBeenCalledOnce();
+    expect(markFullSync).not.toHaveBeenCalled();
 
     const timedOutTick = runWalletTransferTick(deps);
     await vi.advanceTimersByTimeAsync(15_000);
 
     expect((await timedOutTick).size).toBe(0);
     expect(next).toHaveBeenCalledTimes(2);
-    expect(discard).toHaveBeenCalledOnce();
     expect(balance).toHaveBeenCalledTimes(2);
-    expect(markFullSync).toHaveBeenCalledTimes(2);
+    expect(markFullSync).not.toHaveBeenCalled();
 
+    finishLate({ transactions: [resolvedTransaction], done: true });
+    await vi.advanceTimersByTimeAsync(0);
     expect((await runWalletTransferTick(deps)).size).toBe(0);
-    expect(retryNext).toHaveBeenCalledOnce();
     expect(hasShopPayment).toHaveBeenCalled();
     expect(ping).toHaveBeenCalledOnce();
     expect(balance).toHaveBeenCalledTimes(3);
     expect(recordBalance).toHaveBeenCalledTimes(3);
-    expect(markFullSync).toHaveBeenCalledTimes(3);
+    expect(markFullSync).toHaveBeenCalledOnce();
+  });
+
+  it('advances owner resolution once for every unresolved token page', async () => {
+    const token = (hash: string, resolvedInputCount: number) => ({
+      hash,
+      tokenIdentifier: null,
+      direction: resolvedInputCount === 0 ? ('in' as const) : ('out' as const),
+      amount: resolvedInputCount === 0 ? '21' : '5',
+      counterpartyPubkeys: resolvedInputCount === 0 ? [] : [SHOP],
+      inputCount: 1,
+      resolvedInputCount,
+      sparkInvoices: [],
+      type: 'transfer' as const,
+      status: 2,
+      createdTime: undefined,
+      expiryTime: undefined,
+    });
+    const firstNext = vi.fn(async () => ({
+      transactions: [token('11'.repeat(32), 1)],
+      done: true,
+    }));
+    const secondNext = vi.fn(async () => ({
+      transactions: [token('22'.repeat(32), 1)],
+      done: true,
+    }));
+    const tokenTransactions = vi
+      .fn()
+      .mockResolvedValueOnce({
+        transactions: [token('11'.repeat(32), 0)],
+        hasNextPage: true,
+        nextCursor: 'older',
+        rawCount: 100,
+        ownerResolution: { next: firstNext },
+      })
+      .mockResolvedValueOnce({
+        transactions: [token('22'.repeat(32), 0)],
+        hasNextPage: false,
+        nextCursor: null,
+        rawCount: 1,
+        ownerResolution: { next: secondNext },
+      });
+    const markFullSync = vi.fn(noFullSyncWrite);
+    const failed = await runWalletTransferTick({
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions,
+        balance: async () => 0,
+      },
+      transfers: {
+        listWallets: async () => [
+          { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
+        ],
+        syncState: async () => ({
+          newestCreatedAt: null,
+          oldestPendingCreatedAt: null,
+          pendingWithoutCreatedAt: false,
+          lastFullSyncAt: null,
+        }),
+        upsertTransfer: async () => ({
+          inserted: false,
+          updated: false,
+          shopPaymentBecameCompleted: false,
+        }),
+        upsertTokenTransaction: noTokenWrite,
+        markFullSync,
+        hasShopPayment: async () => false,
+      },
+      balances: { recordBalance: async () => undefined },
+      auth: {
+        getAccount: async () => undefined,
+        hasRecoveryShareForVerifiedWallet: async () => false,
+      },
+      funding: { getByAccountId: async () => undefined },
+      ping: {
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => null,
+          getById: async () => undefined,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+      },
+      now: () => NOW,
+    });
+
+    expect(failed.size).toBe(0);
+    expect(firstNext).toHaveBeenCalledOnce();
+    expect(secondNext).toHaveBeenCalledOnce();
+    expect(markFullSync).toHaveBeenCalledOnce();
   });
 
   it('skips a wallet under backoff and records a safe failure reason', async () => {
@@ -1799,6 +1874,8 @@ describe('wallet transfer worker edge decisions', () => {
           direction: 'in' as const,
           amount: '1',
           counterpartyPubkeys: [],
+          inputCount: 0,
+          resolvedInputCount: 0,
           sparkInvoices: ['spark1token'],
           type: 'mint' as const,
           status: 2,

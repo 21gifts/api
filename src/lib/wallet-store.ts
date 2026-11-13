@@ -213,6 +213,8 @@ $wallet_transfer_primary_key$`,
   direction text NOT NULL CHECK (direction IN ('in', 'out')),
   amount numeric(39, 0) NOT NULL CHECK (amount >= 0),
   counterparty_pubkeys text[] NOT NULL,
+  input_count integer,
+  resolved_input_count integer,
   spark_invoices text[] NOT NULL DEFAULT ARRAY[]::text[],
   type text NOT NULL CHECK (type IN ('create', 'mint', 'transfer', 'unknown')),
   status text NOT NULL CHECK (status IN ('started', 'signed', 'revealed', 'finalized', 'cancelled', 'unknown')),
@@ -222,6 +224,8 @@ $wallet_transfer_primary_key$`,
   last_seen_at timestamptz NOT NULL,
   PRIMARY KEY (account_id, wallet_pubkey, transaction_hash)
 )`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS input_count integer`,
+  `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS resolved_input_count integer`,
   `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS token_identifier text`,
   `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS direction text`,
   `ALTER TABLE wallet_token_transaction ADD COLUMN IF NOT EXISTS amount numeric(39, 0)`,
@@ -239,6 +243,13 @@ $wallet_transfer_primary_key$`,
   `ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_direction_check CHECK (direction IN ('in', 'out'))`,
   `ALTER TABLE wallet_token_transaction DROP CONSTRAINT IF EXISTS wallet_token_transaction_amount_check`,
   `ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_amount_check CHECK (amount >= 0)`,
+  `ALTER TABLE wallet_token_transaction DROP CONSTRAINT IF EXISTS wallet_token_transaction_input_resolution_check`,
+  `ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_input_resolution_check CHECK (
+  (input_count IS NULL AND resolved_input_count IS NULL)
+  OR (input_count IS NOT NULL AND input_count >= 0
+      AND (resolved_input_count IS NULL
+           OR (resolved_input_count >= 0 AND resolved_input_count <= input_count)))
+  )`,
   `ALTER TABLE wallet_token_transaction DROP CONSTRAINT IF EXISTS wallet_token_transaction_type_check`,
   `ALTER TABLE wallet_token_transaction ADD CONSTRAINT wallet_token_transaction_type_check CHECK (type IN ('create', 'mint', 'transfer', 'unknown'))`,
   `CREATE INDEX IF NOT EXISTS wallet_token_transaction_wallet_created_idx ON wallet_token_transaction (account_id, wallet_pubkey, transaction_created_at DESC, transaction_hash)`,

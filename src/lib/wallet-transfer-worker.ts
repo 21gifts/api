@@ -249,6 +249,8 @@ async function storeTokenTransactions(
       direction: transaction.direction,
       amount: transaction.amount,
       counterpartyPubkeys: transaction.counterpartyPubkeys,
+      inputCount: transaction.inputCount,
+      resolvedInputCount: transaction.resolvedInputCount,
       sparkInvoices: transaction.sparkInvoices,
       type: transaction.type,
       status: tokenStatus(transaction.status),
@@ -257,6 +259,14 @@ async function storeTokenTransactions(
       seenAt,
     });
   }
+}
+
+function tokenInputsUnresolved(
+  transactions: Awaited<ReturnType<SparkViewer['tokenTransactions']>>['transactions'],
+): boolean {
+  return transactions.some(
+    (transaction) => transaction.resolvedInputCount < transaction.inputCount,
+  );
 }
 
 async function syncWallet(
@@ -307,7 +317,7 @@ async function syncWallet(
       });
   let cursor: string | undefined;
   const seenTokenCursors = new Set<string>();
-  let ownerLookupAttempted = false;
+  let unresolvedTokenInputs = false;
   for (;;) {
     const page = await timed(
       deps.viewer.tokenTransactions({
@@ -320,18 +330,21 @@ async function syncWallet(
     const seenAt = new Date(deps.now());
     await storeTokenTransactions(deps, wallet, page.transactions, seenAt);
     const ownerResolution = page.ownerResolution;
-    if (ownerResolution !== undefined && !ownerLookupAttempted) {
-      ownerLookupAttempted = true;
+    let latestTransactions = page.transactions;
+    if (ownerResolution !== undefined) {
       let ownerPage: Awaited<ReturnType<typeof ownerResolution.next>> | undefined;
       try {
         ownerPage = await timed(ownerResolution.next());
       } catch {
-        ownerResolution.discard();
+        // The lookup owns failure invalidation. A caller timeout keeps its
+        // process-local progress so a late result is reusable on the next tick.
       }
       if (ownerPage !== undefined) {
-        await storeTokenTransactions(deps, wallet, ownerPage.transactions, new Date(deps.now()));
+        latestTransactions = ownerPage.transactions;
+        await storeTokenTransactions(deps, wallet, latestTransactions, new Date(deps.now()));
       }
     }
+    if (tokenInputsUnresolved(latestTransactions)) unresolvedTokenInputs = true;
     if (
       (!fullScan && tokenPagePrecedes(page.transactions, tokenCreatedAfter)) ||
       page.rawCount < WALLET_TRANSFER_PAGE_SIZE ||
@@ -404,7 +417,7 @@ async function syncWallet(
     syncedAt: observedAt,
     receivedAt: observedAt,
   });
-  if (fullScan) {
+  if (fullScan && !unresolvedTokenInputs) {
     await deps.transfers.markFullSync(wallet.accountId, wallet.sparkPubkey, observedAt);
   }
   return { inserted, updated };

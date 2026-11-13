@@ -1068,21 +1068,37 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     await tx.query(
-      `UPDATE wallet_transfer AS dst
-       SET direction = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.direction ELSE dst.direction END,
-           type = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.type ELSE dst.type END,
-           status = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END,
-           amount_sats = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.amount_sats ELSE dst.amount_sats END,
-           counterparty_pubkey = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.counterparty_pubkey ELSE dst.counterparty_pubkey END,
-           counterparty_pubkeys = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.counterparty_pubkeys ELSE dst.counterparty_pubkeys END,
-           counterparty_account_id = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.counterparty_account_id ELSE dst.counterparty_account_id END,
-           spark_invoice = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.spark_invoice ELSE dst.spark_invoice END,
-           transfer_created_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transfer_created_at ELSE dst.transfer_created_at END,
-           transfer_updated_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transfer_updated_at ELSE dst.transfer_updated_at END,
+      `WITH duplicate AS (
+         SELECT src.*,
+                CASE
+                  WHEN src.transfer_updated_at IS NOT NULL
+                   AND dst.transfer_updated_at IS NOT NULL
+                    THEN src.transfer_updated_at > dst.transfer_updated_at
+                  WHEN src.transfer_updated_at IS NOT NULL THEN true
+                  ELSE false
+                END AS state_from_src
+         FROM wallet_transfer AS src
+         JOIN wallet_transfer AS dst
+           ON dst.account_id = $2
+          AND dst.wallet_pubkey = src.wallet_pubkey
+          AND dst.transfer_id = src.transfer_id
+         WHERE src.account_id = $1
+       )
+       UPDATE wallet_transfer AS dst
+       SET direction = CASE WHEN src.state_from_src THEN src.direction ELSE dst.direction END,
+           type = CASE WHEN src.state_from_src THEN src.type ELSE dst.type END,
+           status = CASE WHEN src.state_from_src THEN src.status ELSE dst.status END,
+           amount_sats = CASE WHEN src.state_from_src THEN src.amount_sats ELSE dst.amount_sats END,
+           counterparty_pubkey = CASE WHEN src.state_from_src THEN src.counterparty_pubkey ELSE dst.counterparty_pubkey END,
+           counterparty_pubkeys = CASE WHEN src.state_from_src THEN src.counterparty_pubkeys ELSE dst.counterparty_pubkeys END,
+           counterparty_account_id = CASE WHEN src.state_from_src THEN src.counterparty_account_id ELSE dst.counterparty_account_id END,
+           spark_invoice = CASE WHEN src.state_from_src THEN src.spark_invoice ELSE dst.spark_invoice END,
+           transfer_created_at = CASE WHEN src.state_from_src THEN src.transfer_created_at ELSE dst.transfer_created_at END,
+           transfer_updated_at = CASE WHEN src.state_from_src THEN src.transfer_updated_at ELSE dst.transfer_updated_at END,
            first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at),
            last_seen_at = GREATEST(src.last_seen_at, dst.last_seen_at)
-       FROM wallet_transfer AS src
-       WHERE src.account_id = $1 AND dst.account_id = $2
+       FROM duplicate AS src
+       WHERE dst.account_id = $2
          AND dst.wallet_pubkey = src.wallet_pubkey
          AND dst.transfer_id = src.transfer_id`,
       accountParams,
@@ -1099,11 +1115,32 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     await tx.query(
-      `UPDATE wallet_token_transaction AS dst
+      `WITH duplicate AS (
+         SELECT src.*,
+                CASE
+                  WHEN src.resolved_input_count IS NULL AND dst.resolved_input_count IS NULL
+                    THEN src.last_seen_at > dst.last_seen_at
+                  WHEN dst.resolved_input_count IS NULL
+                    THEN src.resolved_input_count = src.input_count
+                  WHEN src.resolved_input_count IS NULL THEN false
+                  WHEN src.resolved_input_count <> dst.resolved_input_count
+                    THEN src.resolved_input_count > dst.resolved_input_count
+                  ELSE src.last_seen_at > dst.last_seen_at
+                END AS projection_from_src
+         FROM wallet_token_transaction AS src
+         JOIN wallet_token_transaction AS dst
+           ON dst.account_id = $2
+          AND dst.wallet_pubkey = src.wallet_pubkey
+          AND dst.transaction_hash = src.transaction_hash
+         WHERE src.account_id = $1
+       )
+       UPDATE wallet_token_transaction AS dst
        SET token_identifier = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.token_identifier ELSE dst.token_identifier END,
-           direction = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.direction ELSE dst.direction END,
-           amount = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.amount ELSE dst.amount END,
-           counterparty_pubkeys = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.counterparty_pubkeys ELSE dst.counterparty_pubkeys END,
+           direction = CASE WHEN src.projection_from_src THEN src.direction ELSE dst.direction END,
+           amount = CASE WHEN src.projection_from_src THEN src.amount ELSE dst.amount END,
+           counterparty_pubkeys = CASE WHEN src.projection_from_src THEN src.counterparty_pubkeys ELSE dst.counterparty_pubkeys END,
+           input_count = CASE WHEN src.projection_from_src THEN src.input_count ELSE dst.input_count END,
+           resolved_input_count = CASE WHEN src.projection_from_src THEN src.resolved_input_count ELSE dst.resolved_input_count END,
            spark_invoices = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.spark_invoices ELSE dst.spark_invoices END,
            type = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.type ELSE dst.type END,
            status = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END,
@@ -1111,8 +1148,8 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
            transaction_expiry_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transaction_expiry_at ELSE dst.transaction_expiry_at END,
            first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at),
            last_seen_at = GREATEST(src.last_seen_at, dst.last_seen_at)
-       FROM wallet_token_transaction AS src
-       WHERE src.account_id = $1 AND dst.account_id = $2
+       FROM duplicate AS src
+       WHERE dst.account_id = $2
          AND dst.wallet_pubkey = src.wallet_pubkey
          AND dst.transaction_hash = src.transaction_hash`,
       accountParams,
@@ -1145,20 +1182,24 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          )`,
       accountParams,
     );
-    await tx.query(
-      `UPDATE welcome_invoice_reservation AS dst
-       SET reservation_id = CASE WHEN src.expires_at > dst.expires_at THEN src.reservation_id ELSE dst.reservation_id END,
-           created_at = CASE WHEN src.expires_at > dst.expires_at THEN src.created_at ELSE dst.created_at END,
-           expires_at = GREATEST(src.expires_at, dst.expires_at)
-       FROM welcome_invoice_reservation AS src
-       WHERE src.account_id = $1 AND dst.account_id = $2`,
-      accountParams,
-    );
+    // Drop the losing row before the catalog foreign-key pass moves the
+    // source row. `reservation_id` is immediately unique, so copying it onto
+    // the destination while the source still exists cannot be used as a swap.
     await tx.query(
       `DELETE FROM welcome_invoice_reservation AS src
        WHERE src.account_id = $1
          AND EXISTS (
-           SELECT 1 FROM welcome_invoice_reservation AS dst WHERE dst.account_id = $2
+           SELECT 1 FROM welcome_invoice_reservation AS dst
+           WHERE dst.account_id = $2 AND src.expires_at <= dst.expires_at
+         )`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM welcome_invoice_reservation AS dst
+       WHERE dst.account_id = $2
+         AND EXISTS (
+           SELECT 1 FROM welcome_invoice_reservation AS src
+           WHERE src.account_id = $1 AND src.expires_at > dst.expires_at
          )`,
       accountParams,
     );

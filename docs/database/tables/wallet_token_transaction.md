@@ -15,6 +15,8 @@ Source: [src/lib/wallet-store.ts](../../../src/lib/wallet-store.ts)
 | `direction`              | ENUM                    | `text`                     | No       | –                 | –                            |
 | `amount`                 | Decimal                 | `numeric(39,0)`            | No       | –                 | –                            |
 | `counterparty_pubkeys`   | Array of text           | `text[]`                   | No       | –                 | –                            |
+| `input_count`            | Integer                 | `integer`                  | Yes      | –                 | –                            |
+| `resolved_input_count`   | Integer                 | `integer`                  | Yes      | –                 | –                            |
 | `spark_invoices`         | Array of text           | `text[]`                   | No       | `ARRAY[]::text[]` | –                            |
 | `type`                   | ENUM                    | `text`                     | No       | –                 | –                            |
 | `status`                 | ENUM                    | `text`                     | No       | –                 | –                            |

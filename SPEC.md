@@ -4571,25 +4571,37 @@ record of the value-movement facts those two sources observe or report.
   counterparty key (plus the sorted representative key and its resolved
   current/previous-wallet account cache), optional Spark invoice,
   operator creation/update times, and first/last server observation times.
-  A current row changes only when the incoming observation is not older, using
-  the operator update time with server observation time as fallback.
+  Operator update times are ordered only when both observations have one;
+  `last_seen_at` is never an ordering substitute. An incoming operator time is
+  accepted over a row without one. An observation without an operator time
+  advances `last_seen_at` but neither clears a stored operator time nor changes
+  a final status back to `pending`.
   Rows are retained; account merge moves them to the survivor like
   `wallet_payment`. If both accounts have this composite key, the survivor row
-  keeps the earliest `first_seen_at`, the mutable state and `last_seen_at` from
-  the latest observation, then the source duplicate is deleted.
+  keeps the earliest `first_seen_at` and greatest `last_seen_at`; mutable state
+  comes from the later operator update time, a timed row wins over an untimed
+  row, and the survivor keeps mutable state when operator times are equal or
+  both absent. The source duplicate is then deleted.
 - `wallet_token_transaction`: one row per
   `(account_id, wallet_pubkey, transaction_hash)`. It stores only the token
   identifier, owner-relative direction and decimal amount, counterparty keys,
-  Spark invoice attachment strings, normalized type and status, client creation/expiry times, and
-  first/last observation times. Raw SDK rows, signatures, secret keys, commitments,
+  input count and resolved-input count, Spark invoice attachment strings,
+  normalized type and status, client creation/expiry times, and first/last
+  observation times. Raw SDK rows, signatures, secret keys, commitments,
   and revocation secrets are never stored in this table or `db_change`.
   Its current row changes only when the incoming server observation is not older.
+  A later observation with fewer resolved inputs may update its other facts and
+  `last_seen_at`, but cannot replace direction, amount, counterparties, or the
+  better resolution counts. Pre-migration rows have null counts; an incomplete
+  observation cannot replace their projection, while a fully resolved one can.
   A transfer is outgoing only when an input's previous output belongs to this
   wallet; its amount and counterparties are the outputs to other owners.
   Otherwise it is incoming, its amount is the sum of this wallet's outputs,
   and its counterparties are the previous-output owners. Mint and create rows
-  use the public issuer key as counterparty. Account-merge duplicates use the
-  same earliest-first/latest-state reconciliation as `wallet_transfer`.
+  use the public issuer key as counterparty. Account-merge duplicates keep the
+  earliest first observation and latest non-projection facts, but choose
+  direction, amount, counterparties, and resolution counts from the
+  better-resolved row (latest observation breaks an equal-quality tie).
 - `wallet_transfer_sync`: the durable per-account/per-wallet time of the last
   complete history pass. An account-merge duplicate keeps the maximum time.
   It drives the daily full reread and is operational
@@ -6089,7 +6101,7 @@ two rows or by two rows of the same direction is not paired. A paired row moves
 `updated_at` (never backwards) but not `last_observed_at`. Like any resolved
 category, a later re-send without details keeps it.
 
-**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, reconciles duplicate viewer transfer/token rows to earliest first observation and latest mutable state/last observation, keeps the maximum duplicate full-sync time, clears a counterparty that is one of the two merged accounts, then moves the rest.
+**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, reconciles duplicate viewer rows to the earliest first observation and greatest last observation while transfer state follows operator time and token projection fields come from the better-resolved duplicate, keeps the maximum duplicate full-sync time, clears a counterparty that is one of the two merged accounts, then moves the rest.
 
 The app report is supplementary and is not the source of truth for complete
 wallet history. At boot the api loads one deployment viewer from
@@ -6127,25 +6139,29 @@ is `cancelled` when any reached receiver is status 7, preserves aggregate
 only when every own receiver edge is completed, and receiver cancellation is
 stored as `cancelled`. The worker also pages
 `getTokenTransactions` from newest to oldest on every tick, stopping
-incremental passes after their one-hour/pending overlap and performing the
+incremental passes after their one-hour/pending-or-unresolved overlap and performing the
 complete reread once per UTC day. It stores only the explicit non-secret token
-facts listed above. Transfer direction is outgoing only when the wallet owns a
+facts listed above. A finalized or cancelled row whose resolved-input count is
+smaller than its input count stays in that overlap; an undated one forces a
+full token reread. Transfer direction is outgoing only when the wallet owns a
 spent previous output resolved by its outpoint or public spent-output id;
 revocation secrets are never copied. Incoming and outgoing amounts and
 counterparties follow the `wallet_token_transaction` rules above, and invoice
 attachment strings are stored in `spark_invoices`. Each primary token page is
 stored first; an unresolved input therefore remains incoming. Input-owner
-enrichment then advances at most one lookup page per wallet per tick under its
-own timeout and keeps
+enrichment then advances one bounded lookup step for every unresolved primary
+page under its own timeout and keeps
 bounded process-local cursor/owner progress across ticks. The cache contains
 only allow-listed transaction facts and the outpoints/output ids required for
 the lookup, never raw SDK rows or revocation/withdrawal secrets. A cursor is
 consumed only after a successful response returns a new non-empty cursor. A
-failure or timeout discards the in-flight promise and evicts that page's
-progress so the next tick starts a fresh lookup; a refreshed
+lookup failure evicts that page's progress so the next tick starts a fresh
+lookup. A caller timeout retains the cache and its in-flight promise, so a late
+result is reusable on the next tick; a refreshed
 page with new unknown input ids reopens the lookup. Finished and stale entries
 are evicted. An enrichment failure or timeout never prevents token upserts,
-catch-up, the balance snapshot, or the daily full-sync watermark. It normalizes
+catch-up, or the balance snapshot. A daily full-sync watermark is written only
+when no page in that full pass still has unresolved inputs. It normalizes
 SDK enums into `wallet_transfer`, resolves counterparties against verified current and previous wallet
 keys, and writes an owned balance snapshot. Private wallets that have not yet
 granted the viewer simply return no transfers. Changed wallets log only

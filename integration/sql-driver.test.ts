@@ -3043,6 +3043,8 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
         direction: 'in',
         amount: '21',
         counterpartyPubkeys: [],
+        inputCount: 0,
+        resolvedInputCount: 0,
         sparkInvoices: ['spark1token'],
         type: 'mint',
         status: 'finalized',
@@ -3086,6 +3088,41 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
       await store.upsertTransfer(transfer('utc-d', '2026-11-12T23:30:00.000Z'));
       await expect(store.hasShopPayment(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(true);
 
+      const missingTimeTransferId = crypto.randomUUID();
+      await store.upsertTransfer({
+        ...transfer(missingTimeTransferId, '2026-11-12T20:00:00.000Z'),
+        status: 'pending',
+        transferUpdatedAt: null,
+        seenAt: new Date('2026-11-12T22:00:00.000Z'),
+      });
+      // A transfer time is compared only with another transfer time, never
+      // with the later poll clock stored in last_seen_at.
+      await store.upsertTransfer({
+        ...transfer(missingTimeTransferId, '2026-11-12T20:00:00.000Z'),
+        status: 'completed',
+        transferUpdatedAt: new Date('2026-11-12T21:00:00.000Z'),
+        seenAt: new Date('2026-11-12T22:01:00.000Z'),
+      });
+      await store.upsertTransfer({
+        ...transfer(missingTimeTransferId, '2026-11-12T20:00:00.000Z'),
+        status: 'pending',
+        transferUpdatedAt: null,
+        seenAt: new Date('2026-11-12T23:00:00.000Z'),
+      });
+      await expect(
+        client.query<{ status: string; transfer_updated_at: Date; last_seen_at: Date }>(
+          `SELECT status, transfer_updated_at, last_seen_at FROM wallet_transfer
+           WHERE account_id = $1 AND wallet_pubkey = $2 AND transfer_id = $3`,
+          [buyerId, buyerKey, missingTimeTransferId],
+        ),
+      ).resolves.toEqual([
+        {
+          status: 'completed',
+          transfer_updated_at: new Date('2026-11-12T21:00:00.000Z'),
+          last_seen_at: new Date('2026-11-12T23:00:00.000Z'),
+        },
+      ]);
+
       const monotonicTransferId = crypto.randomUUID();
       await store.upsertTransfer({
         ...transfer(monotonicTransferId, '2026-11-12T20:00:00.000Z'),
@@ -3109,6 +3146,8 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
         direction: 'out',
         amount: '34',
         counterpartyPubkeys: [shopKey],
+        inputCount: 1,
+        resolvedInputCount: 1,
         sparkInvoices: [],
         type: 'transfer',
         status: 'finalized',
@@ -3124,12 +3163,14 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
         direction: 'in',
         amount: '1',
         counterpartyPubkeys: [],
+        inputCount: 1,
+        resolvedInputCount: 0,
         sparkInvoices: [],
         type: 'transfer',
-        status: 'started',
+        status: 'finalized',
         transactionCreatedAt: new Date('2026-11-12T20:00:00.000Z'),
         transactionExpiryAt: null,
-        seenAt: new Date('2026-11-12T21:00:00.000Z'),
+        seenAt: new Date('2026-11-12T23:00:00.000Z'),
       });
       await expect(
         client.query<{ status: string }>(
@@ -3153,12 +3194,54 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
         ),
       ).resolves.toEqual([{ status: 'returned', seen_preserved: true }]);
       await expect(
-        client.query<{ status: string; direction: string; amount: string }>(
-          `SELECT status, direction, amount::text AS amount FROM wallet_token_transaction
+        client.query<{
+          status: string;
+          direction: string;
+          amount: string;
+          counterparty_pubkeys: string[];
+          input_count: number;
+          resolved_input_count: number;
+          last_seen_at: Date;
+        }>(
+          `SELECT status, direction, amount::text AS amount, counterparty_pubkeys,
+                  input_count, resolved_input_count, last_seen_at
+           FROM wallet_token_transaction
            WHERE account_id = $1 AND wallet_pubkey = $2 AND transaction_hash = $3`,
           [buyerId, buyerKey, monotonicTokenHash],
         ),
-      ).resolves.toEqual([{ status: 'finalized', direction: 'out', amount: '34' }]);
+      ).resolves.toEqual([
+        {
+          status: 'finalized',
+          direction: 'out',
+          amount: '34',
+          counterparty_pubkeys: [shopKey],
+          input_count: 1,
+          resolved_input_count: 1,
+          last_seen_at: new Date('2026-11-12T23:00:00.000Z'),
+        },
+      ]);
+      const unresolvedTokenHash = hex64();
+      await store.upsertTokenTransaction({
+        accountId: buyerId,
+        walletPubkey: buyerKey,
+        transactionHash: unresolvedTokenHash,
+        tokenIdentifier: null,
+        direction: 'in',
+        amount: '1',
+        counterpartyPubkeys: [],
+        inputCount: 1,
+        resolvedInputCount: 0,
+        sparkInvoices: [],
+        type: 'transfer',
+        status: 'finalized',
+        transactionCreatedAt: new Date('2026-11-12T19:00:00.000Z'),
+        transactionExpiryAt: null,
+        seenAt: new Date('2026-11-12T23:01:00.000Z'),
+      });
+      await expect(store.syncState(buyerId, buyerKey)).resolves.toMatchObject({
+        oldestPendingTokenCreatedAt: new Date('2026-11-12T19:00:00.000Z'),
+        pendingTokenWithoutCreatedAt: false,
+      });
     } finally {
       await client.execute('DELETE FROM wallet_token_transaction WHERE account_id = $1', [buyerId]);
       await client.execute('DELETE FROM wallet_transfer WHERE account_id = $1', [buyerId]);
@@ -4960,7 +5043,102 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateBannerSchema(client);
   await migrateWalletSchema(client);
   await migrateDailyRosterSchema(client);
+  await migrateWelcomeInvoiceReservationSchema(client);
 }
+
+describe('Postgres welcome reservation account merge', () => {
+  test('keeps the later lease without colliding its unique reservation id', async () => {
+    const cases = [
+      {
+        name: 'source later',
+        sourceExpiry: '2026-11-13T12:10:00.000Z',
+        destinationExpiry: '2026-11-13T12:05:00.000Z',
+        expected: 'source',
+      },
+      {
+        name: 'equal expiry',
+        sourceExpiry: '2026-11-13T12:05:00.000Z',
+        destinationExpiry: '2026-11-13T12:05:00.000Z',
+        expected: 'destination',
+      },
+      {
+        name: 'source earlier',
+        sourceExpiry: '2026-11-13T12:04:00.000Z',
+        destinationExpiry: '2026-11-13T12:05:00.000Z',
+        expected: 'destination',
+      },
+    ] as const;
+
+    for (const entry of cases) {
+      const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+      const fromId = crypto.randomUUID();
+      const intoId = crypto.randomUUID();
+      const sourceReservation = crypto.randomUUID().replaceAll('-', '');
+      const destinationReservation = crypto.randomUUID().replaceAll('-', '');
+      try {
+        await migrateMergeTables(client);
+        const auth = new PostgresAuthStore(client);
+        for (const [id, suffix] of [
+          [fromId, 'a'],
+          [intoId, 'b'],
+        ] as const) {
+          await auth.createAccount({
+            id,
+            linkingKey: null,
+            role: 'verified',
+            name: `${entry.name}-${suffix}`,
+            forumLawsDismissed: false,
+            location: null,
+            viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+            createdAt: 1,
+            rulesAgreedAt: null,
+          });
+        }
+        const createdAt = new Date('2026-11-13T12:00:00.000Z');
+        await client.execute(
+          `INSERT INTO welcome_invoice_reservation
+             (account_id, reservation_id, created_at, expires_at)
+           VALUES ($1,$2,$3,$4),($5,$6,$3,$7)`,
+          [
+            fromId,
+            sourceReservation,
+            createdAt,
+            new Date(entry.sourceExpiry),
+            intoId,
+            destinationReservation,
+            new Date(entry.destinationExpiry),
+          ],
+        );
+
+        expect(
+          await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
+        ).toEqual({ ok: true, messages: 0 });
+        await expect(
+          client.query<{ account_id: string; reservation_id: string; expires_at: Date }>(
+            `SELECT account_id, reservation_id, expires_at
+             FROM welcome_invoice_reservation WHERE account_id = $1`,
+            [intoId],
+          ),
+        ).resolves.toEqual([
+          {
+            account_id: intoId,
+            reservation_id:
+              entry.expected === 'source' ? sourceReservation : destinationReservation,
+            expires_at: new Date(
+              entry.expected === 'source' ? entry.sourceExpiry : entry.destinationExpiry,
+            ),
+          },
+        ]);
+      } finally {
+        await client.execute('DELETE FROM welcome_invoice_reservation WHERE account_id = $1', [
+          intoId,
+        ]);
+        await client.execute('DELETE FROM account WHERE id = $1 OR id = $2', [fromId, intoId]);
+        await closeIfPossible(sql);
+      }
+    }
+  });
+});
 
 describe('Postgres zap settlement during account merge', () => {
   test('a merge completed after invoice lookup attributes the receipt to the survivor', async () => {

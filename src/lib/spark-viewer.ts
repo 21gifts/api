@@ -52,6 +52,8 @@ export interface SparkViewerTokenTransaction {
   direction: 'in' | 'out';
   amount: string;
   counterpartyPubkeys: string[];
+  inputCount: number;
+  resolvedInputCount: number;
   sparkInvoices: string[];
   type: 'create' | 'mint' | 'transfer' | 'unknown';
   status: number;
@@ -68,8 +70,6 @@ export interface SparkViewerTokenOwnerPage {
 /** Stateful, process-local token-input owner lookup for one history page. */
 export interface SparkViewerTokenOwnerResolution {
   next(): Promise<SparkViewerTokenOwnerPage>;
-  /** Evict this lookup after the caller's deadline without reusing its in-flight promise. */
-  discard(): void;
 }
 
 /** Read-only operator access used by the wallet transfer worker. */
@@ -515,6 +515,8 @@ function tokenTransactionOf(
     direction,
     amount: amount.toString(),
     counterpartyPubkeys: [...new Set(counterpartyPubkeys)].sort(),
+    inputCount: row.inputs.length,
+    resolvedInputCount: inputOwners.length,
     sparkInvoices: [...row.sparkInvoices],
     type: row.type,
     status: row.status,
@@ -692,9 +694,6 @@ function tokenOwnerResolution(
           inFlight = undefined;
         });
       return inFlight;
-    },
-    discard() {
-      onFailure();
     },
   };
 }

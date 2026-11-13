@@ -1130,8 +1130,9 @@ describe('mergeAccounts', () => {
     expect(transferReconcile).toBeGreaterThan(walletCollision);
     expect(transferReconcile).toBeLessThan(transferCollision);
     expect(queries[transferReconcile]?.text).toContain(
-      'CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END',
+      'CASE WHEN src.state_from_src THEN src.status ELSE dst.status END',
     );
+    expect(queries[transferReconcile]?.text).toContain('WHEN src.transfer_updated_at IS NOT NULL');
     expect(queries[transferReconcile]?.text).toContain(
       'first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at)',
     );
@@ -1155,8 +1156,33 @@ describe('mergeAccounts', () => {
       'CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END',
     );
     expect(queries[tokenReconcile]?.text).toContain(
+      'CASE WHEN src.projection_from_src THEN src.direction ELSE dst.direction END',
+    );
+    expect(queries[tokenReconcile]?.text).toContain(
+      'WHEN src.resolved_input_count <> dst.resolved_input_count',
+    );
+    expect(queries[tokenReconcile]?.text).toContain(
       'first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at)',
     );
+    const sourceLeaseDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM welcome_invoice_reservation AS src'),
+    );
+    const destinationLeaseDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM welcome_invoice_reservation AS dst'),
+    );
+    expect(sourceLeaseDelete).toBeGreaterThan(tokenDelete);
+    expect(destinationLeaseDelete).toBeGreaterThan(sourceLeaseDelete);
+    expect(queries[sourceLeaseDelete]?.text).toContain('src.expires_at <= dst.expires_at');
+    expect(queries[destinationLeaseDelete]?.text).toContain('src.expires_at > dst.expires_at');
+    expect(queries[sourceLeaseDelete]?.params).toEqual([FROM, INTO]);
+    expect(queries[destinationLeaseDelete]?.params).toEqual([FROM, INTO]);
+    expect(
+      queries.some(
+        (query) =>
+          query.text.includes('UPDATE welcome_invoice_reservation') &&
+          query.text.includes('reservation_id'),
+      ),
+    ).toBe(false);
     const syncReconcile = queries.findIndex((query) =>
       query.text.includes('UPDATE wallet_transfer_sync AS dst'),
     );

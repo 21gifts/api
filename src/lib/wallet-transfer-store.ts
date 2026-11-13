@@ -59,6 +59,8 @@ export interface WalletTokenTransactionRecord {
   direction: WalletTransferDirection;
   amount: string;
   counterpartyPubkeys: string[];
+  inputCount: number;
+  resolvedInputCount: number;
   sparkInvoices: string[];
   type: 'create' | 'mint' | 'transfer' | 'unknown';
   status: WalletTokenTransactionStatus;
@@ -130,15 +132,15 @@ function dayOf(row: WalletTransferRecord): string | null {
   return at === null ? null : utcDayKey(at.getTime());
 }
 
-function transferObservationTime(row: WalletTransferRecord): number {
-  return (row.transferUpdatedAt ?? row.seenAt).getTime();
-}
-
 function transferObservationIsOlder(
   incoming: WalletTransferRecord,
   current: WalletTransferRecord,
 ): boolean {
-  return transferObservationTime(incoming) < transferObservationTime(current);
+  return (
+    incoming.transferUpdatedAt !== null &&
+    current.transferUpdatedAt !== null &&
+    incoming.transferUpdatedAt.getTime() < current.transferUpdatedAt.getTime()
+  );
 }
 
 /** Process-local adapter used by database-free boots and tests. */
@@ -198,7 +200,11 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
       .filter((value): value is Date => value !== null)
       .map((value) => value.getTime());
     const pendingTokenCreated = tokens
-      .filter((row) => row.status !== 'finalized' && row.status !== 'cancelled')
+      .filter(
+        (row) =>
+          (row.status !== 'finalized' && row.status !== 'cancelled') ||
+          row.resolvedInputCount < row.inputCount,
+      )
       .map((row) => row.transactionCreatedAt)
       .filter((value): value is Date => value !== null)
       .map((value) => value.getTime());
@@ -213,8 +219,8 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
         pendingTokenCreated.length === 0 ? null : new Date(Math.min(...pendingTokenCreated)),
       pendingTokenWithoutCreatedAt: tokens.some(
         (row) =>
-          row.status !== 'finalized' &&
-          row.status !== 'cancelled' &&
+          ((row.status !== 'finalized' && row.status !== 'cancelled') ||
+            row.resolvedInputCount < row.inputCount) &&
           row.transactionCreatedAt === null,
       ),
       lastFullSyncAt: dateCopy(this.#fullSyncAt.get(`${accountId}\u0000${walletPubkey}`) ?? null),
@@ -253,6 +259,12 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
       existing.type === 'transfer' &&
       (await hasExternalShop(existingCounterparties, existing.accountId, this.#isShop));
     const next = copyRecord(row);
+    if (existing !== undefined && row.transferUpdatedAt === null) {
+      next.transferUpdatedAt = dateCopy(existing.transferUpdatedAt);
+      if (row.status === 'pending' && existing.status !== 'pending') {
+        next.status = existing.status;
+      }
+    }
     if (existing !== undefined && next.seenAt.getTime() < existing.seenAt.getTime()) {
       next.seenAt = new Date(existing.seenAt.getTime());
     }
@@ -275,14 +287,22 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
     if (existing !== undefined && row.seenAt.getTime() < existing.seenAt.getTime()) {
       return Promise.resolve();
     }
-    this.#tokens.set(key, {
+    const next = {
       ...row,
       transactionCreatedAt: dateCopy(row.transactionCreatedAt),
       transactionExpiryAt: dateCopy(row.transactionExpiryAt),
       counterpartyPubkeys: [...row.counterpartyPubkeys],
       sparkInvoices: [...row.sparkInvoices],
       seenAt: new Date(row.seenAt.getTime()),
-    });
+    };
+    if (existing !== undefined && row.resolvedInputCount < existing.resolvedInputCount) {
+      next.direction = existing.direction;
+      next.amount = existing.amount;
+      next.counterpartyPubkeys = [...existing.counterpartyPubkeys];
+      next.inputCount = existing.inputCount;
+      next.resolvedInputCount = existing.resolvedInputCount;
+    }
+    this.#tokens.set(key, next);
     return Promise.resolve();
   }
 
@@ -440,11 +460,17 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
                WHERE account_id = $1 AND wallet_pubkey = $2) AS newest_token_created_at,
               (SELECT min(transaction_created_at) FROM wallet_token_transaction
                WHERE account_id = $1 AND wallet_pubkey = $2
-                 AND status NOT IN ('finalized', 'cancelled')) AS oldest_pending_token_created_at,
+                 AND (status NOT IN ('finalized', 'cancelled')
+                      OR (input_count IS NOT NULL
+                          AND (resolved_input_count IS NULL
+                               OR resolved_input_count < input_count)))) AS oldest_pending_token_created_at,
               (SELECT coalesce(bool_or(transaction_created_at IS NULL), false)
                FROM wallet_token_transaction
                WHERE account_id = $1 AND wallet_pubkey = $2
-                 AND status NOT IN ('finalized', 'cancelled')) AS pending_token_without_created_at,
+                 AND (status NOT IN ('finalized', 'cancelled')
+                      OR (input_count IS NOT NULL
+                          AND (resolved_input_count IS NULL
+                               OR resolved_input_count < input_count)))) AS pending_token_without_created_at,
               (SELECT last_full_sync_at FROM wallet_transfer_sync
                WHERE account_id = $1 AND wallet_pubkey = $2) AS last_full_sync_at
        FROM wallet_transfer WHERE account_id = $1 AND wallet_pubkey = $2`,
@@ -495,17 +521,24 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
          ON CONFLICT (account_id, wallet_pubkey, transfer_id) DO UPDATE SET
            direction = EXCLUDED.direction,
            type = EXCLUDED.type,
-           status = EXCLUDED.status,
            amount_sats = EXCLUDED.amount_sats,
            counterparty_pubkey = EXCLUDED.counterparty_pubkey,
            counterparty_pubkeys = EXCLUDED.counterparty_pubkeys,
            counterparty_account_id = EXCLUDED.counterparty_account_id,
            spark_invoice = EXCLUDED.spark_invoice,
            transfer_created_at = EXCLUDED.transfer_created_at,
-           transfer_updated_at = EXCLUDED.transfer_updated_at,
+           transfer_updated_at = COALESCE(EXCLUDED.transfer_updated_at, wallet_transfer.transfer_updated_at),
+           status = CASE
+             WHEN EXCLUDED.transfer_updated_at IS NULL
+              AND EXCLUDED.status = 'pending'
+              AND wallet_transfer.status <> 'pending'
+             THEN wallet_transfer.status
+             ELSE EXCLUDED.status
+           END,
            last_seen_at = GREATEST(EXCLUDED.last_seen_at, wallet_transfer.last_seen_at)
-         WHERE COALESCE(EXCLUDED.transfer_updated_at, EXCLUDED.last_seen_at) >=
-               COALESCE(wallet_transfer.transfer_updated_at, wallet_transfer.last_seen_at)`,
+         WHERE EXCLUDED.transfer_updated_at IS NULL
+            OR wallet_transfer.transfer_updated_at IS NULL
+            OR EXCLUDED.transfer_updated_at >= wallet_transfer.transfer_updated_at`,
         [
           row.accountId,
           row.walletPubkey,
@@ -557,14 +590,51 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
     await this.sql.execute(
       `INSERT INTO wallet_token_transaction
          (account_id, wallet_pubkey, transaction_hash, token_identifier, direction, amount,
-          counterparty_pubkeys, spark_invoices, type, status, transaction_created_at,
-          transaction_expiry_at, first_seen_at, last_seen_at)
-       VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::text[],$8::text[],$9,$10,$11,$12,$13,$13)
+          counterparty_pubkeys, input_count, resolved_input_count, spark_invoices, type, status,
+          transaction_created_at, transaction_expiry_at, first_seen_at, last_seen_at)
+       VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::text[],$8,$9,$10::text[],$11,$12,$13,$14,$15,$15)
        ON CONFLICT (account_id, wallet_pubkey, transaction_hash) DO UPDATE SET
          token_identifier = EXCLUDED.token_identifier,
-         direction = EXCLUDED.direction,
-         amount = EXCLUDED.amount,
-         counterparty_pubkeys = EXCLUDED.counterparty_pubkeys,
+         direction = CASE
+           WHEN wallet_token_transaction.resolved_input_count IS NULL
+             THEN CASE WHEN EXCLUDED.resolved_input_count = EXCLUDED.input_count
+                       THEN EXCLUDED.direction ELSE wallet_token_transaction.direction END
+           WHEN EXCLUDED.resolved_input_count >= wallet_token_transaction.resolved_input_count
+             THEN EXCLUDED.direction
+           ELSE wallet_token_transaction.direction
+         END,
+         amount = CASE
+           WHEN wallet_token_transaction.resolved_input_count IS NULL
+             THEN CASE WHEN EXCLUDED.resolved_input_count = EXCLUDED.input_count
+                       THEN EXCLUDED.amount ELSE wallet_token_transaction.amount END
+           WHEN EXCLUDED.resolved_input_count >= wallet_token_transaction.resolved_input_count
+             THEN EXCLUDED.amount
+           ELSE wallet_token_transaction.amount
+         END,
+         counterparty_pubkeys = CASE
+           WHEN wallet_token_transaction.resolved_input_count IS NULL
+             THEN CASE WHEN EXCLUDED.resolved_input_count = EXCLUDED.input_count
+                       THEN EXCLUDED.counterparty_pubkeys
+                       ELSE wallet_token_transaction.counterparty_pubkeys END
+           WHEN EXCLUDED.resolved_input_count >= wallet_token_transaction.resolved_input_count
+             THEN EXCLUDED.counterparty_pubkeys
+           ELSE wallet_token_transaction.counterparty_pubkeys
+         END,
+         input_count = CASE
+           WHEN wallet_token_transaction.resolved_input_count IS NULL
+             THEN EXCLUDED.input_count
+           WHEN EXCLUDED.resolved_input_count >= wallet_token_transaction.resolved_input_count
+             THEN EXCLUDED.input_count
+           ELSE wallet_token_transaction.input_count
+         END,
+         resolved_input_count = CASE
+           WHEN wallet_token_transaction.resolved_input_count IS NULL
+             THEN CASE WHEN EXCLUDED.resolved_input_count = EXCLUDED.input_count
+                       THEN EXCLUDED.resolved_input_count
+                       ELSE wallet_token_transaction.resolved_input_count END
+           ELSE GREATEST(EXCLUDED.resolved_input_count,
+                         wallet_token_transaction.resolved_input_count)
+         END,
          spark_invoices = EXCLUDED.spark_invoices,
          type = EXCLUDED.type,
          status = EXCLUDED.status,
@@ -580,6 +650,8 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
         row.direction,
         row.amount,
         postgresTextArrayLiteral(row.counterpartyPubkeys),
+        row.inputCount,
+        row.resolvedInputCount,
         postgresTextArrayLiteral(row.sparkInvoices),
         row.type,
         row.status,

@@ -43,6 +43,8 @@ function tokenRow(
     direction: 'in',
     amount: '21',
     counterpartyPubkeys: [],
+    inputCount: 0,
+    resolvedInputCount: 0,
     sparkInvoices: [],
     type: 'mint',
     status: 'started',
@@ -126,6 +128,8 @@ describe('InMemoryWalletTransferStore', () => {
       direction: 'in',
       amount: '21',
       counterpartyPubkeys: [],
+      inputCount: 0,
+      resolvedInputCount: 0,
       sparkInvoices: ['spark1mint'],
       type: 'mint',
       status: 'finalized',
@@ -199,6 +203,81 @@ describe('InMemoryWalletTransferStore', () => {
     await expect(store.syncState('account', OWNER)).resolves.toMatchObject({
       oldestPendingCreatedAt: null,
       oldestPendingTokenCreatedAt: null,
+    });
+  });
+
+  it('orders only observations with two transfer times and preserves a timed final state', async () => {
+    const store = new InMemoryWalletTransferStore();
+    await store.upsertTransfer(
+      row({
+        status: 'pending',
+        transferUpdatedAt: null,
+        seenAt: new Date('2026-11-12T10:00:00.000Z'),
+      }),
+    );
+    await expect(
+      store.upsertTransfer(
+        row({
+          status: 'completed',
+          transferUpdatedAt: new Date('2026-11-12T09:30:00.000Z'),
+          seenAt: new Date('2026-11-12T10:01:00.000Z'),
+        }),
+      ),
+    ).resolves.toMatchObject({ updated: true });
+    await expect(
+      store.upsertTransfer(
+        row({
+          status: 'pending',
+          transferUpdatedAt: null,
+          seenAt: new Date('2026-11-12T11:00:00.000Z'),
+        }),
+      ),
+    ).resolves.toEqual({ inserted: false, updated: false, shopPaymentBecameCompleted: false });
+
+    await expect(store.syncState('account', OWNER)).resolves.toMatchObject({
+      oldestPendingCreatedAt: null,
+    });
+  });
+
+  it('keeps the better-resolved token projection and retries finalized unresolved inputs', async () => {
+    const store = new InMemoryWalletTransferStore();
+    await store.upsertTokenTransaction(
+      tokenRow({
+        direction: 'out',
+        amount: '34',
+        counterpartyPubkeys: [SHOP],
+        inputCount: 2,
+        resolvedInputCount: 2,
+        status: 'finalized',
+        seenAt: new Date('2026-11-12T10:00:00.000Z'),
+      }),
+    );
+    await store.upsertTokenTransaction(
+      tokenRow({
+        direction: 'in',
+        amount: '1',
+        counterpartyPubkeys: [],
+        inputCount: 2,
+        resolvedInputCount: 1,
+        status: 'finalized',
+        seenAt: new Date('2026-11-12T11:00:00.000Z'),
+      }),
+    );
+    await expect(store.syncState('account', OWNER)).resolves.toMatchObject({
+      oldestPendingTokenCreatedAt: null,
+    });
+
+    await store.upsertTokenTransaction(
+      tokenRow({
+        transactionHash: '55'.repeat(32),
+        inputCount: 2,
+        resolvedInputCount: 1,
+        status: 'finalized',
+        transactionCreatedAt: null,
+      }),
+    );
+    await expect(store.syncState('account', OWNER)).resolves.toMatchObject({
+      pendingTokenWithoutCreatedAt: true,
     });
   });
 
@@ -455,6 +534,8 @@ describe('PostgresWalletTransferStore', () => {
       direction: 'out',
       amount: '256',
       counterpartyPubkeys: [MEMBER, SHOP],
+      inputCount: 2,
+      resolvedInputCount: 2,
       sparkInvoices: ['spark1one', 'spark1two'],
       type: 'transfer',
       status: 'revealed',
@@ -469,7 +550,7 @@ describe('PostgresWalletTransferStore', () => {
     );
     expect(execute.mock.calls[0]?.[0]).not.toContain('payload');
     expect(execute.mock.calls[0]?.[1]).toContain('256');
-    expect(execute.mock.calls[0]?.[1]?.[7]).toBe(
+    expect(execute.mock.calls[0]?.[1]?.[9]).toBe(
       postgresTextArrayLiteral(['spark1one', 'spark1two']),
     );
     expect(execute.mock.calls[1]?.[0]).toContain('INSERT INTO wallet_transfer_sync');
@@ -530,6 +611,12 @@ describe('PostgresWalletTransferStore', () => {
     ).resolves.toEqual({ inserted: false, updated: true, shopPaymentBecameCompleted: true });
     expect(vi.mocked(tx.execute).mock.calls[0]?.[0]).toContain(
       'GREATEST(EXCLUDED.last_seen_at, wallet_transfer.last_seen_at)',
+    );
+    expect(vi.mocked(tx.execute).mock.calls[0]?.[0]).toContain(
+      'OR wallet_transfer.transfer_updated_at IS NULL',
+    );
+    expect(vi.mocked(tx.execute).mock.calls[0]?.[0]).not.toContain(
+      'COALESCE(EXCLUDED.transfer_updated_at, EXCLUDED.last_seen_at)',
     );
   });
 

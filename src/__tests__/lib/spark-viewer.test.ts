@@ -236,6 +236,8 @@ describe('ensureSparkViewer', () => {
           direction: 'in',
           amount: '21',
           counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+          inputCount: 0,
+          resolvedInputCount: 0,
           sparkInvoices: ['spark1mint'],
           type: 'mint',
           status: 2,
@@ -693,8 +695,20 @@ describe('Spark viewer SDK value mapping', () => {
     });
 
     expect(page.transactions).toEqual([
-      expect.objectContaining({ direction: 'in', amount: '21', counterpartyPubkeys: [] }),
-      expect.objectContaining({ direction: 'in', amount: '70', counterpartyPubkeys: [] }),
+      expect.objectContaining({
+        direction: 'in',
+        amount: '21',
+        counterpartyPubkeys: [],
+        inputCount: 1,
+        resolvedInputCount: 0,
+      }),
+      expect.objectContaining({
+        direction: 'in',
+        amount: '70',
+        counterpartyPubkeys: [],
+        inputCount: 1,
+        resolvedInputCount: 0,
+      }),
     ]);
     const firstOwnerPage = await page.ownerResolution?.next();
     expect(firstOwnerPage).toMatchObject({ done: false });
@@ -705,12 +719,14 @@ describe('Spark viewer SDK value mapping', () => {
         direction: 'in',
         amount: '21',
         counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+        resolvedInputCount: 1,
         sparkInvoices: ['spark1receive'],
       }),
       expect.objectContaining({
         direction: 'out',
         amount: '30',
         counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+        resolvedInputCount: 1,
         sparkInvoices: ['spark1send'],
       }),
     ]);
@@ -822,7 +838,7 @@ describe('Spark viewer SDK value mapping', () => {
     expect(getTokenTransactions).toHaveBeenCalledTimes(4);
   });
 
-  it('discards a never-settling owner lookup instead of reusing it on a later tick', async () => {
+  it('retains a never-settling owner lookup for reuse after a caller timeout', async () => {
     const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
     const previousHash = new Uint8Array(32).fill(0x61);
     const primaryPage = {
@@ -877,19 +893,16 @@ describe('Spark viewer SDK value mapping', () => {
       walletPubkey: PUBLIC_KEY,
       pageSize: 100,
     });
-    void first.ownerResolution!.next();
-    first.ownerResolution!.discard();
+    const pending = first.ownerResolution!.next();
 
     const later = await opened.viewer.tokenTransactions({
       sparkAddress: 'spark1address',
       walletPubkey: PUBLIC_KEY,
       pageSize: 100,
     });
-    expect(later.ownerResolution).not.toBe(first.ownerResolution);
-    await expect(later.ownerResolution!.next()).resolves.toMatchObject({
-      done: true,
-      transactions: [expect.objectContaining({ direction: 'out', amount: '25' })],
-    });
+    expect(later.ownerResolution).toBe(first.ownerResolution);
+    expect(later.ownerResolution!.next()).toBe(pending);
+    expect(getTokenTransactions).toHaveBeenCalledTimes(3);
   });
 
   it('reopens an unfinished lookup when the same SDK page gains an output id', async () => {
@@ -1518,6 +1531,8 @@ describe('Spark viewer SDK value mapping', () => {
       direction: 'out',
       amount: '256',
       counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+      inputCount: 1,
+      resolvedInputCount: 1,
       sparkInvoices: ['spark1safe'],
       type: 'transfer',
       status: 3,
