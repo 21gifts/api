@@ -116,7 +116,7 @@ Every HTTP endpoint **must** have at least one Playwright request against a
 booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
-the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called on worker and outbox failure paths: the nostr worker, the OpenCryptoPay outbox and map activity ping, the push worker tick and sweep, and a closed SQL connection; on a rejected receive push of the Spark invoice worker (`payment_received.failed`), which the default boot does not start; and on a store failure of `POST /webhooks/lnurl`, which is not mounted on the default boot), `migrateAuthSchema`, `backfillSparkAddresses`, `encodeSparkAddress` (only called from `PostgresAuthStore.claimSparkPubkey` and both `commitRecovery` implementations, whose routes need the LNURL server, and from `backfillSparkAddresses`), `QueryGiftStore`,`mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
+the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called on worker and outbox failure paths: the nostr worker, the OpenCryptoPay outbox and map activity ping, the push worker tick and sweep, and a closed SQL connection; on a rejected receive push of the Spark invoice worker (`payment_received.failed`), which the default boot does not start; and on a store failure of `POST /webhooks/lnurl`, which is not mounted on the default boot), `ZapIngestRecordError` (only wraps an atomic zap receipt/ingest write failure, which the in-memory default boot cannot inject over HTTP), `migrateAuthSchema`, `backfillSparkAddresses`, `encodeSparkAddress` (only called from `PostgresAuthStore.claimSparkPubkey` and both `commitRecovery` implementations, whose routes need the LNURL server, and from `backfillSparkAddresses`), `QueryGiftStore`,`mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`, `PostgresFxSpotStore`, `migrateFxSpotSchema`,
 `PostgresMessageStore`, `PostgresTranslationStore`, `backfillZapPayments`, `backfillExternalZappers`, `migrateMessageSchema`,
 `PostgresBannerStore`, `migrateBannerSchema`,
@@ -326,6 +326,60 @@ check re-runs when the PR text is edited. The release pull request `staging` →
 every pull request it bundles already passed the check on `staging`. This check is a safety net; it does
 not replace the author's own judgement about whether a change affects the
 database.
+
+### Wallet data (hard requirement)
+
+21.gifts has two separate things, and this rule keeps them apart.
+
+- **The 21.gifts applications are public.** The forum and its notes, gifts,
+  hearts, credit requests and their repayments, shops, and the Fond are public.
+  Anyone can see every such activity and every transaction that belongs to it.
+  The private parts of the app stay private as decided elsewhere:
+  conversations, notifications, the contact mailbox, a shop's own till
+  (`GET /pos`), and notes hidden by staff.
+- **The wallet is not an application.** The wallet is the member's in-app
+  Bitcoin wallet for sending, receiving, and holding bitcoin. It is private to
+  the public and completely visible to 21.gifts. Both halves are binding. A
+  change that breaks either half is rejected. [CONCEPT.md](CONCEPT.md), Core
+  Principle 9, states the same rule.
+
+The wallet rule in detail:
+
+- **Private to the public.** No wallet data of an individual member may be
+  readable outside 21.gifts: not the balance, the payment history, an amount, a
+  fee, a payment time, a counterparty, or an on-chain address of the wallet.
+  This covers public routes, responses to other members, NOSTR events, logs,
+  error reports, and public block explorers. The wallet keeps the Breez SDK
+  Spark private mode on, so its transfers are not published to public Spark
+  explorers. These exceptions are decided, and they are the only ones:
+  - A payment that belongs to a 21.gifts activity (for example a gift to a
+    note or a credit repayment) is public as part of that activity.
+  - What a payer needs to pay a member is public: the receiving address
+    `<username>@<host>` and the invoice (BOLT11 or Spark) issued for one
+    payment.
+  - The Fond account is a 21.gifts application, not a member, so its wallet
+    totals are public (`GET /fond/summary`).
+  - `GET /wallets/stats` publishes totals over all wallets that never name or
+    single out one account.
+  - The owner's previous-wallet lookup (`GET /me/previous-wallets`) reads only
+    what a public Spark explorer already shows and returns it only to the
+    owner.
+- **Completely visible to 21.gifts.** Every wallet event **must** be stored in
+  this api's database: every payment in either direction and of every method
+  (Spark, Lightning, on-chain, token), every status it passes through
+  (`pending`, `completed`, `failed`), with amount, fee, time, method,
+  counterparty, and invoice or destination, and every balance sync. Nothing a
+  wallet does may be missing, filtered, sampled, aggregated away, or kept only
+  in the browser. A wallet event that reaches no table is a defect. A change
+  that drops a field, a status, or a method from storage is a defect.
+- **Who reads it.** The admin team (role at least `software_developer`:
+  software developer, initiator, founder) and operator debug access
+  (`DEBUG_TOKEN`, `DEBUG_READ_TOKEN`) **must** be able to read every stored
+  wallet record of every member. A member reads only their own wallet data. No
+  other role and no other member reads it.
+- **Never key material.** Completeness never includes secrets: the recovery
+  phrase, seed, PRF output, preimages, and any private or spending key are
+  never collected, stored, or logged.
 
 ### Tests
 

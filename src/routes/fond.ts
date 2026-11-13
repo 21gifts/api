@@ -202,7 +202,11 @@ async function refusedInvoice(
   deps: FondRouteDeps,
   id: string,
   result: Extract<IssueGiftInvoiceResult, { ok: false }>,
-): Promise<{ status: 400 | 403 | 409 | 502 | 503; error: string }> {
+): Promise<{
+  status: 400 | 403 | 409 | 502 | 503;
+  error: string;
+  code?: 'credit_closed';
+}> {
   if (result.status < 500) {
     try {
       const failed = await deps.fondPayoutStore.markFailed(id, result.error);
@@ -214,7 +218,11 @@ async function refusedInvoice(
       logEvent('fond.invoice.failed');
       return { status: 503, error: PAYOUTS_UNAVAILABLE };
     }
-    return { status: 409, error: result.error };
+    return {
+      status: 409,
+      error: result.error,
+      ...(result.code === undefined ? {} : { code: result.code }),
+    };
   }
   if (!(await releaseClaim(deps, id))) {
     logEvent('fond.invoice.failed');
@@ -523,7 +531,12 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       }
       if (!result.ok) {
         const refusal = await refusedInvoice(deps, row.id, result);
-        return c.json({ error: refusal.error }, refusal.status);
+        return c.json(
+          refusal.code === undefined
+            ? { error: refusal.error }
+            : { error: refusal.error, code: refusal.code },
+          refusal.status,
+        );
       }
       const sparkInvoice = await payoutSparkInvoice(
         deps,

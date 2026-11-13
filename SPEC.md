@@ -10,7 +10,8 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
 or a round trip through sats does not fill or replace it. This file does not
 describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-11-09 (Orchestra never delays Lightning: a pay-link fetch starts or joins a pending charge's creation but answers at once; `POST /pay/:username/payment` opens Lightning-first and fills stablecoin offers in the background; a fetch starts or joins a quote replacement but answers at once, and a Lightning-only fallback row does not defeat an in-flight offers quote). Before that, 2026-11-07 (member Spark invoices of `POST /pay/:username/invoice` are stored in `member_spark_invoice` and get the receive push once the coordinator reports them finalized, and expired ones are deleted hourly even while the Spark invoice worker is off; 2026-11-05: `RECOVERY_SHARE_REQUIRED_FROM`: a payout needs the 21.gifts recovery share only from that UTC day; 2026-10-30: held-share boxes: `GET /me/held-shares`, `PUT /me/held-shares/:id`, and `DELETE /me/held-shares/:id`, always mounted, store a social recovery holder's shares as opaque boxes the api cannot open; the payout gate is unchanged. Also `POST /debug/spend-ping` also takes a window `{ from, to, dryRun? }` and replays every payout trigger in it: daily payouts and moderator stipends on each event's own UTC day for an account that passes the payout gate now, recovery share included, welcome gifts through the welcome path). Before that, 2026-10-29 (social recovery per [docs/social-recovery.md](docs/social-recovery.md): `POST /auth/passkey/recovery/begin` and `POST /auth/passkey/recovery/finish`, behind the app build check and the login switch, store a pending recovery for a new passkey and wallet key, proven by the old wallet's verified lookup and its signature; `POST /lnurlpay/:pubkey/transfer` forwards the Lightning address transfer and commits it; `PUT /me/recovery-share` stores the encrypted 21.gifts share; `GET /me/previous-wallets` and `DELETE /me/previous-wallets/:sparkPubkey` list and drop the previous wallets; these four are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `POST /lnurlpay/:pubkey/recover` also passes a pending recovery's new key and settles a forwarded recovery; `POST /auth/passkey/authenticate/finish` answers 409 `recovery_pending` for the new passkey of a pending recovery; owner JSON `socialRecoverySetUp`; from the grant gate day `eligibleToday` also requires a 21.gifts recovery share for the current verified wallet, with no start date of its own; `POST /me/events` accepts `recovery_done`; `RECOVERY_SHARE_KEK` is required with `DATABASE_URL`; an account merge deletes the source's recovery rows). Before that, 2026-10-21 (`GET /accounts/by-username/:username` is an exact username lookup: 200 `{ id, username, name }`, stored `username` and stored `name` including null). Before that, 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waited at most until 8 s after its fetch arrived (removed 2026-11-09); the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
+**Status**: living document. Last revised 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit). Before that, 2026-11-09 (Orchestra never delays Lightning: a pay-link fetch starts or joins a pending charge's creation but answers at once; `POST /pay/:username/payment` opens Lightning-first and fills stablecoin offers in the background; a fetch starts or joins a quote replacement but answers at once, and a Lightning-only fallback row does not defeat an in-flight offers quote). Before that, 2026-11-07 (member Spark invoices of `POST /pay/:username/invoice` are stored in `member_spark_invoice` and get the receive push once the coordinator reports them finalized, and expired ones are deleted hourly even while the Spark invoice worker is off; 2026-11-05: `RECOVERY_SHARE_REQUIRED_FROM`: a payout needs the 21.gifts recovery share only from that UTC day; 2026-10-30: held-share boxes: `GET /me/held-shares`, `PUT /me/held-shares/:id`, and `DELETE /me/held-shares/:id`, always mounted, store a social recovery holder's shares as opaque boxes the api cannot open; the payout gate is unchanged. Also `POST /debug/spend-ping` also takes a window `{ from, to, dryRun? }` and replays every payout trigger in it: daily payouts and moderator stipends on each event's own UTC day for an account that passes the payout gate now, recovery share included, welcome gifts through the welcome path). Before that, 2026-10-29 (social recovery per [docs/social-recovery.md](docs/social-recovery.md): `POST /auth/passkey/recovery/begin` and `POST /auth/passkey/recovery/finish`, behind the app build check and the login switch, store a pending recovery for a new passkey and wallet key, proven by the old wallet's verified lookup and its signature; `POST /lnurlpay/:pubkey/transfer` forwards the Lightning address transfer and commits it; `PUT /me/recovery-share` stores the encrypted 21.gifts share; `GET /me/previous-wallets` and `DELETE /me/previous-wallets/:sparkPubkey` list and drop the previous wallets; these four are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `POST /lnurlpay/:pubkey/recover` also passes a pending recovery's new key and settles a forwarded recovery; `POST /auth/passkey/authenticate/finish` answers 409 `recovery_pending` for the new passkey of a pending recovery; owner JSON `socialRecoverySetUp`; from the grant gate day `eligibleToday` also requires a 21.gifts recovery share for the current verified wallet, with no start date of its own; `POST /me/events` accepts `recovery_done`; `RECOVERY_SHARE_KEK` is required with `DATABASE_URL`; an account merge deletes the source's recovery rows). Before that, 2026-10-21 (`GET /accounts/by-username/:username` is an exact username lookup: 200 `{ id, username, name }`, stored `username` and stored `name` including null). Before that, 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waited at most until 8 s after its fetch arrived (removed 2026-11-09); the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`GET /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
+
 ---
 
 ## Implemented HTTP surface (normative)
@@ -2867,9 +2868,9 @@ Store throw → **Response** `503`:
 }
 ```
 
-`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503. Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503. Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding both `repay:` full-share and `repayp:` partial repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
 
-`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither; a repayment subtracts `due_sats`; balances are not clamped; a grant carries the oldest indexed ingest line of that receipt on the same note (the amount fixed when it was paid; a later ingest does not replace it) as USD/CHF/EUR/PHP and a repayment carries none, so each loan-series fiat field is the signed sum of the stored grant amounts for that currency, all missing on a day stays JSON null and does not clear the cumulative, and no rate book is read; loans stay out of `donatedSats` and `receivedSats`.
+`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither. For an early-closed frozen fiat loan, an identified payer's grant movements count only when that payer's immutable `message_credit_payer_snapshot.units` is positive. A missing snapshot row or zero units means that payer has no repayment-plan share, so its receipt sats create neither `owedSats` nor `creditSats`. A repayment movement is either a legacy full-share `message_repayment.due_sats` when that share has no canonical parts, or the exact `message_repayment_part.sats` for each settled part; the part source suppresses a duplicate legacy row for the same share. Balances are not clamped; a grant carries the oldest indexed ingest line of that receipt on the same note (the amount fixed when it was paid; a later ingest does not replace it) as USD/CHF/EUR/PHP and a repayment carries none, so each loan-series fiat field is the signed sum of the stored grant amounts for that currency, all missing on a day stays JSON null and does not clear the cumulative, and no rate book is read; loans stay out of `donatedSats` and `receivedSats`.
 
 ### `GET /me/loans`
 
@@ -2899,6 +2900,9 @@ Success → **Response** `200`:
       "amountPhp": null,
       "termDays": 30,
       "fundedAt": "2026-09-26T12:00:00.000Z",
+      "closedAt": null,
+      "maxSats": 800,
+      "maxAmount": null,
       "daysDue": 12,
       "daysPaid": 11,
       "repaidSats": 11000,
@@ -2922,8 +2926,8 @@ Success → **Response** `200`:
 ```
 
 - `text` is the first 160 characters of the note. `goalCurrency` is the ask currency (`BTC` when none is stored) and `goalAmount` the typed amount (the goal sats when none is stored). The `goalAmount*` and `amount*` keys are the stored ask snapshots and collected totals, as on the public note.
-- `fundedAt` is null while the loan is still collecting; such a loan has `daysDue` 0, `daysPaid` 0, `repaidSats` 0, zero `due` counts, and `next: null`.
-- `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. `repaidSats` is the sum of settled shares. `totalSats` is `repaidSats` plus every unpaid share in sats; sats with no account are not repaid and not counted.
+- `fundedAt` is null while the loan is still collecting; such a loan has `daysDue` 0, `daysPaid` 0, `repaidSats` 0, zero `due` counts, and `next: null`. `closedAt` is the explicit close instant or null. `maxSats` and `maxAmount` are the largest optional amount `POST /messages/:id/repayment` accepts. Funded loans walk unpaid remainders in plan order, skip givers who cannot receive, and stop before the first receivable share whose legacy, oversized, or claim-only reservation would return 409; later payable shares are not advertised. For a still-collecting loan, the maximum is the collected amount restricted to receiving givers. `maxSats` sums the separately rounded sat price of each bill that maximum would create, while `maxAmount` is the two-decimal fiat string, else null.
+- `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. One read of legacy repayments and parts supplies the plan, `repaidSats`, every open remainder, and all derived totals. `repaidSats` adds exact `message_repayment_part.sats` and only legacy full-share rows with no parts, so every payment is counted once. `totalSats` is `repaidSats` plus every unpaid remainder in sats and never combines different settlement snapshots; sats with no account are not repaid and not counted.
 - `due` covers every due, unpaid share. `payable*` are the shares whose lender can receive (the ones `POST /messages/:id/repayment/due` bills), `waiting*` the shares whose lender cannot. `*People` counts distinct lenders and `waitingShares` the waiting shares. `behindDays` is the number of due days before today that still have an unpaid share that is not waiting and did not fall due before its lender's wallet was verified (the rule of `daysPaid` in `GET /messages/:id/repayment`). `lastPayment` is true when paying `payable` would finish the loan.
 - `next` is the next repayment day after the due days: `dueOn` (`YYYY-MM-DD` UTC), its sats, and its amount; null when no later day remains.
 - `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, read once per request for every loan, and is `null` without a rate.
@@ -3054,7 +3058,9 @@ newest-first, capped at 200. Body `{ "messages": [...] }` via
 `authorCanReceive` (true when the author has a receiving address, signed or not);
 optional `goalSats` omitted when unset, optional `goalRepayable: true` when
 the stored column is true (omitted when null; never false), optional
-`goalTermDays` when the stored column is not null (omitted when null), and when
+`goalClosedAt` as an ISO-8601 string when `goal_closed_at` is set (omitted
+otherwise), optional `goalTermDays` when the stored column is not null
+(omitted when null), and when
 `goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
 `goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
 keys).
@@ -4754,11 +4760,51 @@ that exists only between these two accounts is deleted. Two
 conversations with the same other person are folded into one, and the
 messages are kept. Where a second row would break a unique key, the
 survivor's row stays and the source's row is dropped: the same image
-slot, the same notification, the same repayment day, a second address
-check, and a second open till charge. When both accounts have a free
+slot, the same notification, a second address check, and a second open
+till charge. When both accounts have a free
 first post, the source note moves but is no longer marked free, so the
 survivor keeps one free first post. Two funding grants are refused
 before any of those writes.
+
+The transaction takes advisory locks for both account ids in sorted order,
+then every affected message advisory lock in sorted order, and only then row
+locks. Gift and heart invoice issuance follows the same order (payer account,
+then message) and re-checks that the session account still exists before it
+persists a successful invoice. Thus an invoice mint cannot add a stale payer id
+while a merge deletes that account.
+
+Before either identity moves, every affected legacy full-share repayment
+is converted to a canonical repayment part. Its units are reconstructed
+from the original loan schedule (sats for a BTC loan and exact original
+cents for a fiat loan); its stored `due_sats` remains the part's sats.
+The conversion and the later recipient move hold the same per-message advisory
+lock as repayment settlement. Existing `part_index` values never change: they
+are invoice identity. If source and survivor would retain the same message,
+day, and `part_index`, the merge is refused before any write.
+
+Under those locks and before any write, the merge is refused when both
+identities gave to the same repayable credit and that credit has any settled
+legacy repayment or repayment part. It is also refused whenever a successfully
+issued historical `repay:` or `repayp:` invoice has either identity as its
+current author or embedded recipient and lacks its exact settlement. A legacy
+`repay:` invoice whose row was converted by an earlier account merge is settled
+by that one canonical part: message, current recipient, day, reconstructed
+full-share units, stored sats, and the deterministic next `partIndex` must all
+match. The legacy row is still deleted, and the canonical part is counted once.
+This historical-invoice refusal applies to single- and dual-giver credits
+regardless of expiry or payment-hash claim. `message_invoice` does not persist
+the LNURL provider pubkey used at issuance, so moving its author could make a
+valid late receipt fail provider validation against the survivor's current wallet.
+It is also refused while a successful, unpaid, unexpired `repay:` or `repayp:`
+invoice embeds either identity on any affected source-funded credit. A
+payment-hash claim counts as paid here only when the invoice's exact settlement
+exists for its current recipient: message, recipient, and day for legacy, or
+the converted identity above, plus `partIndex`, units, and sats for a canonical
+part invoice. A claim without that exact settlement refuses the merge even after
+the invoice expires. Therefore no part recipient move can run while that claim
+is pending, and an equal-sized sibling
+part is never evidence for it. The survivor need not have given to that credit:
+the open reservation cannot be repointed after the source identity is merged.
 
 An invalid body is **400**
 `{ "error": "Expected a JSON body with \"from\" and \"into\"" }`
@@ -4777,10 +4823,19 @@ unexpired pending till charge while the survivor has an `open` shop
 payment and no unexpired pending till charge of its own is the same
 **409** and nothing changes, so a till charge never lands next to another
 payment's open amount. Both refusals are checked under the locks of both
-account rows, before any write. Due pending charges on either account are marked expired before the
-collision read. When the survivor still has an unexpired pending till
-charge, the source's unexpired pending charge is deleted (below) and the
-merge goes on. A due pending charge is not a collision and is not deleted.
+account rows, before any write. Due pending charges on either account are
+marked expired before the collision read. When the survivor still has an
+unexpired pending till charge, the source's unexpired pending charge is deleted
+(below) and the merge goes on. A due pending charge is not a collision and is not deleted.
+If an affected legacy repayment's exact original schedule units cannot be
+reconstructed, the merge is **409**
+`{ "error": "Repayment history is unavailable" }` and changes nothing.
+The same **409** and no changes apply to the settled dual-giver collision, an
+unsettled historical invoice involving either identity, an immutable part-key
+collision, and
+the still-payable repayment invoice described above. For a credit funded by
+only one identity, expiry alone is not enough: the invoice must first gain its
+exact settlement row. Accounts with a settled dual-giver credit remain separate.
 The source's paid and closed shop payments move like every other row. Every
 charge row of both accounts is locked first in id order (`SELECT id …
 WHERE account_id = $1 OR account_id = $2 ORDER BY id FOR UPDATE`), the
@@ -5324,11 +5379,24 @@ Success → **Response** `200` (never includes the note or preimage):
 }
 ```
 
-The route claims the payment hash, credits the message once, and directly
-persists an indexed synthetic kind:9735 ingest with `manual=debug-settle` and
-the note (plus `preimage` only when it was supplied and verified). On a member
-note it then fans out `notifyZap` and inserts the payer gift-reply from the
-original zap request. On the official platform profile note it skips
+Under the advisory message lock and one transaction, a normal credit persists
+the payment-hash claim, message receipt credit, and indexed synthetic kind:9735
+ingest atomically. Its ingest contains `manual=debug-settle` and the note (plus
+`preimage` only when it was supplied and verified). A failed normal-credit
+write leaves none of those rows visible, so a retry is fresh and returns
+`resumed: false`. Only a pre-existing legacy partial state in which the
+synthetic receipt was already credited but its ingest is absent is resumed;
+that repair does not credit again and returns `resumed: true`.
+
+For a `repay:<day>:<accountId>` invoice, the locked transaction stores the
+claim with a legacy full-share `message_repayment`; for a
+`repayp:<day>:<accountId>:<partIndex>:<units>:<shareUnits>` invoice, it stores
+the claim with the exact canonical `message_repayment_part`. Neither credits
+the ask, and a repayment-row conflict leaves no new claim. Their indexed
+synthetic ingest is written subsequently and remains retryable. On a member
+note a non-repayment settlement then fans out `notifyZap` and inserts the payer
+gift-reply from the original zap request. On the official platform profile
+note it skips
 `notifyZap` and treats the zap comment as a compose post/reply (`sats` 0)
 gated by `forum.post` only (`DEBUG_TOKEN` settle does not pass `postLimiter`
 or `replyLimiter`; limiter denial applies to worker ingest that shares the
@@ -5338,18 +5406,18 @@ budget when it is a reply; a payer at least `software_developer` (`software_deve
 exempt). Missing `forum.post` fields dequeue the receipt without creating a row.
 A created top-level post fans out `notifyForumPost` and `spendPing` only
 when `eligibleToday` (same gate as `POST /messages`; ineligible logs
-`spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that
-failure returns 503; a retry writes the missing ingest from the current
-request, runs the post-credit effects, returns `resumed: true`, and does not
-credit again. Fresh success returns `resumed: false`.
+`spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`.
 
-The durable payment-hash claim prevents a later real receipt, an ingest-write
-failure, or message deletion from allowing another credit. A later real
-receipt is persisted as `rejected` / `settled`. A payment hash already owned by
-another receipt or represented by any indexed ingest cannot be settled
-manually. If payer lookup throws after credit, the route still succeeds: it
-logs the gift-reply failure, omits payer fields from the notification, and
-skips the gift-reply. Note-author lookup runs **before** `claimZapPayment`;
+Once a settlement commits, the durable payment-hash claim prevents a later
+real receipt or message deletion from allowing another credit; for a repayment
+it also survives a subsequent ingest-write failure. A failed fresh normal
+credit leaves neither a claim nor credited sats. A later real receipt after a
+committed settle is persisted as `rejected` / `settled`. A payment hash already
+owned by another receipt or represented by any indexed ingest cannot be
+settled manually. Payer lookup runs before settlement. If it throws, the failure
+is logged and settlement continues without payer data: payer fields are omitted
+from the notification and the gift-reply is skipped. Note-author lookup runs
+**before** `claimZapPayment`;
 a throw there fails the settle with no claim, receipt, or ingest.
 
 Failures:
@@ -5365,9 +5433,10 @@ Failures:
 - store failure, including the direct ingest write, or a thrown note-author lookup → `503 { "error": "Messages are unavailable" }`
 
 `DEBUG_TOKEN` unset/blank returns 503; a missing or bad Bearer returns 401.
-The payment-hash claim and credit are not one transaction, but the claim
-table's primary key serialises competing receipt ids and remains as the
-payment's tombstone.
+Repayment ingest writes are outside their locked settlement boundary and are
+retryable; a normal credit's ingest is inside its atomic boundary. Post-credit
+effects run afterward, and their failures are logged and suppressed. The claim
+remains the payment's tombstone.
 
 ### `GET /debug/zap-ingests`
 
@@ -5432,8 +5501,10 @@ matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
 JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
 `nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths,
 stored `goalSats` (JSON `null` when unset), `goalRepayable: true` only when
-the stored column is true (omitted when null; never false), `goalTermDays`
-only when the stored column is not null (omitted when null), `goalCurrency`,
+the stored column is true (omitted when null; never false), `goalClosedAt` as
+an ISO-8601 string only when `goal_closed_at` is set (omitted otherwise),
+`goalTermDays` only when the stored column is not null (omitted when null),
+`goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots when `goalCurrency` is
 stored (omitted on a legacy row; a snapshot may be null), and always-present
 `placeLat`, `placeLng`, `placeLabel`, `placeStreet`, `placeHouseNumber`,
@@ -5472,8 +5543,9 @@ Same debug token gate as `GET /debug/messages`. Body is the debug object
 (not wrapped), including `nostrEvent`, `claimedUntil`, `contentFp`, photo
 MIME/byte lengths, stored `goalSats` (JSON `null` when unset),
 `goalRepayable: true` only when the stored column is true (omitted when null;
-never false), `goalTermDays` only when the stored column is not null (omitted
-when null), `goalCurrency`, `goalAmount`, and the four `goalAmount*`
+never false), `goalClosedAt` as an ISO-8601 string only when `goal_closed_at`
+is set (omitted otherwise), `goalTermDays` only when the stored column is not
+null (omitted when null), `goalCurrency`, `goalAmount`, and the four `goalAmount*`
 snapshots when `goalCurrency` is stored (omitted on a legacy row; a snapshot
 may be null), and always-present `placeLat`, `placeLng`, `placeLabel`,
 `placeStreet`, `placeHouseNumber`, `placePostalCode`, `placeCity`,
@@ -6332,7 +6404,7 @@ This route has no error status. The response shape is stable.
 ### `GET /gifts/stats`
 
 Public aggregated outbound gift statistics. No auth. The body never includes
-invoices, fees, or wallet identifiers.
+invoices, fees, wallet identifiers, or per-recipient names and amounts.
 
 When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
 **200** with zeros, empty series, `totalBtc` `"0.00000000"`, `totalUsd` /
@@ -6348,17 +6420,14 @@ PHP. One null does not null the day, the other currencies, or a later
 cumulative. A day where every row lacks that currency is null. Gap days in
 `spendOverTime` are zero `giftCount`/sats/BTC and `"0.00"` fiat, and they do
 not change a running cumulative. Gap months in `byMonth` are zero sats/BTC and
-`"0.00"` fiat. An empty selection stays zeros.
+`"0.00"` fiat. An empty list stays zeros. The response has no
+`byRecipient` key. `recipientCount` is the number of distinct stored
+recipient handles (exact `recipient_wos_user` text, so `Alice` and `alice`
+are two).
 A query failure is **503**. A missing stored amount is never 503.
 
-Optional query `recipient` filters to one recipient handle (the local part
-of the receiving address)
-(case-insensitive). The value is trimmed first. When the trimmed value
-contains `@` after the first character, the local-part before `@` is used;
-otherwise the whole trimmed string is the handle. Missing or blank
-(after trim) `recipient` is unfiltered.
-An unknown handle is empty **200** (zeros, USD-only `fx.quotes`) without a
-Coinbase or Frankfurter call. The rate books are not read.
+The route aggregates every outbound row. A `recipient` query parameter
+does not change the response. The rate books are not read.
 
 **Response** `200`:
 
@@ -6375,7 +6444,6 @@ Coinbase or Frankfurter call. The rate books are not read.
   "firstPaidAt": null,
   "lastPaidAt": null,
   "spendOverTime": [],
-  "byRecipient": [],
   "byMonth": [],
   "fx": {
     "quote": "BTC-USD",
@@ -6386,22 +6454,21 @@ Coinbase or Frankfurter call. The rate books are not read.
 }
 ```
 
-| Field            | Type                                                                                                                                             | Meaning                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                             |
-| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                                |
-| `totalUsd`       | string or null                                                                                                                                   | Sum of stored USD strings (`"1234.56"`); `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored USD  |
-| `totalChf`       | string or null                                                                                                                                   | Sum of stored CHF strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored CHF                |
-| `totalEur`       | string or null                                                                                                                                   | Sum of stored EUR strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored EUR                |
-| `totalPhp`       | string or null                                                                                                                                   | Sum of stored PHP strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored PHP                |
-| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                              |
-| `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                            |
-| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                         |
-| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                           |
-| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat          |
-| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                      | Sorted by sats descending, then name; each fiat field sums stored strings and is `null` only when no gift to that recipient stored it |
-| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                                     |
-| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` is USD only                                                                              |
+| Field            | Type                                                                                                                                             | Meaning                                                                                                                          |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                        |
+| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                           |
+| `totalUsd`       | string or null                                                                                                                                   | Sum of stored USD strings (`"1234.56"`); `"0.00"` when there are no gifts; `null` only when every outbound gift lacks stored USD |
+| `totalChf`       | string or null                                                                                                                                   | Sum of stored CHF strings; `"0.00"` when there are no gifts; `null` only when every outbound gift lacks stored CHF               |
+| `totalEur`       | string or null                                                                                                                                   | Sum of stored EUR strings; `"0.00"` when there are no gifts; `null` only when every outbound gift lacks stored EUR               |
+| `totalPhp`       | string or null                                                                                                                                   | Sum of stored PHP strings; `"0.00"` when there are no gifts; `null` only when every outbound gift lacks stored PHP               |
+| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                         |
+| `recipientCount` | number                                                                                                                                           | Distinct stored recipient handles (exact `recipient_wos_user`; case-sensitive)                                                   |
+| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                    |
+| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                      |
+| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat     |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                                |
+| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` is USD only                                                                         |
 
 **Response** `503`:
 
@@ -6508,8 +6575,11 @@ note never become `messageId`. A text-only newest row can still pair with
 
 ### `POST /invoices`
 
-Spend-worker invoice fetch. After address and amount validation, the api
-requires a 21.gifts member whose wallet-backed address is `address`
+Spend-worker invoice fetch. After id, address, and amount validation, the api
+loads a supplied `messageId` under that message's lock. A live note whose
+`goalClosedAt` is set is refused immediately with **409** `credit_closed`,
+before recipient address, passkey, funding, welcome, media, account-association,
+and platform-account gates. Otherwise the api requires a 21.gifts member whose wallet-backed address is `address`
 (`<username>@<host of PUBLIC_BASE_URL>`, case-insensitive, verified wallet;
 a member there with a passkey but no verified wallet is **403**
 `Wallet required`; any other domain or no such member is **403**
@@ -6561,7 +6631,8 @@ with `messageId` (both set → **400**). Invalid UUID on either field → **400*
 `messageId` is set, the post must be that address's live top-level note,
 including the About-me profile note, **and** have a photo or video (else
 **403** `Forum post required` before LNURL). A text-only profile note stays
-**403**. Omitted `messageId` stays any live top-level non-profile post (no
+**403**, unless it is a live closed credit, which was already refused with
+`credit_closed`. Omitted `messageId` stays any live top-level non-profile post (no
 media requirement). Missing
 `isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
 (no LNURL). With `comment` exactly `Welcome` (with or without `messageId`),
@@ -6601,6 +6672,15 @@ Bad JSON, `amountMsat` outside `1000..10000000000`, `comment` longer than
 
 Invalid Lightning Address → **400**
 `{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
+
+A supplied `messageId` resolves under its message lock to a live note whose
+`goalClosedAt` is set → **409** before recipient address, passkey, funding,
+welcome, media, account-association, and platform-account checks (no LNURL fetch;
+no invoice is stored):
+
+```json
+{ "error": "This credit no longer collects", "code": "credit_closed" }
+```
 
 `address` is the wallet-backed address of a member who has a passkey but no
 verified wallet yet → **403** (checked first; before any LNURL fetch; no
@@ -6793,8 +6873,10 @@ display. Each message exposes the author **name snapshotted at post time**,
 `createdAt`, `sats` (validated Lightning receipts on that note, default 0),
 optional `goalSats` (positive integer on a top-level note; omitted when
 unset/null/0), optional `goalRepayable: true` when the stored column is true
-(omitted when null; never false), optional `goalTermDays` when the stored
-column is not null (omitted when null), and when `goalCurrency` is stored also
+(omitted when null; never false), optional `goalClosedAt` as an ISO-8601
+string when `goal_closed_at` is set (omitted otherwise), optional
+`goalTermDays` when the stored column is not null (omitted when null), and when
+`goalCurrency` is stored also
 `goalCurrency`, `goalAmount`, and `goalAmountUsd` / `goalAmountChf` /
 `goalAmountEur` / `goalAmountPhp` (a snapshot may be null; a legacy row omits
 those keys),
@@ -7175,6 +7257,12 @@ otherwise **400** with that shop error and nothing is stored. A reply, and
 a note that is not a shop, may still omit the pin.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that for `goal_term_days` days, but for a credit outside the operator-approved exception never before 2026-11-16. A non-exempt credit that filled on or before 2026-11-15 starts on 2026-11-16. The three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c` are exempt from that minimum and start the day after they filled. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. A BTC `goalAmount` is the whole-sat canonical string: a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). A fiat `goalAmount` keeps the typed decimal after trim and a comma turned into a dot (`5.00` stays `5.00`, `1.0` stays `1.0`), and that string is also stored in `goal_amount_text`. A read uses `goal_amount_text` when it is a non-empty string, otherwise the numeric column. `goal_sats` is that integer for `BTC` (1..10_000_000; a missing spot quote does not reject it). For fiat, sats are half-up from the current spot rate of the typed currency (`round(typed * 1e8 / fiatPerBtc)`), and a positive amount that rounds to 0 becomes 1. Fiat needs a spot quote that prices the typed currency and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If the spot read throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the spot read throws or returns no quote. The typed currency's snapshot is the typed amount at two decimals, not a satoshi round trip. The other three currencies are frozen from that same spot quote and are null when their rate is missing. A BTC ask freezes each fiat snapshot from the spot, or leaves it null. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the stored typed string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
+Every public, debug, and hidden forum message JSON that can carry
+`goalRepayable: true` also carries `goalClosedAt` as an ISO-8601 string when
+`goal_closed_at` is set and omits `goalClosedAt` otherwise. This applies to
+lists, single messages, member feeds and profile messages, external-author
+feeds, funding surfaces, and the corresponding `GET /view/:viewKey` surfaces.
+
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
@@ -7196,8 +7284,10 @@ stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
 `videoContentType`, and always `shopNpub` (the npub of a currently listed
 shop with a key, otherwise JSON `null`). May include `goalSats` (positive integer on a top-level
 note; omitted when unset). May include `goalRepayable: true` when the stored
-column is true (omitted when null; never false). May include `goalTermDays`
-when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
+column is true (omitted when null; never false). May include `goalClosedAt` as
+an ISO-8601 string when `goal_closed_at` is set (omitted otherwise). May include
+`goalTermDays` when the stored column is not null (omitted when null). May include
+`accountId` (21gifts author id) and `mentions`
 (`{ accountId, username }[]`, only when that list is non-empty). A stored
 self mark does not notify the author. Other marks fan out one
 `forum_mention` per person. That is the only in-app row and the only Web
@@ -7426,6 +7516,11 @@ a verified external payer still gains durable zapper entitlement. Gift-only
 member replies (`text === ""`) and all external gift-replies stay
 `nostrPublishState` `skipped` (no kind:1). Parent `sats` is the aggregate;
 reply `sats` is this gift.
+An invoice-less verified member receipt takes the payer account advisory lock
+before the message advisory lock, re-resolves the signed 9734 pubkey while that
+account lock is held, and stores only that current account mapping. A merge
+that completed after the unlocked lookup therefore attributes the receipt to
+the survivor.
 After a newly indexed **member-note** receipt, `notifyZap` runs best-effort
 (in-app rows for every account except the resolved payer, no-op when that
 payer is the official platform account, then filtered by each account's
@@ -7449,6 +7544,9 @@ every attempt with a valid UUID is persisted best-effort to `message_invoice`
 (result, HTTP status, `pr`, description vs `description_hash`,
 `isNip57Invoice`). Store failures log `message.invoice.record_failed` and do
 not change the HTTP response. A non-UUID `:id` is **404** without a persist row.
+The payer account advisory lock is held before the message advisory lock and
+through mint and persistence. The payer is re-read after minting; a merge that
+already deleted it yields **401** and no successful invoice row or BOLT11.
 
 Success → **Response** `200`:
 
@@ -7539,6 +7637,7 @@ Success → **Response** `200`:
 {
   "currency": "BTC",
   "fundedAt": null,
+  "closedAt": null,
   "startsOn": null,
   "termDays": 30,
   "daysDue": 0,
@@ -7564,6 +7663,8 @@ Success → **Response** `200`:
       "username": "ada",
       "amount": null,
       "sats": 21,
+      "paidSats": 0,
+      "paidAmount": null,
       "status": "scheduled",
       "waiting": false,
       "via": "lightning",
@@ -7574,13 +7675,13 @@ Success → **Response** `200`:
 }
 ```
 
-`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `startsOn` is the first repayment day as `YYYY-MM-DD` UTC (the `dueOn` of `dayIndex` 0), or null until then; it is the day after `fundedAt`, and for a credit outside the operator-approved exception never before 2026-11-16. The exception is the three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`: they start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` is null for bitcoin. On a fiat ask it is a two-decimal string in the ask currency: the sum, per giver, of the oldest indexed ingest line of each of that giver's receipts on this note, the amount fixed when it was paid, when every named giver has a parseable stored amount in that currency; otherwise the typed ask amount is split by sat weight. `amount` is a two-decimal string in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: the share in sats for a bitcoin loan, or for a fiat loan the share priced in sats at the rate `POST /messages/:id/repayment` would use now; it is `null` on every other line. The rate is read once per request, so `dueSats` and `next.sats` agree. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. `waiting` is true on a `due` line whose giver cannot receive, and `waitingShares` counts those lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share. A 1-sat or 1-cent gift is its own row.
+`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `closedAt` is ISO-8601 when the author ended collecting, else null. `paidSats` is the sats actually settled for that share so far (0 when none); `paidAmount` is the two-decimal settled amount for a fiat share, else null. A share is `paid` only when its remainder is zero; a partially paid share keeps `due` or `scheduled`, and `dueSats` is its remainder priced in sats. `startsOn` is the first repayment day as `YYYY-MM-DD` UTC (the `dueOn` of `dayIndex` 0), or null until then; it is the day after `fundedAt`, and for a credit outside the operator-approved exception never before 2026-11-16. The exception is the three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`: they start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` is null for bitcoin. On a fiat ask it is a two-decimal string in the ask currency: the sum, per giver, of the oldest indexed ingest line of each of that giver's receipts on this note, the amount fixed when it was paid, when every named giver has a parseable stored amount in that currency; otherwise the typed ask amount is split by sat weight. `amount` is a two-decimal string in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: the share in sats for a bitcoin loan, or for a fiat loan the share priced in sats at the rate `POST /messages/:id/repayment` would use now; it is `null` on every other line. The rate is read once per request, so `dueSats` and `next.sats` agree. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. `waiting` is true on a `due` line whose giver cannot receive, and `waitingShares` counts those lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share. A 1-sat or 1-cent gift is its own row.
 
 Fiat amount or gift-day rate missing, or the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. This holds whenever a fiat share is due, also when every due share waits for a giver who cannot receive.
 
 ### `POST /messages/:id/repayment`
 
-Author pays the next giver share from their own wallet. Bearer session required. No body. A missing or invalid Bearer is **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. After a valid session, a non-UUID `:id` is **404** `{ "error": "Not found" }`. The share is the oldest due, unpaid share (oldest day first, then the order of the repayment list) whose giver can receive; a share whose giver cannot receive is skipped, so that giver does not block the others. The author pays the returned BOLT11. The description is `repay:<day>:<accountId>`. When that zap is indexed, the share is stored on `message_repayment` and `message.sats` does not rise. A repeat for the same unpaid share returns the outstanding invoice instead of minting another, including when the sat price of that fiat share has moved.
+Author pays from their own wallet. Bearer session required. With no body, a blank body, or `{}`, the share is the oldest due, unpaid share (oldest day first, then the order of the repayment list) whose giver can receive; a share whose giver cannot receive is skipped, so that giver does not block the others. The author pays the returned BOLT11. A never-partial legacy share uses `repay:<day>:<accountId>`; after a partial payment the exact remainder uses `repayp:<day>:<accountId>:<part>:<units>:<shareUnits>`. Legacy full-share settlements are stored only on `message_repayment`; part settlements are stored only on `message_repayment_part`, including the part that completes a share. `message.sats` does not rise. A repeat for the same unpaid part returns the outstanding invoice instead of minting another. An open legacy full-share bill blocks a new remainder bill after a part settles, because the legacy bill can still pay the whole share. The optional amount body is documented below under this same endpoint.
 
 Success → **Response** `200`:
 
@@ -7608,7 +7709,7 @@ Nothing left to pay → **400** `{ "error": "Nothing is due" }`.
 Note not payable yet → **400** `{ "error": "This message cannot be paid yet" }`.
 Every due share belongs to a giver without a receiving address → **400** `{ "error": "A giver has no Lightning address", "code": "cannot_receive" }`. The same answer comes when the picked giver has lost the receiving address by the time the invoice is made (the pay-time check stays).
 Giver without a Nostr key → **400** `{ "error": "A giver has no Lightning address" }` (no `code`).
-An open invoice for this share minted for another address → **409** `{ "error": "A payment for this share is still open" }`.
+An open invoice for this share minted for another address → **409** `{ "error": "A payment for this share is still open" }`. A repayment invoice whose payment hash is claimed but whose exact settlement row is missing reserves its share regardless of invoice expiry: it is not counted as paid, and the no-body, due, and amount forms all return this same 409 before minting. Once receipt retry writes the exact row, the share counts as paid.
 Recipient wallet cannot take the payment → **400** `{ "error": "The recipient's wallet cannot receive this Bitcoin payment", "code": "cannot_receive" }`.
 Other payment start failure → **400** `{ "error": "Could not start the Bitcoin payment" }`.
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
@@ -7650,11 +7751,11 @@ Success → **Response** `200`:
 }
 ```
 
-`bills` has one entry for every due (day index below `daysDue`), unpaid share whose giver can receive, oldest day first, then the order of the repayment list. Each bill is made exactly as `POST /messages/:id/repayment` makes it: a zap request tagging the credit note, description `repay:<day>:<accountId>`, a BOLT11 from the giver's wallet, a stored invoice attempt, and `sparkInvoice` when free in-app payments are on (else `null`, see [Free in-app payments](#free-in-app-payments)). An open, still-payable bill for the same share is returned again, never a second one. `waiting` lists the due, unpaid shares whose giver cannot receive (no verified wallet, or the giver's wallet refuses the zap); no bill is made for them. A giver whose wallet refuses the zap is asked once per call, and that giver's other due shares wait as well. `amountSats` is the share in sats (a fiat share is priced at the rate of `POST /messages/:id/repayment`); `amount` is the share as a two-decimal string in the loan's currency for a fiat loan, else `null`. Nothing due → **200** with both lists empty.
+`bills` has one entry for every due (day index below `daysDue`), unpaid share whose giver can receive, oldest day first, then the order of the repayment list. A partially settled share exposes and bills only its unpaid remainder. Each bill uses the legacy or part description as appropriate. An open, still-payable part bill is returned again, never a second one; an open legacy full-share bill after a partial settlement is a 409 conflict until it expires. A claim-only legacy or part invoice remains a 409 conflict after expiry until its exact settlement row is repaired. `waiting` lists due shares whose giver cannot receive. Its `amountSats` and fiat `amount` always describe the whole unpaid share remainder (`share.units - share.paidUnits`), even when a smaller open bill already reserves part of it. Bill amounts describe the returned or newly minted bill only. Nothing due → **200** with both lists empty.
 
 At most **60** bills per call. The remaining payable shares come on the next call. The repayment invoice limiter is asked once per call, by the first bill that has to be minted; a call that only returns open bills does not ask it.
 
-Settlement is unchanged: the zap receipt, or the Spark invoice worker for a paid `sparkInvoice`, stores each paid share on `message_repayment`.
+Close, gift-receipt settlement, note-gift mint and durable invoice storage, repayment reservation, and repayment settlement are serialized by one lock per message. An invoice-less member gift-receipt first takes its payer account lock and re-resolves the signed pubkey before taking that message lock. When an operation also needs account locks, the global order is sorted account advisory locks, sorted message advisory locks, then row locks, all in one transaction. Close takes the message lock before choosing its server timestamp, freezing `goal_funded_at`, or reading the collected response snapshot. Under the same lock reservation rereads every settled and still-payable part, reuses an exact description first, validates all reserved units against the share, and refuses a stale part index or size with 409. Manual and receipt repayment settlement re-read the matching invoice under that lock and derive recipient, description, amount, and legacy/part identity only from that locked row; the already-locked settlement write does not acquire the lock again. A BTC part is reusable only when its stored invoice sats equal its encoded units; an underpriced or overpriced open part is the same 409 conflict. A repayment invoice with a claimed payment hash reserves its exact legacy share or canonical part until the matching settlement row is present. A repayment payment-hash claim and its matching repayment row become visible together; an immutable part-key conflict leaves no new claim. A same-receipt retry repairs a missing row only against the exact invoice identity; for parts, an equal-sized sibling with another `partIndex` is not accepted. The zap receipt, or the Spark invoice worker for a paid `sparkInvoice`, stores a legacy full share on `message_repayment` or an exact part on `message_repayment_part`, never both.
 
 Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID.
 Unknown id, a non-UUID after a valid session, a note that is not a live repayable ask, a credit that is not funded yet, or a caller who is not the author → **404** `{ "error": "Not found" }`.
@@ -7663,6 +7764,86 @@ Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing
 Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
 Debt or a fiat share cannot be priced, including when the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`.
 Any other error of `POST /messages/:id/repayment` while making a bill (`This message cannot be paid yet`, a giver without a Nostr key, `A payment for this share is still open`, `Could not start the Bitcoin payment`, `Messages are unavailable`) answers the whole call with that status and body. Bills minted before it stay stored and are returned again on the next call.
+
+### `POST /messages/:id/repayment/close`
+
+End collecting on a live, top-level repayable ask. Bearer session required. No body. The caller must be the author. Sunday rest does not refuse close.
+
+Under the per-message lock, the first close chooses the server clock and sets `message.goal_closed_at`; when the ask had not filled, it also sets `message.goal_funded_at` to that same instant. PostgreSQL evaluates `clock_timestamp()` once and keeps that exact `timestamptz` in the database for both columns and the inclusive receipt comparison; the boundary is never truncated through a JavaScript `Date`. The response queries named and unassigned receipts against the stored `message.goal_closed_at` directly, rather than binding the returned timestamp again. Gift-receipt settlement takes the same lock, so the frozen debt and the response's collected snapshot have one atomic boundary. For such an early fiat close, `message.goal_debt_frozen` is true and each giver's exact stored gift-time loan-currency cents are frozen in `message_credit_payer_snapshot`; a gift without that snapshot contributes zero cents to its giver and never receives another giver's cents. Their sum, not the original goal, is the debt and `collectedAmount`. The same exact-cents preview supplies `maxAmount` while the loan is still collecting. The debt and daily plan then follow the ordinary funded-loan rules. A BTC close never sets `goal_debt_frozen`. A loan that already filled keeps its `goal_funded_at`, leaves `goal_debt_frozen` false, and keeps its existing payment-snapshot computation. Closing again is idempotent. A loan closed with 0 collected owes nothing. For staff deletion, a frozen fiat loan is open only while a positive frozen scheduled unit remains unsettled; unassigned sats and an empty frozen schedule do not keep it open.
+
+Success → **Response** `200`:
+
+```json
+{
+  "fundedAt": "2026-11-11T12:00:00.000Z",
+  "closedAt": "2026-11-11T12:00:00.000Z",
+  "collectedSats": 12345,
+  "collectedAmount": "12.00"
+}
+```
+
+`collectedAmount` is the loan-currency two-decimal string for a fiat loan, else null. `collectedSats` is the collected sat total.
+
+After taking the message lock, debt availability is checked before the close
+write when the existing funded debt is sufficient to decide it. An early fiat
+close may first need to commit its missing-snapshot zero-cent rows. If debt is
+still unavailable after that second check, the response is **503**
+`{ "error": "Ask amount is unavailable" }` and the loan is already closed.
+
+Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. Unknown id, a non-UUID after a valid session, a note that is not a live repayable top-level ask with a term, or a caller who is not the author → **404** `{ "error": "Not found" }`. Author missing `forum.pay` → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
+
+After close, every route that mints a gift or zap invoice for that note answers **409** `{ "error": "This credit no longer collects", "code": "credit_closed" }` and mints nothing. `POST /invoices` makes that decision from the live row loaded under the message lock before recipient and payout gates. The shared Fond invoice path therefore marks its payout terminally `failed` with this refusal even when a missing passkey, funding grant, media/account association, or platform account would otherwise refuse invoice issue. A loan that filled on its own keeps accepting gifts.
+
+### `POST /messages/:id/repayment` — optional amount body
+
+Author pays any freely chosen amount, ahead of schedule and on a loan that never reached 100 %. Bearer session required. Body:
+
+```json
+{ "amount": "1000" }
+```
+
+The guards are the same as the no-body form (session, `forum.pay`, Sunday rest, invoice limiter, pricing), except that a loan still collecting is allowed: the request first closes it exactly as `POST /messages/:id/repayment/close`, then prepays.
+
+BTC loans take a whole positive sat string. Fiat loans take a decimal string in the loan currency with at most two decimals, comma or dot; cents are stored per [docs/fiat-amounts.md](docs/fiat-amounts.md), and each part is priced in sats at the rate `POST /messages/:id/repayment` uses now. Amount 0, negative, malformed, more than two decimals on a fiat loan, or a non-integer on a BTC loan → **400** `{ "error": "Invalid amount", "code": "invalid_amount" }`.
+
+The amount is applied to unpaid remainder shares in plan order: day ascending, then the order of the repayment list within a day. Shares whose giver cannot receive are skipped and listed in `waiting`; they never consume amount. When a wallet refuses, its unused allocation is immediately reallocated to later receivers in the same request. Every bill already created or reused earlier in that request remains a fixed reservation, consumes the requested amount, and is returned even when a later share of the same giver refuses. The replacement allocation has only the unused slots of the 60-bill limit; if the requested remainder does not fit, no replacement is minted and the bills completed before the refusal are returned. The last share reached may be paid partially. An open part bill is returned through the common bill path, including its Spark invoice and current-address conflict check. Fiat open parts are validated by their reserved cents even when their fixed sats differ from today's rate; exact sat matching applies only to BTC. An oversized open part, a conflicting legacy full-share bill, an expired claim-only bill, or a plan made stale by another reservation before it acquired the message lock is **409** `{ "error": "A payment for this share is still open" }` and mints nothing.
+
+`max` walks the plan in allocation order, skipping givers who cannot receive, and stops before the first receivable share whose legacy, oversized, or claim-only reservation would return 409. It is the accepted prefix before that conflict (0 when the first share blocks); later payable shares do not increase it. An amount above that blocked prefix is **409** `{ "error": "A payment for this share is still open" }` with nothing minted. When no blocking share stopped the prefix, an amount above everything receivable is **400** `{ "error": "Amount is above what is left", "code": "amount_too_high", "maxSats": <int|null>, "maxAmount": <string|null> }`; `maxSats` is the sum of each bill's separately rounded sat price. With no receivable remainder at all the response is **400** `{ "error": "Nothing is due" }`. More than 60 parts are needed → **400** `{ "error": "Too many shares for one payment", "code": "too_many_shares", "maxSats": <int|null>, "maxAmount": <string|null> }`, where the max is the largest amount that fits in 60 bills and `maxSats` sums exactly those bills.
+
+Success → **Response** `200`:
+
+```json
+{
+  "amountSats": 1000,
+  "amount": null,
+  "bills": [
+    {
+      "dayIndex": 3,
+      "recipientAccountId": "<uuid>",
+      "name": "Bruno",
+      "username": "bruno",
+      "amountSats": 500,
+      "amount": null,
+      "pr": "lnbc…",
+      "sparkInvoice": "spark1…"
+    }
+  ],
+  "waiting": [
+    {
+      "dayIndex": 3,
+      "recipientAccountId": "<uuid>",
+      "name": "Diego",
+      "username": "diego",
+      "amountSats": 200,
+      "amount": null
+    }
+  ]
+}
+```
+
+`amountSats` is the sum of the bills and never exceeds the requested sats. For a fiat loan, the bills' cents never exceed the requested cents; `amount` echoes the exact request string, including comma versus dot and trailing zeros. Leading or trailing whitespace is invalid rather than trimmed. For a BTC loan `amount` is null. Bills and waiting rows have exactly the shape of `/repayment/due`. Settlement records the exact part; a share becomes `paid` only when its remainder reaches zero.
+
+Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. Unknown id, a note that is not a live repayable top-level ask with a term, or a caller who is not the author → **404** `{ "error": "Not found" }`. Author missing `forum.pay` → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`. An open bill larger than the remaining requested amount → **409** `{ "error": "A payment for this share is still open" }` before any bill is minted. Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. Over-limit → **429** `{ "error": "Too many payments" }` with `Retry-After: 10`. A debt or fiat share that cannot be priced → **503** `{ "error": "Ask amount is unavailable" }`. Every other bill error of `/repayment/due` applies unchanged.
 
 ### `GET /messages/:id/photo`
 
@@ -7771,6 +7952,7 @@ receiving address (see [Receiving address](#receiving-address)),
 the stored author id is non-null, with or without a session. External replies
 set `via: "nostr"`, keep `payable: false` and `authorCanReceive: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
+They also never include `goalClosedAt`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`). The response also carries `hearts`: one entry per claimed
 paid heart on the parent, ordered newest first (`createdAt` desc, then invoice
@@ -8029,7 +8211,9 @@ those paths are not captured as `:id`. A live GET returns
 the public message JSON (`sats`, optional `goalSats` on a top-level note
 when the stored ask is a positive integer, optional `goalRepayable: true`
 when the stored column is true (omitted when null; never false), optional
-`goalTermDays` when the stored column is not null (omitted when null), and when
+`goalClosedAt` as an ISO-8601 string when `goal_closed_at` is set (omitted
+otherwise), optional `goalTermDays` when the stored column is not null
+(omitted when null), and when
 `goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
 `goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
 keys — optional `place` (`{ lat, lng, label, address }` when a pin is stored;
@@ -8311,8 +8495,10 @@ when there are no stills) and `photoTakenAt` only when `photoCount` is 1 /
 `hasVideo` / `videoContentType`, optional `goalSats` (positive integer on a
 top-level note; omitted when unset/null/0 or on a reply), optional
 `goalRepayable: true` when the stored column is true (omitted when null;
-never false), optional `goalTermDays` when the stored column is not null
-(omitted when null), and when `goalCurrency` is stored also `goalCurrency`,
+never false), optional `goalClosedAt` as an ISO-8601 string when
+`goal_closed_at` is set (omitted otherwise), optional `goalTermDays` when the
+stored column is not null (omitted when null), and when `goalCurrency` is
+stored also `goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots (a snapshot may be null;
 a legacy row omits those keys), optional `place` (`{ lat, lng, label, address }`
 when a pin is stored; `address` is the structured postal address or JSON `null`;

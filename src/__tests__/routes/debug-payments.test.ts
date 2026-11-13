@@ -433,7 +433,7 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
-  it('returns resumed true when a failed ingest write is retried', async () => {
+  it('retries atomically after a failed ingest write', async () => {
     class FailingIngestStore extends InMemoryMessageStore {
       failIngest = true;
 
@@ -458,14 +458,14 @@ describe('debugPaymentsRoutes', () => {
     const failed = await app.request('/debug/invoices/settle', request);
     expect(failed.status).toBe(503);
     expect(await failed.json()).toEqual({ error: 'Messages are unavailable' });
-    expect((await store.getById('settle-message'))?.sats).toBe(210_000);
+    expect((await store.getById('settle-message'))?.sats).toBe(0);
 
     const resumed = await app.request('/debug/invoices/settle', request);
     expect(resumed.status).toBe(200);
     expect(await resumed.json()).toMatchObject({
       messageId: 'settle-message',
       amountSats: 210_000,
-      resumed: true,
+      resumed: false,
     });
     expect((await store.getById('settle-message'))?.sats).toBe(210_000);
     expect(await store.listZapIngests(10)).toHaveLength(1);

@@ -76,6 +76,19 @@ test('Function: parsePaymentReceived — a signed body of another template is ig
   expect(await res.json()).toEqual({ outcome: 'ignored' });
 });
 
+test('Function: giftsForRecipient — verified shop activity returns received-gift totals', async ({
+  request,
+}) => {
+  const shop = await verifiedShop(request, 'activity');
+  const res = await request.get('/me/activity', {
+    headers: { authorization: `Bearer ${shop.token}` },
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { receivedSats: number; receivedOverTime: unknown[] };
+  expect(body.receivedSats).toBe(0);
+  expect(body.receivedOverTime).toEqual([]);
+});
+
 test('Function: notifyPaymentReceived — a verified wallet without a push device queues nothing', async ({
   request,
 }) => {

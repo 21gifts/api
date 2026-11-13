@@ -558,6 +558,35 @@ describe('serializeMessage', () => {
     ).not.toHaveProperty('goalRepayable');
   });
 
+  it('includes goalClosedAt as ISO only when the stored timestamp is set', () => {
+    const closedAt = new Date('2026-11-12T09:10:11.000Z');
+    const row: MessageRow = {
+      id: 'msg-closed',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'closed ask',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 21000,
+      goalRepayable: true,
+      goalClosedAt: closedAt,
+    };
+    const deletedBy = { id: 'staff', name: 'Mod', role: 'moderator' as const };
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').goalClosedAt).toBe(closedAt.toISOString());
+    expect(serializeDebugMessage(row)['goalClosedAt']).toBe(closedAt.toISOString());
+    expect(serializeHiddenMessage(row, deletedBy)['goalClosedAt']).toBe(closedAt.toISOString());
+    expect(
+      serializeMessage({ ...row, goalClosedAt: null }, NOT_PAYABLE, 'basis'),
+    ).not.toHaveProperty('goalClosedAt');
+    expect(serializeDebugMessage({ ...row, goalClosedAt: null })).not.toHaveProperty(
+      'goalClosedAt',
+    );
+    expect(serializeHiddenMessage({ ...row, goalClosedAt: null }, deletedBy)).not.toHaveProperty(
+      'goalClosedAt',
+    );
+  });
+
   it('includes goalTermDays only when the stored column is not null', () => {
     const row: MessageRow = {
       id: 'msg-term',

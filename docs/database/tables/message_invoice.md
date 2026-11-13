@@ -35,12 +35,13 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns                            | Unique | Where                   | Definition                                                                                                                                                    |
-| ---------------------------------- | ------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `created_at`, `id`                 | No     | –                       | `CREATE INDEX message_invoice_created_at_idx ON public.message_invoice USING btree (created_at DESC, id DESC)`                                                |
-| `id`                               | Yes    | –                       | `CREATE UNIQUE INDEX message_invoice_pkey ON public.message_invoice USING btree (id)`                                                                         |
-| `message_id`, `created_at`         | No     | –                       | `CREATE INDEX message_invoice_message_id_idx ON public.message_invoice USING btree (message_id, created_at DESC)`                                             |
-| `payment_hash`, `created_at`, `id` | No     | `(result = 'ok'::text)` | `CREATE INDEX message_invoice_ok_payment_hash_idx ON public.message_invoice USING btree (payment_hash, created_at DESC, id DESC) WHERE (result = 'ok'::text)` |
+| Columns                            | Unique | Where                                                           | Definition                                                                                                                                                                                                |
+| ---------------------------------- | ------ | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `created_at`, `id`                 | No     | –                                                               | `CREATE INDEX message_invoice_created_at_idx ON public.message_invoice USING btree (created_at DESC, id DESC)`                                                                                            |
+| `id`                               | Yes    | –                                                               | `CREATE UNIQUE INDEX message_invoice_pkey ON public.message_invoice USING btree (id)`                                                                                                                     |
+| `message_id`, `created_at`         | No     | –                                                               | `CREATE INDEX message_invoice_message_id_idx ON public.message_invoice USING btree (message_id, created_at DESC)`                                                                                         |
+| `message_id`, `description`        | Yes    | `((result = 'ok'::text) AND (description ~~ 'repayp:%'::text))` | `CREATE UNIQUE INDEX message_invoice_repayment_part_description_uidx ON public.message_invoice USING btree (message_id, description) WHERE ((result = 'ok'::text) AND (description ~~ 'repayp:%'::text))` |
+| `payment_hash`, `created_at`, `id` | No     | `(result = 'ok'::text)`                                         | `CREATE INDEX message_invoice_ok_payment_hash_idx ON public.message_invoice USING btree (payment_hash, created_at DESC, id DESC) WHERE (result = 'ok'::text)`                                             |
 
 ## Referenced by
 

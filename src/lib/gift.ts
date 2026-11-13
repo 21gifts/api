@@ -2,8 +2,9 @@
  * Gift statistics domain: outbound gift rows and pure aggregation.
  *
  * The HTTP surface never includes invoices or other payment secrets — only
- * amounts (sats, BTC, historical USD/CHF/EUR/PHP), UTC days, and recipient
- * handles (the local part of the receiving address).
+ * amounts (sats, BTC, historical USD/CHF/EUR/PHP), UTC days, and, on the
+ * per-day gift list, recipient handles (the local part of the receiving
+ * address). Public stats count distinct handles and do not list them.
  */
 
 import { FX_SOURCE_COINBASE_DAILY_CLOSE } from '@/lib/btc-usd-store';
@@ -82,26 +83,6 @@ export interface SpendDay {
   cumulativePhp: string | null;
 }
 
-/** Totals for one recipient. */
-export interface RecipientSpend {
-  /** Recipient handle (local part of the receiving address). */
-  recipient: string;
-  /** Number of outbound gifts to this recipient. */
-  giftCount: number;
-  /** Sats paid to this recipient. */
-  sats: number;
-  /** BTC string for `sats`. */
-  btc: string;
-  /** Sum of stored USD on gifts to this recipient. All missing is `null`. */
-  usd: string | null;
-  /** Sum of stored CHF on gifts to this recipient. All missing is `null`. */
-  chf: string | null;
-  /** Sum of stored EUR on gifts to this recipient. All missing is `null`. */
-  eur: string | null;
-  /** Sum of stored PHP on gifts to this recipient. All missing is `null`. */
-  php: string | null;
-}
-
 /** Totals for one UTC calendar month. */
 export interface MonthSpend {
   /** UTC month `YYYY-MM`. */
@@ -160,7 +141,7 @@ export interface GiftStats {
   totalPhp: string | null;
   /** Number of outbound gifts. */
   giftCount: number;
-  /** Distinct recipient handles. */
+  /** Distinct stored `recipientWosUser` strings (exact text, case-sensitive). */
   recipientCount: number;
   /** ISO-8601 timestamp of the earliest gift, or `null` when none. */
   firstPaidAt: string | null;
@@ -168,8 +149,6 @@ export interface GiftStats {
   lastPaidAt: string | null;
   /** Cumulative spend series, UTC days from first through last inclusive. */
   spendOverTime: SpendDay[];
-  /** Per-recipient totals, largest spend first. */
-  byRecipient: RecipientSpend[];
   /** Per-month totals, UTC months from first through last inclusive (gap months included). */
   byMonth: MonthSpend[];
   /** Quote metadata (always present, including empty stats). */
@@ -546,7 +525,7 @@ function quotesForGiftDays(
 }
 
 /**
- * Empty fiat bucket used when first inserting a recipient or month.
+ * Empty fiat bucket used when first inserting a month.
  *
  * @returns A bucket whose fiat sums are null until a stored figure arrives.
  */
@@ -562,7 +541,7 @@ function emptyFiatBucket(): FiatBucket {
 }
 
 /**
- * Add one gift into a recipient/month bucket.
+ * Add one gift into a month bucket.
  *
  * @param bucket - Mutable bucket.
  * @param amountSats - Gift sats.
@@ -626,7 +605,10 @@ function cumulativeFiat(running: number | null): string | null {
  * cumulative. `spendOverTime[].officialCount` is the number of distinct
  * case-insensitive recipient handles that UTC day with kind `daily` or
  * `welcome` (gap days 0; moderator excluded). `giftCount` remains every
- * outbound row. `fiatRates` is quote metadata, not the amount.
+ * outbound row. `recipientCount` is the number of distinct stored
+ * `recipientWosUser` strings (exact text, not lowercased). The payload has
+ * no per-recipient names or amounts. The rows passed in are aggregated as
+ * given. `fiatRates` is quote metadata, not the amount.
  *
  * @param rows - Outbound gifts (order does not matter).
  * @param _rates - Ignored. A daily close does not price a stored amount.
@@ -652,7 +634,6 @@ export function buildGiftStats(
       firstPaidAt: null,
       lastPaidAt: null,
       spendOverTime: [],
-      byRecipient: [],
       byMonth: [],
       fx: EMPTY_FX,
     };
@@ -669,7 +650,8 @@ export function buildGiftStats(
   const byDayChfCents = new Map<string, number | null>();
   const byDayEurCents = new Map<string, number | null>();
   const byDayPhpCents = new Map<string, number | null>();
-  const byRecipient = new Map<string, FiatBucket>();
+  // Exact stored handle, not lowercased (unlike spendOverTime.officialCount).
+  const recipientKeys = new Set<string>();
   const byMonth = new Map<string, FiatBucket>();
   let totalSats = 0;
   let totalUsdCents: number | null = null;
@@ -699,9 +681,7 @@ export function buildGiftStats(
     byDayEurCents.set(day, foldDay(byDayEurCents, day, converted.eur));
     byDayPhpCents.set(day, foldDay(byDayPhpCents, day, converted.php));
 
-    const rec = byRecipient.get(row.recipientWosUser) ?? emptyFiatBucket();
-    addToBucket(rec, row.amountSats, usdCents, converted);
-    byRecipient.set(row.recipientWosUser, rec);
+    recipientKeys.add(row.recipientWosUser);
 
     const month = utcMonthString(row.paidAt);
     const mon = byMonth.get(month) ?? emptyFiatBucket();
@@ -747,19 +727,6 @@ export function buildGiftStats(
     });
   }
 
-  const recipients: RecipientSpend[] = [...byRecipient.entries()]
-    .map(([recipient, totals]) => ({
-      recipient,
-      giftCount: totals.giftCount,
-      sats: totals.sats,
-      btc: satsToBtcString(totals.sats),
-      usd: formatMaybeCents(totals.usdCents),
-      chf: formatMaybeCents(totals.chfCents),
-      eur: formatMaybeCents(totals.eurCents),
-      php: formatMaybeCents(totals.phpCents),
-    }))
-    .sort((a, b) => b.sats - a.sats || a.recipient.localeCompare(b.recipient));
-
   const months: MonthSpend[] = enumerateUtcMonths(
     utcMonthString(first.paidAt),
     utcMonthString(last.paidAt),
@@ -787,11 +754,10 @@ export function buildGiftStats(
     totalEur: formatMaybeCents(totalEurCents),
     totalPhp: formatMaybeCents(totalPhpCents),
     giftCount: sorted.length,
-    recipientCount: byRecipient.size,
+    recipientCount: recipientKeys.size,
     firstPaidAt: first.paidAt.toISOString(),
     lastPaidAt: last.paidAt.toISOString(),
     spendOverTime,
-    byRecipient: recipients,
     byMonth: months,
     fx: {
       quote: 'BTC-USD',

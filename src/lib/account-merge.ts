@@ -1,3 +1,19 @@
+import type { SqlClient } from '@/lib/auth/sql';
+import { invoiceStillOpen } from '@/lib/bolt11';
+import {
+  fiatAmountToCents,
+  nextRepaymentPartIndex,
+  parseRepaymentDescription,
+  parseRepaymentPartDescription,
+  payerDebtUnits,
+  repaymentSchedule,
+} from '@/lib/credit-repayment';
+import {
+  PostgresMessageStore,
+  type MessageStore,
+  type MessageInvoiceAttempt,
+  type RepaymentPartRow,
+} from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** One reserved database transaction connection used by an account merge. */
@@ -29,7 +45,13 @@ type MergeResult =
   | { ok: true; messages: number }
   | {
       ok: false;
-      error: 'not_found' | 'same_account' | 'platform' | 'both_grants' | 'shop_payment_open';
+      error:
+        | 'not_found'
+        | 'same_account'
+        | 'platform'
+        | 'both_grants'
+        | 'shop_payment_open'
+        | 'repayment_unavailable';
     };
 
 interface LockedAccountRow {
@@ -45,7 +67,119 @@ interface CatalogColumnRow {
   column_name: string;
 }
 
+interface LegacyRepaymentRow {
+  message_id: string;
+  day_index: number | string;
+  recipient_account_id: string;
+  due_sats: number | string;
+  paid_at: Date | string;
+  goal_currency: string | null;
+  goal_amount: string | null;
+  goal_term_days: number | string | null;
+  goal_debt_frozen: boolean;
+}
+
+interface OpenRepaymentInvoiceRow {
+  message_id: string;
+  author_account_id: string;
+  amount_sats: number | string;
+  payment_hash: string | null;
+  description: string;
+  created_at: Date | string;
+  pr: string;
+  payment_claimed: boolean;
+}
+
+interface HistoricalRepaymentInvoiceRow {
+  message_id: string;
+  author_account_id: string;
+  amount_sats: number | string;
+  description: string;
+}
+
+interface LegacyRepaymentContext {
+  goal_currency: string | null;
+  goal_amount: string | null;
+  goal_term_days: number | string | null;
+  goal_debt_frozen: boolean;
+}
+
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
+const FROZEN_FIAT_FIELDS = {
+  USD: 'usd',
+  CHF: 'chf',
+  EUR: 'eur',
+  PHP: 'php',
+} as const;
+
+async function legacyRepaymentUnits(
+  store: Pick<MessageStore, 'listCreditPayers' | 'sumUnassignedCreditSats'>,
+  legacy: Pick<LegacyRepaymentRow, 'message_id' | 'day_index' | 'recipient_account_id'> &
+    LegacyRepaymentContext,
+): Promise<bigint | undefined> {
+  const payers = await store.listCreditPayers(legacy.message_id);
+  const frozenField =
+    legacy.goal_debt_frozen === true &&
+    legacy.goal_currency !== null &&
+    legacy.goal_currency in FROZEN_FIAT_FIELDS
+      ? FROZEN_FIAT_FIELDS[legacy.goal_currency as keyof typeof FROZEN_FIAT_FIELDS]
+      : undefined;
+  if (frozenField === undefined) {
+    payers.push({
+      accountId: '',
+      sats: await store.sumUnassignedCreditSats(legacy.message_id),
+      usd: null,
+      chf: null,
+      eur: null,
+      php: null,
+    });
+  }
+  const owed =
+    frozenField === undefined
+      ? payerDebtUnits(legacy.goal_currency, legacy.goal_amount, payers)
+      : payers.map((payer) => ({
+          accountId: payer.accountId,
+          units: fiatAmountToCents(payer[frozenField] as string) as bigint,
+        }));
+  if (owed === 'unavailable') {
+    return undefined;
+  }
+  return repaymentSchedule(Number(legacy.goal_term_days), owed).find(
+    (slice) =>
+      slice.dayIndex === Number(legacy.day_index) &&
+      slice.accountId === legacy.recipient_account_id,
+  )?.units;
+}
+
+/**
+ * Recognise the canonical part produced when a merge converted one legacy
+ * full-share settlement. Removing the candidate must reproduce the exact next
+ * part index that the conversion assigned; units and sats must also match.
+ */
+function hasConvertedLegacySettlement(
+  invoice: HistoricalRepaymentInvoiceRow,
+  dayIndex: number,
+  units: bigint,
+  parts: readonly RepaymentPartRow[],
+  attempts: readonly MessageInvoiceAttempt[],
+): boolean {
+  const invoiceValueKey = `${invoice.message_id}:${dayIndex}:${invoice.author_account_id}:${units}:${invoice.amount_sats}`;
+  const partValueKey = (part: RepaymentPartRow): string =>
+    `${part.messageId}:${part.dayIndex}:${part.recipientAccountId}:${part.units}:${part.sats}`;
+  const partIdentityKey = (part: RepaymentPartRow): string =>
+    `${part.messageId}:${part.dayIndex}:${part.recipientAccountId}:${part.partIndex}`;
+  return parts.some((candidate) => {
+    if (partValueKey(candidate) !== invoiceValueKey) {
+      return false;
+    }
+    const candidateIdentity = partIdentityKey(candidate);
+    const precedingParts = parts.filter((part) => partIdentityKey(part) !== candidateIdentity);
+    return (
+      candidate.partIndex ===
+      nextRepaymentPartIndex(dayIndex, [invoice.author_account_id], precedingParts, attempts)
+    );
+  });
+}
 
 /** Quote a catalog identifier after the strict public-schema allowlist check. */
 function quoteIdentifier(identifier: string): string {
@@ -80,6 +214,21 @@ function quoteIdentifier(identifier: string): string {
  * to the merged account's wallets, which go with its row. It also deletes the
  * merged account's `held_share_box` rows: each box is sealed to the merged
  * account's id and words, so the surviving account could never open it.
+ * Frozen credit snapshots are combined by message. Before either identity is
+ * moved, the merge refuses without writes when both identities gave to one
+ * credit with a settled repayment, when either identity has any successfully
+ * issued historical repayment invoice without its exact settlement (a legacy
+ * row or its deterministically converted canonical part), when
+ * a still-payable repayment invoice embeds either identity on an affected
+ * source-funded credit, or when such an invoice has a payment claim but no
+ * exact settlement row (including
+ * part index, units, and sats for a part). It also refuses when any historical
+ * part invoice or settled part of one identity has the same message, day, and
+ * immutable part index as an invoice or settled part of the other identity.
+ * Otherwise, legacy full-share repayments are reconstructed from the original
+ * loan schedule and converted to canonical parts. A schedule that cannot be
+ * reconstructed refuses the merge without writes. Parts from both identities
+ * are then moved without changing their immutable part indexes.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -96,10 +245,74 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
 
   return db.begin(async (tx) => {
     const accountParams = [input.from, input.into] as const;
+    const transactionStore = new PostgresMessageStore(tx as SqlClient, {}, true);
+
+    // Global order: account advisory locks, message advisory locks, row locks.
+    // Both identities are stable before the affected-message query runs, so a
+    // concurrent invoice mint cannot add a payer reference after this set was
+    // collected and before the source account is deleted. This store is scoped
+    // to db.begin, so every primitive's transaction lock remains held through
+    // the row locks and writes below after its callback returns.
+    const repaymentStore = await transactionStore.withAccountLocks(
+      accountParams,
+      async (accountLockedStore) => {
+        const affectedMessages = await tx.query<{ message_id: string }>(
+          `SELECT affected.message_id
+       FROM (
+         SELECT message_id FROM message_repayment
+         WHERE recipient_account_id = $1::uuid OR recipient_account_id = $2::uuid
+         UNION
+         SELECT message_id FROM message_repayment_part
+         WHERE recipient_account_id = $1::uuid OR recipient_account_id = $2::uuid
+         UNION
+         SELECT message_id FROM message_invoice
+         WHERE payer_account_id = $1::uuid
+            OR payer_account_id = $2::uuid
+            OR author_account_id = $1::uuid
+            OR author_account_id = $2::uuid
+         UNION
+         SELECT message_id FROM message_invoice
+         WHERE result = 'ok'
+           AND (description LIKE 'repay:%' OR description LIKE 'repayp:%')
+           AND (
+             author_account_id = $1::uuid
+             OR author_account_id = $2::uuid
+             OR description LIKE 'repay:%:' || $1::text
+             OR description LIKE 'repay:%:' || $2::text
+             OR description LIKE 'repayp:%:' || $1::text || ':%'
+             OR description LIKE 'repayp:%:' || $2::text || ':%'
+           )
+         UNION
+         SELECT message_id FROM nostr_zap_receipt
+         WHERE payer_account_id = $1::uuid OR payer_account_id = $2::uuid
+         UNION
+         SELECT receipt.message_id
+         FROM nostr_zap_receipt AS receipt
+         JOIN message ON message.id = receipt.message_id
+         WHERE message.goal_repayable IS TRUE
+           AND (receipt.payer_account_id = $1::uuid OR receipt.payer_account_id = $2::uuid)
+         UNION
+         SELECT id AS message_id FROM message
+         WHERE goal_repayable IS TRUE
+           AND (account_id = $1::uuid OR account_id = $2::uuid)
+       ) AS affected
+       ORDER BY affected.message_id`,
+          accountParams,
+        );
+        let lockedStore = accountLockedStore;
+        for (const affected of affectedMessages) {
+          lockedStore = await lockedStore.withMessageLock(
+            affected.message_id,
+            async (messageLockedStore) => messageLockedStore,
+          );
+        }
+        return lockedStore;
+      },
+    );
     const locked = await tx.query<LockedAccountRow>(
       `SELECT id, is_platform, role, profile_message_id
        FROM account
-       WHERE id = $1 OR id = $2
+       WHERE id = $1::uuid OR id = $2::uuid
        FOR UPDATE`,
       accountParams,
     );
@@ -161,6 +374,326 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     );
     const messages = counts[0]?.n ?? 0;
     const savedProfileMessageId = fromAccount.profile_message_id;
+
+    const loadRepaymentHistory = async (
+      messageId: string,
+    ): Promise<{ parts: RepaymentPartRow[]; attempts: MessageInvoiceAttempt[] }> => {
+      const [parts, attempts] = await Promise.all([
+        repaymentStore.listRepaymentParts(messageId),
+        repaymentStore.listInvoiceAttemptsForMessage(messageId),
+      ]);
+      return { parts, attempts };
+    };
+    const loadLegacyContext = async (messageId: string): Promise<LegacyRepaymentContext> => {
+      const rows = await tx.query<LegacyRepaymentContext>(
+        `SELECT goal_currency,
+                COALESCE(NULLIF(goal_amount_text, ''), goal_amount::text) AS goal_amount,
+                goal_term_days, goal_debt_frozen
+         FROM message
+         WHERE id = $1::uuid`,
+        [messageId],
+      );
+      return rows[0] as LegacyRepaymentContext;
+    };
+    // Claim-only handling and the all-history refusal must agree on this exact
+    // rule. A legacy invoice is settled by its legacy row or by precisely the
+    // canonical part that an earlier account merge deterministically produced.
+    const isHistoricalRepaymentInvoiceSettled = async (
+      invoice: HistoricalRepaymentInvoiceRow,
+      whole: NonNullable<ReturnType<typeof parseRepaymentDescription>>,
+    ): Promise<boolean> => {
+      const part = parseRepaymentPartDescription(invoice.description);
+      if (part !== null) {
+        const history = await loadRepaymentHistory(invoice.message_id);
+        const invoiceIdentity =
+          `${invoice.message_id}:${part.dayIndex}:${invoice.author_account_id}:` +
+          `${part.partIndex}:${part.units}:${invoice.amount_sats}`;
+        return history.parts.some(
+          (settled) =>
+            `${settled.messageId}:${settled.dayIndex}:${settled.recipientAccountId}:` +
+              `${settled.partIndex}:${settled.units}:${settled.sats}` ===
+            invoiceIdentity,
+        );
+      }
+      const exactLegacyRows = await tx.query<{ settled: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM message_repayment AS settled
+           WHERE settled.message_id = $1::uuid
+             AND settled.recipient_account_id = $2::uuid
+             AND settled.day_index = $3::integer
+         ) AS settled`,
+        [invoice.message_id, invoice.author_account_id, whole.dayIndex],
+      );
+      const exactLegacy = exactLegacyRows[0] as { settled: boolean };
+      if (exactLegacy.settled) {
+        return true;
+      }
+      const context = await loadLegacyContext(invoice.message_id);
+      const units = await legacyRepaymentUnits(repaymentStore, {
+        message_id: invoice.message_id,
+        day_index: whole.dayIndex,
+        recipient_account_id: invoice.author_account_id,
+        ...context,
+      });
+      const history = await loadRepaymentHistory(invoice.message_id);
+      return (
+        units !== undefined &&
+        hasConvertedLegacySettlement(
+          invoice,
+          whole.dayIndex,
+          units,
+          history.parts,
+          history.attempts,
+        )
+      );
+    };
+
+    // Combining two givers after any repayment settled can change the rounded
+    // day slices of their combined debt. Keep the settled schedule immutable:
+    // the operator can merge only before that credit has any paid unit.
+    const settledMergeConflicts = await tx.query<{ message_id: string }>(
+      `SELECT credit.id AS message_id
+       FROM message AS credit
+       WHERE credit.goal_repayable IS TRUE
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS source_gift
+           WHERE source_gift.message_id = credit.id
+             AND source_gift.payer_account_id = $1::uuid
+             AND (
+               credit.goal_funded_at IS NULL
+               OR source_gift.recorded_at IS NULL
+               OR source_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS survivor_gift
+           WHERE survivor_gift.message_id = credit.id
+             AND survivor_gift.payer_account_id = $2::uuid
+             AND (
+               credit.goal_funded_at IS NULL
+               OR survivor_gift.recorded_at IS NULL
+               OR survivor_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
+         AND (
+           EXISTS (
+             SELECT 1 FROM message_repayment AS settled
+             WHERE settled.message_id = credit.id
+           )
+           OR EXISTS (
+             SELECT 1 FROM message_repayment_part AS settled_part
+             WHERE settled_part.message_id = credit.id
+           )
+         )
+       LIMIT 1`,
+      accountParams,
+    );
+    if (settledMergeConflicts.length > 0) {
+      return { ok: false, error: 'repayment_unavailable' };
+    }
+    // A repayment description is settlement metadata and embeds its original
+    // recipient account id. Keep every open reservation that names either
+    // identity on a source-funded credit immutable until it settles or
+    // expires. A payment-hash claim is settled only when the invoice's current
+    // recipient also has the described legacy/part settlement, including an
+    // exact part converted from legacy by an earlier merge; a claim-only
+    // invoice refuses the merge even after the invoice itself expired.
+    const openRepaymentInvoices = await tx.query<OpenRepaymentInvoiceRow>(
+      `SELECT invoice.message_id, invoice.author_account_id, invoice.amount_sats,
+              invoice.payment_hash, invoice.description, invoice.created_at, invoice.pr,
+              invoice.payment_hash IS NOT NULL AND EXISTS (
+                SELECT 1 FROM nostr_zap_payment AS claimed
+                WHERE claimed.payment_hash = lower(invoice.payment_hash)
+              ) AS payment_claimed
+       FROM message_invoice AS invoice
+       JOIN message AS credit ON credit.id = invoice.message_id
+       WHERE invoice.result = 'ok'
+         AND invoice.pr IS NOT NULL
+         AND (
+           invoice.description LIKE 'repay:%'
+           OR invoice.description LIKE 'repayp:%'
+         )
+         AND credit.goal_repayable IS TRUE
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS source_gift
+           WHERE source_gift.message_id = credit.id
+             AND source_gift.payer_account_id = $1::uuid
+             AND (
+               credit.goal_funded_at IS NULL
+               OR source_gift.recorded_at IS NULL
+               OR source_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
+         AND (
+           invoice.author_account_id = $1::uuid
+           OR invoice.author_account_id = $2::uuid
+           OR invoice.description LIKE 'repay:%:' || $1::text
+           OR invoice.description LIKE 'repayp:%:' || $1::text || ':%'
+           OR invoice.description LIKE 'repay:%:' || $2::text
+           OR invoice.description LIKE 'repayp:%:' || $2::text || ':%'
+         )
+       ORDER BY invoice.created_at, invoice.id`,
+      accountParams,
+    );
+    for (const invoice of openRepaymentInvoices) {
+      const whole = parseRepaymentDescription(invoice.description);
+      if (whole === null) {
+        continue;
+      }
+      const claimOnly =
+        invoice.payment_claimed && !(await isHistoricalRepaymentInvoiceSettled(invoice, whole));
+      if (
+        claimOnly ||
+        (!invoice.payment_claimed &&
+          invoiceStillOpen(invoice.pr, new Date(invoice.created_at).getTime(), Date.now()))
+      ) {
+        return { ok: false, error: 'repayment_unavailable' };
+      }
+    }
+    // Part indexes are immutable invoice identity. Include every successfully
+    // issued historical part invoice under its current author: its description
+    // can still name an account merged away earlier, and its receipt can arrive
+    // after expiry. Moving the source recipient/author must not make any
+    // invoice or settled part share a canonical key with the survivor. Keep
+    // this check after the invoice scan so its more specific refusals win.
+    const partKeyCollisions = await tx.query<{ message_id: string }>(
+      `WITH part_invoices AS (
+         SELECT invoice.message_id,
+                invoice.author_account_id AS recipient_account_id,
+                ((matched.parts)[1])::numeric AS day_index,
+                ((matched.parts)[2])::numeric AS part_index
+         FROM message_invoice AS invoice
+         CROSS JOIN LATERAL regexp_match(
+           invoice.description,
+           '^repayp:([0-9]+):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:([0-9]+):([0-9]+):([0-9]+)$',
+           'i'
+         ) AS matched(parts)
+         WHERE invoice.result = 'ok'
+           AND (
+             invoice.author_account_id = $1::uuid
+             OR invoice.author_account_id = $2::uuid
+           )
+           AND ((matched.parts)[2])::numeric <= 9007199254740991::numeric
+           AND ((matched.parts)[3])::numeric > 0::numeric
+           AND ((matched.parts)[4])::numeric > 0::numeric
+       ), part_keys AS (
+         SELECT settled.message_id, settled.recipient_account_id,
+                settled.day_index::numeric AS day_index,
+                settled.part_index::numeric AS part_index
+         FROM message_repayment_part AS settled
+         WHERE settled.recipient_account_id = $1::uuid
+            OR settled.recipient_account_id = $2::uuid
+         UNION ALL
+         SELECT message_id, recipient_account_id, day_index, part_index
+         FROM part_invoices
+       )
+       SELECT source.message_id
+       FROM part_keys AS source
+       JOIN part_keys AS survivor
+         ON survivor.message_id = source.message_id
+        AND survivor.day_index = source.day_index
+        AND survivor.part_index = source.part_index
+       WHERE source.recipient_account_id = $1::uuid
+         AND survivor.recipient_account_id = $2::uuid
+       LIMIT 1`,
+      accountParams,
+    );
+    if (partKeyCollisions.length > 0) {
+      return { ok: false, error: 'repayment_unavailable' };
+    }
+    // A late receipt is checked against the invoice author's current wallet.
+    // Because message_invoice does not persist the provider pubkey used at
+    // issuance, moving either identity would make an unsettled historical
+    // invoice unverifiable. Refuse it regardless of expiry or claim state.
+    // Exact legacy and part settlements, including a deterministically converted
+    // legacy settlement, are safe and do not block the merge.
+    const historicalRepaymentInvoices = await tx.query<HistoricalRepaymentInvoiceRow>(
+      `SELECT historical.message_id, historical.author_account_id,
+              historical.amount_sats, historical.description
+       FROM message_invoice AS historical
+       JOIN message AS credit ON credit.id = historical.message_id
+       WHERE credit.goal_repayable IS TRUE
+         AND historical.result = 'ok'
+         AND (
+           historical.description LIKE 'repay:%'
+           OR historical.description LIKE 'repayp:%'
+         )
+         AND (
+           historical.author_account_id = $1::uuid
+           OR historical.author_account_id = $2::uuid
+           OR historical.description LIKE 'repay:%:' || $1::text
+           OR historical.description LIKE 'repayp:%:' || $1::text || ':%'
+           OR historical.description LIKE 'repay:%:' || $2::text
+           OR historical.description LIKE 'repayp:%:' || $2::text || ':%'
+         )
+       ORDER BY historical.created_at, historical.id`,
+      accountParams,
+    );
+    for (const historical of historicalRepaymentInvoices) {
+      const whole = parseRepaymentDescription(historical.description);
+      if (whole !== null && !(await isHistoricalRepaymentInvoiceSettled(historical, whole))) {
+        return { ok: false, error: 'repayment_unavailable' };
+      }
+    }
+    const legacyRepayments = await tx.query<LegacyRepaymentRow>(
+      `SELECT legacy.message_id, legacy.day_index, legacy.recipient_account_id,
+              legacy.due_sats, legacy.paid_at, message.goal_currency,
+              COALESCE(NULLIF(message.goal_amount_text, ''), message.goal_amount::text) AS goal_amount,
+              message.goal_term_days, message.goal_debt_frozen
+       FROM message_repayment AS legacy
+       JOIN message ON message.id = legacy.message_id
+       WHERE legacy.recipient_account_id = $1::uuid
+          OR legacy.recipient_account_id = $2::uuid
+       ORDER BY legacy.message_id, legacy.day_index, legacy.recipient_account_id
+       FOR UPDATE OF legacy, message`,
+      accountParams,
+    );
+    const canonicalLegacy: Array<LegacyRepaymentRow & { units: bigint }> = [];
+    for (const legacy of legacyRepayments) {
+      const units = await legacyRepaymentUnits(repaymentStore, legacy);
+      if (units === undefined) {
+        return { ok: false, error: 'repayment_unavailable' };
+      }
+      canonicalLegacy.push({ ...legacy, units });
+    }
+    for (const legacy of canonicalLegacy) {
+      // Use the same store history and index rule as invoice minting. In
+      // particular, invoice ownership follows its current author, while both
+      // identities still share one namespace before the account move below.
+      const parts = await repaymentStore.listRepaymentParts(legacy.message_id);
+      const attempts = await repaymentStore.listInvoiceAttemptsForMessage(legacy.message_id);
+      const partIndex = nextRepaymentPartIndex(
+        Number(legacy.day_index),
+        accountParams,
+        parts,
+        attempts,
+      );
+      await tx.query(
+        `INSERT INTO message_repayment_part (
+           message_id, day_index, recipient_account_id, part_index, units, sats, paid_at
+         )
+         VALUES (
+           $1::uuid, $2::integer, $3::uuid, $4::integer,
+           $5::bigint, $6::bigint, $7::timestamptz
+         )`,
+        [
+          legacy.message_id,
+          Number(legacy.day_index),
+          legacy.recipient_account_id,
+          partIndex,
+          legacy.units.toString(),
+          legacy.due_sats,
+          legacy.paid_at,
+        ],
+      );
+      await tx.query(
+        `DELETE FROM message_repayment
+         WHERE message_id = $1::uuid
+           AND day_index = $2::integer
+           AND recipient_account_id = $3::uuid`,
+        [legacy.message_id, Number(legacy.day_index), legacy.recipient_account_id],
+      );
+    }
 
     await tx.query('UPDATE account SET profile_message_id = NULL WHERE id = $1', [input.from]);
 
@@ -320,17 +853,28 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
 
+    // Frozen fiat debt follows the person. When both ids gave to the same
+    // credit, keep one snapshot whose units are the exact sum of both rows.
     await tx.query(
-      `DELETE FROM message_repayment AS src
-       USING message_repayment AS dst
-       WHERE src.recipient_account_id = $1
-         AND dst.recipient_account_id = $2
-         AND dst.message_id = src.message_id
-         AND dst.day_index = src.day_index`,
+      `INSERT INTO message_credit_payer_snapshot (message_id, account_id, currency, units)
+       SELECT message_id, $2::uuid, MIN(currency), SUM(units)::bigint
+       FROM message_credit_payer_snapshot
+       WHERE account_id = $1 OR account_id = $2
+       GROUP BY message_id
+       HAVING BOOL_OR(account_id = $1)
+       ON CONFLICT (message_id, account_id) DO UPDATE
+       SET currency = EXCLUDED.currency,
+           units = EXCLUDED.units`,
       accountParams,
     );
+    await tx.query('DELETE FROM message_credit_payer_snapshot WHERE account_id = $1', [input.from]);
+
+    // Part indexes are encoded into repayment invoices and remain immutable.
+    // The collision check above makes the direct recipient move safe.
     await tx.query(
-      'UPDATE message_repayment SET recipient_account_id = $2 WHERE recipient_account_id = $1',
+      `UPDATE message_repayment_part
+       SET recipient_account_id = $2::uuid
+       WHERE recipient_account_id = $1::uuid`,
       accountParams,
     );
 

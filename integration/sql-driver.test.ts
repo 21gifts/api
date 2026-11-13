@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { SQL } from 'bun';
 import { describe, expect, spyOn, test } from 'bun:test';
+import { Hono } from 'hono';
 import { mergeAccounts, type MergeDb, type MergeTx } from '@/lib/account-merge';
 import {
   backfillSparkAddresses,
@@ -11,6 +12,7 @@ import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import type { PasskeyChallenge, PendingRecovery } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
+import { repaymentDescription, repaymentPartDescription } from '@/lib/credit-repayment';
 import {
   linkDailyRosterAccounts,
   migrateDailyRosterSchema,
@@ -28,7 +30,7 @@ import { migrateDbChangeSchema } from '@/lib/db-change';
 import { DEBUG_DB_PAGE_SIZE, PostgresDebugDbStore } from '@/lib/debug-db';
 import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { NOT_PAYABLE, serializeMessage, unsignedNostrDefaults } from '@/lib/message';
-import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
+import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
 import { migrateBannerSchema } from '@/lib/banner-store';
 import { migrateConversationSchema } from '@/lib/conversation-store';
 import { migrateNotificationSchema } from '@/lib/notification-store';
@@ -78,7 +80,9 @@ import {
 import { isListedShop } from '@/lib/shop-place';
 import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
 import { signEventForShop } from '@/lib/nostr/sign';
+import { manualReceiptIdForPaymentHash, settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { ForumPhoto, MessageRow } from '@/lib/message';
+import { messagesRoutes } from '@/routes/messages';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -4241,6 +4245,136 @@ describe('PostgresMessageStore loan ledger fiat', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('early fiat close endpoint includes earlier-microsecond receipts in its response', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const authorId = crypto.randomUUID();
+    const payerId = crypto.randomUUID();
+    const loanId = crypto.randomUUID();
+    const receiptId = `receipt-${crypto.randomUUID()}`;
+    const unassignedReceiptId = `receipt-${crypto.randomUUID()}`;
+    let ready = false;
+    try {
+      await migrateAuthSchema(client);
+      await migrateBtcUsdSchema(client);
+      await migrateFiatSchema(client);
+      await migrateMessageSchema(client);
+      await migrateShopIdentitySchema(client);
+      ready = true;
+      const auth = new PostgresAuthStore(client);
+      const nowMs = Date.now();
+      for (const [id, suffix] of [
+        [authorId, 'a'],
+        [payerId, 'b'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: `02${id.replaceAll('-', '').padEnd(64, suffix)}`,
+          role: 'verified',
+          name: suffix,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+          createdAt: nowMs,
+          rulesAgreedAt: nowMs,
+        });
+      }
+      const sessionToken = `close-${crypto.randomUUID()}`;
+      await auth.createSession({ token: sessionToken, accountId: authorId, createdAt: nowMs });
+      const store = new PostgresMessageStore(client);
+      await store.create({
+        id: loanId,
+        accountId: authorId,
+        name: 'Ada',
+        text: 'microsecond close',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 1_000,
+        goalCurrency: 'USD',
+        goalAmount: '10.00',
+        goalRepayable: true,
+        goalTermDays: 1,
+      });
+      expect(await store.recordZapReceipt(receiptId, loanId, 100, null)).toBe(true);
+      await store.updateZapReceiptGift(receiptId, { payerAccountId: payerId });
+      expect(await store.recordZapReceipt(unassignedReceiptId, loanId, 7, null)).toBe(true);
+      await store.recordZapIngest({
+        id: crypto.randomUUID(),
+        createdAt: new Date(),
+        receiptId,
+        noteEventId: null,
+        messageId: loanId,
+        outcome: 'indexed',
+        reason: null,
+        amountSats: 100,
+        amountUsd: '1.23',
+        receiptPubkey: null,
+        receipt: { id: receiptId, kind: 9735 },
+      });
+      await client.execute(
+        `UPDATE nostr_zap_receipt
+         SET recorded_at = '2026-11-11T12:00:00.123456Z'::timestamptz
+         WHERE event_id = $1::text`,
+        [receiptId],
+      );
+      await client.execute(
+        `UPDATE nostr_zap_receipt
+         SET recorded_at = '2026-11-11T12:00:00.123500Z'::timestamptz
+         WHERE event_id = $1::text`,
+        [unassignedReceiptId],
+      );
+      await client.execute(
+        `UPDATE message
+         SET goal_closed_at = '2026-11-11T12:00:00.123789Z'::timestamptz
+         WHERE id = $1::uuid`,
+        [loanId],
+      );
+
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({ store, authStore: auth, now: () => nowMs }),
+      );
+      const response = await app.request(`/messages/${loanId}/repayment/close`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${sessionToken}` },
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        collectedSats: 107,
+        collectedAmount: '1.23',
+      });
+      const snapshot = await client.query<{
+        units: string;
+        funded_at: string;
+        closed_at: string;
+      }>(
+        `SELECT snapshot.units::text AS units,
+                message.goal_funded_at::text AS funded_at,
+                message.goal_closed_at::text AS closed_at
+         FROM message_credit_payer_snapshot AS snapshot
+         JOIN message ON message.id = snapshot.message_id
+         WHERE snapshot.message_id = $1::uuid AND snapshot.account_id = $2::uuid`,
+        [loanId, payerId],
+      );
+      expect(snapshot).toEqual([
+        expect.objectContaining({
+          units: '123',
+          funded_at: expect.stringContaining('.123789'),
+          closed_at: expect.stringContaining('.123789'),
+        }),
+      ]);
+    } finally {
+      if (ready) {
+        await client.execute('DELETE FROM auth_session WHERE account_id = $1::uuid', [authorId]);
+        await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1', [receiptId]);
+        await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1', [loanId]);
+        await client.execute('DELETE FROM message WHERE id = $1', [loanId]);
+        await client.execute('DELETE FROM account WHERE id = $1 OR id = $2', [authorId, payerId]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 /** Every table `mergeAccounts` names, so the merge runs end to end. */
@@ -4260,6 +4394,626 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateWalletSchema(client);
   await migrateDailyRosterSchema(client);
 }
+
+describe('Postgres zap settlement during account merge', () => {
+  test('a merge completed after invoice lookup attributes the receipt to the survivor', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const authorId = crypto.randomUUID();
+    const fromId = crypto.randomUUID();
+    const intoId = crypto.randomUUID();
+    const loanId = crypto.randomUUID();
+    const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
+    const receiptId = manualReceiptIdForPaymentHash(paymentHash);
+    let ready = false;
+    let releaseSettlement = (): void => undefined;
+    const settlementGate = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
+    });
+    let reachedLock = (): void => undefined;
+    const beforeLock = new Promise<void>((resolve) => {
+      reachedLock = resolve;
+    });
+    try {
+      await migrateMergeTables(client);
+      ready = true;
+      const auth = new PostgresAuthStore(client);
+      for (const [id, suffix] of [
+        [authorId, 'a'],
+        [fromId, 'b'],
+        [intoId, 'c'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'verified',
+          name: suffix,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        });
+      }
+      class PausedBeforeLockStore extends PostgresMessageStore {
+        override async withMessageLock<T>(
+          messageId: string,
+          run: (store: MessageStore) => Promise<T>,
+        ): Promise<T> {
+          reachedLock();
+          await settlementGate;
+          return super.withMessageLock(messageId, run);
+        }
+      }
+      const store = new PausedBeforeLockStore(client);
+      await store.create({
+        id: loanId,
+        accountId: authorId,
+        name: 'Ada',
+        text: 'merge during zap settlement',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 100,
+        goalRepayable: true,
+        goalTermDays: 1,
+      });
+      await store.recordInvoiceAttempt({
+        id: crypto.randomUUID(),
+        createdAt: new Date(),
+        messageId: loanId,
+        payerAccountId: fromId,
+        authorAccountId: authorId,
+        amountSats: 21,
+        lightningAddress: null,
+        zapRequest: null,
+        result: 'ok',
+        httpStatus: 200,
+        pr: `lnbc-merge-settle-${loanId}`,
+        paymentHash,
+        description: null,
+        descriptionHash: null,
+        isNip57Invoice: true,
+        lnurlResponse: null,
+        fiatPinned: true,
+        amountUsd: '0.21',
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+        heart: true,
+      });
+
+      const settling = settleInvoiceManually({
+        store,
+        auth,
+        now: () => Date.parse('2026-11-13T12:00:00.000Z'),
+        paymentHash,
+        note: 'provider receipt missing',
+      });
+      await beforeLock;
+      expect(await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' })).toEqual(
+        expect.objectContaining({ ok: true }),
+      );
+      releaseSettlement();
+      await expect(settling).resolves.toMatchObject({ ok: true, receiptId });
+
+      expect(
+        await client.query<{ payer_account_id: string }>(
+          `SELECT payer_account_id
+           FROM nostr_zap_receipt
+           WHERE event_id = $1::text`,
+          [receiptId],
+        ),
+      ).toEqual([{ payer_account_id: intoId }]);
+    } finally {
+      releaseSettlement();
+      if (ready) {
+        await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1::text', [
+          paymentHash,
+        ]);
+        await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1::text', [
+          receiptId,
+        ]);
+        await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1::uuid', [loanId]);
+        await client.execute('DELETE FROM message WHERE id = $1::uuid', [loanId]);
+        await client.execute(
+          'DELETE FROM account WHERE id = $1::uuid OR id = $2::uuid OR id = $3::uuid',
+          [authorId, fromId, intoId],
+        );
+      }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('Postgres repayment retry after account merge', () => {
+  test('an expired unpaid invoice refuses merging its sole giver into an account without a wallet', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const authorId = crypto.randomUUID();
+    const fromId = crypto.randomUUID();
+    const intoId = crypto.randomUUID();
+    const loanId = crypto.randomUUID();
+    const sourceReceiptId = `receipt-${crypto.randomUUID()}`;
+    const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
+    let ready = false;
+    try {
+      await migrateMergeTables(client);
+      ready = true;
+      const auth = new PostgresAuthStore(client);
+      for (const [id, suffix] of [
+        [authorId, 'a'],
+        [fromId, 'b'],
+        [intoId, 'c'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'verified',
+          name: suffix,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        });
+      }
+      const store = new PostgresMessageStore(client);
+      await store.create({
+        id: loanId,
+        accountId: authorId,
+        name: 'Ada',
+        text: 'expired unpaid invoice on a sole-giver credit',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 100,
+        goalRepayable: true,
+        goalTermDays: 1,
+        goalFundedAt: new Date('2099-01-01T00:00:00.000Z'),
+      });
+      expect(await store.recordZapReceipt(sourceReceiptId, loanId, 100, null)).toBe(true);
+      await store.updateZapReceiptGift(sourceReceiptId, { payerAccountId: fromId });
+      await store.recordInvoiceAttempt({
+        id: crypto.randomUUID(),
+        createdAt: new Date('2020-01-01T00:00:00.000Z'),
+        messageId: loanId,
+        payerAccountId: authorId,
+        authorAccountId: fromId,
+        amountSats: 100,
+        lightningAddress: 'merged-away@example.test',
+        zapRequest: null,
+        result: 'ok',
+        httpStatus: 200,
+        pr: `lnbc-expired-sole-giver-${loanId}`,
+        paymentHash,
+        description: repaymentDescription(0, fromId),
+        descriptionHash: null,
+        isNip57Invoice: true,
+        lnurlResponse: null,
+      });
+
+      expect(await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' })).toEqual({
+        ok: false,
+        error: 'repayment_unavailable',
+      });
+      expect(await auth.getAccount(fromId)).toBeDefined();
+      expect(await auth.getAccount(intoId)).toBeDefined();
+      expect((await auth.getAccount(intoId))?.sparkPubkey).toBeNull();
+    } finally {
+      if (ready) {
+        await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1::text', [
+          paymentHash,
+        ]);
+        await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1::text', [
+          sourceReceiptId,
+        ]);
+        await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1::uuid', [loanId]);
+        await client.execute('DELETE FROM message_invoice WHERE message_id = $1::uuid', [loanId]);
+        await client.execute('DELETE FROM message WHERE id = $1::uuid', [loanId]);
+        await client.execute(
+          'DELETE FROM account WHERE id = $1::uuid OR id = $2::uuid OR id = $3::uuid',
+          [authorId, fromId, intoId],
+        );
+      }
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('expired unpaid legacy and part invoices refuse merging two givers', async () => {
+    for (const kind of ['legacy', 'part'] as const) {
+      const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+      const authorId = crypto.randomUUID();
+      const fromId = crypto.randomUUID();
+      const intoId = crypto.randomUUID();
+      const loanId = crypto.randomUUID();
+      const sourceReceiptId = `receipt-${crypto.randomUUID()}`;
+      const survivorReceiptId = `receipt-${crypto.randomUUID()}`;
+      const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
+      let ready = false;
+      try {
+        await migrateMergeTables(client);
+        ready = true;
+        const auth = new PostgresAuthStore(client);
+        for (const [id, suffix] of [
+          [authorId, 'a'],
+          [fromId, 'b'],
+          [intoId, 'c'],
+        ] as const) {
+          await auth.createAccount({
+            id,
+            linkingKey: null,
+            role: 'verified',
+            name: suffix,
+            forumLawsDismissed: false,
+            location: null,
+            viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+            createdAt: 1,
+            rulesAgreedAt: null,
+          });
+        }
+        const store = new PostgresMessageStore(client);
+        await store.create({
+          id: loanId,
+          accountId: authorId,
+          name: 'Ada',
+          text: `expired unpaid ${kind} invoice on a dual-giver credit`,
+          createdAt: new Date(),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+          goalSats: 200,
+          goalRepayable: true,
+          goalTermDays: 1,
+          goalFundedAt: new Date('2099-01-01T00:00:00.000Z'),
+        });
+        expect(await store.recordZapReceipt(sourceReceiptId, loanId, 100, null)).toBe(true);
+        await store.updateZapReceiptGift(sourceReceiptId, { payerAccountId: fromId });
+        expect(await store.recordZapReceipt(survivorReceiptId, loanId, 100, null)).toBe(true);
+        await store.updateZapReceiptGift(survivorReceiptId, { payerAccountId: intoId });
+        await store.recordInvoiceAttempt({
+          id: crypto.randomUUID(),
+          createdAt: new Date('2020-01-01T00:00:00.000Z'),
+          messageId: loanId,
+          payerAccountId: authorId,
+          authorAccountId: fromId,
+          amountSats: 100,
+          lightningAddress: 'merged-away@example.test',
+          zapRequest: null,
+          result: 'ok',
+          httpStatus: 200,
+          pr: `lnbc-expired-${kind}-${loanId}`,
+          paymentHash,
+          description:
+            kind === 'legacy'
+              ? repaymentDescription(0, fromId)
+              : repaymentPartDescription(0, fromId, 0, 100n, 100n),
+          descriptionHash: null,
+          isNip57Invoice: true,
+          lnurlResponse: null,
+        });
+
+        expect(
+          await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
+        ).toEqual({ ok: false, error: 'repayment_unavailable' });
+        expect(await auth.getAccount(fromId)).toBeDefined();
+        expect(await auth.getAccount(intoId)).toBeDefined();
+      } finally {
+        if (ready) {
+          await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1::text', [
+            paymentHash,
+          ]);
+          await client.execute(
+            'DELETE FROM nostr_zap_ingest WHERE receipt_id = $1::text OR receipt_id = $2::text',
+            [sourceReceiptId, survivorReceiptId],
+          );
+          await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1::uuid', [
+            loanId,
+          ]);
+          await client.execute('DELETE FROM message_invoice WHERE message_id = $1::uuid', [loanId]);
+          await client.execute('DELETE FROM message WHERE id = $1::uuid', [loanId]);
+          await client.execute(
+            'DELETE FROM account WHERE id = $1::uuid OR id = $2::uuid OR id = $3::uuid',
+            [authorId, fromId, intoId],
+          );
+        }
+        await closeIfPossible(sql);
+      }
+    }
+  });
+
+  test('an expired part invoice refuses a merge before it can collide with a legacy payment', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const authorId = crypto.randomUUID();
+    const fromId = crypto.randomUUID();
+    const intoId = crypto.randomUUID();
+    const loanId = crypto.randomUUID();
+    const sourceReceiptId = `receipt-${crypto.randomUUID()}`;
+    const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
+    let ready = false;
+    try {
+      await migrateMergeTables(client);
+      ready = true;
+      const auth = new PostgresAuthStore(client);
+      for (const [id, suffix] of [
+        [authorId, 'a'],
+        [fromId, 'b'],
+        [intoId, 'c'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'verified',
+          name: suffix,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        });
+      }
+      const store = new PostgresMessageStore(client);
+      await store.create({
+        id: loanId,
+        accountId: authorId,
+        name: 'Ada',
+        text: 'expired part before legacy merge',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 100,
+        goalRepayable: true,
+        goalTermDays: 1,
+        goalFundedAt: new Date('2099-01-01T00:00:00.000Z'),
+      });
+      expect(await store.recordZapReceipt(sourceReceiptId, loanId, 100, null)).toBe(true);
+      await store.updateZapReceiptGift(sourceReceiptId, { payerAccountId: fromId });
+      await store.recordInvoiceAttempt({
+        id: crypto.randomUUID(),
+        createdAt: new Date('2020-01-01T00:00:00.000Z'),
+        messageId: loanId,
+        payerAccountId: authorId,
+        authorAccountId: fromId,
+        amountSats: 100,
+        lightningAddress: 'merged-away@example.test',
+        zapRequest: null,
+        result: 'ok',
+        httpStatus: 200,
+        pr: `lnbc-expired-part-${loanId}`,
+        paymentHash,
+        description: repaymentPartDescription(0, fromId, 0, 100n, 100n),
+        descriptionHash: null,
+        isNip57Invoice: true,
+        lnurlResponse: null,
+      });
+      const paidAt = new Date('2026-11-12T12:00:00.000Z');
+      await store.markRepaymentPaid({
+        messageId: loanId,
+        dayIndex: 0,
+        recipientAccountId: fromId,
+        dueSats: 100,
+        paidAt,
+      });
+
+      expect(await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' })).toEqual({
+        ok: false,
+        error: 'repayment_unavailable',
+      });
+      expect(await store.listRepayments(loanId)).toEqual([
+        expect.objectContaining({
+          recipientAccountId: fromId,
+          dueSats: 100,
+          paidAt,
+        }),
+      ]);
+      expect(await store.listRepaymentParts(loanId)).toEqual([]);
+      expect(await auth.getAccount(fromId)).toBeDefined();
+      expect(await auth.getAccount(intoId)).toBeDefined();
+      expect(await store.zapPaymentReceiptId(paymentHash)).toBeUndefined();
+    } finally {
+      if (ready) {
+        await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1::text', [
+          paymentHash,
+        ]);
+        await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1::text', [
+          sourceReceiptId,
+        ]);
+        await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1::uuid', [loanId]);
+        await client.execute('DELETE FROM message_repayment_part WHERE message_id = $1::uuid', [
+          loanId,
+        ]);
+        await client.execute('DELETE FROM message_repayment WHERE message_id = $1::uuid', [loanId]);
+        await client.execute('DELETE FROM message WHERE id = $1::uuid', [loanId]);
+        await client.execute(
+          'DELETE FROM account WHERE id = $1::uuid OR id = $2::uuid OR id = $3::uuid',
+          [authorId, fromId, intoId],
+        );
+      }
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a claim-only retry settles once and converted legacy survives a second merge', async () => {
+    for (const kind of ['legacy', 'part'] as const) {
+      const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+      const authorId = crypto.randomUUID();
+      const fromId = crypto.randomUUID();
+      const intoId = crypto.randomUUID();
+      const finalId = crypto.randomUUID();
+      const loanId = crypto.randomUUID();
+      const receiptId = `receipt-${crypto.randomUUID()}`;
+      const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
+      let ready = false;
+      try {
+        await migrateMergeTables(client);
+        ready = true;
+        const auth = new PostgresAuthStore(client);
+        for (const [id, suffix] of [
+          [authorId, 'a'],
+          [fromId, 'b'],
+          [intoId, 'c'],
+          [finalId, 'd'],
+        ] as const) {
+          await auth.createAccount({
+            id,
+            linkingKey: null,
+            role: 'verified',
+            name: suffix,
+            forumLawsDismissed: false,
+            location: null,
+            viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+            createdAt: 1,
+            rulesAgreedAt: null,
+          });
+        }
+        const store = new PostgresMessageStore(client);
+        await store.create({
+          id: loanId,
+          accountId: authorId,
+          name: 'Ada',
+          text: `${kind} retry`,
+          createdAt: new Date(),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+          goalSats: 100,
+          goalRepayable: true,
+          goalTermDays: 1,
+          goalFundedAt: new Date('2099-01-01T00:00:00.000Z'),
+        });
+        expect(await store.recordZapReceipt(receiptId, loanId, 100, null)).toBe(true);
+        await store.updateZapReceiptGift(receiptId, { payerAccountId: fromId });
+        await store.recordInvoiceAttempt({
+          id: crypto.randomUUID(),
+          createdAt: new Date(),
+          messageId: loanId,
+          payerAccountId: authorId,
+          authorAccountId: fromId,
+          amountSats: 100,
+          lightningAddress: 'merged-away@example.test',
+          zapRequest: null,
+          result: 'ok',
+          httpStatus: 200,
+          pr: `lnbc-${kind}-${loanId}`,
+          paymentHash,
+          description:
+            kind === 'legacy'
+              ? repaymentDescription(0, fromId)
+              : repaymentPartDescription(0, fromId, 0, 100n, 100n),
+          descriptionHash: null,
+          isNip57Invoice: true,
+          lnurlResponse: null,
+        });
+        const paidAt = new Date('2026-11-12T12:00:00.000Z');
+        const settlement: Parameters<PostgresMessageStore['settleRepaymentPayment']>[3] =
+          kind === 'legacy'
+            ? {
+                kind,
+                messageId: loanId,
+                dayIndex: 0,
+                recipientAccountId: fromId,
+                dueSats: 100,
+                paidAt,
+              }
+            : {
+                kind,
+                messageId: loanId,
+                dayIndex: 0,
+                recipientAccountId: fromId,
+                partIndex: 0,
+                units: 100n,
+                sats: 100,
+                shareUnits: 100n,
+                paidAt,
+              };
+        // Reproduce the historical split write: the durable claim committed,
+        // then the repayment-row insert failed.
+        expect(await store.claimZapPayment(paymentHash, receiptId, paidAt)).toBe(true);
+        expect(
+          await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
+        ).toEqual({ ok: false, error: 'repayment_unavailable' });
+        expect(
+          await store.settleRepaymentPayment(paymentHash, receiptId, paidAt, settlement, true),
+        ).toBe(true);
+        expect(
+          await store.settleRepaymentPayment(paymentHash, receiptId, paidAt, settlement, true),
+        ).toBe(true);
+        expect(
+          await client.query<{ n: number }>(
+            `SELECT (
+               (SELECT COUNT(*) FROM message_repayment WHERE message_id = $1::uuid) +
+               (SELECT COUNT(*) FROM message_repayment_part WHERE message_id = $1::uuid)
+             )::integer AS n`,
+            [loanId],
+          ),
+        ).toEqual([{ n: 1 }]);
+        expect(
+          await client.query<{ n: number }>(
+            'SELECT count(*)::int AS n FROM nostr_zap_ingest WHERE receipt_id = $1',
+            [receiptId],
+          ),
+        ).toEqual([{ n: 0 }]);
+
+        expect(
+          await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
+        ).toEqual(expect.objectContaining({ ok: true }));
+        const survivingId = kind === 'legacy' ? finalId : intoId;
+        if (kind === 'legacy') {
+          expect(
+            await mergeAccounts(mergeDb, { from: intoId, into: finalId, verify: 'into' }),
+          ).toEqual(expect.objectContaining({ ok: true }));
+          expect(
+            await client.query<{ n: number }>(
+              `SELECT (
+                 (SELECT COUNT(*) FROM message_repayment WHERE message_id = $1::uuid) +
+                 (SELECT COUNT(*) FROM message_repayment_part WHERE message_id = $1::uuid)
+               )::integer AS n`,
+              [loanId],
+            ),
+          ).toEqual([{ n: 1 }]);
+        }
+        const mergedSettlement = { ...settlement, recipientAccountId: survivingId };
+        // A legacy row is intentionally canonicalized to a part by the merge,
+        // so only the unchanged exact part identity remains an idempotent retry.
+        expect(
+          await store.settleRepaymentPayment(
+            paymentHash,
+            receiptId,
+            paidAt,
+            mergedSettlement,
+            true,
+          ),
+        ).toBe(kind === 'part');
+
+        const rows = await client.query<{ recipient_account_id: string; n: number }>(
+          `SELECT recipient_account_id, count(*)::int AS n
+           FROM message_repayment_part
+           WHERE message_id = $1::uuid
+           GROUP BY recipient_account_id
+           ORDER BY recipient_account_id`,
+          [loanId],
+        );
+        expect(rows).toEqual([{ recipient_account_id: survivingId, n: 1 }]);
+        expect(await auth.getAccount(fromId)).toBeUndefined();
+        expect((await auth.getAccount(intoId)) === undefined).toBe(kind === 'legacy');
+      } finally {
+        if (ready) {
+          await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1', [
+            paymentHash,
+          ]);
+          await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1', [receiptId]);
+          await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1', [loanId]);
+          await client.execute('DELETE FROM message_repayment_part WHERE message_id = $1', [
+            loanId,
+          ]);
+          await client.execute('DELETE FROM message_repayment WHERE message_id = $1', [loanId]);
+          await client.execute('DELETE FROM message WHERE id = $1', [loanId]);
+          await client.execute(
+            'DELETE FROM account WHERE id = $1 OR id = $2 OR id = $3 OR id = $4',
+            [authorId, fromId, intoId, finalId],
+          );
+        }
+        await closeIfPossible(sql);
+      }
+    }
+  });
+});
 
 describe('PostgresShopPaymentStore', () => {
   const hex64 = (): string =>
