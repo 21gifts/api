@@ -158,7 +158,7 @@
 - **Purpose:** Pure aggregation of outbound gifts into the public stats JSON (UTC daily series with gap days and per-day `giftCount` plus `officialCount`, months with gap months, recipients) including BTC strings. `officialCount` is the distinct case-insensitive recipient handles that UTC day with kind `daily` or `welcome` (one person once; moderator excluded; gap days 0). `giftCount` remains every outbound row. Each currency is its own stored string. A missing USD does not discard a stored CHF, EUR, or PHP. A missing currency stays null. No daily close is read. One null does not null the day, the other currencies, or a later cumulative. A day where every row lacks a currency is null for that currency.
 - **Inputs:** `readonly GiftRow[]` (`paidAt`, `amountSats`, `recipientWosUser`, `kind`), ignored `ReadonlyMap<string, string>` of UTC day → USD-per-BTC, optional `ReadonlyMap` of UTC day → USD→CHF/EUR/PHP used only for `fx.quotes`. Empty rows need no rates.
 - **Returns / side effects:** `GiftStats` with `totalBtc`, `totalUsd`, `totalChf`/`totalEur`/`totalPhp`, `fx` (including `fx.quotes`), BTC/USD/fiat on series/buckets, and `spendOverTime[].officialCount` (not on recipient or month buckets). A missing stored amount is JSON `null`, never a throw. Gap days and gap months are zero sats/BTC/`officialCount` and `"0.00"` fiat and do not change a running cumulative. An empty selection stays zeros. No I/O.
-- **Used by:** `giftsStatsRoutes`.
+- **Used by:** `giftsStatsRoutes`, `buildAccountActivity`.
 
 ## Function: giftsForRecipient
 
