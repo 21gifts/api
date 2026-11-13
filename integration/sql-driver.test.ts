@@ -9336,6 +9336,11 @@ describe('PostgresWalletUsageStore', () => {
     const ids: string[] = [];
     const payoutIds: string[] = [];
     const paymentHashes: string[] = [];
+    const messageIds: string[] = [];
+    const receiptIds: string[] = [];
+    // Every inserted text id carries this prefix, so the assertions never read
+    // another run's rows from the shared database.
+    const run = `usage-${crypto.randomUUID()}`;
     let previousPlatform: string | undefined;
     let platformId: string | undefined;
     try {
@@ -9384,9 +9389,32 @@ describe('PostgresWalletUsageStore', () => {
 
       const since = new Date(Date.UTC(2400, 0, 1 + Math.floor(Math.random() * 300), 12, 0, 0));
       const at = (minutes: number): Date => new Date(since.getTime() + minutes * 60_000);
-      const bolt11 = `usage-bolt-${crypto.randomUUID()}`;
-      const sparkInvoice = `usage-spark-${crypto.randomUUID()}`;
-      const owedInvoice = `usage-owed-${crypto.randomUUID()}`;
+      const bolt11 = `${run}-bolt`;
+      const sparkInvoice = `${run}-spark`;
+      const owedInvoice = `${run}-owed`;
+      const forumPr = `${run}-forum-pr`;
+      const invoiceOnlyPr = `${run}-invoice-only-pr`;
+
+      const insertNote = async (
+        accountId: string,
+        hidden: boolean,
+      ): Promise<string> => {
+        const id = crypto.randomUUID();
+        messageIds.push(id);
+        await client.execute(
+          `INSERT INTO message (id, account_id, name, text, created_at, deleted_at)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [
+            id,
+            accountId,
+            'Usage note',
+            `${run} note`,
+            at(0),
+            hidden ? at(5) : null,
+          ],
+        );
+        return id;
+      };
 
       const insertPayment = async (row: {
         accountId: string;
@@ -9398,6 +9426,7 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: Date;
         category: string;
         counterpartyAccountId: string | null;
+        paymentHash: string | null;
         invoice: string | null;
       }): Promise<void> => {
         await client.execute(
@@ -9406,7 +9435,7 @@ describe('PostgresWalletUsageStore', () => {
              method, payment_hash, invoice, destination, description, lnurl_comment,
              category, counterparty_account_id, first_seen_at, updated_at
            ) VALUES (
-             $1,$2,$3,$4,$5,$6,$7,'lightning',NULL,$8,NULL,NULL,NULL,$9,$10,$7,$7
+             $1,$2,$3,$4,$5,$6,$7,'lightning',$8,$9,NULL,NULL,NULL,$10,$11,$7,$7
            )`,
           [
             row.accountId,
@@ -9416,6 +9445,7 @@ describe('PostgresWalletUsageStore', () => {
             row.amountSats,
             row.feeSats,
             row.paidAt,
+            row.paymentHash,
             row.invoice,
             row.category,
             row.counterpartyAccountId,
@@ -9433,13 +9463,13 @@ describe('PostgresWalletUsageStore', () => {
           `INSERT INTO fond_payout (
              id, utc_day, kind, address, amount_usd, comment, status, bolt11, spark_invoice
            ) VALUES ($1, '2400-01-01', 'welcome', $2, '1.00', 'usage', $3, $4, $5)`,
-          [id, `usage-${id}`, status, bolt, spark],
+          [id, `${run}-${id}`, status, bolt, spark],
         );
       };
 
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-g1',
+        paymentId: `${run}-g1`,
         direction: 'out',
         status: 'completed',
         amountSats: 100,
@@ -9447,11 +9477,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(120),
         category: 'unknown',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: shop,
-        paymentId: 'usage-g1',
+        paymentId: `${run}-g1`,
         direction: 'in',
         status: 'completed',
         amountSats: 150,
@@ -9459,11 +9490,13 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(180),
         category: 'shop',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
+      const giftHash = hex64();
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-g2',
+        paymentId: `${run}-g2`,
         direction: 'out',
         status: 'completed',
         amountSats: 40,
@@ -9471,11 +9504,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(240),
         category: 'gift',
         counterpartyAccountId: null,
-        invoice: null,
+        paymentHash: giftHash,
+        invoice: forumPr,
       });
       await insertPayment({
         accountId: memberB,
-        paymentId: 'usage-g2',
+        paymentId: `${run}-g2`,
         direction: 'in',
         status: 'completed',
         amountSats: 40,
@@ -9483,11 +9517,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(250),
         category: 'member',
         counterpartyAccountId: null,
-        invoice: null,
+        paymentHash: giftHash,
+        invoice: forumPr,
       });
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-g3',
+        paymentId: `${run}-g3`,
         direction: 'out',
         status: 'completed',
         amountSats: 12321,
@@ -9495,11 +9530,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(300),
         category: 'member',
         counterpartyAccountId: memberB,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: fund,
-        paymentId: 'usage-g4',
+        paymentId: `${run}-g4`,
         direction: 'in',
         status: 'completed',
         amountSats: 293955,
@@ -9507,11 +9543,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(360),
         category: 'outside_lightning',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-g5',
+        paymentId: `${run}-g5`,
         direction: 'out',
         status: 'completed',
         amountSats: 69089,
@@ -9519,12 +9556,13 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(420),
         category: 'outside_lightning',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayout('paid', bolt11, null);
       await insertPayment({
         accountId: fund,
-        paymentId: 'usage-g6',
+        paymentId: `${run}-g6`,
         direction: 'out',
         status: 'completed',
         amountSats: 1000,
@@ -9532,11 +9570,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(480),
         category: 'shop',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: bolt11,
       });
       await insertPayment({
         accountId: shop,
-        paymentId: 'usage-g6',
+        paymentId: `${run}-g6`,
         direction: 'in',
         status: 'completed',
         amountSats: 1000,
@@ -9544,12 +9583,13 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(490),
         category: 'shop',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayout('paid', null, sparkInvoice);
       await insertPayment({
         accountId: fund,
-        paymentId: 'usage-g7',
+        paymentId: `${run}-g7`,
         direction: 'out',
         status: 'completed',
         amountSats: 500,
@@ -9557,12 +9597,13 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(540),
         category: 'member',
         counterpartyAccountId: memberB,
+        paymentHash: null,
         invoice: sparkInvoice,
       });
       await insertPayout('owed', owedInvoice, null);
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-g8',
+        paymentId: `${run}-g8`,
         direction: 'out',
         status: 'completed',
         amountSats: 7,
@@ -9570,11 +9611,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(600),
         category: 'gift',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: owedInvoice,
       });
       await insertPayment({
         accountId: platformId,
-        paymentId: 'usage-g9',
+        paymentId: `${run}-g9`,
         direction: 'out',
         status: 'completed',
         amountSats: 1,
@@ -9582,11 +9624,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(660),
         category: 'platform',
         counterpartyAccountId: memberB,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-pending',
+        paymentId: `${run}-pending`,
         direction: 'out',
         status: 'pending',
         amountSats: 111,
@@ -9594,11 +9637,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(30),
         category: 'member',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-before',
+        paymentId: `${run}-before`,
         direction: 'out',
         status: 'completed',
         amountSats: 222,
@@ -9606,11 +9650,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(-1),
         category: 'member',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-straddle',
+        paymentId: `${run}-straddle`,
         direction: 'out',
         status: 'completed',
         amountSats: 333,
@@ -9618,11 +9663,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(-1440),
         category: 'unknown',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: memberB,
-        paymentId: 'usage-straddle',
+        paymentId: `${run}-straddle`,
         direction: 'in',
         status: 'completed',
         amountSats: 333,
@@ -9630,11 +9676,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(1440),
         category: 'member',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-unknown',
+        paymentId: `${run}-unknown`,
         direction: 'out',
         status: 'completed',
         amountSats: 9,
@@ -9642,11 +9689,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(720),
         category: 'unknown',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: memberB,
-        paymentId: 'usage-unknown',
+        paymentId: `${run}-unknown`,
         direction: 'in',
         status: 'completed',
         amountSats: 9,
@@ -9654,11 +9702,12 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(730),
         category: 'unknown',
         counterpartyAccountId: null,
+        paymentHash: null,
         invoice: null,
       });
       await insertPayment({
         accountId: memberA,
-        paymentId: 'usage-onchain',
+        paymentId: `${run}-onchain`,
         direction: 'out',
         status: 'completed',
         amountSats: 15,
@@ -9666,6 +9715,94 @@ describe('PostgresWalletUsageStore', () => {
         paidAt: at(780),
         category: 'onchain',
         counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+
+      // Forum-gift classifier cases: each `gift` payment is a forum gift only
+      // when the paid invoice is a living, claimed forum gift or paid heart.
+      const conversationHash = hex64();
+      const repaymentHash = hex64();
+      const hiddenHash = hex64();
+      const heartHash = hex64();
+      const invoiceOnlyHash = hex64();
+      const zapHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-conversation`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 41,
+        feeSats: 0,
+        paidAt: at(840),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: conversationHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-repayment`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 42,
+        feeSats: 0,
+        paidAt: at(850),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: repaymentHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-hidden`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 43,
+        feeSats: 0,
+        paidAt: at(860),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: hiddenHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-heart`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 44,
+        feeSats: 0,
+        paidAt: at(870),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: heartHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-invoice-only`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 45,
+        feeSats: 0,
+        paidAt: at(880),
+        category: 'platform',
+        counterpartyAccountId: platformId,
+        paymentHash: null,
+        invoice: invoiceOnlyPr,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-zap`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 46,
+        feeSats: 0,
+        paidAt: at(890),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: zapHash,
         invoice: null,
       });
 
@@ -9677,32 +9814,38 @@ describe('PostgresWalletUsageStore', () => {
       const forumRepayAt = at(70);
       const forumRepayPartAt = at(80);
       const forumUnpaidAt = at(90);
+      const forumHiddenAt = at(100);
+      const forumInvoiceOnlyAt = at(110);
       const insertForum = async (row: {
         createdAt: Date;
         amountSats: number;
         result: string;
         heart: boolean;
         paymentHash: string | null;
+        pr: string | null;
         description: string | null;
         conversationId: string | null;
+        hiddenNote: boolean;
         paid: boolean;
       }): Promise<void> => {
+        const messageId = await insertNote(memberB, row.hiddenNote);
         await client.execute(
           `INSERT INTO message_invoice (
              id, created_at, message_id, payer_account_id, author_account_id,
-             amount_sats, result, http_status, heart, payment_hash, description,
+             amount_sats, result, http_status, heart, payment_hash, pr, description,
              conversation_id
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,200,$8,$9,$10,$11)`,
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,200,$8,$9,$10,$11,$12)`,
           [
             crypto.randomUUID(),
             row.createdAt,
-            crypto.randomUUID(),
+            messageId,
             memberA,
             memberB,
             row.amountSats,
             row.result,
             row.heart,
             row.paymentHash,
+            row.pr,
             row.description,
             row.conversationId,
           ],
@@ -9714,23 +9857,30 @@ describe('PostgresWalletUsageStore', () => {
           throw new Error('paid forum invoice has no payment hash');
         }
         const storedHash = row.paymentHash.toLowerCase();
+        const receiptEventId = `${run}-receipt-${crypto.randomUUID()}`;
+        receiptIds.push(receiptEventId);
         await client.execute(
           `INSERT INTO nostr_zap_payment (payment_hash, receipt_event_id, created_at)
            VALUES ($1::text, $2::text, $3::timestamptz)`,
-          [storedHash, `usage-receipt-${crypto.randomUUID()}`, row.createdAt],
+          [storedHash, receiptEventId, row.createdAt],
         );
         paymentHashes.push(storedHash);
+        await client.execute(
+          `INSERT INTO nostr_zap_receipt (event_id, message_id, sats, recorded_at)
+           VALUES ($1::text, $2::uuid, $3::bigint, $4::timestamptz)`,
+          [receiptEventId, messageId, row.amountSats, row.createdAt],
+        );
       };
-      const heartHash = hex64();
-      const giftHash = hex64();
       await insertForum({
         createdAt: forumHeartAt,
         amountSats: 21,
         result: 'ok',
         heart: true,
         paymentHash: heartHash.toUpperCase(),
+        pr: null,
         description: null,
         conversationId: null,
+        hiddenNote: false,
         paid: true,
       });
       await insertForum({
@@ -9739,8 +9889,10 @@ describe('PostgresWalletUsageStore', () => {
         result: 'ok',
         heart: false,
         paymentHash: giftHash,
+        pr: forumPr,
         description: null,
         conversationId: null,
+        hiddenNote: false,
         paid: true,
       });
       await insertForum({
@@ -9749,8 +9901,10 @@ describe('PostgresWalletUsageStore', () => {
         result: 'error',
         heart: true,
         paymentHash: hex64(),
+        pr: null,
         description: null,
         conversationId: null,
+        hiddenNote: false,
         paid: true,
       });
       await insertForum({
@@ -9759,8 +9913,10 @@ describe('PostgresWalletUsageStore', () => {
         result: 'ok',
         heart: true,
         paymentHash: hex64(),
+        pr: null,
         description: null,
         conversationId: null,
+        hiddenNote: false,
         paid: true,
       });
       await insertForum({
@@ -9768,9 +9924,11 @@ describe('PostgresWalletUsageStore', () => {
         amountSats: 31,
         result: 'ok',
         heart: true,
-        paymentHash: hex64(),
+        paymentHash: conversationHash,
+        pr: null,
         description: null,
         conversationId: crypto.randomUUID(),
+        hiddenNote: false,
         paid: true,
       });
       await insertForum({
@@ -9778,9 +9936,11 @@ describe('PostgresWalletUsageStore', () => {
         amountSats: 32,
         result: 'ok',
         heart: false,
-        paymentHash: hex64(),
+        paymentHash: repaymentHash,
+        pr: null,
         description: `repay:0:${memberB}`,
         conversationId: null,
+        hiddenNote: false,
         paid: true,
       });
       await insertForum({
@@ -9789,8 +9949,10 @@ describe('PostgresWalletUsageStore', () => {
         result: 'ok',
         heart: false,
         paymentHash: hex64(),
+        pr: null,
         description: `repayp:0:${memberB}:0:21:21`,
         conversationId: null,
+        hiddenNote: false,
         paid: true,
       });
       await insertForum({
@@ -9799,10 +9961,51 @@ describe('PostgresWalletUsageStore', () => {
         result: 'ok',
         heart: true,
         paymentHash: hex64(),
+        pr: null,
         description: null,
         conversationId: null,
+        hiddenNote: false,
         paid: false,
       });
+      await insertForum({
+        createdAt: forumHiddenAt,
+        amountSats: 35,
+        result: 'ok',
+        heart: false,
+        paymentHash: hiddenHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: true,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumInvoiceOnlyAt,
+        amountSats: 45,
+        result: 'ok',
+        heart: false,
+        paymentHash: invoiceOnlyHash,
+        pr: invoiceOnlyPr,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      // A zap receipt gift: claimed hash, living note, no heart invoice.
+      const zapReceiptId = `${run}-zap-receipt`;
+      receiptIds.push(zapReceiptId);
+      const zapNoteId = await insertNote(memberB, false);
+      await client.execute(
+        `INSERT INTO nostr_zap_receipt (event_id, message_id, sats, recorded_at)
+         VALUES ($1::text, $2::uuid, 46, $3::timestamptz)`,
+        [zapReceiptId, zapNoteId, at(890)],
+      );
+      paymentHashes.push(zapHash);
+      await client.execute(
+        `INSERT INTO nostr_zap_payment (payment_hash, receipt_event_id, created_at)
+         VALUES ($1::text, $2::text, $3::timestamptz)`,
+        [zapHash, zapReceiptId, at(890)],
+      );
 
       const shopPaidAt = at(15);
       const shopPendingAt = at(25);
@@ -9838,7 +10041,7 @@ describe('PostgresWalletUsageStore', () => {
       };
       expect(
         ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
-      ).toEqual([1, 7, 9, 15, 40, 150, 500, 1000, 12321, 69089, 293955]);
+      ).toEqual([1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 150, 500, 1000, 12321, 69089, 293955]);
 
       const grouped = byAmount(150);
       expect(grouped).toMatchObject({
@@ -9849,14 +10052,18 @@ describe('PostgresWalletUsageStore', () => {
         payerParty: 'members',
         payeeParty: 'members',
         isFundPayout: false,
+        isForumGift: false,
       });
       expect(grouped.paidAt.toISOString()).toBe(at(120).toISOString());
 
       const gift = byAmount(40);
-      expect(gift.category).toBe('gift');
-      expect(gift.feeSats).toBe(1);
-      expect(gift.payerAccountId).toBe(memberA);
-      expect(gift.payeeAccountId).toBe(memberB);
+      expect(gift).toMatchObject({
+        category: 'gift',
+        feeSats: 1,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+        isForumGift: true,
+      });
       expect(gift.paidAt.toISOString()).toBe(at(240).toISOString());
 
       const transfer = byAmount(12321);
@@ -9867,6 +10074,7 @@ describe('PostgresWalletUsageStore', () => {
         payerParty: 'members',
         payeeParty: 'members',
         isFundPayout: false,
+        isForumGift: false,
       });
 
       const outsideFund = byAmount(293955);
@@ -9877,6 +10085,7 @@ describe('PostgresWalletUsageStore', () => {
         payerParty: 'outside',
         payeeParty: 'fund',
         isFundPayout: false,
+        isForumGift: false,
       });
 
       const withdrawal = byAmount(69089);
@@ -9888,6 +10097,7 @@ describe('PostgresWalletUsageStore', () => {
         payerParty: 'members',
         payeeParty: 'outside',
         isFundPayout: false,
+        isForumGift: false,
       });
 
       const boltPayout = byAmount(1000);
@@ -9898,6 +10108,7 @@ describe('PostgresWalletUsageStore', () => {
         payerParty: 'fund',
         payeeParty: 'members',
         isFundPayout: true,
+        isForumGift: false,
       });
       expect(boltPayout.paidAt.toISOString()).toBe(at(480).toISOString());
 
@@ -9908,10 +10119,12 @@ describe('PostgresWalletUsageStore', () => {
         payerParty: 'fund',
         payeeParty: 'members',
         isFundPayout: true,
+        isForumGift: false,
       });
 
       expect(byAmount(7).isFundPayout).toBe(false);
       expect(byAmount(7).category).toBe('gift');
+      expect(byAmount(7).isForumGift).toBe(false);
 
       const platformPayment = byAmount(1);
       expect(platformPayment).toMatchObject({
@@ -9921,10 +10134,22 @@ describe('PostgresWalletUsageStore', () => {
         payeeParty: 'members',
         category: 'platform',
         isFundPayout: false,
+        isForumGift: false,
       });
 
       expect(byAmount(9).category).toBe('unknown');
+      expect(byAmount(9).isForumGift).toBe(false);
       expect(byAmount(15).category).toBe('onchain');
+
+      // Only a paid forum gift or paid heart on a living note is `isForumGift`.
+      expect(byAmount(41).isForumGift).toBe(false);
+      expect(byAmount(42).isForumGift).toBe(false);
+      expect(byAmount(43).isForumGift).toBe(false);
+      expect(byAmount(44).isForumGift).toBe(true);
+      expect(byAmount(45).isForumGift).toBe(true);
+      expect(byAmount(45).category).toBe('platform');
+      expect(byAmount(46).isForumGift).toBe(true);
+      expect(byAmount(46).category).toBe('gift');
 
       const forum = await store.forumInvoices(since.getTime());
       const forumAt = (createdAt: Date) =>
@@ -9939,12 +10164,22 @@ describe('PostgresWalletUsageStore', () => {
         amountSats: 5,
         heart: false,
       });
+      expect(forumAt(forumInvoiceOnlyAt)).toEqual({
+        createdAt: forumInvoiceOnlyAt,
+        amountSats: 45,
+        heart: false,
+      });
       expect(forumAt(forumErrorAt)).toBeUndefined();
       expect(forumAt(forumOldAt)).toBeUndefined();
       expect(forumAt(forumConversationAt)).toBeUndefined();
       expect(forumAt(forumRepayAt)).toBeUndefined();
       expect(forumAt(forumRepayPartAt)).toBeUndefined();
       expect(forumAt(forumUnpaidAt)).toBeUndefined();
+      expect(forumAt(forumHiddenAt)).toBeUndefined();
+      expect(forum.every((row) => row.createdAt.getTime() >= since.getTime())).toBe(true);
+      expect(forum.map((row) => row.amountSats).sort((left, right) => left - right)).toEqual([
+        5, 21, 45,
+      ]);
 
       const charges = await store.shopCharges(since.getTime());
       const chargeAt = (createdAt: Date) =>
@@ -9952,7 +10187,13 @@ describe('PostgresWalletUsageStore', () => {
       expect(chargeAt(shopPaidAt)?.status).toBe('paid');
       expect(chargeAt(shopPendingAt)?.status).toBe('pending');
       expect(chargeAt(shopOldAt)).toBeUndefined();
+      expect(charges.every((row) => row.createdAt.getTime() >= since.getTime())).toBe(true);
     } finally {
+      if (receiptIds.length > 0) {
+        await client.execute(`DELETE FROM nostr_zap_receipt WHERE event_id = ANY($1::text[])`, [
+          postgresTextArrayLiteral(receiptIds),
+        ]);
+      }
       if (ids.length > 0) {
         const idList = postgresTextArrayLiteral(ids);
         await client.execute(
@@ -9966,12 +10207,16 @@ describe('PostgresWalletUsageStore', () => {
            WHERE payer_account_id = ANY($1::uuid[]) OR author_account_id = ANY($1::uuid[])`,
           [idList],
         );
-        if (paymentHashes.length > 0) {
-          await client.execute(
-            `DELETE FROM nostr_zap_payment WHERE payment_hash = ANY($1::text[])`,
-            [postgresTextArrayLiteral(paymentHashes)],
-          );
-        }
+      }
+      if (paymentHashes.length > 0) {
+        await client.execute(`DELETE FROM nostr_zap_payment WHERE payment_hash = ANY($1::text[])`, [
+          postgresTextArrayLiteral(paymentHashes),
+        ]);
+      }
+      if (messageIds.length > 0) {
+        await client.execute(`DELETE FROM message WHERE id = ANY($1::uuid[])`, [
+          postgresTextArrayLiteral(messageIds),
+        ]);
       }
       if (payoutIds.length > 0) {
         await client.execute(`DELETE FROM fond_payout WHERE id = ANY($1::uuid[])`, [
