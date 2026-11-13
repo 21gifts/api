@@ -101,6 +101,7 @@ import {
   repairWalletPaymentPairs,
   type WalletStore,
 } from '@/lib/wallet-store';
+import { PostgresWalletUsageStore, type WalletUsageStore } from '@/lib/wallet-usage-store';
 import {
   migrateLoginGateSchema,
   PostgresLoginGateStore,
@@ -257,6 +258,12 @@ export interface BootStores {
   /** Public identity key wallets grant to the deployment viewer. */
   walletViewerPublicKey: string | null;
   /**
+   * Postgres-backed wallet-usage reads, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default. Read-only: the
+   * store does not migrate.
+   */
+  usageStore: WalletUsageStore | undefined;
+  /**
    * Postgres-backed member interaction-log events, or `undefined` when no
    * SQL client was opened so `createApp` keeps the empty in-memory default.
    */
@@ -320,6 +327,7 @@ export interface BootFxOptions {
  * {@link InMemoryFondPayoutStore} as `fondPayoutStore`, `bannerStore: undefined`,
  * `sparkInvoiceStore: undefined`,
  * `walletStore: undefined`,
+ * `usageStore: undefined`,
  * `memberEventStore: undefined`,
  * `loginGateStore: undefined`,
  * `listDbChange: undefined`,
@@ -346,6 +354,7 @@ export interface BootFxOptions {
  * {@link PostgresDailyRosterStore}, {@link PostgresFondPayoutStore},
  * {@link PostgresBannerStore},
  * {@link PostgresSparkInvoiceStore}, {@link PostgresWalletStore},
+ * {@link PostgresWalletUsageStore} (read-only; no migration),
  * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek` and `RECOVERY_SHARE_KEK` into
  * `recoveryShareKek` right after the auth migration, constructs {@link PostgresBtcUsdStore} and
@@ -463,6 +472,7 @@ export async function openBootStores(
       welcomeInvoiceReservationStore: undefined,
       sparkViewer: memoryViewer?.viewer,
       walletViewerPublicKey: memoryViewer?.publicKey ?? null,
+      usageStore: undefined,
       memberEventStore: undefined,
       loginGateStore: undefined,
     };
@@ -733,6 +743,7 @@ export async function openBootStores(
     welcomeInvoiceReservationStore: new PostgresWelcomeInvoiceReservationStore(sqlClient),
     sparkViewer: sparkViewerKey.viewer,
     walletViewerPublicKey: sparkViewerKey.publicKey,
+    usageStore: new PostgresWalletUsageStore(sqlClient),
     memberEventStore: new PostgresMemberEventStore(sqlClient),
     loginGateStore: new PostgresLoginGateStore(sqlClient),
   };
