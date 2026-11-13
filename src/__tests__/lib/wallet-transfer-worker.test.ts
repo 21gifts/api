@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Account } from '@/lib/auth/store';
-import type { SparkViewerTransfer } from '@/lib/spark-viewer';
+import type { SparkViewerTokenOwnerPage, SparkViewerTransfer } from '@/lib/spark-viewer';
 import type { WalletTransferRecord, WalletTransferStore } from '@/lib/wallet-transfer-store';
-import { runWalletTransferTick, startWalletTransferWorker } from '@/lib/wallet-transfer-worker';
+import {
+  runWalletTransferTick,
+  startWalletTransferWorker,
+  type WalletTransferWorkerDeps,
+} from '@/lib/wallet-transfer-worker';
 
 const OWNER = `02${'a'.repeat(64)}`;
 const SHOP = `03${'b'.repeat(64)}`;
@@ -104,6 +108,7 @@ describe('runWalletTransferTick', () => {
       rawCount: 100,
       ownerResolution: {
         next: async () => ({ transactions: [], done: true }),
+        discard: vi.fn(),
       },
     }));
     const recordBalance = vi.fn(async () => undefined);
@@ -222,8 +227,13 @@ describe('runWalletTransferTick', () => {
     const recordBalance = vi.fn(async () => undefined);
     const balance = vi.fn(async () => 34);
     const ping = vi.fn(async () => undefined);
+    const discard = vi.fn();
+    const retryNext = vi.fn<() => Promise<SparkViewerTokenOwnerPage>>(async () => ({
+      transactions: [],
+      done: true,
+    }));
     const next = vi
-      .fn()
+      .fn<() => Promise<SparkViewerTokenOwnerPage>>()
       .mockResolvedValueOnce({
         transactions: [
           {
@@ -247,7 +257,7 @@ describe('runWalletTransferTick', () => {
             // A stuck owner lookup must not hold the rest of the wallet sync.
           }),
       );
-    const pending = runWalletTransferTick({
+    const deps: WalletTransferWorkerDeps = {
       viewer: {
         transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
         tokenTransactions: async () => ({
@@ -268,7 +278,10 @@ describe('runWalletTransferTick', () => {
           hasNextPage: false,
           nextCursor: null,
           rawCount: 1,
-          ownerResolution: { next },
+          ownerResolution:
+            discard.mock.calls.length === 0
+              ? { next, discard }
+              : { next: retryNext, discard: vi.fn() },
         }),
         balance,
       },
@@ -331,24 +344,35 @@ describe('runWalletTransferTick', () => {
         walletTransfers: { hasShopPayment },
       },
       now: () => NOW,
-    });
+    };
 
-    await vi.advanceTimersByTimeAsync(0);
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
     expect(upsertTokenTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ direction: 'in', amount: '21' }),
     );
     expect(upsertTokenTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ direction: 'out', amount: '5' }),
     );
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(balance).toHaveBeenCalledOnce();
+    expect(markFullSync).toHaveBeenCalledOnce();
+
+    const timedOutTick = runWalletTransferTick(deps);
     await vi.advanceTimersByTimeAsync(15_000);
 
-    expect((await pending).size).toBe(0);
+    expect((await timedOutTick).size).toBe(0);
     expect(next).toHaveBeenCalledTimes(2);
+    expect(discard).toHaveBeenCalledOnce();
+    expect(balance).toHaveBeenCalledTimes(2);
+    expect(markFullSync).toHaveBeenCalledTimes(2);
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(retryNext).toHaveBeenCalledOnce();
     expect(hasShopPayment).toHaveBeenCalled();
     expect(ping).toHaveBeenCalledOnce();
-    expect(balance).toHaveBeenCalledOnce();
-    expect(recordBalance).toHaveBeenCalledOnce();
-    expect(markFullSync).toHaveBeenCalledOnce();
+    expect(balance).toHaveBeenCalledTimes(3);
+    expect(recordBalance).toHaveBeenCalledTimes(3);
+    expect(markFullSync).toHaveBeenCalledTimes(3);
   });
 
   it('skips a wallet under backoff and records a safe failure reason', async () => {
@@ -406,6 +430,8 @@ describe('runWalletTransferTick', () => {
   const catchUpRetry = async (recordedKind: 'daily' | 'welcome'): Promise<void> => {
     let now = NOW;
     let payoutRecorded = false;
+    const markFullSync = vi.fn(async () => undefined);
+    const recordBalance = vi.fn(async () => undefined);
     const store: WalletTransferStore = {
       listWallets: async () => [
         { accountId: 'retry-account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
@@ -414,7 +440,7 @@ describe('runWalletTransferTick', () => {
         newestCreatedAt: null,
         oldestPendingCreatedAt: null,
         pendingWithoutCreatedAt: false,
-        lastFullSyncAt: new Date(NOW),
+        lastFullSyncAt: null,
       }),
       upsertTransfer: async () => ({
         inserted: false,
@@ -422,7 +448,7 @@ describe('runWalletTransferTick', () => {
         shopPaymentBecameCompleted: false,
       }),
       upsertTokenTransaction: noTokenWrite,
-      markFullSync: noFullSyncWrite,
+      markFullSync,
       hasShopPayment: async () => true,
     };
     const account = {
@@ -449,7 +475,7 @@ describe('runWalletTransferTick', () => {
         balance: async () => 0,
       },
       transfers: store,
-      balances: { recordBalance: async () => undefined },
+      balances: { recordBalance },
       auth: {
         getAccount: async () => account,
         hasRecoveryShareForVerifiedWallet: async () => true,
@@ -497,8 +523,12 @@ describe('runWalletTransferTick', () => {
     };
 
     expect((await runWalletTransferTick(deps)).size).toBe(0);
-    expect((await runWalletTransferTick(deps)).get(`retry-account\u0000${OWNER}`)).toBe(true);
     expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(recordBalance).toHaveBeenCalledTimes(2);
+    expect(markFullSync).toHaveBeenCalledTimes(2);
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(ping).toHaveBeenCalledTimes(2);
+    now += 120_001;
     expect((await runWalletTransferTick(deps)).size).toBe(0);
     expect(ping).toHaveBeenCalledTimes(3);
     now += 86_400_000;
@@ -511,6 +541,227 @@ describe('runWalletTransferTick', () => {
     'retries a level-triggered catch-up until delivery succeeds, then treats a %s payout as paid for the UTC day',
     catchUpRetry,
   );
+
+  const catchUpTestDeps = (
+    now: () => number,
+    ping: NonNullable<WalletTransferWorkerDeps['ping']['spendPing']>['ping'],
+  ): WalletTransferWorkerDeps => {
+    const account = {
+      id: 'catch-up-retry-account',
+      role: 'verified',
+      username: 'alice',
+      sparkPubkey: OWNER,
+      sparkPubkeyVerifiedAt: NOW,
+      isPlatform: false,
+    } as Account;
+    const store: WalletTransferStore = {
+      listWallets: async () => [
+        { accountId: account.id, sparkPubkey: OWNER, sparkAddress: 'spark1address' },
+      ],
+      syncState: async () => ({
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: new Date(now()),
+      }),
+      upsertTransfer: async () => ({
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      }),
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
+      hasShopPayment: async () => true,
+    };
+    return {
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions: noTokenTransactions,
+        balance: async () => 0,
+      },
+      transfers: store,
+      balances: { recordBalance: async () => undefined },
+      auth: {
+        getAccount: async () => account,
+        hasRecoveryShareForVerifiedWallet: async () => true,
+      },
+      funding: {
+        getByAccountId: async () => ({
+          accountId: account.id,
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: null,
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        }),
+      },
+      gifts: { listOutbound: async () => [] },
+      ping: {
+        spendPing: { ping },
+        lnurlServer: {
+          baseUrl: 'https://lnurl.test',
+          publicBaseUrl: 'https://21.gifts',
+          host: '21.gifts',
+        },
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => 'message',
+          getById: async () => ({ id: 'message', createdAt: new Date(now()) }) as never,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
+        walletTransfers: store,
+      },
+      now,
+    };
+  };
+
+  it('drops a previous UTC day catch-up retry before attempting the new day', async () => {
+    let now = Date.parse('2026-11-12T23:59:30.000Z');
+    const failedAt = now;
+    const ping = vi
+      .fn<NonNullable<WalletTransferWorkerDeps['ping']['spendPing']>['ping']>()
+      .mockResolvedValueOnce({ status: 'failed' })
+      .mockResolvedValue({ status: 'accepted' });
+    const deps = catchUpTestDeps(() => now, ping);
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(ping).toHaveBeenCalledOnce();
+
+    now = Date.parse('2026-11-13T00:00:00.001Z');
+    expect(now - failedAt).toBeLessThan(120_000);
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(ping).toHaveBeenCalledTimes(2);
+  });
+
+  it('exponentially delays a second consecutive catch-up failure', async () => {
+    let now = NOW;
+    const attemptedAt: number[] = [];
+    const ping = vi.fn<NonNullable<WalletTransferWorkerDeps['ping']['spendPing']>['ping']>(
+      async () => {
+        attemptedAt.push(now);
+        return attemptedAt.length <= 2
+          ? ({ status: 'failed' } as const)
+          : ({ status: 'accepted' } as const);
+      },
+    );
+    const deps = catchUpTestDeps(() => now, ping);
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    now += 120_001;
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(ping).toHaveBeenCalledTimes(2);
+
+    now += 120_001;
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(ping).toHaveBeenCalledTimes(2);
+
+    now += 120_000;
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(ping).toHaveBeenCalledTimes(3);
+    expect(attemptedAt[2]! - attemptedAt[1]!).toBeGreaterThan(attemptedAt[1]! - attemptedAt[0]!);
+  });
+
+  it.each([
+    { label: 'Error', failure: new RangeError('unavailable'), reason: 'RangeError' },
+    { label: 'non-Error', failure: 'unavailable', reason: 'unknown' },
+  ])('logs and delays a catch-up retry after a $label failure', async ({ failure, reason }) => {
+    let now = NOW;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store: WalletTransferStore = {
+      listWallets: async () => [
+        { accountId: 'catch-up-account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
+      ],
+      syncState: async () => ({
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: new Date(NOW),
+      }),
+      upsertTransfer: async () => ({
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      }),
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
+      hasShopPayment: vi.fn(async () => true),
+    };
+    const account = {
+      id: 'catch-up-account',
+      role: 'verified',
+      username: 'alice',
+      sparkPubkey: OWNER,
+      sparkPubkeyVerifiedAt: NOW,
+      isPlatform: false,
+    } as Account;
+    const getAccount = vi
+      .fn<(accountId: string) => Promise<Account | undefined>>()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValue(account);
+    const ping = vi.fn(async () => ({ status: 'accepted' as const }));
+    const deps: WalletTransferWorkerDeps = {
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions: noTokenTransactions,
+        balance: async () => 0,
+      },
+      transfers: store,
+      balances: { recordBalance: async () => undefined },
+      auth: {
+        getAccount,
+        hasRecoveryShareForVerifiedWallet: async () => true,
+      },
+      funding: {
+        getByAccountId: async () => ({
+          accountId: account.id,
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: null,
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        }),
+      },
+      gifts: { listOutbound: async () => [] },
+      ping: {
+        spendPing: { ping },
+        lnurlServer: {
+          baseUrl: 'https://lnurl.test',
+          publicBaseUrl: 'https://21.gifts',
+          host: '21.gifts',
+        },
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => 'message',
+          getById: async () => ({ id: 'message', createdAt: new Date(NOW) }) as never,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
+        walletTransfers: store,
+      },
+      now: () => now,
+    };
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(
+      warn.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>),
+    ).toContainEqual(
+      expect.objectContaining({
+        event: 'wallet_transfer.catch_up_failed',
+        accountId: account.id,
+        reason,
+      }),
+    );
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(getAccount).toHaveBeenCalledTimes(1);
+    expect(ping).not.toHaveBeenCalled();
+
+    now += 120_001;
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(getAccount).toHaveBeenCalledTimes(2);
+    expect(ping).toHaveBeenCalledOnce();
+  });
 
   it('continues catch-up eligibility without reading gifts when the account has no username', async () => {
     const store: WalletTransferStore = {
@@ -700,6 +951,28 @@ describe('runWalletTransferTick', () => {
             { senderId: 'sender-shop', receiverId: 'receiver-owner-pending', value: 1 },
           ],
         }),
+        ...(
+          [
+            ['multi-out-cancelled', 5, 7],
+            ['multi-out-expired', 6, 5],
+            ['multi-out-returned', 7, 5],
+          ] as const
+        ).map(([id, aggregateStatus, receiverStatus]) =>
+          transfer({
+            id,
+            status: aggregateStatus,
+            senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
+            receivers: [
+              {
+                id: 'receiver-shop',
+                identityPublicKey: bytes(SHOP),
+                amountSats: 1,
+                status: receiverStatus,
+              },
+            ],
+            leaves: [{ senderId: 'sender-owner', receiverId: 'receiver-shop', value: 1 }],
+          }),
+        ),
         transfer({
           id: 'unrelated',
           senderIdentityPublicKey: bytes(SHOP),
@@ -854,12 +1127,21 @@ describe('runWalletTransferTick', () => {
       status: 'pending',
       amountSats: 2,
     });
+    expect(stored.find((record) => record.transferId === 'multi-out-cancelled')?.status).toBe(
+      'cancelled',
+    );
+    expect(stored.find((record) => record.transferId === 'multi-out-expired')?.status).toBe(
+      'expired',
+    );
+    expect(stored.find((record) => record.transferId === 'multi-out-returned')?.status).toBe(
+      'returned',
+    );
     expect(stored.find((record) => record.transferId === 'self-counterparty')).toMatchObject({
       status: 'completed',
       counterpartyPubkey: OWNER,
       counterpartyPubkeys: [OWNER],
     });
-    expect(stored).toHaveLength(16);
+    expect(stored).toHaveLength(19);
     expect(recordBalance).toHaveBeenCalledOnce();
   });
 

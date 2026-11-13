@@ -125,6 +125,10 @@ import {
 } from '@/lib/config';
 import { InMemorySparkInvoiceStore, type SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
+import {
+  InMemoryWelcomeInvoiceReservationStore,
+  type WelcomeInvoiceReservationStore,
+} from '@/lib/welcome-reservation';
 import type { InvoiceStore } from '@/lib/invoice-store';
 import type { GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
@@ -313,6 +317,8 @@ export interface AppDeps {
   invoiceRateCaps?: InvoiceRateCaps | null;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
+  /** Atomic welcome-exception entitlement reservations (default: in-memory). */
+  welcomeInvoiceReservationStore?: WelcomeInvoiceReservationStore;
   /**
    * Persist proven spend gifts into `gift` (default: no-op). Boot injects
    * {@link SqlGiftRecorder} when `DATABASE_URL` is set.
@@ -687,6 +693,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const replyLimiter = deps.replyLimiter ?? new PostRateLimiter(REPLY_POST_CAPS);
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
+  const welcomeInvoiceReservationStore =
+    deps.welcomeInvoiceReservationStore ?? new InMemoryWelcomeInvoiceReservationStore();
   const giftRecorder = deps.giftRecorder;
 
   const app = new Hono();
@@ -1246,6 +1254,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     invoiceRoutes({
       spendApiToken,
       store: invoiceStore,
+      welcomeReservations: welcomeInvoiceReservationStore,
       walletTransfers: walletTransferStore,
       authStore: store,
       messageStore,
@@ -1275,6 +1284,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(sparkInvoices === undefined ? {} : { freePayments: true }),
       actions: {
         store: invoiceStore,
+        welcomeReservations: welcomeInvoiceReservationStore,
         walletTransfers: walletTransferStore,
         authStore: store,
         messageStore,

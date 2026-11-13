@@ -81,6 +81,7 @@ function receiverStatuses(rows: ReadonlyArray<{ status: number }>): WalletTransf
 function outboundReceiverStatus(
   receivers: ReadonlyArray<{ id: string; status: number }>,
   leaves: ReadonlyArray<{ receiverId: string }>,
+  aggregateStatus: WalletTransferStatus,
 ): WalletTransferStatus {
   const receiverById = new Map(
     receivers.filter((receiver) => receiver.id !== '').map((receiver) => [receiver.id, receiver]),
@@ -90,6 +91,12 @@ function outboundReceiverStatus(
     leaves.every((leaf) => receiverById.get(leaf.receiverId)?.status === 6)
   ) {
     return 'completed';
+  }
+  if (leaves.some((leaf) => receiverById.get(leaf.receiverId)?.status === 7)) {
+    return 'cancelled';
+  }
+  if (aggregateStatus === 'expired' || aggregateStatus === 'returned') {
+    return aggregateStatus;
   }
   return 'pending';
 }
@@ -150,7 +157,7 @@ function normalizedTransfer(
       direction = 'out';
       const leaves = transfer.leaves.filter((leaf) => senderIds.has(leaf.senderId));
       amountSats = safeSum(leaves.map((leaf) => leaf.value));
-      status = outboundReceiverStatus(receivers, leaves);
+      status = outboundReceiverStatus(receivers, leaves, transferStatus(transfer.status));
       counterpartyPubkeys = outboundCounterpartiesOf(receivers, leaves, wallet.sparkPubkey);
       counterpartyPubkey = counterpartyPubkeys[0] ?? null;
     } else if (receiverIds.size > 0) {
@@ -300,6 +307,7 @@ async function syncWallet(
       });
   let cursor: string | undefined;
   const seenTokenCursors = new Set<string>();
+  let ownerLookupAttempted = false;
   for (;;) {
     const page = await timed(
       deps.viewer.tokenTransactions({
@@ -312,16 +320,16 @@ async function syncWallet(
     const seenAt = new Date(deps.now());
     await storeTokenTransactions(deps, wallet, page.transactions, seenAt);
     const ownerResolution = page.ownerResolution;
-    if (ownerResolution !== undefined) {
-      for (;;) {
-        let ownerPage: Awaited<ReturnType<typeof ownerResolution.next>>;
-        try {
-          ownerPage = await timed(ownerResolution.next());
-        } catch {
-          break;
-        }
+    if (ownerResolution !== undefined && !ownerLookupAttempted) {
+      ownerLookupAttempted = true;
+      let ownerPage: Awaited<ReturnType<typeof ownerResolution.next>> | undefined;
+      try {
+        ownerPage = await timed(ownerResolution.next());
+      } catch {
+        ownerResolution.discard();
+      }
+      if (ownerPage !== undefined) {
         await storeTokenTransactions(deps, wallet, ownerPage.transactions, new Date(deps.now()));
-        if (ownerPage.done) break;
       }
     }
     if (
@@ -340,35 +348,49 @@ async function syncWallet(
 
   const catchUpKey = `${wallet.accountId}\u0000${today}`;
   const successful = successfulCatchUpPingsFor(deps.transfers, today);
+  const retries = catchUpPingRetriesFor(deps.transfers, today);
   if (
     !successful.has(catchUpKey) &&
+    (retries.get(catchUpKey)?.retryAt ?? 0) <= deps.now() &&
     (await deps.transfers.hasShopPayment(wallet.accountId, yesterday, today))
   ) {
-    const account = await deps.auth.getAccount(wallet.accountId);
-    if (
-      account !== undefined &&
-      !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
-    ) {
-      const nowMs = deps.now();
-      const payout = await loadPayoutEligibility(
-        deps.funding,
-        deps.auth,
-        account,
-        nowMs,
-        deps.ping.recoveryShareRequiredFrom ?? null,
-        deps.transfers,
-      );
-      if (payout.eligible) {
-        const result = await pingTodayMedia(
-          deps.ping,
+    try {
+      const account = await deps.auth.getAccount(wallet.accountId);
+      if (
+        account !== undefined &&
+        !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
+      ) {
+        const nowMs = deps.now();
+        const payout = await loadPayoutEligibility(
+          deps.funding,
+          deps.auth,
           account,
           nowMs,
-          effectiveStatus(payout.grant, nowMs),
-          true,
+          deps.ping.recoveryShareRequiredFrom ?? null,
+          deps.transfers,
         );
-        if (result === 'failed') throw new Error('Daily catch-up ping failed');
-        if (result === 'sent') successful.add(catchUpKey);
+        if (payout.eligible) {
+          const result = await pingTodayMedia(
+            deps.ping,
+            account,
+            nowMs,
+            effectiveStatus(payout.grant, nowMs),
+            true,
+          );
+          if (result === 'failed') {
+            delayCatchUpRetry(retries, catchUpKey, nowMs);
+          } else if (result === 'sent') {
+            retries.delete(catchUpKey);
+            successful.add(catchUpKey);
+          }
+        }
       }
+    } catch (error) {
+      delayCatchUpRetry(retries, catchUpKey, deps.now());
+      logEvent('wallet_transfer.catch_up_failed', {
+        accountId: wallet.accountId,
+        reason: error instanceof Error ? error.name : 'unknown',
+      });
     }
   }
 
@@ -525,12 +547,39 @@ function tokenPagePrecedes(
 }
 
 const successfulCatchUpPings = new WeakMap<WalletTransferStore, Set<string>>();
+const catchUpPingRetries = new WeakMap<
+  WalletTransferStore,
+  Map<string, { attempts: number; retryAt: number }>
+>();
 
 function successfulCatchUpPingsFor(store: WalletTransferStore, today: string): Set<string> {
   const successes = successfulCatchUpPings.get(store) ?? new Set<string>();
   for (const key of successes) if (!key.endsWith(`\u0000${today}`)) successes.delete(key);
   successfulCatchUpPings.set(store, successes);
   return successes;
+}
+
+function catchUpPingRetriesFor(
+  store: WalletTransferStore,
+  today: string,
+): Map<string, { attempts: number; retryAt: number }> {
+  const retries = catchUpPingRetries.get(store) ?? new Map();
+  for (const key of retries.keys()) if (!key.endsWith(`\u0000${today}`)) retries.delete(key);
+  catchUpPingRetries.set(store, retries);
+  return retries;
+}
+
+function delayCatchUpRetry(
+  retries: Map<string, { attempts: number; retryAt: number }>,
+  key: string,
+  nowMs: number,
+): void {
+  const attempts = (retries.get(key)?.attempts ?? 0) + 1;
+  retries.set(key, {
+    attempts,
+    retryAt:
+      nowMs + Math.min(60 * 60_000, WALLET_TRANSFER_INTERVAL_MS * 2 ** Math.min(attempts, 6)),
+  });
 }
 
 async function hasRecordedPayoutToday(

@@ -98,6 +98,15 @@ describe('InMemoryWalletTransferStore', () => {
         }),
       ),
     ).resolves.toEqual({ inserted: false, updated: false, shopPaymentBecameCompleted: false });
+    await expect(
+      store.upsertTransfer(
+        row({
+          status: 'pending',
+          transferUpdatedAt: new Date('2026-11-12T08:59:59.000Z'),
+          seenAt: new Date('2026-11-12T10:00:00.000Z'),
+        }),
+      ),
+    ).resolves.toEqual({ inserted: false, updated: false, shopPaymentBecameCompleted: false });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(true);
     await expect(store.hasShopPayment('account', '2026-11-10', '2026-11-11')).resolves.toBe(false);
   });
@@ -160,6 +169,58 @@ describe('InMemoryWalletTransferStore', () => {
       oldestPendingTokenCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
       pendingTokenWithoutCreatedAt: true,
     });
+  });
+
+  it('does not let strictly older transfer or token observations regress current state', async () => {
+    const store = new InMemoryWalletTransferStore();
+    await store.upsertTransfer(
+      row({
+        status: 'completed',
+        transferUpdatedAt: new Date('2026-11-12T10:00:00.000Z'),
+        seenAt: new Date('2026-11-12T10:01:00.000Z'),
+      }),
+    );
+    await expect(
+      store.upsertTransfer(
+        row({
+          status: 'pending',
+          transferUpdatedAt: new Date('2026-11-12T09:00:00.000Z'),
+          seenAt: new Date('2026-11-12T11:00:00.000Z'),
+        }),
+      ),
+    ).resolves.toEqual({ inserted: false, updated: false, shopPaymentBecameCompleted: false });
+    await store.upsertTokenTransaction(
+      tokenRow({ status: 'finalized', seenAt: new Date('2026-11-12T10:00:00.000Z') }),
+    );
+    await store.upsertTokenTransaction(
+      tokenRow({ status: 'started', seenAt: new Date('2026-11-12T09:00:00.000Z') }),
+    );
+
+    await expect(store.syncState('account', OWNER)).resolves.toMatchObject({
+      oldestPendingCreatedAt: null,
+      oldestPendingTokenCreatedAt: null,
+    });
+  });
+
+  it('accepts an equal-age substantive transfer change', async () => {
+    const store = new InMemoryWalletTransferStore();
+    await store.upsertTransfer(
+      row({
+        status: 'completed',
+        transferUpdatedAt: new Date('2026-11-12T10:00:00.000Z'),
+        seenAt: new Date('2026-11-12T10:01:00.000Z'),
+      }),
+    );
+
+    await expect(
+      store.upsertTransfer(
+        row({
+          status: 'returned',
+          transferUpdatedAt: new Date('2026-11-12T10:00:00.000Z'),
+          seenAt: new Date('2026-11-12T10:00:00.000Z'),
+        }),
+      ),
+    ).resolves.toEqual({ inserted: false, updated: true, shopPaymentBecameCompleted: false });
   });
 
   it('forces a full reread for a pending row without a creation time', async () => {
@@ -258,7 +319,7 @@ describe('InMemoryWalletTransferStore', () => {
       { counterpartyPubkeys: [MEMBER] },
       { sparkInvoice: 'spark1other' },
       { transferCreatedAt: new Date('2026-11-12T08:00:01.000Z') },
-      { transferUpdatedAt: new Date('2026-11-12T08:00:01.000Z') },
+      { transferUpdatedAt: new Date('2026-11-12T08:01:00.000Z') },
     ];
     for (const change of changes) {
       const store = new InMemoryWalletTransferStore();
@@ -403,6 +464,9 @@ describe('PostgresWalletTransferStore', () => {
     });
     await store.markFullSync('account', OWNER, new Date('2026-11-12T09:00:00.000Z'));
     expect(execute.mock.calls[0]?.[0]).toContain('INSERT INTO wallet_token_transaction');
+    expect(execute.mock.calls[0]?.[0]).toContain(
+      'EXCLUDED.last_seen_at >= wallet_token_transaction.last_seen_at',
+    );
     expect(execute.mock.calls[0]?.[0]).not.toContain('payload');
     expect(execute.mock.calls[0]?.[1]).toContain('256');
     expect(execute.mock.calls[0]?.[1]?.[7]).toBe(
@@ -436,7 +500,20 @@ describe('PostgresWalletTransferStore', () => {
           ] as unknown as T[];
         }
         return [
-          { is_shop_payment: true, counterparty_account_id: 'shop-account' },
+          {
+            wallet_pubkey: OWNER,
+            direction: 'out',
+            type: 'transfer',
+            status: 'completed',
+            amount_sats: 21,
+            counterparty_pubkey: SHOP,
+            counterparty_pubkeys: [SHOP],
+            counterparty_account_id: 'shop-account',
+            spark_invoice: null,
+            transfer_created_at: new Date('2026-11-12T08:00:00.000Z'),
+            transfer_updated_at: new Date('2026-11-12T09:00:00.000Z'),
+            is_shop_payment: true,
+          },
         ] as unknown as T[];
       },
     };
@@ -451,6 +528,9 @@ describe('PostgresWalletTransferStore', () => {
         row({ status: 'completed', transferUpdatedAt: new Date('2026-11-12T09:00:00.000Z') }),
       ),
     ).resolves.toEqual({ inserted: false, updated: true, shopPaymentBecameCompleted: true });
+    expect(vi.mocked(tx.execute).mock.calls[0]?.[0]).toContain(
+      'GREATEST(EXCLUDED.last_seen_at, wallet_transfer.last_seen_at)',
+    );
   });
 
   it('reports inserts, other-wallet fields, and counterparty-only updates from snapshots', async () => {
@@ -483,6 +563,7 @@ describe('PostgresWalletTransferStore', () => {
           ? [mode === 'other-wallet' ? { ...before, wallet_pubkey: MEMBER } : before]
           : [
               {
+                ...before,
                 counterparty_account_id: mode === 'same' ? 'old-shop' : 'new-shop',
                 is_shop_payment: false,
               },

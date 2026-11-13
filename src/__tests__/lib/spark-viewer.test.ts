@@ -822,6 +822,76 @@ describe('Spark viewer SDK value mapping', () => {
     expect(getTokenTransactions).toHaveBeenCalledTimes(4);
   });
 
+  it('discards a never-settling owner lookup instead of reusing it on a later tick', async () => {
+    const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
+    const previousHash = new Uint8Array(32).fill(0x61);
+    const primaryPage = {
+      transactions: [
+        {
+          tokenTransactionHash: new Uint8Array(32).fill(0x62),
+          status: 2,
+          tokenTransaction: {
+            tokenInputs: {
+              $case: 'transferInput',
+              transferInput: {
+                outputsToSpend: [
+                  { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 0 },
+                ],
+              },
+            },
+            tokenOutputs: [
+              { ownerPublicKey: otherKey, tokenAmount: Uint8Array.of(25) },
+              { ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(75) },
+            ],
+          },
+          confirmationMetadata: { spentTokenOutputsMetadata: [{ outputId: 'stuck-spent' }] },
+        },
+      ],
+      pageResponse: null,
+    };
+    getTokenTransactions
+      .mockResolvedValueOnce(primaryPage)
+      .mockImplementationOnce(() => new Promise(() => undefined))
+      .mockResolvedValueOnce(primaryPage)
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: previousHash,
+            status: 2,
+            tokenTransaction: {
+              tokenOutputs: [
+                {
+                  id: 'stuck-spent',
+                  ownerPublicKey: PUBLIC_BYTES,
+                  tokenAmount: Uint8Array.of(100),
+                },
+              ],
+            },
+          },
+        ],
+        pageResponse: null,
+      });
+    const opened = await ensureSparkViewer(undefined, undefined);
+    const first = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark1address',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+    });
+    void first.ownerResolution!.next();
+    first.ownerResolution!.discard();
+
+    const later = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark1address',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+    });
+    expect(later.ownerResolution).not.toBe(first.ownerResolution);
+    await expect(later.ownerResolution!.next()).resolves.toMatchObject({
+      done: true,
+      transactions: [expect.objectContaining({ direction: 'out', amount: '25' })],
+    });
+  });
+
   it('reopens an unfinished lookup when the same SDK page gains an output id', async () => {
     const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
     const previousHash = new Uint8Array(32).fill(0x53);

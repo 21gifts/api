@@ -41,6 +41,10 @@ import {
 } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
 import { accountWelcomed } from '@/lib/welcome-media';
+import {
+  InMemoryWelcomeInvoiceReservationStore,
+  type WelcomeInvoiceReservationStore,
+} from '@/lib/welcome-reservation';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
@@ -64,6 +68,8 @@ export interface InvoiceRouteDeps {
   spendApiToken: string | undefined;
   /** Issued-invoice store. */
   store: InvoiceStore;
+  /** Atomic welcome-exception entitlement leases. */
+  welcomeReservations?: WelcomeInvoiceReservationStore;
   /**
    * Auth store for receiving address → account (by username), passkey,
    * platform, custodial pubkey, and recovery share lookup. Distinct from
@@ -425,6 +431,8 @@ export interface GiftActionDeps {
   walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Issued-invoice store. */
   store: InvoiceStore;
+  /** Atomic welcome-exception entitlement leases. */
+  welcomeReservations?: WelcomeInvoiceReservationStore;
   /** Auth store for receiving address, passkey, platform, and recovery lookups. */
   authStore: InvoiceRouteDeps['authStore'];
   /** Forum store for post, media, gift-reply, and group lookups. */
@@ -482,6 +490,20 @@ export type IssueGiftInvoiceResult =
 export type ProveGiftInvoiceResult =
   | { ok: true; body: { status: 'paid'; id: string; paymentHash: string } }
   | { ok: false; status: 400 | 404 | 409; error: string };
+
+const inMemoryWelcomeReservations = new WeakMap<
+  InvoiceStore,
+  InMemoryWelcomeInvoiceReservationStore
+>();
+
+function welcomeReservationsFor(deps: GiftActionDeps): WelcomeInvoiceReservationStore {
+  if (deps.welcomeReservations !== undefined) return deps.welcomeReservations;
+  const existing = inMemoryWelcomeReservations.get(deps.store);
+  if (existing !== undefined) return existing;
+  const created = new InMemoryWelcomeInvoiceReservationStore();
+  inMemoryWelcomeReservations.set(deps.store, created);
+  return created;
+}
 
 /**
  * One payment-time snapshot for the gift, the forum credit, and the group row.
@@ -876,6 +898,10 @@ async function issueGiftInvoiceLocked(
     ...(input.groupMessageId === undefined ? {} : { groupMessageId: input.groupMessageId }),
   };
   const canonicalWelcome = canonicalWelcomeRequest(welcomeRequest);
+  const welcomeReservations = welcomeReservationsFor(deps);
+  const reservedAt = deps.now();
+  const reservationId = newInvoiceId();
+  let welcomeReservationAccountId: string | undefined;
   let serverPayoutKind: 'welcome' | undefined;
   if (
     await welcomeShopPaymentException(
@@ -884,176 +910,199 @@ async function issueGiftInvoiceLocked(
       welcomeRequest,
     )
   ) {
-    serverPayoutKind = input.serverPayoutKind ?? 'welcome';
+    try {
+      if (
+        await welcomeReservations.reserve(
+          account.id,
+          reservationId,
+          new Date(reservedAt),
+          new Date(reservedAt + GIFT_INVOICE_TTL_MS),
+        )
+      ) {
+        welcomeReservationAccountId = account.id;
+        serverPayoutKind = input.serverPayoutKind ?? 'welcome';
+      }
+    } catch {
+      serverPayoutKind = undefined;
+    }
   }
   const genuineWelcome = serverPayoutKind === 'welcome' && canonicalWelcome;
+  let keepWelcomeReservation = false;
 
-  const { eligible } = await loadPayoutEligibility(
-    fundingStore,
-    deps.authStore,
-    account,
-    deps.now(),
-    deps.recoveryShareRequiredFrom ?? null,
-    genuineWelcome ? undefined : deps.walletTransfers,
-  );
-  if (!eligible) {
-    logEvent('invoice.funding_required', { address });
-    return { ok: false, status: 403, error: 'Funding grant required' };
-  }
+  try {
+    const { eligible } = await loadPayoutEligibility(
+      fundingStore,
+      deps.authStore,
+      account,
+      deps.now(),
+      deps.recoveryShareRequiredFrom ?? null,
+      genuineWelcome ? undefined : deps.walletTransfers,
+    );
+    if (!eligible) {
+      logEvent('invoice.funding_required', { address });
+      return { ok: false, status: 403, error: 'Funding grant required' };
+    }
 
-  // With a groupMessageId the check waits until it is resolved: a resolved
-  // moderator payout is recorded as `moderator`, not as a welcome.
-  if (input.groupMessageId === undefined && (await welcomeRefused())) {
-    logEvent('invoice.welcome_already_paid', { address });
-    return { ok: false, status: 409, error: 'Welcome gift already paid' };
-  }
+    // With a groupMessageId the check waits until it is resolved: a resolved
+    // moderator payout is recorded as `moderator`, not as a welcome.
+    if (input.groupMessageId === undefined && (await welcomeRefused())) {
+      logEvent('invoice.welcome_already_paid', { address });
+      return { ok: false, status: 409, error: 'Welcome gift already paid' };
+    }
 
-  let resolvedGroupMessageId: string | undefined;
-  if (input.messageId !== undefined) {
-    const message = forumMessage;
-    if (
-      message === undefined ||
-      message.deletedAt !== null ||
-      message.parentId !== null ||
-      message.accountId === null ||
-      message.accountId !== account.id
-    ) {
-      logEvent('invoice.forum_post_required', { address });
-      return { ok: false, status: 403, error: 'Forum post required' };
-    }
-    if (
-      message.hasPhoto !== true &&
-      message.hasVideo !== true &&
-      !(Number(message.photoCount) > 0)
-    ) {
-      logEvent('invoice.forum_post_required', { address });
-      return { ok: false, status: 403, error: 'Forum post required' };
-    }
-    const accounts = await deps.authStore.listAccounts();
-    const platform = accounts.find((item) => item.isPlatform === true);
-    if (platform === undefined) {
-      return { ok: false, status: 503, error: 'Platform account is not configured' };
-    }
-  } else {
-    const hasPosted = await accountHasPosted(deps.messageStore, account);
-    if (!hasPosted) {
-      logEvent('invoice.forum_post_required', { address });
-      return { ok: false, status: 403, error: 'Forum post required' };
-    }
-    if (input.groupMessageId !== undefined) {
-      // Display only: a failing lookup must never block the payout.
-      try {
-        const conversationStore = deps.conversationStore;
-        const row =
-          conversationStore === undefined
-            ? undefined
-            : await conversationStore.getMessageById(input.groupMessageId);
-        const thread =
-          conversationStore === undefined || row === undefined
-            ? undefined
-            : await conversationStore.getById(row.conversationId);
-        const accounts = await deps.authStore.listAccounts();
-        const platform = accounts.find((item) => item.isPlatform === true);
-        if (
-          conversationStore !== undefined &&
-          row !== undefined &&
-          thread !== undefined &&
-          thread.kind === 'moderator_group' &&
-          row.senderAccountId === account.id &&
-          !(isModeratorGroupMember(account) && !earnsModeratorGroupPay(account)) &&
-          platform !== undefined
-        ) {
-          resolvedGroupMessageId = input.groupMessageId;
+    let resolvedGroupMessageId: string | undefined;
+    if (input.messageId !== undefined) {
+      const message = forumMessage;
+      if (
+        message === undefined ||
+        message.deletedAt !== null ||
+        message.parentId !== null ||
+        message.accountId === null ||
+        message.accountId !== account.id
+      ) {
+        logEvent('invoice.forum_post_required', { address });
+        return { ok: false, status: 403, error: 'Forum post required' };
+      }
+      if (
+        message.hasPhoto !== true &&
+        message.hasVideo !== true &&
+        !(Number(message.photoCount) > 0)
+      ) {
+        logEvent('invoice.forum_post_required', { address });
+        return { ok: false, status: 403, error: 'Forum post required' };
+      }
+      const accounts = await deps.authStore.listAccounts();
+      const platform = accounts.find((item) => item.isPlatform === true);
+      if (platform === undefined) {
+        return { ok: false, status: 503, error: 'Platform account is not configured' };
+      }
+    } else {
+      const hasPosted = await accountHasPosted(deps.messageStore, account);
+      if (!hasPosted) {
+        logEvent('invoice.forum_post_required', { address });
+        return { ok: false, status: 403, error: 'Forum post required' };
+      }
+      if (input.groupMessageId !== undefined) {
+        // Display only: a failing lookup must never block the payout.
+        try {
+          const conversationStore = deps.conversationStore;
+          const row =
+            conversationStore === undefined
+              ? undefined
+              : await conversationStore.getMessageById(input.groupMessageId);
+          const thread =
+            conversationStore === undefined || row === undefined
+              ? undefined
+              : await conversationStore.getById(row.conversationId);
+          const accounts = await deps.authStore.listAccounts();
+          const platform = accounts.find((item) => item.isPlatform === true);
+          if (
+            conversationStore !== undefined &&
+            row !== undefined &&
+            thread !== undefined &&
+            thread.kind === 'moderator_group' &&
+            row.senderAccountId === account.id &&
+            !(isModeratorGroupMember(account) && !earnsModeratorGroupPay(account)) &&
+            platform !== undefined
+          ) {
+            resolvedGroupMessageId = input.groupMessageId;
+          }
+        } catch {
+          resolvedGroupMessageId = undefined;
         }
-      } catch {
-        resolvedGroupMessageId = undefined;
-      }
-      if (resolvedGroupMessageId === undefined) {
-        logEvent('invoice.group_message_ignored', { address });
+        if (resolvedGroupMessageId === undefined) {
+          logEvent('invoice.group_message_ignored', { address });
+        }
       }
     }
-  }
 
-  if (
-    input.groupMessageId !== undefined &&
-    resolvedGroupMessageId === undefined &&
-    (await welcomeRefused())
-  ) {
-    logEvent('invoice.welcome_already_paid', { address });
-    return { ok: false, status: 409, error: 'Welcome gift already paid' };
-  }
-
-  if (
-    input.comment !== 'Welcome' &&
-    resolvedGroupMessageId === undefined &&
-    deps.gifts !== undefined
-  ) {
-    let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
-    try {
-      outbound = await deps.gifts.listOutbound();
-    } catch {
-      return { ok: false, status: 503, error: 'Gift ledger unreadable' };
-    }
     if (
-      welcomeGiftPaidOnUtcDay(outbound, address, new Date(deps.now()).toISOString().slice(0, 10))
+      input.groupMessageId !== undefined &&
+      resolvedGroupMessageId === undefined &&
+      (await welcomeRefused())
     ) {
-      logEvent('invoice.welcome_paid', { address });
-      return { ok: false, status: 403, error: 'Welcome gift already paid' };
+      logEvent('invoice.welcome_already_paid', { address });
+      return { ok: false, status: 409, error: 'Welcome gift already paid' };
+    }
+
+    if (
+      input.comment !== 'Welcome' &&
+      resolvedGroupMessageId === undefined &&
+      deps.gifts !== undefined
+    ) {
+      let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
+      try {
+        outbound = await deps.gifts.listOutbound();
+      } catch {
+        return { ok: false, status: 503, error: 'Gift ledger unreadable' };
+      }
+      if (
+        welcomeGiftPaidOnUtcDay(outbound, address, new Date(deps.now()).toISOString().slice(0, 10))
+      ) {
+        logEvent('invoice.welcome_paid', { address });
+        return { ok: false, status: 403, error: 'Welcome gift already paid' };
+      }
+    }
+
+    const fetchArgs: {
+      address: string;
+      amountMsat: number;
+      comment?: string;
+      fetchImpl: FetchFn;
+    } = {
+      address: receiver.receiving.address,
+      amountMsat,
+      fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
+    };
+    if (input.comment !== undefined) {
+      fetchArgs.comment = input.comment;
+    }
+    const fetched = await requestGiftInvoice(fetchArgs);
+    if (!fetched.ok) {
+      logEvent('invoice.issue_failed', { address });
+      return { ok: false, status: 502, error: ISSUE_ERROR };
+    }
+
+    const decoded = decodeBolt11(fetched.pr);
+    if (decoded === null || decoded.amountMsat !== amountMsat) {
+      logEvent('invoice.issue_failed', { address });
+      return { ok: false, status: 502, error: ISSUE_ERROR };
+    }
+
+    const now = genuineWelcome ? reservedAt : deps.now();
+    const id = genuineWelcome ? reservationId : newInvoiceId();
+    const invoice: GiftInvoice = {
+      id,
+      address: receiver.receiving.address,
+      pr: fetched.pr,
+      paymentHash: decoded.paymentHash,
+      amountMsat,
+      createdAt: now,
+      expiresAt: now + GIFT_INVOICE_TTL_MS,
+      ...(input.comment === undefined ? {} : { comment: input.comment }),
+      ...(input.messageId === undefined
+        ? {}
+        : { messageId: input.messageId, comment: input.comment ?? '' }),
+      ...(resolvedGroupMessageId === undefined
+        ? {}
+        : { groupMessageId: resolvedGroupMessageId, comment: input.comment ?? '' }),
+      ...(input.comment === 'Welcome' &&
+      input.messageId === undefined &&
+      resolvedGroupMessageId === undefined
+        ? { comment: 'Welcome' }
+        : {}),
+      ...(amountUsd === undefined ? {} : { amountUsd }),
+      ...(welcomeReservationAccountId === undefined ? {} : { welcomeReservationAccountId }),
+    };
+    deps.store.put(invoice);
+    keepWelcomeReservation = true;
+    logEvent('invoice.issued', { id, address, amountMsat });
+    return { ok: true, invoice };
+  } finally {
+    if (welcomeReservationAccountId !== undefined && !keepWelcomeReservation) {
+      await welcomeReservations.release(welcomeReservationAccountId, reservationId);
     }
   }
-
-  const fetchArgs: {
-    address: string;
-    amountMsat: number;
-    comment?: string;
-    fetchImpl: FetchFn;
-  } = {
-    address: receiver.receiving.address,
-    amountMsat,
-    fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
-  };
-  if (input.comment !== undefined) {
-    fetchArgs.comment = input.comment;
-  }
-  const fetched = await requestGiftInvoice(fetchArgs);
-  if (!fetched.ok) {
-    logEvent('invoice.issue_failed', { address });
-    return { ok: false, status: 502, error: ISSUE_ERROR };
-  }
-
-  const decoded = decodeBolt11(fetched.pr);
-  if (decoded === null || decoded.amountMsat !== amountMsat) {
-    logEvent('invoice.issue_failed', { address });
-    return { ok: false, status: 502, error: ISSUE_ERROR };
-  }
-
-  const now = deps.now();
-  const id = newInvoiceId();
-  const invoice: GiftInvoice = {
-    id,
-    address: receiver.receiving.address,
-    pr: fetched.pr,
-    paymentHash: decoded.paymentHash,
-    amountMsat,
-    createdAt: now,
-    expiresAt: now + GIFT_INVOICE_TTL_MS,
-    ...(input.comment === undefined ? {} : { comment: input.comment }),
-    ...(input.messageId === undefined
-      ? {}
-      : { messageId: input.messageId, comment: input.comment ?? '' }),
-    ...(resolvedGroupMessageId === undefined
-      ? {}
-      : { groupMessageId: resolvedGroupMessageId, comment: input.comment ?? '' }),
-    ...(input.comment === 'Welcome' &&
-    input.messageId === undefined &&
-    resolvedGroupMessageId === undefined
-      ? { comment: 'Welcome' }
-      : {}),
-    ...(amountUsd === undefined ? {} : { amountUsd }),
-  };
-  deps.store.put(invoice);
-  logEvent('invoice.issued', { id, address, amountMsat });
-  return { ok: true, invoice };
 }
 
 /**
@@ -1098,6 +1147,9 @@ export async function proveGiftInvoice(
     };
   }
   if (now >= invoice.expiresAt) {
+    if (invoice.welcomeReservationAccountId !== undefined) {
+      await welcomeReservationsFor(deps).release(invoice.welcomeReservationAccountId, invoice.id);
+    }
     return { ok: false, status: 409, error: 'Invoice expired' };
   }
   return { ok: false, status: 400, error: GIFT_PROOF_MISMATCH };

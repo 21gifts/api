@@ -10,7 +10,7 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
 or a round trip through sats does not fill or replace it. This file does not
 describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit; input-owned token direction and amounts, token invoice attachments, verified-only current-wallet counterparty ownership, strict catch-up delivery outcomes, and one About-me-inclusive daily-media definition). Before that, 2026-11-12 (encrypted deployment Spark viewer, direct current/previous-wallet transfer sync, admin wallet-table reads, the server-verified shop-payment grant condition, and the owner-facing single reason for today's grant payout). Earlier decisions remain documented in the Decisions Log and the endpoint sections below.
+**Status**: living document. Last revised 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit; terminal receiver-edge status, bounded/evictable token-owner enrichment, independent catch-up retry, monotone viewer upserts, atomic welcome-invoice entitlement reservations, input-owned token direction and amounts, token invoice attachments, verified-only current-wallet counterparty ownership, and one About-me-inclusive daily-media definition). Before that, 2026-11-12 (encrypted deployment Spark viewer, direct current/previous-wallet transfer sync, admin wallet-table reads, the server-verified shop-payment grant condition, and the owner-facing single reason for today's grant payout). Earlier decisions remain documented in the Decisions Log and the endpoint sections below.
 
 ---
 
@@ -4571,6 +4571,8 @@ record of the value-movement facts those two sources observe or report.
   counterparty key (plus the sorted representative key and its resolved
   current/previous-wallet account cache), optional Spark invoice,
   operator creation/update times, and first/last server observation times.
+  A current row changes only when the incoming observation is not older, using
+  the operator update time with server observation time as fallback.
   Rows are retained; account merge moves them to the survivor like
   `wallet_payment`. If both accounts have this composite key, the survivor row
   keeps the earliest `first_seen_at`, the mutable state and `last_seen_at` from
@@ -4581,6 +4583,7 @@ record of the value-movement facts those two sources observe or report.
   Spark invoice attachment strings, normalized type and status, client creation/expiry times, and
   first/last observation times. Raw SDK rows, signatures, secret keys, commitments,
   and revocation secrets are never stored in this table or `db_change`.
+  Its current row changes only when the incoming server observation is not older.
   A transfer is outgoing only when an input's previous output belongs to this
   wallet; its amount and counterparties are the outputs to other owners.
   Otherwise it is incoming, its amount is the sum of this wallet's outputs,
@@ -4591,6 +4594,9 @@ record of the value-movement facts those two sources observe or report.
   complete history pass. An account-merge duplicate keeps the maximum time.
   It drives the daily full reread and is operational
   state, not a payment-history surface for member sessions.
+- `welcome_invoice_reservation`: one active or expired welcome-exception lease
+  per account. Account merge keeps the later expiry when both sides have one;
+  issue failure or an expired proof deletes the matching lease.
 - `member_event`: one row per accepted event. `id`, `account_id`, `name` (one
   of `MEMBER_EVENT_NAMES`), `at` (client time), `path` (no query or fragment),
   `props` (flat JSON object of scalars), `received_at` (server time of the
@@ -6115,8 +6121,11 @@ edges and the leaves attributed to those edges; participant `amountSats` is
 never an attribution fallback, and deprecated single-party fields are used
 only when both participant lists are empty. Every outgoing recipient reached
 by an attributed leaf is retained; a self-transfer retains the wallet's own
-key. Incoming is completed only when every own receiver edge is completed,
-and receiver cancellation is stored as `cancelled`. The worker also pages
+key. Outgoing is `completed` only when every reached receiver edge is status 6,
+is `cancelled` when any reached receiver is status 7, preserves aggregate
+`expired` / `returned`, and otherwise remains `pending`. Incoming is completed
+only when every own receiver edge is completed, and receiver cancellation is
+stored as `cancelled`. The worker also pages
 `getTokenTransactions` from newest to oldest on every tick, stopping
 incremental passes after their one-hour/pending overlap and performing the
 complete reread once per UTC day. It stores only the explicit non-secret token
@@ -6126,12 +6135,14 @@ revocation secrets are never copied. Incoming and outgoing amounts and
 counterparties follow the `wallet_token_transaction` rules above, and invoice
 attachment strings are stored in `spark_invoices`. Each primary token page is
 stored first; an unresolved input therefore remains incoming. Input-owner
-enrichment then advances one lookup page per independently timed call and keeps
+enrichment then advances at most one lookup page per wallet per tick under its
+own timeout and keeps
 bounded process-local cursor/owner progress across ticks. The cache contains
 only allow-listed transaction facts and the outpoints/output ids required for
 the lookup, never raw SDK rows or revocation/withdrawal secrets. A cursor is
 consumed only after a successful response returns a new non-empty cursor. A
-failure evicts that page's progress so the next tick retries it; a refreshed
+failure or timeout discards the in-flight promise and evicts that page's
+progress so the next tick starts a fresh lookup; a refreshed
 page with new unknown input ids reopens the lookup. Finished and stale entries
 are evicted. An enrichment failure or timeout never prevents token upserts,
 catch-up, the balance snapshot, or the daily full-sync watermark. It normalizes
@@ -6156,13 +6167,16 @@ and a normalized exact USD `1.00`, and `amountMsat` is at most the server's
 The conversion is the same whole-satoshi, half-up conversion used by Fond.
 Without a usable current spot, the exception fails closed and the recent shop
 payment is required. The public body has no payout-kind override;
-the internal `serverPayoutKind` cannot weaken these checks. Those facts are the
-welcome gift's own once-per-account conditions, so a caller can obtain at most
-that one entitlement. A roster `Welcome` with a message id or another amount
+the internal `serverPayoutKind` cannot weaken these checks. Before using the
+exception, the API atomically reserves the account's entitlement in the durable,
+`db_change`-audited `welcome_invoice_reservation` table. A second active request
+remains shop-payment-gated; issue failure or unpaid expiry releases the row. A
+roster `Welcome` with a message id or another amount
 is not the exception. A failed decision reports `no_shop_payment`. On every tick, while
 such a payment is in D-1..D, the member is eligible, today's media exists, and
 no daily payout is recorded today, the worker calls `pingTodayMedia` until a
-delivery is accepted. Failed deliveries enter the existing wallet backoff;
+delivery is accepted. Failed deliveries enter a separate catch-up backoff and
+never delay wallet observation, its balance snapshot, or full-sync watermark;
 skipped deliveries are retried on a later tick without error backoff. Only an
 accepted account/day is remembered in the process. Spend still pays at most once daily.
 
@@ -6912,6 +6926,10 @@ after the passkey and grant checks and before LNURL (with `groupMessageId`,
 after that id is resolved: a resolved moderator payout is recorded as
 `moderator` and is not refused; an ignored id is); the welcome gift is once
 per account, whichever address it went to. Stores `comment` on the invoice whenever it is sent, so a `Welcome` invoice without `messageId` is still recorded as a welcome gift on proof; with `messageId` it stores `messageId` and `comment` (or `''`).
+The shop-payment exception first atomically reserves one active durable
+entitlement row for the account. Concurrent or sequential requests before
+settlement cannot both use the exception. Issue failure and unpaid expiry
+release the reservation; all changes are covered by `db_change`.
 When `groupMessageId` is set (no `messageId`), the living-room post gate
 still applies. The id is display-only: it is stored only when it is that
 address's message in the closed `moderator_group` thread, the sender is not a

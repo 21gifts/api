@@ -5170,6 +5170,27 @@ test('Function: PostgresWalletTransferStore — default boot serves HTTP', async
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
+test('Function: InMemoryWelcomeInvoiceReservationStore — POST /invoices stops at unconfigured spend before reservation', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@example.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: PostgresWelcomeInvoiceReservationStore — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: migrateWelcomeInvoiceReservationSchema — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
 test('Function: runWalletTransferTick — default boot serves HTTP', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

@@ -1145,6 +1145,23 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          )`,
       accountParams,
     );
+    await tx.query(
+      `UPDATE welcome_invoice_reservation AS dst
+       SET reservation_id = CASE WHEN src.expires_at > dst.expires_at THEN src.reservation_id ELSE dst.reservation_id END,
+           created_at = CASE WHEN src.expires_at > dst.expires_at THEN src.created_at ELSE dst.created_at END,
+           expires_at = GREATEST(src.expires_at, dst.expires_at)
+       FROM welcome_invoice_reservation AS src
+       WHERE src.account_id = $1 AND dst.account_id = $2`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM welcome_invoice_reservation AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM welcome_invoice_reservation AS dst WHERE dst.account_id = $2
+         )`,
+      accountParams,
+    );
     // A payment between the two accounts would point at its own account after the merge.
     await tx.query(
       `UPDATE wallet_payment SET counterparty_account_id = NULL

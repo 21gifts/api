@@ -3387,10 +3387,14 @@ describe('POST /invoices/proof', () => {
   });
 
   it('returns 409 when expired unpaid and the preimage does not match', async () => {
-    store.put(unpaid({ expiresAt: 10 }));
+    const release = vi.fn(async () => undefined);
+    store.put(
+      unpaid({ expiresAt: 10, welcomeReservationAccountId: 'welcome-reservation-account' }),
+    );
     const res = await createApp({
       spendApiToken: TOKEN,
       invoiceStore: store,
+      welcomeInvoiceReservationStore: { reserve: async () => false, release },
       now: () => 11,
     }).request(
       '/invoices/proof',
@@ -3401,6 +3405,7 @@ describe('POST /invoices/proof', () => {
     );
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Invoice expired' });
+    expect(release).toHaveBeenCalledWith('welcome-reservation-account', unpaid().id);
   });
 
   it('returns 400 when the preimage does not match', async () => {
@@ -4693,6 +4698,151 @@ describe('GET /invoices/eligible', () => {
     expect(res.status).toBe(200);
     expect(mockedSpot).toHaveBeenCalledWith(fetchImpl);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('reserves the welcome exception before settlement and shop-gates a second invoice', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValue('100000');
+    mockedDecode.mockReturnValue({
+      paymentHash: HASH,
+      amountMsat: ONE_USD_AT_100K_MSAT,
+    });
+    const app = spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    });
+    const request = () =>
+      app.request(
+        '/invoices',
+        auth({
+          method: 'POST',
+          body: JSON.stringify({
+            address: ADDRESS,
+            amountMsat: ONE_USD_AT_100K_MSAT,
+            amountUsd: '1.00',
+            comment: 'Welcome',
+          }),
+        }),
+      );
+
+    const first = await request();
+    expect(first.status).toBe(200);
+    const fetchCallsAfterFirst = fetchImpl.mock.calls.length;
+    const second = await request();
+    expect(second.status).toBe(403);
+    expect(await second.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).toHaveBeenCalledTimes(fetchCallsAfterFirst);
+  });
+
+  it('reuses the fallback welcome reservation store for the same invoice store', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValue('100000');
+    mockedDecode.mockReturnValue({
+      paymentHash: HASH,
+      amountMsat: ONE_USD_AT_100K_MSAT,
+    });
+    const app = new Hono().route(
+      '/invoices',
+      invoiceRoutes({
+        spendApiToken: TOKEN,
+        store: new InMemoryInvoiceStore(),
+        authStore,
+        messageStore: livePostStore(),
+        fundingStore: admittedStore(),
+        walletTransfers: fakeWalletTransferStore(false),
+        now: () => GATE_MS,
+        fetchImpl,
+        lnurlServer: LNURL_SERVER,
+      }),
+    );
+    const request = () =>
+      app.request(
+        '/invoices',
+        auth({
+          method: 'POST',
+          body: JSON.stringify({
+            address: ADDRESS,
+            amountMsat: ONE_USD_AT_100K_MSAT,
+            amountUsd: '1.00',
+            comment: 'Welcome',
+          }),
+        }),
+      );
+
+    const first = await request();
+    expect(first.status).toBe(200);
+    const fetchCallsAfterFirst = fetchImpl.mock.calls.length;
+    const second = await request();
+    expect(second.status).toBe(403);
+    expect(await second.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).toHaveBeenCalledTimes(fetchCallsAfterFirst);
+  });
+
+  it('releases a welcome reservation when a later issue gate fails', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const release = vi.fn(async () => undefined);
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: new InMemoryMessageStore(),
+      welcomeInvoiceReservationStore: { reserve: async () => true, release },
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(release).toHaveBeenCalledWith('acc-alice', expect.stringMatching(/^[0-9a-f]{32}$/));
+  });
+
+  it('requires a shop payment when durable welcome reservation fails', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      welcomeInvoiceReservationStore: {
+        reserve: async () => Promise.reject(new Error('unavailable')),
+        release: async () => undefined,
+      },
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
   });
 
   it('allows the one-dollar welcome at exactly ten percent above the server conversion', async () => {

@@ -4,9 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 67
-- Columns: 645
-- Foreign keys: 63
+- Tables: 68
+- Columns: 649
+- Foreign keys: 64
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
@@ -79,3 +79,4 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`wallet_token_transaction`](tables/wallet_token_transaction.md)                 | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 14      | 1            |
 | [`wallet_transfer`](tables/wallet_transfer.md)                                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 15      | 2            |
 | [`wallet_transfer_sync`](tables/wallet_transfer_sync.md)                         | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 3       | 1            |
+| [`welcome_invoice_reservation`](tables/welcome_invoice_reservation.md)           | [src/lib/welcome-reservation.ts](../../src/lib/welcome-reservation.ts) | 4       | 1            |

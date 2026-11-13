@@ -125,6 +125,7 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `PostgresShopPaymentStore`, `migrateShopPaymentSchema`,
 `PostgresWalletStore`, `migrateWalletSchema`, `repairWalletPaymentPairs`,
 `PostgresWalletTransferStore`,
+`PostgresWelcomeInvoiceReservationStore`, `migrateWelcomeInvoiceReservationSchema`,
 `migrateSparkViewerSchema`, `runWalletTransferTick`, and
 `startWalletTransferWorker`,
 `PostgresMemberEventStore`, `migrateMemberEventSchema`,
@@ -151,7 +152,7 @@ default boot leaves blank (its test asserts the 503 `Push is not configured`);
 `buildPaymentReceivedPushPayload`, which runs only for a receiver with a push subscription, and subscribing needs VAPID, which both Playwright boots leave blank (its test, in the `shop-payment` project, asserts the 503 `Push is not configured` and the webhook outcome `no_device`);
 `isPublicIp`, which needs a relay target host that resolves (outbound DNS), so its test
 asserts the 502 for a host that does not resolve;
-`InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
+`InMemoryInvoiceStore`, `InMemoryWelcomeInvoiceReservationStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
 `normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`,
 `recipientHandleFromAddress`, and `accountWelcomed`, which need `SPEND_API_TOKEN` and a reachable
 LNURL-pay;

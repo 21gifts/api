@@ -130,6 +130,17 @@ function dayOf(row: WalletTransferRecord): string | null {
   return at === null ? null : utcDayKey(at.getTime());
 }
 
+function transferObservationTime(row: WalletTransferRecord): number {
+  return (row.transferUpdatedAt ?? row.seenAt).getTime();
+}
+
+function transferObservationIsOlder(
+  incoming: WalletTransferRecord,
+  current: WalletTransferRecord,
+): boolean {
+  return transferObservationTime(incoming) < transferObservationTime(current);
+}
+
 /** Process-local adapter used by database-free boots and tests. */
 export class InMemoryWalletTransferStore implements WalletTransferStore {
   readonly #rows = new Map<string, WalletTransferRecord>();
@@ -221,6 +232,13 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
         (candidate) =>
           candidate.accountId === row.accountId && candidate.transferId === row.transferId,
       );
+    if (existing !== undefined && transferObservationIsOlder(row, existing)) {
+      return {
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      };
+    }
     const counterparties = await Promise.all(
       row.counterpartyPubkeys.map((key) => this.#accountForPubkey(key)),
     );
@@ -235,6 +253,9 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
       existing.type === 'transfer' &&
       (await hasExternalShop(existingCounterparties, existing.accountId, this.#isShop));
     const next = copyRecord(row);
+    if (existing !== undefined && next.seenAt.getTime() < existing.seenAt.getTime()) {
+      next.seenAt = new Date(existing.seenAt.getTime());
+    }
     this.#rows.set(key, next);
     const isShop =
       next.status === 'completed' &&
@@ -250,6 +271,10 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
 
   upsertTokenTransaction(row: WalletTokenTransactionRecord): Promise<void> {
     const key = `${row.accountId}\u0000${row.walletPubkey}\u0000${row.transactionHash}`;
+    const existing = this.#tokens.get(key);
+    if (existing !== undefined && row.seenAt.getTime() < existing.seenAt.getTime()) {
+      return Promise.resolve();
+    }
     this.#tokens.set(key, {
       ...row,
       transactionCreatedAt: dateCopy(row.transactionCreatedAt),
@@ -478,7 +503,9 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
            spark_invoice = EXCLUDED.spark_invoice,
            transfer_created_at = EXCLUDED.transfer_created_at,
            transfer_updated_at = EXCLUDED.transfer_updated_at,
-           last_seen_at = EXCLUDED.last_seen_at`,
+           last_seen_at = GREATEST(EXCLUDED.last_seen_at, wallet_transfer.last_seen_at)
+         WHERE COALESCE(EXCLUDED.transfer_updated_at, EXCLUDED.last_seen_at) >=
+               COALESCE(wallet_transfer.transfer_updated_at, wallet_transfer.last_seen_at)`,
         [
           row.accountId,
           row.walletPubkey,
@@ -496,8 +523,10 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
         ],
       );
       const after = (
-        await tx.query<{ is_shop_payment: boolean; counterparty_account_id: string | null }>(
-          `SELECT counterparty_account_id,
+        await tx.query<TransferSqlRow>(
+          `SELECT wallet_pubkey, direction, type, status, amount_sats, counterparty_pubkey,
+                  counterparty_pubkeys, counterparty_account_id, spark_invoice,
+                  transfer_created_at, transfer_updated_at,
                   (direction = 'out' AND status = 'completed' AND type = 'transfer'
                    AND ${SHOP_EXISTS_SQL}) AS is_shop_payment
            FROM wallet_transfer WHERE account_id = $1 AND wallet_pubkey = $2 AND transfer_id = $3`,
@@ -508,12 +537,16 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
       // transfer from another wallet while still reporting this row as inserted.
       const before = beforeRows.find((candidate) => candidate.wallet_pubkey === row.walletPubkey);
       const comparable = before ?? beforeRows[0];
+      const stored =
+        after === undefined ? undefined : recordFromSql(row.accountId, row.transferId, after);
       return {
         inserted: before === undefined,
         updated:
           comparable !== undefined &&
-          (!substantiveEqual(recordFromSql(row.accountId, row.transferId, comparable), row) ||
-            comparable.counterparty_account_id !== after?.counterparty_account_id),
+          after !== undefined &&
+          stored !== undefined &&
+          (!substantiveEqual(recordFromSql(row.accountId, row.transferId, comparable), stored) ||
+            comparable.counterparty_account_id !== after.counterparty_account_id),
         shopPaymentBecameCompleted:
           after?.is_shop_payment === true && before?.is_shop_payment !== true,
       };
@@ -537,7 +570,8 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
          status = EXCLUDED.status,
          transaction_created_at = EXCLUDED.transaction_created_at,
          transaction_expiry_at = EXCLUDED.transaction_expiry_at,
-         last_seen_at = EXCLUDED.last_seen_at`,
+         last_seen_at = EXCLUDED.last_seen_at
+       WHERE EXCLUDED.last_seen_at >= wallet_token_transaction.last_seen_at`,
       [
         row.accountId,
         row.walletPubkey,

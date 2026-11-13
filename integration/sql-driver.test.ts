@@ -68,6 +68,10 @@ import {
   type WalletPaymentRecord,
 } from '@/lib/wallet-store';
 import { PostgresWalletTransferStore } from '@/lib/wallet-transfer-store';
+import {
+  migrateWelcomeInvoiceReservationSchema,
+  PostgresWelcomeInvoiceReservationStore,
+} from '@/lib/welcome-reservation';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
 import type { OrchestraClient } from '@/lib/orchestra';
@@ -3081,12 +3085,160 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
       await expect(store.hasShopPayment(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(false);
       await store.upsertTransfer(transfer('utc-d', '2026-11-12T23:30:00.000Z'));
       await expect(store.hasShopPayment(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(true);
+
+      const monotonicTransferId = crypto.randomUUID();
+      await store.upsertTransfer({
+        ...transfer(monotonicTransferId, '2026-11-12T20:00:00.000Z'),
+        status: 'completed',
+        transferUpdatedAt: new Date('2026-11-12T22:00:00.000Z'),
+        seenAt: new Date('2026-11-12T22:01:00.000Z'),
+      });
+      // Commit the older observation second: current state must remain the newer one.
+      await store.upsertTransfer({
+        ...transfer(monotonicTransferId, '2026-11-12T20:00:00.000Z'),
+        status: 'pending',
+        transferUpdatedAt: new Date('2026-11-12T21:00:00.000Z'),
+        seenAt: new Date('2026-11-12T23:00:00.000Z'),
+      });
+      const monotonicTokenHash = hex64();
+      await store.upsertTokenTransaction({
+        accountId: buyerId,
+        walletPubkey: buyerKey,
+        transactionHash: monotonicTokenHash,
+        tokenIdentifier: null,
+        direction: 'out',
+        amount: '34',
+        counterpartyPubkeys: [shopKey],
+        sparkInvoices: [],
+        type: 'transfer',
+        status: 'finalized',
+        transactionCreatedAt: new Date('2026-11-12T20:00:00.000Z'),
+        transactionExpiryAt: null,
+        seenAt: new Date('2026-11-12T22:00:00.000Z'),
+      });
+      await store.upsertTokenTransaction({
+        accountId: buyerId,
+        walletPubkey: buyerKey,
+        transactionHash: monotonicTokenHash,
+        tokenIdentifier: null,
+        direction: 'in',
+        amount: '1',
+        counterpartyPubkeys: [],
+        sparkInvoices: [],
+        type: 'transfer',
+        status: 'started',
+        transactionCreatedAt: new Date('2026-11-12T20:00:00.000Z'),
+        transactionExpiryAt: null,
+        seenAt: new Date('2026-11-12T21:00:00.000Z'),
+      });
+      await expect(
+        client.query<{ status: string }>(
+          `SELECT status FROM wallet_transfer
+           WHERE account_id = $1 AND wallet_pubkey = $2 AND transfer_id = $3`,
+          [buyerId, buyerKey, monotonicTransferId],
+        ),
+      ).resolves.toEqual([{ status: 'completed' }]);
+      // Equal operator age remains authoritative even when it arrived with an earlier seen time.
+      await store.upsertTransfer({
+        ...transfer(monotonicTransferId, '2026-11-12T20:00:00.000Z'),
+        status: 'returned',
+        transferUpdatedAt: new Date('2026-11-12T22:00:00.000Z'),
+        seenAt: new Date('2026-11-12T22:00:00.000Z'),
+      });
+      await expect(
+        client.query<{ status: string; seen_preserved: boolean }>(
+          `SELECT status, last_seen_at = $4 AS seen_preserved FROM wallet_transfer
+           WHERE account_id = $1 AND wallet_pubkey = $2 AND transfer_id = $3`,
+          [buyerId, buyerKey, monotonicTransferId, new Date('2026-11-12T22:01:00.000Z')],
+        ),
+      ).resolves.toEqual([{ status: 'returned', seen_preserved: true }]);
+      await expect(
+        client.query<{ status: string; direction: string; amount: string }>(
+          `SELECT status, direction, amount::text AS amount FROM wallet_token_transaction
+           WHERE account_id = $1 AND wallet_pubkey = $2 AND transaction_hash = $3`,
+          [buyerId, buyerKey, monotonicTokenHash],
+        ),
+      ).resolves.toEqual([{ status: 'finalized', direction: 'out', amount: '34' }]);
     } finally {
       await client.execute('DELETE FROM wallet_token_transaction WHERE account_id = $1', [buyerId]);
       await client.execute('DELETE FROM wallet_transfer WHERE account_id = $1', [buyerId]);
       await client.execute('DELETE FROM message WHERE id = $1', [noteId]);
       await client.execute('DELETE FROM account WHERE id IN ($1, $2)', [buyerId, shopId]);
       await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresWelcomeInvoiceReservationStore concurrency', () => {
+  test('atomically grants one welcome entitlement and audits its release', async () => {
+    const firstDb = createBunSqlClient(databaseUrl, { max: 2 });
+    const secondDb = createBunSqlClient(databaseUrl, { max: 1 });
+    const accountId = crypto.randomUUID();
+    const firstReservation = 'a'.repeat(32);
+    const secondReservation = 'b'.repeat(32);
+    try {
+      await migrateAuthSchema(firstDb.client);
+      await migrateWelcomeInvoiceReservationSchema(firstDb.client);
+      await migrateDbChangeSchema(firstDb.client);
+      await new PostgresAuthStore(firstDb.client).createAccount({
+        id: accountId,
+        linkingKey: null,
+        role: 'verified',
+        name: null,
+        username: `welcome_reservation_${accountId.slice(0, 8)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`,
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      const createdAt = new Date('2026-11-12T12:00:00.000Z');
+      const expiresAt = new Date('2026-11-12T12:05:00.000Z');
+      const outcomes = await Promise.all([
+        new PostgresWelcomeInvoiceReservationStore(firstDb.client).reserve(
+          accountId,
+          firstReservation,
+          createdAt,
+          expiresAt,
+        ),
+        new PostgresWelcomeInvoiceReservationStore(secondDb.client).reserve(
+          accountId,
+          secondReservation,
+          createdAt,
+          expiresAt,
+        ),
+      ]);
+      expect(outcomes.sort()).toEqual([false, true]);
+      const rows = await firstDb.client.query<{ reservation_id: string }>(
+        `SELECT reservation_id FROM welcome_invoice_reservation WHERE account_id = $1`,
+        [accountId],
+      );
+      const reservationId = rows[0]?.reservation_id;
+      if (reservationId === undefined) {
+        throw new Error('welcome reservation was not stored');
+      }
+      expect([firstReservation, secondReservation]).toContain(reservationId);
+      await new PostgresWelcomeInvoiceReservationStore(firstDb.client).release(
+        accountId,
+        reservationId,
+      );
+      const changes = await firstDb.client.query<{ op: string }>(
+        `SELECT op FROM db_change
+         WHERE table_name = 'welcome_invoice_reservation'
+           AND COALESCE(after ->> 'account_id', before ->> 'account_id') = $1
+         ORDER BY id`,
+        [accountId],
+      );
+      expect(changes.map((row) => row.op)).toEqual(['INSERT', 'DELETE']);
+    } finally {
+      await firstDb.client.execute(
+        'DELETE FROM welcome_invoice_reservation WHERE account_id = $1',
+        [accountId],
+      );
+      await firstDb.client.execute('DELETE FROM account WHERE id = $1', [accountId]);
+      await closeIfPossible(firstDb.sql);
+      await closeIfPossible(secondDb.sql);
     }
   });
 });

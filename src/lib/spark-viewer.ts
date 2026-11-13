@@ -68,6 +68,8 @@ export interface SparkViewerTokenOwnerPage {
 /** Stateful, process-local token-input owner lookup for one history page. */
 export interface SparkViewerTokenOwnerResolution {
   next(): Promise<SparkViewerTokenOwnerPage>;
+  /** Evict this lookup after the caller's deadline without reusing its in-flight promise. */
+  discard(): void;
 }
 
 /** Read-only operator access used by the wallet transfer worker. */
@@ -690,6 +692,9 @@ function tokenOwnerResolution(
           inFlight = undefined;
         });
       return inFlight;
+    },
+    discard() {
+      onFailure();
     },
   };
 }

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { HEART_SATS_MAX } from '@/lib/config';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
+import { WELCOME_INVOICE_RESERVATION_SCHEMA_SQL } from '@/lib/welcome-reservation';
 
 describe('AUTH_SCHEMA_SQL', () => {
   it('creates the auth tables and backfills account.name idempotently', () => {
@@ -148,7 +149,7 @@ describe('AUTH_SCHEMA_SQL', () => {
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true',
     );
     const tail = AUTH_SCHEMA_SQL.slice(notifyHeartsAt + 1);
-    expect(tail).toHaveLength(15);
+    expect(tail).toHaveLength(16);
     expect(tail.slice(0, 6)).toEqual([
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS heart_sats integer NOT NULL DEFAULT 1',
       'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_heart_sats_chk',
@@ -169,6 +170,7 @@ describe('AUTH_SCHEMA_SQL', () => {
       'CREATE TABLE IF NOT EXISTS held_share_box (',
       'CREATE INDEX IF NOT EXISTS held_share_box_account_idx ON held_share_box (account_id)',
       'CREATE INDEX IF NOT EXISTS passkey_challenge_open_account_type_idx',
+      'CREATE TABLE IF NOT EXISTS welcome_invoice_reservation (',
     ]);
     const migrationAt = AUTH_SCHEMA_SQL.findIndex((statement) => statement.includes('DO $'));
     expect(migrationAt).toBeGreaterThan(
@@ -256,5 +258,16 @@ describe('AUTH_SCHEMA_SQL', () => {
         expect(docs(table)).toContain(flat(statement));
       }
     }
+  });
+
+  it('includes the merge-owned welcome reservation table and its exact schema reference', () => {
+    const flat = (text: string): string => text.replace(/\s+/g, ' ').trim();
+    const docs = readFileSync(
+      join(process.cwd(), 'docs/schema/welcome_invoice_reservation.sql'),
+      'utf8',
+    );
+
+    expect(AUTH_SCHEMA_SQL).toContain(WELCOME_INVOICE_RESERVATION_SCHEMA_SQL);
+    expect(flat(docs)).toContain(flat(WELCOME_INVOICE_RESERVATION_SCHEMA_SQL));
   });
 });

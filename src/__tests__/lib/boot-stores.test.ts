@@ -37,6 +37,7 @@ import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryFondPayoutStore, PostgresFondPayoutStore } from '@/lib/fond-payout-store';
 import { PostgresWalletStore } from '@/lib/wallet-store';
 import { PostgresWalletTransferStore } from '@/lib/wallet-transfer-store';
+import { PostgresWelcomeInvoiceReservationStore } from '@/lib/welcome-reservation';
 import { PostgresMemberEventStore } from '@/lib/member-event-store';
 import { PostgresShopIdentityStore } from '@/lib/shop-identity';
 
@@ -157,6 +158,7 @@ describe('openBootStores', () => {
       sparkInvoiceStore,
       walletStore,
       walletTransferStore,
+      welcomeInvoiceReservationStore,
       sparkViewer,
       walletViewerPublicKey,
       memberEventStore,
@@ -188,6 +190,7 @@ describe('openBootStores', () => {
     expect(sparkInvoiceStore).toBeUndefined();
     expect(walletStore).toBeUndefined();
     expect(walletTransferStore).toBeUndefined();
+    expect(welcomeInvoiceReservationStore).toBeUndefined();
     expect(sparkViewer).toBeDefined();
     expect(walletViewerPublicKey).toMatch(/^0[23][0-9a-f]{64}$/);
     expect(memberEventStore).toBeUndefined();
@@ -225,6 +228,7 @@ describe('openBootStores', () => {
       debugDbStore,
       walletStore,
       walletTransferStore,
+      welcomeInvoiceReservationStore,
       sparkViewer,
       walletViewerPublicKey,
       memberEventStore,
@@ -250,6 +254,7 @@ describe('openBootStores', () => {
     expect(debugDbStore).toBeUndefined();
     expect(walletStore).toBeUndefined();
     expect(walletTransferStore).toBeUndefined();
+    expect(welcomeInvoiceReservationStore).toBeUndefined();
     expect(sparkViewer).toBeDefined();
     expect(walletViewerPublicKey).toMatch(/^0[23][0-9a-f]{64}$/);
     expect(memberEventStore).toBeUndefined();
@@ -329,6 +334,7 @@ describe('openBootStores', () => {
       sparkInvoiceStore,
       walletStore,
       walletTransferStore,
+      welcomeInvoiceReservationStore,
       memberEventStore,
       recoveryShareKek,
     } = await openBootStores(url, factory, {
@@ -367,6 +373,7 @@ describe('openBootStores', () => {
     expect(sparkInvoiceStore).toBeInstanceOf(PostgresSparkInvoiceStore);
     expect(walletStore).toBeInstanceOf(PostgresWalletStore);
     expect(walletTransferStore).toBeInstanceOf(PostgresWalletTransferStore);
+    expect(welcomeInvoiceReservationStore).toBeInstanceOf(PostgresWelcomeInvoiceReservationStore);
     expect(memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
@@ -427,6 +434,9 @@ describe('openBootStores', () => {
     const sparkViewerIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS spark_viewer_key/i.test(q),
     );
+    const welcomeReservationIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS welcome_invoice_reservation/i.test(q),
+    );
     const memberEventIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS member_event/i.test(q),
     );
@@ -442,7 +452,10 @@ describe('openBootStores', () => {
     }
     expect(recoveryTableIdx[1]).toBeGreaterThan(recoveryTableIdx[0] ?? -1);
     expect(recoveryTableIdx[2]).toBeGreaterThan(recoveryTableIdx[1] ?? -1);
+    // Account merge always has the reservation table because auth owns its DDL.
+    expect(welcomeReservationIdx).toBeGreaterThan(recoveryTableIdx[2] ?? -1);
     expect(sparkInvoiceIdx).toBeGreaterThanOrEqual(0);
+    expect(sparkInvoiceIdx).toBeGreaterThan(welcomeReservationIdx);
     expect(walletIdx).toBeGreaterThan(sparkInvoiceIdx);
     expect(memberEventIdx).toBeGreaterThan(walletIdx);
     // migrateWalletSchema owns both wallet_payment and wallet_transfer before the viewer table.
