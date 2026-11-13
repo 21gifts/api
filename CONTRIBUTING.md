@@ -395,9 +395,10 @@ The wallet rule in detail:
     senders in the volume, where a sender is a sending wallet ranked by the sats
     it sent in counted payments, and the time of the newest counted payment. For
     shops it publishes only totals over all shops: shop purchases inside the
-    figures above, and the number of till charges created and paid per UTC day
-    from 14 days before the release. Per-shop till data stays private with the
-    shop's own `GET /pos`.
+    figures above, and, for till charges created on or after 2026-10-26 11:17
+    UTC (14 days before the release), two counts per UTC day of the charge's
+    creation time: the charges created that day, and how many of those charges
+    are paid. Per-shop till data stays private with the shop's own `GET /pos`.
   - The owner's previous-wallet lookup (`GET /me/previous-wallets`) returns
     the stored `sparkPubkey`, `sparkAddress`, and `replacedAt`, plus the soft
     balance a public Spark explorer already shows (or `null`), only to the
