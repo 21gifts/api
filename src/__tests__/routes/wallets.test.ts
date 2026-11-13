@@ -243,6 +243,7 @@ describe('GET /wallets/usage', () => {
           payerParty: 'members',
           payeeParty: 'members',
           isFundPayout: false,
+          isForumGift: false,
         },
       ],
       forumInvoices: [
@@ -326,6 +327,7 @@ describe('GET /wallets/usage', () => {
         payerParty: 'outside' as const,
         payeeParty: 'outside' as const,
         isFundPayout: false,
+        isForumGift: false,
       })),
       forumInvoices: [],
       shopCharges: [],

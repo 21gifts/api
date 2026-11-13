@@ -35,6 +35,7 @@ function pay(over: Partial<WalletUsagePaymentRow> = {}): WalletUsagePaymentRow {
     payerParty: 'members',
     payeeParty: 'members',
     isFundPayout: false,
+    isForumGift: false,
     ...over,
   };
 }
@@ -86,9 +87,12 @@ describe('walletUsagePurpose', () => {
         'fund_payout',
       ],
       [pay({ payeeParty: 'fund', payerParty: 'members', category: 'member' }), 'fund_deposit'],
-      [pay({ payeeParty: 'fund', payerParty: 'outside', category: 'gift' }), 'forum_gift'],
-      [pay({ category: 'gift' }), 'forum_gift'],
-      [pay({ category: 'platform' }), 'forum_gift'],
+      [pay({ payeeParty: 'fund', payerParty: 'outside', category: 'gift' }), 'other'],
+      [pay({ isForumGift: true, category: 'gift' }), 'forum_gift'],
+      [pay({ isForumGift: true, category: 'platform', payeeParty: 'platform' }), 'forum_gift'],
+      [pay({ category: 'gift' }), 'transfer'],
+      [pay({ category: 'gift', payeeParty: 'outside' }), 'other'],
+      [pay({ category: 'platform', payeeParty: 'platform' }), 'other'],
       [pay({ category: 'shop' }), 'shop_purchase'],
       [pay({ category: 'member', payerParty: 'outside' }), 'transfer'],
       [
@@ -204,7 +208,8 @@ describe('buildWalletUsage', () => {
       averageSats: 126144,
       activeWalletCount: 5,
       sendingWalletCount: 3,
-      topFiveSenderShare: 1,
+      receivingWalletCount: 3,
+      topFiveSenderShare: 0.6116,
       heartCount: 1,
       paidShopChargeCount: 1,
     });
@@ -237,7 +242,7 @@ describe('buildWalletUsage', () => {
     });
     expect(body.days[3]).toMatchObject({
       purposes: purposes({
-        forum_gift: { count: 1, sats: 1 },
+        other: { count: 1, sats: 1 },
         deposit: { count: 1, sats: 293955 },
         withdrawal: { count: 1, sats: 69089 },
         transfer: { count: 1, sats: 12321 },
@@ -287,7 +292,7 @@ describe('buildWalletUsage', () => {
         day: '2026-11-12',
         from: 'members',
         to: 'platform',
-        purpose: 'forum_gift',
+        purpose: 'other',
         count: 1,
         sats: 1,
         feeSats: 0,
@@ -452,6 +457,7 @@ describe('buildWalletUsage', () => {
       averageSats: 0,
       activeWalletCount: 0,
       sendingWalletCount: 0,
+      receivingWalletCount: 0,
       topFiveSenderShare: 0,
       heartCount: 0,
       paidShopChargeCount: 0,
@@ -585,7 +591,7 @@ describe('buildWalletUsage', () => {
     expect(highFirst.totals.medianSats).toBe(1);
   });
 
-  it('reports the top five sender share for equal and unequal payers', () => {
+  it('reports the top five sender share for equal and unequal senders', () => {
     const ids = ['p5', 'p4', 'p3', 'p2', 'p1', 'p0'];
     const equal = buildWalletUsage(
       {
@@ -596,6 +602,33 @@ describe('buildWalletUsage', () => {
       NOW,
     );
     expect(equal.totals.topFiveSenderShare).toBe(0.8333);
+    const platformAndOutside = buildWalletUsage(
+      {
+        payments: [
+          pay({ amountSats: 10, payerAccountId: 'acct-one' }),
+          pay({ amountSats: 10, payerAccountId: 'acct-two' }),
+          pay({
+            amountSats: 70,
+            category: 'platform',
+            payerAccountId: 'acct-platform',
+            payeeParty: 'platform',
+          }),
+          pay({
+            amountSats: 10,
+            category: 'outside_lightning',
+            payerAccountId: null,
+            payerParty: 'outside',
+          }),
+        ],
+        forumInvoices: [],
+        shopCharges: [],
+      },
+      NOW,
+    );
+    // Senders are wallets only, but the share is of all counted volume.
+    expect(platformAndOutside.totals.volumeSats).toBe(100);
+    expect(platformAndOutside.totals.sendingWalletCount).toBe(2);
+    expect(platformAndOutside.totals.topFiveSenderShare).toBe(0.2);
     const ascending = buildWalletUsage(
       {
         payments: [

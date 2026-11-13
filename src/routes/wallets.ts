@@ -5,6 +5,9 @@ import { buildWalletUsage, walletUsageReadSince } from '@/lib/wallet-usage';
 import type { WalletUsageStore } from '@/lib/wallet-usage-store';
 import { logEvent } from '@/lib/log';
 
+/** CDN and browser cache for a `GET /wallets/usage` body. */
+const PUBLIC_CACHE = 'public, max-age=60';
+
 /** Collaborators the public wallet statistics routes need. */
 export interface WalletStatsRouteDeps {
   /** Wallet balance snapshot source for `GET /stats`. */
@@ -43,7 +46,7 @@ export function walletStatsRoutes(deps: WalletStatsRouteDeps): Hono {
       const forumInvoices = await deps.usageStore.forumInvoices(since.forumInvoices);
       const shopCharges = await deps.usageStore.shopCharges(since.shopCharges);
       const body = buildWalletUsage({ payments, forumInvoices, shopCharges }, nowMs);
-      c.header('Cache-Control', 'public, max-age=60');
+      c.header('Cache-Control', PUBLIC_CACHE);
       return c.json(body, 200);
     } catch {
       logEvent('wallets.usage.failed');

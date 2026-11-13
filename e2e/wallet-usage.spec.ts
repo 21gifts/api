@@ -28,6 +28,7 @@ interface UsageBody {
     averageSats: number;
     activeWalletCount: number;
     sendingWalletCount: number;
+    receivingWalletCount: number;
     topFiveSenderShare: number;
     heartCount: number;
     paidShopChargeCount: number;
@@ -81,6 +82,7 @@ function expectEmptyUsage(body: UsageBody, nowMs: number): void {
     averageSats: 0,
     activeWalletCount: 0,
     sendingWalletCount: 0,
+    receivingWalletCount: 0,
     topFiveSenderShare: 0,
     heartCount: 0,
     paidShopChargeCount: 0,

@@ -22,6 +22,7 @@ function payment(paidAt: Date, amountSats = 1): WalletUsagePaymentRow {
     payerParty: 'members',
     payeeParty: 'members',
     isFundPayout: false,
+    isForumGift: false,
   };
 }
 
@@ -144,17 +145,29 @@ describe('PostgresWalletUsageStore', () => {
     expect(payments.text).toContain('payee.is_platform');
     expect(payments.text).toContain("payee.role = 'fond'");
     expect(payments.text).toContain('HAVING min(paid_at) >= $1');
-    expect(forum.text).toContain('message_invoice');
-    expect(forum.text).toContain("result = 'ok'");
-    expect(forum.text).toContain('conversation_id IS NULL');
-    expect(forum.text).toContain("coalesce(description, '') NOT LIKE 'repay:%'");
-    expect(forum.text).toContain("coalesce(description, '') NOT LIKE 'repayp:%'");
-    expect(forum.text).toContain('COALESCE(heart, false)');
-    expect(forum.text).toContain('created_at >= $1');
+    expect(payments.text).toContain('payment_hash');
+    expect(payments.text).toContain('AS is_forum_gift');
+    expect(payments.text).not.toContain('invoice.heart IS FALSE');
+    expect(payments.text).toContain('lower(invoice.payment_hash) = lower(completed.payment_hash)');
+    expect(payments.text).toContain('invoice.pr = completed.invoice');
+    expect(payments.text).toContain('nostr_zap_receipt');
+    expect(payments.text).toContain('receipt.event_id = z.receipt_event_id');
+    expect(payments.text).toContain('note.deleted_at IS NULL');
+    expect(payments.text).not.toContain('other_invoice.heart');
+    expect(payments.text).toContain('other_invoice.conversation_id IS NOT NULL');
+    expect(forum.text).toContain('FROM message_invoice invoice');
+    expect(forum.text).toContain("invoice.result = 'ok'");
+    expect(forum.text).toContain('invoice.conversation_id IS NULL');
+    expect(forum.text).toContain("coalesce(invoice.description, '') NOT LIKE 'repay:%'");
+    expect(forum.text).toContain("coalesce(invoice.description, '') NOT LIKE 'repayp:%'");
+    expect(forum.text).toContain('COALESCE(invoice.heart, false)');
+    expect(forum.text).toContain('invoice.created_at >= $1');
     expect(forum.text).toContain('nostr_zap_payment');
-    expect(forum.text).toContain('z.payment_hash = lower(message_invoice.payment_hash)');
+    expect(forum.text).toContain('z.payment_hash = lower(invoice.payment_hash)');
     expect(forum.text).not.toContain('lower(z.payment_hash)');
     expect(forum.text).not.toContain('$2');
+    expect(forum.text).toContain('JOIN message note ON note.id = invoice.message_id');
+    expect(forum.text).toContain('note.deleted_at IS NULL');
     expect(charges.text).toContain('pos_charge');
     expect(charges.text).toContain('created_at');
     expect(charges.text).toContain('status');
@@ -199,6 +212,7 @@ describe('PostgresWalletUsageStore', () => {
       payerParty: 'outside',
       payeeParty: 'members',
       isFundPayout: false,
+      isForumGift: true,
     });
     expect(rows[1]?.payerParty).toBe('fund');
     expect(rows[1]?.payeeParty).toBe('platform');
@@ -222,6 +236,131 @@ describe('PostgresWalletUsageStore', () => {
     await expect(store.shopCharges(0)).resolves.toEqual([
       { createdAt: new Date('2026-11-12T01:00:00.000Z'), status: 'paid' },
     ]);
+  });
+
+  it('derives isForumGift in memory from claimed invoices, gifts, and paid hearts', async () => {
+    const basePayment = payment(AT, 1);
+    const seed = (paymentHash: string | null, invoice: string | null, isForumGift?: boolean) => {
+      const { isForumGift: _ignored, ...rest } = basePayment;
+      return {
+        ...rest,
+        paymentHash,
+        invoice,
+        ...(isForumGift === undefined ? {} : { isForumGift }),
+      };
+    };
+    const store = new InMemoryWalletUsageStore({
+      payments: [
+        seed('AA11', null),
+        seed(null, 'bolt-forum'),
+        seed('bb22', null),
+        seed('cc33', null),
+        seed('dd44', null),
+        seed('ee55', null),
+        seed('ff66', null),
+        seed('gg77', null),
+        seed('hh88', null),
+        seed('ii99', null),
+        seed('jj00', null),
+      ],
+      forumInvoices: [],
+      shopCharges: [],
+      forumGiftInvoices: [
+        {
+          paymentHash: 'aa11',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+        {
+          paymentHash: null,
+          pr: 'bolt-forum',
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+        {
+          paymentHash: 'bb22',
+          pr: null,
+          conversation: true,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+        {
+          paymentHash: 'cc33',
+          pr: null,
+          conversation: false,
+          repayment: true,
+          hidden: false,
+          claimed: true,
+        },
+        {
+          paymentHash: 'dd44',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: true,
+          claimed: true,
+        },
+        {
+          paymentHash: 'ee55',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: false,
+        },
+        {
+          paymentHash: 'ff66',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+      ],
+      zapGifts: [
+        { paymentHash: 'GG77', hidden: false },
+        { paymentHash: 'hh88', hidden: true },
+        { paymentHash: 'ii99', hidden: false },
+      ],
+    });
+    const rows = await store.payments(AT.getTime());
+    expect(rows.map((row) => row.isForumGift)).toEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+    ]);
+    expect(rows.some((row) => 'paymentHash' in row)).toBe(false);
+    expect(rows.some((row) => 'invoice' in row)).toBe(false);
+    const explicit = new InMemoryWalletUsageStore({
+      payments: [seed(null, null, true), seed(null, null, false)],
+      forumInvoices: [],
+      shopCharges: [],
+      forumGiftInvoices: [
+        {
+          paymentHash: null,
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+      ],
+    });
+    expect((await explicit.payments(0)).map((row) => row.isForumGift)).toEqual([true, false]);
   });
 
   it('rejects rows the driver did not shape as usage data', async () => {
@@ -250,6 +389,7 @@ describe('PostgresWalletUsageStore', () => {
       throw new Error(`expected payments to throw: ${message}`);
     };
     await rejects({ ...base, is_fund_payout: null }, 'wallet usage fund payout flag is invalid');
+    await rejects({ ...base, is_forum_gift: null }, 'wallet usage forum gift flag is invalid');
     await rejects({ ...base, paid_at: 'not-a-date' }, 'wallet usage time is invalid');
     await rejects({ ...base, paid_at: new Date('not-a-date') }, 'wallet usage time is invalid');
     await rejects({ ...base, amount_sats: null }, 'wallet usage sats are missing');

@@ -60,6 +60,14 @@ export interface WalletUsagePaymentRow {
    * `fond_payout` whose status is `paid`.
    */
   isFundPayout: boolean;
+  /**
+   * True when the payment is a paid forum gift or paid heart: one of its
+   * hashes (or its invoice hash) matches a `message_invoice` with
+   * `result = 'ok'`, no conversation, no `repay:` / `repayp:` description, a
+   * claimed `nostr_zap_payment` hash, and a note whose `deleted_at` is null;
+   * or a zap receipt gift or paid heart on such a note.
+   */
+  isForumGift: boolean;
 }
 
 /** One successful forum invoice (`message_invoice.result = 'ok'`). */
@@ -155,10 +163,13 @@ export interface WalletUsage {
     activeWalletCount: number;
     /** Distinct member or fund accounts that paid. */
     sendingWalletCount: number;
+    /** Distinct member or fund accounts that were paid. */
+    receivingWalletCount: number;
     /**
-     * Share of non-null payer volume held by the five payers with the
-     * highest summed `amountSats`, from 0 to 1, four decimal places.
-     * 0 when no non-null payer exists.
+     * Share of `volumeSats` held by the five sending wallets with the highest
+     * summed `amountSats`, from 0 to 1, four decimal places. A sending wallet
+     * is a member or fund payer, so the platform account and outside payers
+     * are not ranked. 0 when `volumeSats` is 0.
      */
     topFiveSenderShare: number;
     /** Hearts with `createdAt` on or after release. */
@@ -242,6 +253,11 @@ export function walletUsageReadSince(): WalletUsageReadSince {
 /**
  * Classify one merged payment. First match wins.
  *
+ * `forum_gift` is only a paid forum gift or paid heart ({@link
+ * WalletUsagePaymentRow.isForumGift}). A stored `gift` or `platform` category
+ * that is not a forum gift is `transfer` when both parties are `members`,
+ * otherwise `other`.
+ *
  * @param row - Merged payment. Account ids are not read.
  * @returns The purpose used in the public totals, days, and flows.
  */
@@ -252,7 +268,7 @@ export function walletUsagePurpose(row: WalletUsagePaymentRow): WalletUsagePurpo
   if (row.payeeParty === 'fund' && row.payerParty !== 'outside') {
     return 'fund_deposit';
   }
-  if (row.category === 'gift' || row.category === 'platform') {
+  if (row.isForumGift) {
     return 'forum_gift';
   }
   if (row.category === 'shop') {
@@ -260,6 +276,9 @@ export function walletUsagePurpose(row: WalletUsagePaymentRow): WalletUsagePurpo
   }
   if (row.category === 'member') {
     return 'transfer';
+  }
+  if (row.category === 'gift' || row.category === 'platform') {
+    return row.payerParty === 'members' && row.payeeParty === 'members' ? 'transfer' : 'other';
   }
   if (row.category === 'outside_lightning' || row.category === 'onchain') {
     return row.payerParty === 'outside' ? 'deposit' : 'withdrawal';
@@ -356,16 +375,11 @@ function roundedAverage(volume: bigint, count: number): number {
   return safeSatsTotal((volume + divisor / 2n) / divisor);
 }
 
-function topFiveSenderShare(sent: ReadonlyMap<string, bigint>): number {
-  let whole = 0n;
-  const ranked: Array<{ id: string; sats: bigint }> = [];
-  for (const [id, sats] of sent) {
-    whole += sats;
-    ranked.push({ id, sats });
-  }
-  if (whole === 0n) {
+function topFiveSenderShare(sent: ReadonlyMap<string, bigint>, volume: bigint): number {
+  if (volume === 0n) {
     return 0;
   }
+  const ranked = [...sent.entries()].map(([id, sats]) => ({ id, sats }));
   ranked.sort((left, right) => {
     if (left.sats !== right.sats) {
       return left.sats > right.sats ? -1 : 1;
@@ -377,7 +391,7 @@ function topFiveSenderShare(sent: ReadonlyMap<string, bigint>): number {
   for (let index = 0; index < keep; index += 1) {
     part += (ranked[index] as { id: string; sats: bigint }).sats;
   }
-  const scaled = (part * 10000n + whole / 2n) / whole;
+  const scaled = (part * 10000n + volume / 2n) / volume;
   return Number(scaled) / 10000;
 }
 
@@ -402,7 +416,10 @@ interface FlowAcc {
  * Build the public usage body from already merged rows.
  *
  * Days are UTC. A row whose UTC day is after `nowMs` is ignored. Sat sums
- * that are not safe integers throw.
+ * that are not safe integers throw. Active, sending, and receiving wallet
+ * counts use member and fund accounts only, both in the totals and per day.
+ * `topFiveSenderShare` ranks those sending wallets by their counted sats and
+ * divides by the counted payment volume.
  *
  * @param input - Payments, forum invoices, and shop charges. Order is ignored.
  * @param nowMs - Clock in epoch milliseconds. Selects the last UTC day.
@@ -415,7 +432,8 @@ export function buildWalletUsage(input: WalletUsageInput, nowMs: number): Wallet
   const since = walletUsageReadSince();
   const active = new Set<string>();
   const sending = new Set<string>();
-  const sentByPayer = new Map<string, bigint>();
+  const receiving = new Set<string>();
+  const sentByWallet = new Map<string, bigint>();
   const amounts: bigint[] = [];
   let volume = 0n;
   let fees = 0n;
@@ -455,13 +473,12 @@ export function buildWalletUsage(input: WalletUsageInput, nowMs: number): Wallet
     if (payerWallet !== null) {
       active.add(payerWallet);
       sending.add(payerWallet);
+      const current = sentByWallet.get(payerWallet);
+      sentByWallet.set(payerWallet, (current === undefined ? 0n : current) + amount);
     }
     if (payeeWallet !== null) {
       active.add(payeeWallet);
-    }
-    if (row.payerAccountId !== null) {
-      const current = sentByPayer.get(row.payerAccountId);
-      sentByPayer.set(row.payerAccountId, (current === undefined ? 0n : current) + amount);
+      receiving.add(payeeWallet);
     }
     const hour = hours[row.paidAt.getUTCHours()] as { hourUtc: number; count: number };
     hour.count += 1;
@@ -577,7 +594,8 @@ export function buildWalletUsage(input: WalletUsageInput, nowMs: number): Wallet
       averageSats: roundedAverage(volume, amounts.length),
       activeWalletCount: active.size,
       sendingWalletCount: sending.size,
-      topFiveSenderShare: topFiveSenderShare(sentByPayer),
+      receivingWalletCount: receiving.size,
+      topFiveSenderShare: topFiveSenderShare(sentByWallet, volume),
       heartCount,
       paidShopChargeCount,
     },
