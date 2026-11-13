@@ -10,7 +10,7 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
 or a round trip through sats does not fill or replace it. This file does not
 describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit; terminal receiver-edge status, bounded/evictable token-owner enrichment, independent catch-up retry, monotone viewer upserts, atomic welcome-invoice entitlement reservations, input-owned token direction and amounts, token invoice attachments, verified-only current-wallet counterparty ownership, and one About-me-inclusive daily-media definition). Before that, 2026-11-12 (encrypted deployment Spark viewer, direct current/previous-wallet transfer sync, admin wallet-table reads, the server-verified shop-payment grant condition, and the owner-facing single reason for today's grant payout). Earlier decisions remain documented in the Decisions Log and the endpoint sections below.
+**Status**: living document. Last revised 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit; terminal receiver-edge status, bounded/queued token-owner enrichment, independent catch-up retry, monotone viewer upserts, atomic welcome-invoice entitlement reservations, input-owned token direction and amounts, token invoice attachments, verified-only current-wallet counterparty ownership, and one About-me-inclusive daily-media definition). Before that, 2026-11-12 (encrypted deployment Spark viewer, direct current/previous-wallet transfer sync, admin wallet-table reads, the server-verified shop-payment grant condition, and the owner-facing single reason for today's grant payout). Earlier decisions remain documented in the Decisions Log and the endpoint sections below.
 
 ---
 
@@ -4607,8 +4607,9 @@ record of the value-movement facts those two sources observe or report.
   It drives the daily full reread and is operational
   state, not a payment-history surface for member sessions.
 - `welcome_invoice_reservation`: one active or expired welcome-exception lease
-  per account. Account merge keeps the later expiry when both sides have one;
-  issue failure or an expired proof deletes the matching lease.
+  per account. Account merge refuses without writes while both sides have a live
+  lease; otherwise it keeps the later expiry when both sides have a row. Issue
+  failure or an expired proof deletes the matching lease.
 - `member_event`: one row per accepted event. `id`, `account_id`, `name` (one
   of `MEMBER_EVENT_NAMES`), `at` (client time), `path` (no query or fragment),
   `props` (flat JSON object of scalars), `received_at` (server time of the
@@ -5003,6 +5004,9 @@ account is **404** `{ "error": "Not found" }`. The platform account
 is **409** `{ "error": "Cannot merge the platform account" }`. Two
 funding grants are **409**
 `{ "error": "Both accounts have a funding grant" }`. A source account
+and survivor that both have an unexpired welcome-invoice lease are **409**
+`{ "error": "Welcome invoice already open" }` before any write; the merge can
+be retried after one lease expires or its invoice is released. A source account
 with a shop payment that is neither `paid` nor closed is **409**
 `{ "error": "A payment is already open" }` and nothing changes, because
 that payment's BOLT11 still pays the source account's wallet, which the
@@ -6157,9 +6161,12 @@ the lookup, never raw SDK rows or revocation/withdrawal secrets. A cursor is
 consumed only after a successful response returns a new non-empty cursor. A
 lookup failure evicts that page's progress so the next tick starts a fresh
 lookup. A caller timeout retains the cache and its in-flight promise, so a late
-result is reusable on the next tick; a refreshed
-page with new unknown input ids reopens the lookup. Finished and stale entries
-are evicted. An enrichment failure or timeout never prevents token upserts,
+result is returned as the next primary page's transactions before that finished
+entry is removed; a refreshed page with new unknown input ids reuses and
+reopens the lookup. At most 128 unfinished resolutions exist. Capacity never
+evicts one: excess pages queue for admission, stay unresolved, and keep the
+full-sync watermark open until a slot is served and freed. An enrichment failure
+or timeout never prevents token upserts,
 catch-up, or the balance snapshot. A daily full-sync watermark is written only
 when no page in that full pass still has unresolved inputs. It normalizes
 SDK enums into `wallet_transfer`, resolves counterparties against verified current and previous wallet
@@ -6186,15 +6193,20 @@ payment is required. The public body has no payout-kind override;
 the internal `serverPayoutKind` cannot weaken these checks. Before using the
 exception, the API atomically reserves the account's entitlement in the durable,
 `db_change`-audited `welcome_invoice_reservation` table. A second active request
-remains shop-payment-gated; issue failure or unpaid expiry releases the row. A
+is **409** `{ "error": "Welcome invoice already open" }`, even when the account
+has a qualifying shop payment; a reservation-store failure is **503** and never
+falls through to ordinary eligibility. Issue failure or unpaid expiry releases the row. A
 roster `Welcome` with a message id or another amount
 is not the exception. A failed decision reports `no_shop_payment`. On every tick, while
 such a payment is in D-1..D, the member is eligible, today's media exists, and
-no daily payout is recorded today, the worker calls `pingTodayMedia` until a
-delivery is accepted. Failed deliveries enter a separate catch-up backoff and
+no daily payout is recorded today, the worker claims the account/UTC-day key
+synchronously before its first asynchronous read and calls `pingTodayMedia`
+until a delivery is accepted. Two wallets therefore cannot send the same ping
+concurrently. Failed deliveries enter a separate catch-up backoff and
 never delay wallet observation, its balance snapshot, or full-sync watermark;
-skipped deliveries are retried on a later tick without error backoff. Only an
-accepted account/day is remembered in the process. Spend still pays at most once daily.
+failed and skipped deliveries release the claim (skips retry without error
+backoff). Only an accepted account/day remains remembered in the process.
+Spend still pays at most once daily.
 
 **Response** `200` `{ "acknowledgedIds": ["sdk-payment-id"] }` — every stored
 payment id, once each (a later duplicate in the same report wins).

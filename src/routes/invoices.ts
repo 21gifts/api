@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { earnsModeratorGroupPay, isModeratorGroupMember } from '@/lib/auth/roles';
+import {
+  earnsModeratorGroupPay,
+  isModeratorGroupMember,
+  roleAtLeast,
+} from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
@@ -351,7 +355,7 @@ async function welcomePostedFields(
 }
 
 function isWelcomeRecipient(account: Pick<Account, 'role' | 'isPlatform'>): boolean {
-  return account.role === 'verified' && account.isPlatform !== true;
+  return roleAtLeast(account.role, 'verified') && account.isPlatform !== true;
 }
 
 /**
@@ -479,6 +483,8 @@ export interface IssueGiftInvoiceInput {
   amountUsd?: string;
   /** Server-decided payout provenance; never copied from the public request body. */
   serverPayoutKind?: 'welcome';
+  /** Trusted booked UTC payout day for the shop-payment window. */
+  shopPaymentUtcDay?: string;
 }
 
 /** Issue action result: an invoice, or the HTTP error the spend route returned. */
@@ -911,19 +917,19 @@ async function issueGiftInvoiceLocked(
     )
   ) {
     try {
-      if (
-        await welcomeReservations.reserve(
-          account.id,
-          reservationId,
-          new Date(reservedAt),
-          new Date(reservedAt + GIFT_INVOICE_TTL_MS),
-        )
-      ) {
-        welcomeReservationAccountId = account.id;
-        serverPayoutKind = input.serverPayoutKind ?? 'welcome';
+      const reserved = await welcomeReservations.reserve(
+        account.id,
+        reservationId,
+        new Date(reservedAt),
+        new Date(reservedAt + GIFT_INVOICE_TTL_MS),
+      );
+      if (!reserved) {
+        return { ok: false, status: 409, error: 'Welcome invoice already open' };
       }
+      welcomeReservationAccountId = account.id;
+      serverPayoutKind = input.serverPayoutKind ?? 'welcome';
     } catch {
-      serverPayoutKind = undefined;
+      return { ok: false, status: 503, error: 'Welcome invoice reservation unavailable' };
     }
   }
   const genuineWelcome = serverPayoutKind === 'welcome' && canonicalWelcome;
@@ -937,6 +943,7 @@ async function issueGiftInvoiceLocked(
       deps.now(),
       deps.recoveryShareRequiredFrom ?? null,
       genuineWelcome ? undefined : deps.walletTransfers,
+      input.shopPaymentUtcDay,
     );
     if (!eligible) {
       logEvent('invoice.funding_required', { address });

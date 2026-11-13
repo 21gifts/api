@@ -37,6 +37,8 @@ interface FakeDatabaseOptions {
   intoId?: string;
   platform?: boolean;
   bothGrants?: boolean;
+  /** Live welcome leases held by the two locked accounts. */
+  welcomeReservations?: readonly { account_id: string }[];
   shopPayments?: readonly { id: string }[];
   /** Stateful `shop_payment` rows: the open check filters them and the column move updates them. */
   shopRows?: FakeShopRow[];
@@ -224,6 +226,9 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           }
           if (text.includes("p.status = 'open'")) {
             return (options.openBesideCharge ?? []) as T[];
+          }
+          if (text.includes('FROM welcome_invoice_reservation')) {
+            return (options.welcomeReservations ?? []) as T[];
           }
           if (text.includes('FOR UPDATE')) {
             if (options.lock !== undefined) {
@@ -1386,6 +1391,23 @@ describe('mergeAccounts', () => {
       error: 'both_grants',
     });
     expect(queries.some((query) => query.text.includes('DELETE FROM account'))).toBe(false);
+  });
+
+  it('refuses two live welcome leases before any write', async () => {
+    const { db, queries } = fakeDatabase({
+      welcomeReservations: [{ account_id: FROM }, { account_id: INTO }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'welcome_invoice_open',
+    });
+    const check = queries.find((query) =>
+      query.text.includes('FROM welcome_invoice_reservation'),
+    );
+    expect(check?.text).toContain('expires_at > now()');
+    expect(check?.text).toContain('FOR UPDATE');
+    expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
   });
 
   it('refuses while the merged account has a shop payment that is neither paid nor closed', async () => {

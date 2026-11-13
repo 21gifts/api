@@ -4700,7 +4700,7 @@ describe('GET /invoices/eligible', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it('reserves the welcome exception before settlement and shop-gates a second invoice', async () => {
+  it('returns 409 for a second live welcome lease even with a qualifying shop payment', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
@@ -4714,7 +4714,7 @@ describe('GET /invoices/eligible', () => {
       authStore,
       messageStore: livePostStore(),
       fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
+      walletTransferStore: fakeWalletTransferStore(true),
       now: () => GATE_MS,
     });
     const request = () =>
@@ -4735,8 +4735,8 @@ describe('GET /invoices/eligible', () => {
     expect(first.status).toBe(200);
     const fetchCallsAfterFirst = fetchImpl.mock.calls.length;
     const second = await request();
-    expect(second.status).toBe(403);
-    expect(await second.json()).toEqual({ error: 'Funding grant required' });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: 'Welcome invoice already open' });
     expect(fetchImpl).toHaveBeenCalledTimes(fetchCallsAfterFirst);
   });
 
@@ -4781,8 +4781,8 @@ describe('GET /invoices/eligible', () => {
     expect(first.status).toBe(200);
     const fetchCallsAfterFirst = fetchImpl.mock.calls.length;
     const second = await request();
-    expect(second.status).toBe(403);
-    expect(await second.json()).toEqual({ error: 'Funding grant required' });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: 'Welcome invoice already open' });
     expect(fetchImpl).toHaveBeenCalledTimes(fetchCallsAfterFirst);
   });
 
@@ -4815,7 +4815,7 @@ describe('GET /invoices/eligible', () => {
     expect(release).toHaveBeenCalledWith('acc-alice', expect.stringMatching(/^[0-9a-f]{32}$/));
   });
 
-  it('requires a shop payment when durable welcome reservation fails', async () => {
+  it('returns 503 when durable welcome reservation fails despite a shop payment', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     mockedSpot.mockResolvedValueOnce('100000');
@@ -4827,7 +4827,7 @@ describe('GET /invoices/eligible', () => {
         reserve: async () => Promise.reject(new Error('unavailable')),
         release: async () => undefined,
       },
-      walletTransferStore: fakeWalletTransferStore(false),
+      walletTransferStore: fakeWalletTransferStore(true),
       now: () => GATE_MS,
     }).request(
       '/invoices',
@@ -4841,8 +4841,8 @@ describe('GET /invoices/eligible', () => {
         }),
       }),
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Welcome invoice reservation unavailable' });
   });
 
   it('allows the one-dollar welcome at exactly ten percent above the server conversion', async () => {
@@ -5028,14 +5028,43 @@ describe('GET /invoices/eligible', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['a promoted founder', { role: 'founder' as const }],
-    ['the platform account', { role: 'verified' as const, isPlatform: true }],
-  ])('does not treat %s as the server welcome exception', async (_label, patch) => {
+  it('keeps the server welcome exception for a higher-ranked role', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const account = await authStore.getAccount('acc-alice');
-    await authStore.updateAccount({ ...account!, ...patch });
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, role: 'founder' });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not treat the platform account as the server welcome exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, role: 'founder', isPlatform: true });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const res = await spendApp({
       spendApiToken: TOKEN,

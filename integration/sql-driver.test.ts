@@ -5051,20 +5051,20 @@ describe('Postgres welcome reservation account merge', () => {
     const cases = [
       {
         name: 'source later',
-        sourceExpiry: '2026-11-13T12:10:00.000Z',
-        destinationExpiry: '2026-11-13T12:05:00.000Z',
+        sourceExpiryOffset: -60_000,
+        destinationExpiryOffset: -120_000,
         expected: 'source',
       },
       {
         name: 'equal expiry',
-        sourceExpiry: '2026-11-13T12:05:00.000Z',
-        destinationExpiry: '2026-11-13T12:05:00.000Z',
+        sourceExpiryOffset: -60_000,
+        destinationExpiryOffset: -60_000,
         expected: 'destination',
       },
       {
         name: 'source earlier',
-        sourceExpiry: '2026-11-13T12:04:00.000Z',
-        destinationExpiry: '2026-11-13T12:05:00.000Z',
+        sourceExpiryOffset: -120_000,
+        destinationExpiryOffset: -60_000,
         expected: 'destination',
       },
     ] as const;
@@ -5094,7 +5094,10 @@ describe('Postgres welcome reservation account merge', () => {
             rulesAgreedAt: null,
           });
         }
-        const createdAt = new Date('2026-11-13T12:00:00.000Z');
+        const now = Date.now();
+        const createdAt = new Date(now - 600_000);
+        const sourceExpiry = new Date(now + entry.sourceExpiryOffset);
+        const destinationExpiry = new Date(now + entry.destinationExpiryOffset);
         await client.execute(
           `INSERT INTO welcome_invoice_reservation
              (account_id, reservation_id, created_at, expires_at)
@@ -5103,10 +5106,10 @@ describe('Postgres welcome reservation account merge', () => {
             fromId,
             sourceReservation,
             createdAt,
-            new Date(entry.sourceExpiry),
+            sourceExpiry,
             intoId,
             destinationReservation,
-            new Date(entry.destinationExpiry),
+            destinationExpiry,
           ],
         );
 
@@ -5124,9 +5127,7 @@ describe('Postgres welcome reservation account merge', () => {
             account_id: intoId,
             reservation_id:
               entry.expected === 'source' ? sourceReservation : destinationReservation,
-            expires_at: new Date(
-              entry.expected === 'source' ? entry.sourceExpiry : entry.destinationExpiry,
-            ),
+            expires_at: entry.expected === 'source' ? sourceExpiry : destinationExpiry,
           },
         ]);
       } finally {
@@ -5136,6 +5137,79 @@ describe('Postgres welcome reservation account merge', () => {
         await client.execute('DELETE FROM account WHERE id = $1 OR id = $2', [fromId, intoId]);
         await closeIfPossible(sql);
       }
+    }
+  });
+
+  test('refuses without writes while both accounts have live welcome leases', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const fromId = crypto.randomUUID();
+    const intoId = crypto.randomUUID();
+    const sourceReservation = crypto.randomUUID().replaceAll('-', '');
+    const destinationReservation = crypto.randomUUID().replaceAll('-', '');
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      for (const [id, suffix] of [
+        [fromId, 'a'],
+        [intoId, 'b'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'verified',
+          name: `live-welcome-${suffix}`,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        });
+      }
+      const createdAt = new Date();
+      await client.execute(
+        `INSERT INTO welcome_invoice_reservation
+           (account_id, reservation_id, created_at, expires_at)
+         VALUES ($1,$2,$3,$4),($5,$6,$3,$7)`,
+        [
+          fromId,
+          sourceReservation,
+          createdAt,
+          new Date(createdAt.getTime() + 600_000),
+          intoId,
+          destinationReservation,
+          new Date(createdAt.getTime() + 900_000),
+        ],
+      );
+
+      expect(await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' })).toEqual({
+        ok: false,
+        error: 'welcome_invoice_open',
+      });
+      await expect(
+        client.query<{ account_id: string; reservation_id: string }>(
+          `SELECT account_id, reservation_id FROM welcome_invoice_reservation
+           WHERE account_id IN ($1, $2) ORDER BY account_id`,
+          [fromId, intoId],
+        ),
+      ).resolves.toEqual(
+        [
+          { account_id: fromId, reservation_id: sourceReservation },
+          { account_id: intoId, reservation_id: destinationReservation },
+        ].sort((left, right) => left.account_id.localeCompare(right.account_id)),
+      );
+      await expect(
+        client.query<{ id: string }>(
+          'SELECT id FROM account WHERE id IN ($1, $2) ORDER BY id',
+          [fromId, intoId],
+        ),
+      ).resolves.toEqual([{ id: fromId }, { id: intoId }].sort((a, b) => a.id.localeCompare(b.id)));
+    } finally {
+      await client.execute('DELETE FROM welcome_invoice_reservation WHERE account_id IN ($1, $2)', [
+        fromId,
+        intoId,
+      ]);
+      await client.execute('DELETE FROM account WHERE id = $1 OR id = $2', [fromId, intoId]);
+      await closeIfPossible(sql);
     }
   });
 });

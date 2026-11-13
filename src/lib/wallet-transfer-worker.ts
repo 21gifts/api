@@ -362,39 +362,39 @@ async function syncWallet(
   const catchUpKey = `${wallet.accountId}\u0000${today}`;
   const successful = successfulCatchUpPingsFor(deps.transfers, today);
   const retries = catchUpPingRetriesFor(deps.transfers, today);
-  if (
-    !successful.has(catchUpKey) &&
-    (retries.get(catchUpKey)?.retryAt ?? 0) <= deps.now() &&
-    (await deps.transfers.hasShopPayment(wallet.accountId, yesterday, today))
-  ) {
+  if (!successful.has(catchUpKey) && (retries.get(catchUpKey)?.retryAt ?? 0) <= deps.now()) {
+    successful.add(catchUpKey);
+    let keepCatchUpClaim = false;
     try {
-      const account = await deps.auth.getAccount(wallet.accountId);
-      if (
-        account !== undefined &&
-        !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
-      ) {
-        const nowMs = deps.now();
-        const payout = await loadPayoutEligibility(
-          deps.funding,
-          deps.auth,
-          account,
-          nowMs,
-          deps.ping.recoveryShareRequiredFrom ?? null,
-          deps.transfers,
-        );
-        if (payout.eligible) {
-          const result = await pingTodayMedia(
-            deps.ping,
+      if (await deps.transfers.hasShopPayment(wallet.accountId, yesterday, today)) {
+        const account = await deps.auth.getAccount(wallet.accountId);
+        if (
+          account !== undefined &&
+          !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
+        ) {
+          const nowMs = deps.now();
+          const payout = await loadPayoutEligibility(
+            deps.funding,
+            deps.auth,
             account,
             nowMs,
-            effectiveStatus(payout.grant, nowMs),
-            true,
+            deps.ping.recoveryShareRequiredFrom ?? null,
+            deps.transfers,
           );
-          if (result === 'failed') {
-            delayCatchUpRetry(retries, catchUpKey, nowMs);
-          } else if (result === 'sent') {
-            retries.delete(catchUpKey);
-            successful.add(catchUpKey);
+          if (payout.eligible) {
+            const result = await pingTodayMedia(
+              deps.ping,
+              account,
+              nowMs,
+              effectiveStatus(payout.grant, nowMs),
+              true,
+            );
+            if (result === 'failed') {
+              delayCatchUpRetry(retries, catchUpKey, nowMs);
+            } else if (result === 'sent') {
+              retries.delete(catchUpKey);
+              keepCatchUpClaim = true;
+            }
           }
         }
       }
@@ -404,6 +404,8 @@ async function syncWallet(
         accountId: wallet.accountId,
         reason: error instanceof Error ? error.name : 'unknown',
       });
+    } finally {
+      if (!keepCatchUpClaim) successful.delete(catchUpKey);
     }
   }
 

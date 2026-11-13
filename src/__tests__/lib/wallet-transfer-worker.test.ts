@@ -691,6 +691,24 @@ describe('runWalletTransferTick', () => {
     };
   };
 
+  it('claims one account-day before two wallets can send concurrent catch-up pings', async () => {
+    const ping = vi.fn(async () => ({ status: 'accepted' as const }));
+    const base = catchUpTestDeps(() => NOW, ping);
+    const deps: WalletTransferWorkerDeps = {
+      ...base,
+      transfers: {
+        ...base.transfers,
+        listWallets: async () => [
+          { accountId: 'catch-up-retry-account', sparkPubkey: OWNER, sparkAddress: 'spark1first' },
+          { accountId: 'catch-up-retry-account', sparkPubkey: SHOP, sparkAddress: 'spark1second' },
+        ],
+      },
+    };
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+    expect(ping).toHaveBeenCalledOnce();
+  });
+
   it('drops a previous UTC day catch-up retry before attempting the new day', async () => {
     let now = Date.parse('2026-11-12T23:59:30.000Z');
     const failedAt = now;

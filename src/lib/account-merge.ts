@@ -51,6 +51,7 @@ type MergeResult =
         | 'platform'
         | 'both_grants'
         | 'shop_payment_open'
+        | 'welcome_invoice_open'
         | 'repayment_unavailable';
     };
 
@@ -192,7 +193,9 @@ function quoteIdentifier(identifier: string): string {
 /**
  * Fold one account into another on one reserved transaction connection.
  *
- * Under both account row locks it refuses with `shop_payment_open`, before
+ * Under both account row locks it refuses with `welcome_invoice_open`, before
+ * any write, while both accounts have an unexpired welcome-invoice lease. It
+ * refuses with `shop_payment_open`, also before
  * any write, while the merged account has a shop payment that is neither
  * paid nor closed, or has an unexpired pending charge while the surviving
  * account has no unexpired pending charge and has an `open` shop payment.
@@ -339,6 +342,17 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     );
     if (grants.length >= 2) {
       return { ok: false, error: 'both_grants' };
+    }
+
+    const welcomeReservations = await tx.query<{ account_id: string }>(
+      `SELECT account_id FROM welcome_invoice_reservation
+       WHERE account_id IN ($1, $2) AND expires_at > now()
+       ORDER BY account_id
+       FOR UPDATE`,
+      accountParams,
+    );
+    if (welcomeReservations.length >= 2) {
+      return { ok: false, error: 'welcome_invoice_open' };
     }
 
     // A shop payment's BOLT11 pays the merged account's wallet, which the merge

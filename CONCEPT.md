@@ -923,6 +923,17 @@ repository — they're intentionally not part of this project's scope.
 
 ---
 
+The welcome-recipient check follows the ranked role model: every non-platform
+account at least `verified` remains eligible after promotion. A live welcome
+lease is exclusive: another canonical issue is a conflict, reservation storage
+failure is unavailable, and two live leases make an account merge refuse
+without writes. Token-owner work is capped by queuing excess pages, never by
+evicting unfinished lookups; a late finished result is consumed on the next
+tick before removal. Catch-up pings claim account/day before asynchronous work,
+and reclaimed Fond issuance keeps the payout row's booked D-1..D shop window.
+This supersedes the same-day decision-log sentence below that restricted the
+welcome exception to the exact `verified` role.
+
 ## Decisions Log
 
 | Date       | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |

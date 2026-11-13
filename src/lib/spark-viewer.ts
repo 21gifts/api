@@ -553,7 +553,6 @@ function tokenOwnerResolution(
   transactions: readonly TokenTransactionProjection[],
   owners: ReturnType<typeof inputOwnerIndexes>,
   historyCursor: string | null,
-  onFinished: () => void,
   onFailure: () => void,
 ): CachedTokenOwnerResolution {
   let currentProjections = transactions;
@@ -682,10 +681,6 @@ function tokenOwnerResolution(
     },
     next() {
       inFlight ??= advance()
-        .then((page) => {
-          if (page.done) onFinished();
-          return page;
-        })
         .catch((error: unknown) => {
           onFailure();
           throw error;
@@ -716,6 +711,7 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
     mnemonic,
   )) as unknown as SdkViewer;
   const ownerResolutions = new Map<string, CachedTokenOwnerResolution>();
+  const waitingOwnerResolutions = new Set<string>();
   return {
     async transfers(input) {
       const page = await sdk.getTransfers({ ...input, types: ALL_TRANSFER_TYPES });
@@ -752,41 +748,71 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
         .join(',')}`;
       const needsOwnerResolution =
         unresolvedInputReferences(projectedTransactions, localOwners).length > 0;
-      for (const [key, cached] of ownerResolutions) {
-        if (cached.finished() || (key.startsWith(pagePrefix) && key !== pageKey)) {
-          ownerResolutions.delete(key);
+      for (const key of waitingOwnerResolutions) {
+        if (key.startsWith(pagePrefix) && key !== pageKey) {
+          waitingOwnerResolutions.delete(key);
         }
       }
-      let ownerResolution: CachedTokenOwnerResolution | undefined;
+      let ownerResolution = ownerResolutions.get(pageKey);
+      if (ownerResolution === undefined) {
+        for (const [key, cached] of ownerResolutions) {
+          if (key.startsWith(pagePrefix)) {
+            ownerResolutions.delete(key);
+            ownerResolutions.set(pageKey, cached);
+            ownerResolution = cached;
+            break;
+          }
+        }
+      }
       let transactions: SparkViewerTokenTransaction[];
       if (needsOwnerResolution) {
-        ownerResolution = ownerResolutions.get(pageKey);
         if (ownerResolution === undefined) {
-          const removeCreated = (): void => {
-            if (ownerResolutions.get(pageKey) === created) ownerResolutions.delete(pageKey);
-          };
-          const created = tokenOwnerResolution(
-            sdk,
-            input,
-            projectedTransactions,
-            localOwners,
-            historyCursor,
-            removeCreated,
-            removeCreated,
-          );
-          ownerResolution = created;
-          ownerResolutions.set(pageKey, ownerResolution);
-          while (ownerResolutions.size > MAX_TOKEN_OWNER_RESOLUTIONS) {
-            const oldest = ownerResolutions.keys().next().value as string;
-            ownerResolutions.delete(oldest);
+          const wasWaiting = waitingOwnerResolutions.has(pageKey);
+          if (
+            ownerResolutions.size < MAX_TOKEN_OWNER_RESOLUTIONS &&
+            (waitingOwnerResolutions.size === 0 || wasWaiting)
+          ) {
+            waitingOwnerResolutions.delete(pageKey);
+            const removeCreated = (): void => {
+              for (const [key, cached] of ownerResolutions) {
+                if (cached === created) {
+                  ownerResolutions.delete(key);
+                  break;
+                }
+              }
+            };
+            const created = tokenOwnerResolution(
+              sdk,
+              input,
+              projectedTransactions,
+              localOwners,
+              historyCursor,
+              removeCreated,
+            );
+            ownerResolution = created;
+            ownerResolutions.set(pageKey, ownerResolution);
+            transactions = ownerResolution.current();
+          } else {
+            waitingOwnerResolutions.add(pageKey);
+            transactions = tokenTransactionsOf(
+              projectedTransactions,
+              input.walletPubkey,
+              localOwners,
+            );
           }
         } else {
+          waitingOwnerResolutions.delete(pageKey);
           ownerResolutions.delete(pageKey);
           ownerResolutions.set(pageKey, ownerResolution);
           ownerResolution.update(projectedTransactions, historyCursor);
+          transactions = ownerResolution.current();
+          if (ownerResolution.finished()) {
+            ownerResolutions.delete(pageKey);
+            ownerResolution = undefined;
+          }
         }
-        transactions = ownerResolution.current();
       } else {
+        waitingOwnerResolutions.delete(pageKey);
         ownerResolutions.delete(pageKey);
         transactions = tokenTransactionsOf(projectedTransactions, input.walletPubkey, localOwners);
       }

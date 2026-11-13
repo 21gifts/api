@@ -46,6 +46,7 @@ function mergeDbForStore(
   options: {
     bothGrants?: boolean;
     shopPaymentOpen?: boolean;
+    welcomeInvoiceOpen?: boolean;
     repaymentUnavailable?: boolean;
   } = {},
 ): MergeDb {
@@ -82,6 +83,11 @@ function mergeDbForStore(
                 php: null,
               },
             ] as T[];
+          }
+          if (text.includes('FROM welcome_invoice_reservation')) {
+            return (options.welcomeInvoiceOpen === true
+              ? [{ account_id: MERGE_FROM }, { account_id: MERGE_INTO }]
+              : []) as T[];
           }
           if (text.includes('FOR UPDATE')) {
             const rows: Array<{
@@ -1537,6 +1543,20 @@ describe('debugRoutes', () => {
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'A payment is already open' });
+    expect(await store.getAccount(MERGE_FROM)).toBeDefined();
+  });
+
+  it('POST /debug/accounts/merge returns 409 while both welcome invoices are open', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store, { welcomeInvoiceOpen: true }),
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Welcome invoice already open' });
     expect(await store.getAccount(MERGE_FROM)).toBeDefined();
   });
 

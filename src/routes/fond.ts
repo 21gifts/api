@@ -489,6 +489,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
           amountUsd: row.amountUsd,
           ...(row.kind === 'welcome' ? { serverPayoutKind: 'welcome' as const } : {}),
+          shopPaymentUtcDay: row.utcDay,
         });
       } catch {
         await releaseClaim(deps, row.id);

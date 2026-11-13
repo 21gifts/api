@@ -13,7 +13,12 @@ export const WELCOME_INVOICE_RESERVATION_SCHEMA_SQL = `CREATE TABLE IF NOT EXIST
   expires_at timestamptz NOT NULL CHECK (expires_at > created_at)
 )`;
 
-/** Apply the durable reservation table DDL independently of the auth migration. */
+/**
+ * Apply the durable reservation table DDL independently of the auth migration.
+ *
+ * @param sql - Database client that executes the idempotent table DDL.
+ * @returns A promise that resolves after the DDL completes.
+ */
 export async function migrateWelcomeInvoiceReservationSchema(sql: SqlClient): Promise<void> {
   await sql.execute(WELCOME_INVOICE_RESERVATION_SCHEMA_SQL);
 }

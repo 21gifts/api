@@ -21,6 +21,7 @@ import {
   type WalletPaymentRecord,
   type WalletStore,
 } from '@/lib/wallet-store';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { fondRoutes } from '@/routes/fond';
 import { issueGiftInvoice } from '@/routes/invoices';
 
@@ -187,6 +188,7 @@ interface AppOptions {
   actionsStore?: InMemoryInvoiceStore;
   payoutStore?: InMemoryFondPayoutStore;
   walletStore?: WalletStore;
+  walletTransferStore?: Pick<WalletTransferStore, 'hasShopPayment'>;
   messageStore?: InMemoryMessageStore;
   fundingStore?: InMemoryFundingStore;
   fetchImpl?: FetchFn;
@@ -252,6 +254,9 @@ async function makeApp(options: AppOptions = {}): Promise<{
         now,
         fetchImpl,
         fundingStore: options.fundingStore ?? new InMemoryFundingStore(),
+        ...(options.walletTransferStore === undefined
+          ? {}
+          : { walletTransfers: options.walletTransferStore }),
         lnurlServer: LNURL,
       },
     }),
@@ -1277,6 +1282,66 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', claimedAt: null });
   });
 
+  it('uses the booked payout day after a stale issuing lease crosses midnight', async () => {
+    let clock = Date.parse('2026-11-09T23:58:00.000Z');
+    const hasShopPayment = vi.fn(
+      async (_accountId: string, fromUtcDay: string, toUtcDay: string) =>
+        fromUtcDay === YESTERDAY && toUtcDay === TODAY,
+    );
+    const paymentHash = 'cd'.repeat(32);
+    const invoicePr = bolt11ForSats(1000, paymentHash);
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/ada')) {
+        return jsonResponse({
+          callback: `${LNURL.baseUrl}/lnurlp/ada/invoice`,
+          minSendable: 1000,
+          maxSendable: 100_000_000,
+          commentAllowed: 255,
+        });
+      }
+      return jsonResponse({ pr: invoicePr });
+    };
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'ada',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 1,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 1,
+        note: null,
+      },
+    ]);
+    const messageStore = new InMemoryMessageStore([
+      post({ accountId: 'ada', hasVideo: true, videoContentType: 'video/mp4' }),
+    ]);
+    const { app, payouts } = await makeApp({
+      now: () => clock,
+      seedPlatform: true,
+      seedRecipient: true,
+      fundingStore,
+      messageStore,
+      walletTransferStore: { hasShopPayment },
+      fetchImpl,
+    });
+    const actual = await vi.importActual<typeof import('@/routes/invoices')>('@/routes/invoices');
+    mockedIssue.mockImplementation(actual.issueGiftInvoice);
+    await payouts.enqueue(rowInput({ address: 'ada@gifts.test' }));
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+
+    clock += 120_001;
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+
+    expect(res.status).toBe(200);
+    expect(hasShopPayment).toHaveBeenCalledWith('ada', YESTERDAY, TODAY);
+    expect(hasShopPayment).toHaveBeenCalledOnce();
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', claimedAt: null });
+  });
+
   it('does not issue when the stale issuing re-claim loses the race', async () => {
     let clock = NOW;
     const { app, payouts } = await makeApp({ now: () => clock });
@@ -1566,6 +1631,7 @@ describe('POST /fond/payouts/:id/invoice', () => {
         comment: 'thanks',
         messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         amountUsd: '1.00',
+        shopPaymentUtcDay: TODAY,
       }),
     );
     expect(await payouts.get(ROW_ID)).toMatchObject({

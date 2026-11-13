@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
+import {
+  runWalletTransferTick,
+  type WalletTransferWorkerDeps,
+} from '@/lib/wallet-transfer-worker';
 
 const sdk = vi.hoisted(() => {
   const publicBytes = new Uint8Array([2, ...Array<number>(32).fill(7)]);
@@ -737,7 +742,7 @@ describe('Spark viewer SDK value mapping', () => {
     expect(getTokenTransactions.mock.calls[2]?.[0]).toMatchObject({ cursor: 'lookup-next' });
   });
 
-  it('evicts a finished owner lookup and resolves the same token page again', async () => {
+  it('returns a late finished owner lookup on the next token page before dropping it', async () => {
     const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
     const previousHash = new Uint8Array(32).fill(0x51);
     const primaryPage = {
@@ -827,15 +832,13 @@ describe('Spark viewer SDK value mapping', () => {
       pageSize: 100,
     });
 
-    expect(repeated.transactions[0]).toMatchObject({ direction: 'in', amount: '75' });
-    const repeatedResolved = await repeated.ownerResolution!.next();
-    expect(repeatedResolved.transactions[0]).toMatchObject({
+    expect(repeated.transactions[0]).toMatchObject({
       direction: 'out',
       amount: '25',
       counterpartyPubkeys: [`03${'08'.repeat(32)}`],
     });
-    expect(repeatedResolved.done).toBe(true);
-    expect(getTokenTransactions).toHaveBeenCalledTimes(4);
+    expect(repeated.ownerResolution).toBeUndefined();
+    expect(getTokenTransactions).toHaveBeenCalledTimes(3);
   });
 
   it('retains a never-settling owner lookup for reuse after a caller timeout', async () => {
@@ -1044,7 +1047,7 @@ describe('Spark viewer SDK value mapping', () => {
     expect(resolved.transactions[0]).toMatchObject({ direction: 'out', amount: '25' });
   });
 
-  it('evicts stale page keys and bounds unfinished owner lookups', async () => {
+  it('queues lookups beyond 128 without evicting unfinished resolutions', async () => {
     const previousHash = new Uint8Array(32).fill(0x55);
     const unresolvedPage = (hashByte: number) => ({
       transactions: [
@@ -1070,35 +1073,134 @@ describe('Spark viewer SDK value mapping', () => {
       pageResponse: null,
     });
     getTokenTransactions.mockImplementation(async (input) => {
-      const address = (input as { sparkAddresses?: string[] }).sparkAddresses?.[0] ?? '';
-      const suffix = Number(address.slice('spark'.length));
-      return unresolvedPage(Number.isSafeInteger(suffix) ? (suffix % 200) + 1 : 1);
+      const request = input as {
+        sparkAddresses?: string[];
+        outputIds?: string[];
+        cursor?: string;
+      };
+      const address = request.sparkAddresses?.[0];
+      if (address !== undefined) {
+        const suffix = Number(address.slice('spark'.length));
+        return unresolvedPage(Number.isSafeInteger(suffix) ? suffix + 1 : 1);
+      }
+      const outputId = request.outputIds?.[0] ?? '';
+      if (request.cursor === undefined) {
+        return {
+          transactions: [],
+          pageResponse: { hasNextPage: true, nextCursor: `next-${outputId}` },
+        };
+      }
+      return {
+        transactions: [
+          {
+            tokenTransactionHash: previousHash,
+            status: 2,
+            tokenTransaction: {
+              tokenOutputs: [
+                {
+                  id: outputId,
+                  ownerPublicKey: PUBLIC_BYTES,
+                  tokenAmount: Uint8Array.of(100),
+                },
+              ],
+            },
+          },
+        ],
+        pageResponse: null,
+      };
     });
     const opened = await ensureSparkViewer(undefined, undefined);
-    const first = await opened.viewer.tokenTransactions({
-      sparkAddress: 'spark0',
-      walletPubkey: PUBLIC_KEY,
-      pageSize: 100,
-    });
-    for (let index = 1; index <= 128; index += 1) {
-      await opened.viewer.tokenTransactions({
-        sparkAddress: `spark${String(index)}`,
-        walletPubkey: PUBLIC_KEY,
-        pageSize: 100,
-      });
+    getTransfers.mockResolvedValue({ transfers: [], offset: -1 });
+    getOwnedBalance.mockResolvedValue(0);
+    const wallets = Array.from({ length: 129 }, (_, index) => ({
+      accountId: `account-${String(index)}`,
+      sparkPubkey: PUBLIC_KEY,
+      sparkAddress: `spark${String(index)}`,
+    }));
+    const fullSync = new Set<string>();
+    const transfers: WalletTransferStore = {
+      listWallets: async () => wallets,
+      syncState: async (accountId, walletPubkey) => ({
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: fullSync.has(`${accountId}\u0000${walletPubkey}`)
+          ? new Date('2026-11-13T12:00:00.000Z')
+          : null,
+      }),
+      upsertTransfer: async () => ({
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      }),
+      upsertTokenTransaction: async () => undefined,
+      markFullSync: async (accountId, walletPubkey) => {
+        fullSync.add(`${accountId}\u0000${walletPubkey}`);
+      },
+      hasShopPayment: async () => false,
+    };
+    const deps: WalletTransferWorkerDeps = {
+      viewer: opened.viewer,
+      transfers,
+      balances: { recordBalance: async () => undefined },
+      auth: {
+        getAccount: async () => undefined,
+        hasRecoveryShareForVerifiedWallet: async () => false,
+      },
+      funding: { getByAccountId: async () => undefined },
+      gifts: { listOutbound: async () => [] },
+      ping: {
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => null,
+          getById: async () => undefined,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+        walletTransfers: transfers,
+      },
+      now: () => Date.parse('2026-11-13T12:00:00.000Z'),
+    };
+    for (let tick = 0; tick < 4; tick += 1) {
+      expect((await runWalletTransferTick(deps)).size).toBe(0);
     }
-    const bounded = await opened.viewer.tokenTransactions({
-      sparkAddress: 'spark0',
-      walletPubkey: PUBLIC_KEY,
-      pageSize: 100,
-    });
-    expect(bounded.ownerResolution).not.toBe(first.ownerResolution);
 
+    expect(fullSync.size).toBe(129);
+    expect(
+      getTokenTransactions.mock.calls.filter(
+        (call) => (call[0] as { outputIds?: string[] }).outputIds !== undefined,
+      ).length,
+    ).toBeLessThanOrEqual(2 * 129 + 127);
+  });
+
+  it('reuses an unfinished resolution when the primary page hash changes', async () => {
+    const previousHash = new Uint8Array(32).fill(0x55);
+    const unresolvedPage = (hashByte: number) => ({
+      transactions: [
+        {
+          tokenTransactionHash: new Uint8Array(32).fill(hashByte),
+          status: 2,
+          tokenTransaction: {
+            tokenInputs: {
+              $case: 'transferInput',
+              transferInput: {
+                outputsToSpend: [
+                  { prevTokenTransactionHash: previousHash, prevTokenTransactionVout: 0 },
+                ],
+              },
+            },
+            tokenOutputs: [],
+          },
+          confirmationMetadata: {
+            spentTokenOutputsMetadata: [{ outputId: `output-${String(hashByte)}` }],
+          },
+        },
+      ],
+      pageResponse: null,
+    });
     getTokenTransactions
-      .mockReset()
       .mockResolvedValueOnce(unresolvedPage(201))
       .mockResolvedValueOnce(unresolvedPage(202))
       .mockResolvedValueOnce(unresolvedPage(201));
+    const opened = await ensureSparkViewer(undefined, undefined);
     const staleFirst = await opened.viewer.tokenTransactions({
       sparkAddress: 'spark-stale',
       walletPubkey: PUBLIC_KEY,
@@ -1114,7 +1216,7 @@ describe('Spark viewer SDK value mapping', () => {
       walletPubkey: PUBLIC_KEY,
       pageSize: 100,
     });
-    expect(staleAgain.ownerResolution).not.toBe(staleFirst.ownerResolution);
+    expect(staleAgain.ownerResolution).toBe(staleFirst.ownerResolution);
   });
 
   it('uses a local outpoint owner and never guesses ownership for an unresolved input', async () => {
