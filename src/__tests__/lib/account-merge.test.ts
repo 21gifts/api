@@ -5,6 +5,7 @@ const FROM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const INTO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const PROFILE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const FINAL = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
 interface RecordedQuery {
   text: string;
@@ -32,6 +33,8 @@ interface FakeShopRow {
 }
 
 interface FakeDatabaseOptions {
+  fromId?: string;
+  intoId?: string;
   platform?: boolean;
   bothGrants?: boolean;
   shopPayments?: readonly { id: string }[];
@@ -108,8 +111,22 @@ interface FakeDatabaseOptions {
   }[];
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
-  /** Repayable credits with an unsettled historical invoice involving either identity. */
-  historicalRepaymentInvoiceConflicts?: readonly { message_id: string }[];
+  /** Successful historical repayment invoices involving either identity. */
+  historicalRepaymentInvoices?: readonly {
+    message_id: string;
+    author_account_id: string;
+    amount_sats: number;
+    description: string;
+  }[];
+  /** Exact legacy-settlement lookup used by historical invoice checks. */
+  exactLegacySettlement?: boolean;
+  /** Loan fields used to reconstruct a converted legacy settlement. */
+  repaymentContext?: {
+    goal_currency: string | null;
+    goal_amount: string | null;
+    goal_term_days: number | null;
+    goal_debt_frozen: boolean;
+  };
   /** Existing source/survivor invoices or settled rows with the same immutable part key. */
   partKeyCollisions?: readonly { message_id: string }[];
   /** Successful repayment invoice candidates on affected source-funded credits. */
@@ -123,8 +140,6 @@ interface FakeDatabaseOptions {
     pr: string;
     payment_claimed: boolean;
   }[];
-  /** Result of the shared exact claim-only lookup for an affected invoice. */
-  claimOnlyRepayment?: boolean;
 }
 
 function fakeDatabase(options: FakeDatabaseOptions = {}): {
@@ -132,6 +147,8 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
   queries: RecordedQuery[];
   begins: { n: number };
 } {
+  const fromId = options.fromId ?? FROM;
+  const intoId = options.intoId ?? INTO;
   const queries: RecordedQuery[] = [];
   const begins = { n: 0 };
   const db: MergeDb = {
@@ -166,11 +183,8 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           if (text.includes('FROM message_invoice') && text.includes('WHERE message_id = $1')) {
             return (options.repaymentInvoiceAttempts ?? []) as T[];
           }
-          if (
-            text.includes('WITH historical_invoices AS') &&
-            text.includes('FROM message_invoice AS historical')
-          ) {
-            return (options.historicalRepaymentInvoiceConflicts ?? []) as T[];
+          if (text.includes('FROM message_invoice AS historical')) {
+            return (options.historicalRepaymentInvoices ?? []) as T[];
           }
           if (
             text.includes('FROM message AS credit') &&
@@ -187,8 +201,17 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           if (text.includes('FROM message_invoice AS invoice')) {
             return (options.openRepaymentInvoices ?? []) as T[];
           }
-          if (text.includes('AS claim_only') && text.includes('nostr_zap_payment AS claim')) {
-            return [{ claim_only: options.claimOnlyRepayment === true }] as T[];
+          if (text.includes('FROM message_repayment AS settled') && text.includes('AS settled')) {
+            return [{ settled: options.exactLegacySettlement === true }] as T[];
+          }
+          if (
+            text.includes('SELECT goal_currency') &&
+            text.includes('goal_debt_frozen') &&
+            text.includes('FROM message')
+          ) {
+            return (
+              options.repaymentContext === undefined ? [] : [options.repaymentContext]
+            ) as T[];
           }
           if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
             return [];
@@ -208,13 +231,13 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
             }
             return [
               {
-                id: FROM,
+                id: fromId,
                 is_platform: options.platform === true,
                 role: options.fromRole ?? 'verified',
                 profile_message_id: options.fromProfile ?? null,
               },
               {
-                id: INTO,
+                id: intoId,
                 is_platform: options.intoPlatform === true,
                 role: options.intoRole ?? 'verified',
                 profile_message_id: options.intoProfile ?? null,
@@ -465,6 +488,202 @@ describe('mergeAccounts', () => {
     expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
   });
 
+  it('allows a second merge after a paid legacy share was converted exactly once', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const legacyAttempt = {
+      id: '99999999-9999-4999-8999-999999999999',
+      created_at: new Date('2026-11-11T11:00:00.000Z'),
+      message_id: messageId,
+      payer_account_id: PROFILE,
+      author_account_id: FROM,
+      amount_sats: 100,
+      lightning_address: null,
+      zap_request: null,
+      result: 'ok',
+      http_status: 200,
+      pr: 'paid-legacy',
+      payment_hash: 'ab'.repeat(32),
+      description: `repay:0:${FROM}`,
+      description_hash: null,
+      is_nip57_invoice: true,
+      lnurl_response: null,
+    } as const;
+    const first = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 100,
+          paid_at: paidAt,
+          goal_currency: 'BTC',
+          goal_amount: '100',
+          goal_term_days: 1,
+          goal_debt_frozen: false,
+        },
+      ],
+      repaymentPayers: [
+        { account_id: FROM, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+      repaymentInvoiceAttempts: [legacyAttempt],
+      historicalRepaymentInvoices: [
+        {
+          message_id: messageId,
+          author_account_id: FROM,
+          amount_sats: 100,
+          description: legacyAttempt.description,
+        },
+      ],
+      exactLegacySettlement: true,
+    });
+    await expect(
+      mergeAccounts(first.db, { from: FROM, into: INTO, verify: 'into' }),
+    ).resolves.toEqual({ ok: true, messages: 1 });
+    expect(
+      first.queries.filter((query) => query.text.includes('INSERT INTO message_repayment_part')),
+    ).toHaveLength(1);
+
+    const movedAttempt = { ...legacyAttempt, author_account_id: INTO };
+    const second = fakeDatabase({
+      fromId: INTO,
+      intoId: FINAL,
+      repaymentParts: [
+        {
+          day_index: 1,
+          recipient_account_id: FINAL,
+          part_index: 0,
+          units: 1,
+          sats: 1,
+          paid_at: paidAt,
+        },
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 0,
+          units: 100,
+          sats: 100,
+          paid_at: paidAt,
+        },
+      ],
+      repaymentInvoiceAttempts: [movedAttempt],
+      historicalRepaymentInvoices: [
+        {
+          message_id: messageId,
+          author_account_id: INTO,
+          amount_sats: 100,
+          description: legacyAttempt.description,
+        },
+      ],
+      repaymentContext: {
+        goal_currency: 'BTC',
+        goal_amount: '100',
+        goal_term_days: 1,
+        goal_debt_frozen: false,
+      },
+      repaymentPayers: [
+        { account_id: INTO, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+    });
+    await expect(
+      mergeAccounts(second.db, { from: INTO, into: FINAL, verify: 'into' }),
+    ).resolves.toEqual({ ok: true, messages: 1 });
+    expect(
+      second.queries.filter((query) => query.text.includes('INSERT INTO message_repayment_part')),
+    ).toHaveLength(0);
+    expect(
+      second.queries.filter((query) => query.text.includes('DELETE FROM message_repayment')),
+    ).toHaveLength(0);
+    expect(second.queries).toContainEqual({
+      text: `UPDATE message_repayment_part
+       SET recipient_account_id = $2::uuid
+       WHERE recipient_account_id = $1::uuid`,
+      params: [INTO, FINAL],
+    });
+
+    const wrongIndex = fakeDatabase({
+      fromId: INTO,
+      intoId: FINAL,
+      repaymentParts: [
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 1,
+          units: 100,
+          sats: 100,
+          paid_at: paidAt,
+        },
+      ],
+      repaymentInvoiceAttempts: [movedAttempt],
+      historicalRepaymentInvoices: [
+        {
+          message_id: messageId,
+          author_account_id: INTO,
+          amount_sats: 100,
+          description: legacyAttempt.description,
+        },
+      ],
+      repaymentContext: {
+        goal_currency: 'BTC',
+        goal_amount: '100',
+        goal_term_days: 1,
+        goal_debt_frozen: false,
+      },
+      repaymentPayers: [
+        { account_id: INTO, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+    });
+    await expect(
+      mergeAccounts(wrongIndex.db, { from: INTO, into: FINAL, verify: 'into' }),
+    ).resolves.toEqual({ ok: false, error: 'repayment_unavailable' });
+    expect(
+      wrongIndex.queries.some((query) =>
+        /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart()),
+      ),
+    ).toBe(false);
+
+    const unavailableUnits = fakeDatabase({
+      fromId: INTO,
+      intoId: FINAL,
+      repaymentParts: [
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 0,
+          units: 100,
+          sats: 100,
+          paid_at: paidAt,
+        },
+      ],
+      repaymentInvoiceAttempts: [movedAttempt],
+      historicalRepaymentInvoices: [
+        {
+          message_id: messageId,
+          author_account_id: INTO,
+          amount_sats: 100,
+          description: legacyAttempt.description,
+        },
+      ],
+      repaymentContext: {
+        goal_currency: 'USD',
+        goal_amount: '2.00',
+        goal_term_days: 1,
+        goal_debt_frozen: false,
+      },
+      repaymentPayers: [
+        { account_id: INTO, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+    });
+    await expect(
+      mergeAccounts(unavailableUnits.db, { from: INTO, into: FINAL, verify: 'into' }),
+    ).resolves.toEqual({ ok: false, error: 'repayment_unavailable' });
+    expect(
+      unavailableUnits.queries.some((query) =>
+        /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart()),
+      ),
+    ).toBe(false);
+  });
+
   it('keeps an expired part invoice index distinct through legacy conversion and late receipt', async () => {
     const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const paidAt = new Date('2026-11-11T12:00:00.000Z');
@@ -702,7 +921,23 @@ describe('mergeAccounts', () => {
             payment_claimed: false,
           },
         ],
-        historicalRepaymentInvoiceConflicts: [{ message_id: PROFILE }],
+        historicalRepaymentInvoices: [
+          {
+            message_id: PROFILE,
+            author_account_id: FROM,
+            amount_sats: 100,
+            description,
+          },
+        ],
+        repaymentContext: {
+          goal_currency: 'BTC',
+          goal_amount: '100',
+          goal_term_days: 1,
+          goal_debt_frozen: false,
+        },
+        repaymentPayers: [
+          { account_id: FROM, sats: 100, usd: null, chf: null, eur: null, php: null },
+        ],
       });
 
       await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
@@ -720,7 +955,6 @@ describe('mergeAccounts', () => {
       expect(partCollisionRefusal).toBeGreaterThan(openRefusal);
       expect(historicalRefusal).toBeGreaterThan(partCollisionRefusal);
       expect(historical?.params).toEqual([FROM, INTO]);
-      expect(historical?.text).toContain('WITH historical_invoices AS');
       expect(historical?.text).toContain('credit.goal_repayable IS TRUE');
       expect(historical?.text).toContain("historical.result = 'ok'");
       expect(historical?.text).toContain("historical.description LIKE 'repay:%'");
@@ -731,15 +965,10 @@ describe('mergeAccounts', () => {
       expect(historical?.text).toContain(
         "historical.description LIKE 'repayp:%:' || $2::text || ':%'",
       );
-      expect(historical?.text).not.toContain('historical.created_at');
+      expect(historical?.text).toContain('ORDER BY historical.created_at, historical.id');
       expect(historical?.text).not.toContain('historical.payment_hash');
       expect(historical?.text).not.toContain('historical.pr');
-      expect(historical?.text).toContain('FROM message_repayment AS settled');
-      expect(historical?.text).toContain('settled.day_index::numeric');
-      expect(historical?.text).toContain('FROM message_repayment_part AS settled_part');
-      expect(historical?.text).toContain('settled_part.part_index::numeric');
-      expect(historical?.text).toContain('settled_part.units = ((historical.part)[3])::numeric');
-      expect(historical?.text).toContain('settled_part.sats = historical.amount_sats');
+      expect(historical?.text).not.toContain('FROM message_repayment AS settled');
       expect(
         queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
       ).toBe(false);
@@ -761,7 +990,16 @@ describe('mergeAccounts', () => {
           payment_claimed: true,
         },
       ],
-      claimOnlyRepayment: true,
+      repaymentParts: [
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 0,
+          units: 100,
+          sats: 100,
+          paid_at: new Date(0),
+        },
+      ],
     });
 
     await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
@@ -772,11 +1010,10 @@ describe('mergeAccounts', () => {
     expect(open?.text).toContain('AS payment_claimed');
     const exact = queries.find(
       (query) =>
-        query.text.includes('AS claim_only') &&
-        query.text.includes('FROM message_repayment_part AS settled'),
+        query.text.includes('FROM message_repayment_part') &&
+        query.text.includes('ORDER BY day_index ASC'),
     );
-    expect(exact?.text).toContain('settled.part_index = $5::integer');
-    expect(exact?.params).toEqual([paymentHash, PROFILE, 0, INTO, 1, '100', 100]);
+    expect(exact?.params).toEqual([PROFILE]);
     expect(
       queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
     ).toBe(false);
@@ -796,7 +1033,16 @@ describe('mergeAccounts', () => {
           payment_claimed: true,
         },
       ],
-      claimOnlyRepayment: false,
+      repaymentParts: [
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 1,
+          units: 100,
+          sats: 100,
+          paid_at: new Date(0),
+        },
+      ],
     });
 
     await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
@@ -817,6 +1063,14 @@ describe('mergeAccounts', () => {
           created_at: new Date(),
           pr: 'malformed-repayment',
           payment_claimed: false,
+        },
+      ],
+      historicalRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          description: 'repay:not-canonical',
         },
       ],
     });

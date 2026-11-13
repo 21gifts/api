@@ -4786,18 +4786,23 @@ Under those locks and before any write, the merge is refused when both
 identities gave to the same repayable credit and that credit has any settled
 legacy repayment or repayment part. It is also refused whenever a successfully
 issued historical `repay:` or `repayp:` invoice has either identity as its
-current author or embedded recipient and lacks its exact settlement row. This
-historical-invoice refusal applies to single- and dual-giver credits regardless
-of expiry or payment-hash claim. `message_invoice` does not persist the LNURL
-provider pubkey used at issuance, so moving its author could make a valid late
-receipt fail provider validation against the survivor's current wallet.
+current author or embedded recipient and lacks its exact settlement. A legacy
+`repay:` invoice whose row was converted by an earlier account merge is settled
+by that one canonical part: message, current recipient, day, reconstructed
+full-share units, stored sats, and the deterministic next `partIndex` must all
+match. The legacy row is still deleted, and the canonical part is counted once.
+This historical-invoice refusal applies to single- and dual-giver credits
+regardless of expiry or payment-hash claim. `message_invoice` does not persist
+the LNURL provider pubkey used at issuance, so moving its author could make a
+valid late receipt fail provider validation against the survivor's current wallet.
 It is also refused while a successful, unpaid, unexpired `repay:` or `repayp:`
 invoice embeds either identity on any affected source-funded credit. A
 payment-hash claim counts as paid here only when the invoice's exact settlement
-row exists for its current recipient: message, recipient, and day for legacy,
-plus `partIndex`, units, and sats for a canonical part. A claim without that
-exact row refuses the merge even after the invoice expires. Therefore no part
-recipient move can run while that claim is pending, and an equal-sized sibling
+exists for its current recipient: message, recipient, and day for legacy, or
+the converted identity above, plus `partIndex`, units, and sats for a canonical
+part invoice. A claim without that exact settlement refuses the merge even after
+the invoice expires. Therefore no part recipient move can run while that claim
+is pending, and an equal-sized sibling
 part is never evidence for it. The survivor need not have given to that credit:
 the open reservation cannot be repointed after the source identity is merged.
 

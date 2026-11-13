@@ -4830,12 +4830,13 @@ describe('Postgres repayment retry after account merge', () => {
     }
   });
 
-  test('a claim-only retry settles once before its repayment survives a later merge', async () => {
+  test('a claim-only retry settles once and converted legacy survives a second merge', async () => {
     for (const kind of ['legacy', 'part'] as const) {
       const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
       const authorId = crypto.randomUUID();
       const fromId = crypto.randomUUID();
       const intoId = crypto.randomUUID();
+      const finalId = crypto.randomUUID();
       const loanId = crypto.randomUUID();
       const receiptId = `receipt-${crypto.randomUUID()}`;
       const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
@@ -4848,6 +4849,7 @@ describe('Postgres repayment retry after account merge', () => {
           [authorId, 'a'],
           [fromId, 'b'],
           [intoId, 'c'],
+          [finalId, 'd'],
         ] as const) {
           await auth.createAccount({
             id,
@@ -4951,7 +4953,22 @@ describe('Postgres repayment retry after account merge', () => {
         expect(
           await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
         ).toEqual(expect.objectContaining({ ok: true }));
-        const mergedSettlement = { ...settlement, recipientAccountId: intoId };
+        const survivingId = kind === 'legacy' ? finalId : intoId;
+        if (kind === 'legacy') {
+          expect(
+            await mergeAccounts(mergeDb, { from: intoId, into: finalId, verify: 'into' }),
+          ).toEqual(expect.objectContaining({ ok: true }));
+          expect(
+            await client.query<{ n: number }>(
+              `SELECT (
+                 (SELECT COUNT(*) FROM message_repayment WHERE message_id = $1::uuid) +
+                 (SELECT COUNT(*) FROM message_repayment_part WHERE message_id = $1::uuid)
+               )::integer AS n`,
+              [loanId],
+            ),
+          ).toEqual([{ n: 1 }]);
+        }
+        const mergedSettlement = { ...settlement, recipientAccountId: survivingId };
         // A legacy row is intentionally canonicalized to a part by the merge,
         // so only the unchanged exact part identity remains an idempotent retry.
         expect(
@@ -4972,8 +4989,9 @@ describe('Postgres repayment retry after account merge', () => {
            ORDER BY recipient_account_id`,
           [loanId],
         );
-        expect(rows).toEqual([{ recipient_account_id: intoId, n: 1 }]);
+        expect(rows).toEqual([{ recipient_account_id: survivingId, n: 1 }]);
         expect(await auth.getAccount(fromId)).toBeUndefined();
+        expect((await auth.getAccount(intoId)) === undefined).toBe(kind === 'legacy');
       } finally {
         if (ready) {
           await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1', [
@@ -4986,11 +5004,10 @@ describe('Postgres repayment retry after account merge', () => {
           ]);
           await client.execute('DELETE FROM message_repayment WHERE message_id = $1', [loanId]);
           await client.execute('DELETE FROM message WHERE id = $1', [loanId]);
-          await client.execute('DELETE FROM account WHERE id = $1 OR id = $2 OR id = $3', [
-            authorId,
-            fromId,
-            intoId,
-          ]);
+          await client.execute(
+            'DELETE FROM account WHERE id = $1 OR id = $2 OR id = $3 OR id = $4',
+            [authorId, fromId, intoId, finalId],
+          );
         }
         await closeIfPossible(sql);
       }
