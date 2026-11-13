@@ -494,9 +494,14 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
   let daysPaid = 0;
   let next: { dayIndex: number; sats: number; recipientAccountId: string } | null = null;
   let price: Awaited<ReturnType<typeof sharePricer>> | null = null;
+  let dueShares = new Map<string, ShareState>();
   if (fundedAt !== null) {
     const plan = await duePlan(deps, row, nowMs, { owed, paid, parts });
-    price = plan.due.length > 0 ? await sharePricer(deps, row).catch(() => null) : null;
+    dueShares = new Map(
+      plan.due.map((share) => [`${share.dayIndex}:${share.accountId}`, share] as const),
+    );
+    price =
+      plan.due.length > 0 ? await sharePartsPricer(deps, row, unpaidSharesParts(plan.due)) : null;
     const share = await nextShare(deps, row, nowMs, { plan, price });
     if (share.error !== null) {
       return c.json({ error: share.error }, share.status);
@@ -505,11 +510,13 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
     daysPaid = share.daysPaid;
     if (share.share !== null) {
       const nextShareState = share.share;
-      const nextLine = lines.find(
-        (line) =>
-          line.dayIndex === nextShareState.dayIndex && line.accountId === nextShareState.accountId,
-      ) as (typeof lines)[number];
-      const unpaidSats = (price as (units: bigint) => number)(nextLine.units - nextLine.paidUnits);
+      const state = dueShares.get(
+        `${nextShareState.dayIndex}:${nextShareState.accountId}`,
+      ) as ShareState;
+      const unpaidSats = pricedSum(
+        price as Awaited<ReturnType<typeof sharePricer>>,
+        unpaidShareParts(state),
+      ) as number;
       next = {
         dayIndex: nextShareState.dayIndex,
         sats: unpaidSats,
@@ -565,7 +572,14 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
           waiting: waits(line),
           via: 'lightning',
           dueSats:
-            line.status === 'due' && price !== null && remainder > 0n ? price(remainder) : null,
+            line.status === 'due' && price !== null && remainder > 0n
+              ? pricedSum(
+                  price,
+                  unpaidShareParts(
+                    dueShares.get(`${line.dayIndex}:${line.accountId}`) as ShareState,
+                  ),
+                )
+              : null,
         };
       }),
       next,
@@ -993,10 +1007,12 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
 function billableSharePart(share: ShareState): {
   units: bigint;
   description: string;
+  open?: true;
+  amountSats?: number;
 } {
   const open = share.openParts[0];
   if (open !== undefined) {
-    return { units: open.units, description: open.description };
+    return open;
   }
   const units = share.units - share.paidUnits;
   return {
@@ -1058,9 +1074,9 @@ async function repaymentDueBillsLocked(
   if (plan.due.length === 0) {
     return c.json({ bills: [], waiting: [] }, 200);
   }
-  // A spot read that fails is the same 503 as a missing rate.
-  const price = await sharePricer(deps, opened.row).catch(() => null);
-  if (price === null) {
+  const dueParts = unpaidSharesParts(plan.due);
+  const price = await sharePartsPricer(deps, opened.row, dueParts);
+  if (price === null || pricedSum(price, dueParts) === null) {
     return c.json({ error: 'Ask amount is unavailable' }, 503);
   }
   const fiat = isFiatCredit(opened.row);
@@ -1090,10 +1106,7 @@ async function repaymentDueBillsLocked(
       continue;
     }
     const waitingUnits = share.units - share.paidUnits;
-    const waitingSats = price(waitingUnits);
-    if (waitingSats === null) {
-      return c.json({ error: 'Ask amount is unavailable' }, 503);
-    }
+    const waitingSats = pricedSum(price, unpaidShareParts(share)) as number;
     const giver = await giverOf(share.accountId);
     const waitingLine = {
       dayIndex: share.dayIndex,
@@ -1108,7 +1121,7 @@ async function repaymentDueBillsLocked(
       continue;
     }
     const part = billableSharePart(share);
-    const sats = price(part.units) as number;
+    const sats = pricedSum(price, [part]) as number;
     const line = {
       dayIndex: share.dayIndex,
       recipientAccountId: share.accountId,
@@ -1201,7 +1214,7 @@ interface PrepayPlan {
   allocation: ReturnType<typeof allocateRepayment>;
   /** Largest prefix that cannot hit an existing-payment conflict. */
   maxUnits: bigint;
-  maxSats: number | null;
+  maxSats: number;
   maxAmount: string | null;
   /** The accepted prefix ended because the next receivable share conflicts. */
   stoppedAtBlockingShare: boolean;
@@ -1247,11 +1260,21 @@ async function prepayPlan(
     maxParts,
   );
   const maximum = maximumAcceptedRepayment(remainingShares);
-  const price = maximum.usedUnits === 0n ? () => 0 : await sharePricer(deps, row).catch(() => null);
-  if (price === null) {
+  const waitingKeys = new Set(
+    allocation.waiting.map((share) => `${share.dayIndex}:${share.accountId}`),
+  );
+  const pricedParts = [
+    ...maximum.parts,
+    ...unpaidSharesParts(
+      remainingShares.filter((share) => waitingKeys.has(`${share.dayIndex}:${share.accountId}`)),
+    ),
+  ];
+  const price = await sharePartsPricer(deps, row, pricedParts);
+  if (price === null || pricedSum(price, pricedParts) === null) {
     return 'unavailable';
   }
-  const maxSats = pricedSum(price, maximum.parts);
+  // `maximum.parts` is a prefix of the successfully priced parts above.
+  const maxSats = pricedSum(price, maximum.parts) as number;
   return {
     allocation,
     maxUnits: maximum.usedUnits,
@@ -1435,9 +1458,6 @@ async function repaymentAmountLocked(
   if (plan === 'unavailable') {
     return c.json({ error: 'Ask amount is unavailable' }, 503);
   }
-  if (plan.maxSats === null) {
-    return c.json({ error: 'Ask amount is unavailable' }, 503);
-  }
   if (plan.allocation.maxUnits === 0n) {
     return c.json({ error: NOTHING_DUE_BODY }, 400);
   }
@@ -1526,7 +1546,7 @@ async function repaymentAmountLocked(
     for (const part of allocation.parts) {
       const key = partKey(part);
       const share = shares.get(`${part.dayIndex}:${part.accountId}`) as ShareState;
-      const sats = plan.price(part.units) as number;
+      const sats = pricedSum(plan.price, [part]) as number;
       const giver = await giverOf(part.accountId);
       const line = {
         dayIndex: part.dayIndex,
@@ -1638,16 +1658,30 @@ async function repaymentAmountLocked(
   });
   const bills = finalParts.map((part) => completed.get(partKey(part)) as Record<string, unknown>);
   const waiting: Record<string, unknown>[] = [];
-  for (const share of allocation.waiting) {
-    const sats = plan.price(share.units) as number;
-    const giver = await giverOf(share.accountId);
+  for (const waitingShare of allocation.waiting) {
+    const share = shares.get(`${waitingShare.dayIndex}:${waitingShare.accountId}`) as ShareState;
+    const completedIndexes = new Set(
+      [...completedParts.values()]
+        .filter(
+          (part) =>
+            part.dayIndex === waitingShare.dayIndex && part.accountId === waitingShare.accountId,
+        )
+        .map((part) => part.partIndex),
+    );
+    const remainder = {
+      ...share,
+      paidUnits: share.paidUnits + fixedUnitsForShare(share.dayIndex, share.accountId),
+      openParts: share.openParts.filter((part) => !completedIndexes.has(part.partIndex)),
+    };
+    const sats = pricedSum(plan.price, unpaidShareParts(remainder)) as number;
+    const giver = await giverOf(waitingShare.accountId);
     waiting.push({
-      dayIndex: share.dayIndex,
-      recipientAccountId: share.accountId,
+      dayIndex: waitingShare.dayIndex,
+      recipientAccountId: waitingShare.accountId,
       name: giver.name,
       username: giver.username,
       amountSats: sats,
-      amount: plan.fiat ? formatCents(share.units) : null,
+      amount: plan.fiat ? formatCents(waitingShare.units) : null,
     });
   }
   const amountSats = bills.reduce((sum, bill) => sum + Number(bill['amountSats']), 0);
@@ -1701,8 +1735,9 @@ async function openCredit(
 /**
  * The oldest due, unpaid share whose giver can receive. Shares of a giver who
  * cannot receive are skipped; `waiting` says some were. A due share that
- * cannot be priced (a fiat loan with no spot, or a spot read that fails) is
- * 503, whoever its giver is.
+ * has unreserved units that cannot be priced (a fiat loan with no spot, or a
+ * spot read that fails) is 503, whoever its giver is. Open bills use their
+ * stored sats without a spot.
  *
  * @param deps - Store, auth, and optional spot store.
  * @param row - Funded credit note.
@@ -1754,11 +1789,12 @@ async function nextShare(
   if (plan.due.length === 0) {
     return { daysDue, daysPaid, share: null, waiting: false, error: null, status: 400 };
   }
-  // Every due share needs a price, whether or not its giver can receive. A spot
-  // read that fails is the same 503 as a missing rate.
+  const dueParts = unpaidSharesParts(plan.due);
+  // Every unreserved due unit needs a price, whether or not its giver can
+  // receive. Fully reserved shares need no spot.
   const price =
-    prepared === undefined ? await sharePricer(deps, row).catch(() => null) : prepared.price;
-  if (price === null || plan.due.some((share) => price(share.units - share.paidUnits) === null)) {
+    prepared === undefined ? await sharePartsPricer(deps, row, dueParts) : prepared.price;
+  if (price === null || pricedSum(price, dueParts) === null) {
     return {
       daysDue,
       daysPaid,
@@ -1774,7 +1810,7 @@ async function nextShare(
   }
   const openPart = payable.openParts[0];
   const units = openPart === undefined ? payable.units - payable.paidUnits : openPart.units;
-  const sats = price(units) as number;
+  const sats = (openPart?.amountSats ?? price(units)) as number;
   return {
     daysDue,
     daysPaid,
@@ -1829,6 +1865,37 @@ function pricedSum(
     total += sats;
   }
   return total;
+}
+
+type PricedSharePart = { units: bigint; open?: boolean; amountSats?: number };
+
+/** Open bills at stored sats, followed by the unreserved remainder of one share. */
+function unpaidShareParts(
+  share: Pick<ShareState, 'units' | 'paidUnits' | 'openParts'>,
+): PricedSharePart[] {
+  const reservedUnits = share.openParts.reduce((sum, part) => sum + part.units, 0n);
+  const unreservedUnits = share.units - share.paidUnits - reservedUnits;
+  return unreservedUnits > 0n
+    ? [...share.openParts, { units: unreservedUnits }]
+    : [...share.openParts];
+}
+
+/** Flatten the stored and unreserved parts of several unpaid shares. */
+function unpaidSharesParts(
+  shares: readonly Pick<ShareState, 'units' | 'paidUnits' | 'openParts'>[],
+): PricedSharePart[] {
+  return shares.flatMap(unpaidShareParts);
+}
+
+/** Read a pricer only when at least one part has not already been invoiced. */
+async function sharePartsPricer(
+  deps: RepaymentDeps,
+  row: MessageRow,
+  parts: readonly PricedSharePart[],
+): Promise<Awaited<ReturnType<typeof sharePricer>> | null> {
+  return parts.some((part) => part.open !== true)
+    ? sharePricer(deps, row).catch(() => null)
+    : () => 0;
 }
 
 /**
@@ -1941,9 +2008,10 @@ async function loanRow(
   if (open.length === 0) {
     return null;
   }
-  // Read the spot only now: a repaid loan is left out without it. A failing
-  // read is 503; a missing currency rate leaves sats null.
-  const price = await sharePricer(deps, row).catch(() => null);
+  // Read the spot only when an unpaid unit is not covered by an open bill. A
+  // failing read is 503; a missing currency rate leaves new-unit sats null.
+  const openParts = unpaidSharesParts(open);
+  const price = await sharePartsPricer(deps, row, openParts);
   if (price === null) {
     return 'unavailable';
   }
@@ -1953,10 +2021,7 @@ async function loanRow(
     .filter((item) => !partKeys.has(`${item.dayIndex}:${item.recipientAccountId}`))
     .reduce((sum, item) => sum + item.dueSats, 0);
   const repaidSats = paidParts.reduce((sum, part) => sum + part.sats, legacyRepaidSats);
-  const openSats = pricedSum(
-    price,
-    open.map((share) => ({ units: share.units - share.paidUnits })),
-  );
+  const openSats = pricedSum(price, openParts);
   const payable = plan.due.filter((share) => share.canReceive);
   const waiting = plan.due.filter((share) => !share.canReceive);
   const remainderUnits = (shares: readonly ShareState[]): bigint =>
@@ -1981,16 +2046,10 @@ async function loanRow(
     maxSats: pricedSum(price, maximum.parts),
     maxAmount: cents(maximum.usedUnits),
     due: {
-      payableSats: pricedSum(
-        price,
-        payable.map((share) => ({ units: share.units - share.paidUnits })),
-      ),
+      payableSats: pricedSum(price, unpaidSharesParts(payable)),
       payableAmount: cents(remainderUnits(payable)),
       payablePeople: people(payable),
-      waitingSats: pricedSum(
-        price,
-        waiting.map((share) => ({ units: share.units - share.paidUnits })),
-      ),
+      waitingSats: pricedSum(price, unpaidSharesParts(waiting)),
       waitingAmount: cents(remainderUnits(waiting)),
       waitingPeople: people(waiting),
       waitingShares: waiting.length,
@@ -2002,10 +2061,7 @@ async function loanRow(
         ? null
         : {
             dueOn: repaymentDueDate(fundedAt.getTime(), nextDay, row.id),
-            sats: pricedSum(
-              price,
-              nextShares.map((share) => ({ units: share.units - share.paidUnits })),
-            ),
+            sats: pricedSum(price, unpaidSharesParts(nextShares)),
             amount: cents(remainderUnits(nextShares)),
           },
   };
@@ -2061,17 +2117,13 @@ async function lenderWaiting(
     if (mine.length === 0) {
       continue;
     }
-    const price = await sharePricer(deps, row).catch(() => null);
+    const mineParts = unpaidSharesParts(mine);
+    const price = await sharePartsPricer(deps, row, mineParts);
     if (price === null) {
       return 'unavailable';
     }
     shares += mine.length;
-    loanSats.push(
-      pricedSum(
-        price,
-        mine.map((share) => ({ units: share.units - share.paidUnits })),
-      ),
-    );
+    loanSats.push(pricedSum(price, mineParts));
   }
   return {
     shares,

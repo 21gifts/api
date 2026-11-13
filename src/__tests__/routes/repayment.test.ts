@@ -2390,7 +2390,7 @@ describe('repayment from the in-app wallet', () => {
       expect(response.status).toBe(409);
       expect(await response.json()).toEqual({ error: 'A payment for this share is still open' });
     }
-    expect(reads).toBe(4);
+    expect(reads).toBe(0);
   });
 
   it('reuses a prepay Spark invoice and refuses an open bill for an old address', async () => {
@@ -3237,6 +3237,69 @@ describe('repayment from the in-app wallet', () => {
       waiting: [],
     });
     expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toHaveLength(1);
+  });
+
+  it('adds stored invoice sats to the spot price of only the unreserved remainder', async () => {
+    const rates = { usd: '50000.00' };
+    const { app, messages, clock } = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '1.00',
+      termDays: 2,
+      fundedAt: new Date(Date.UTC(2027, 1, 28, 12)),
+      rates: async () => spot({ USD: rates.usd }),
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true, fiatAmount: '1.00' }],
+    });
+    await messages.recordInvoiceAttempt(openPartAttempt(200, 10n, 50n, new Date(clock.now)));
+    await messages.recordInvoiceAttempt({
+      ...openPartAttempt(200, 10n, 50n, new Date(clock.now)),
+      description: repaymentPartDescription(1, WALLET_GIVER, 0, 10n, 50n),
+    });
+    rates.usd = '100000.00';
+
+    const loan = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(loan).toMatchObject({
+      totalSats: 1200,
+      maxSats: 1200,
+      due: { payableSats: 600 },
+      next: { sats: 600 },
+    });
+
+    const status = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as {
+      next: { sats: number };
+      repayments: Array<{ dayIndex: number; dueSats: number | null }>;
+    };
+    expect(status.next.sats).toBe(600);
+    expect(status.repayments.find((line) => line.dayIndex === 0)?.dueSats).toBe(600);
+  });
+
+  it('reuses a fully reserved fiat invoice when the spot is unavailable', async () => {
+    const rates = vi.fn<() => Promise<FxSpotQuote>>(() => Promise.reject(new Error('spot down')));
+    const { app, messages, clock } = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '0.21',
+      termDays: 1,
+      rates,
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true, fiatAmount: '0.21' }],
+    });
+    await messages.recordInvoiceAttempt(openPartAttempt(37, 21n, 21n, new Date(clock.now)));
+
+    const status = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      next: { sats: 37 },
+      repayments: [{ dueSats: 37 }],
+    });
+    const listed = await loans(app);
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toMatchObject({
+      loans: [{ totalSats: 37, maxSats: 37, due: { payableSats: 37 } }],
+    });
+
+    const response = await post(app, `/messages/${CREDIT}/repayment`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ amountSats: 37 });
+    expect(rates).not.toHaveBeenCalled();
   });
 
   it('keeps open fiat invoice sats fixed in every repayment maximum', async () => {
@@ -4341,7 +4404,7 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
-  it('loads the spot for lender reservations', async () => {
+  it('does not load the spot for fully reserved lender shares', async () => {
     const setup = async (
       rates: () => Promise<FxSpotQuote>,
       claimOnly: boolean,
@@ -4385,22 +4448,26 @@ describe('repayment from the in-app wallet', () => {
 
     const pricedRates = vi.fn<() => Promise<FxSpotQuote>>(async () => spot({ USD: '100000.00' }));
     const priced = await setup(pricedRates, true);
-    expect((await request(priced.app)).status).toBe(200);
-    expect(pricedRates).toHaveBeenCalledOnce();
+    const claimed = await request(priced.app);
+    expect(claimed.status).toBe(200);
+    expect(await claimed.json()).toMatchObject({ lenderWaiting: { sats: 21 } });
+    expect(pricedRates).not.toHaveBeenCalled();
 
     const failingRates = vi.fn<() => Promise<FxSpotQuote>>(() =>
       Promise.reject(new Error('spot down')),
     );
     const failing = await setup(failingRates, true);
-    const unavailable = await request(failing.app);
-    expect(unavailable.status).toBe(503);
-    expect(await unavailable.json()).toEqual({ error: 'Ask amount is unavailable' });
-    expect(failingRates).toHaveBeenCalledOnce();
+    const available = await request(failing.app);
+    expect(available.status).toBe(200);
+    expect(await available.json()).toMatchObject({ lenderWaiting: { sats: 21 } });
+    expect(failingRates).not.toHaveBeenCalled();
 
     const fixedRates = vi.fn<() => Promise<FxSpotQuote>>(async () => spot({ USD: '100000.00' }));
     const fixed = await setup(fixedRates, false);
-    expect((await request(fixed.app)).status).toBe(200);
-    expect(fixedRates).toHaveBeenCalledOnce();
+    const open = await request(fixed.app);
+    expect(open.status).toBe(200);
+    expect(await open.json()).toMatchObject({ lenderWaiting: { sats: 21 } });
+    expect(fixedRates).not.toHaveBeenCalled();
   });
 
   it('leaves the lender sum null without a spot and answers 503 when a lent loan cannot be computed', async () => {
