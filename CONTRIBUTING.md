@@ -358,7 +358,12 @@ The wallet rule in detail:
     `<username>@<host>` and the invoice (BOLT11 or Spark) issued for one
     payment.
   - The Fond account is a 21.gifts application, not a member, so its wallet
-    totals are public (`GET /fond/summary`).
+    totals (`GET /fond/summary`) and its completed payments
+    (`GET /fond/payments`) are public. Each payment shows its public id,
+    direction, amount, time, and the stored USD figure of a paid grant payout;
+    it shows no fee. The other side is named (account id, username, name) only
+    for a direct transfer between a member and the Fond; every other payment
+    shows no other side.
   - `GET /wallets/stats` publishes totals over all wallets that never name or
     single out one account.
   - The owner's previous-wallet lookup (`GET /me/previous-wallets`) reads only
