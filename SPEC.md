@@ -6613,13 +6613,13 @@ Success is always **200** (never 404 for an unknown address):
 (`ownerFundingStatus`), so this answer keeps its five values. Unknown address and `basis` are always
 `{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
 2026-10-01 a missing/pending/rejected/withdrawn grant on a non-`basis` account is
-`eligible: true` with `status` still from `effectiveStatus`; from that day
+`eligible: true` with `status` still from `ownerFundingStatus`; from that day
 `eligible` is false unless admitted or trial-today **and**, from the UTC day
 `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts
 recovery share is stored for the member's current verified wallet
 ([docs/social-recovery.md](docs/social-recovery.md)). From that day a member in the grant
 program without that share is `{ "eligible": false, "status": "admitted" }`
-(or `"trial"`): `status` stays the effective grant status.
+(or `"trial"`): `status` stays the grant status (`ownerFundingStatus`).
 
 ### `GET /invoices/posted`
 
