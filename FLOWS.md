@@ -409,7 +409,11 @@ member→platform via `POST /contact`. Inbox threads have per-viewer unread
 via `GET /conversations` (per-row `unread` / `unreadMessageCount`; envelope
 `unreadCount` is the number of unread threads) and
 `POST /conversations/:id/read`. NIP-17 gift wraps and legacy kind:4
-inbound; outbound wraps with the sender nsec (platform nsec for staff on
+inbound (relay query from three days back). A sender that is not a 21.gifts
+account reaches the inbox only as a known contact (an entitled external
+zapper, or a Damus thread in which the member already wrote), when not
+blocked, and within a per-pubkey and global limit; anything else stays on
+Nostr with no thread and no push. Outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
 with PNs. Conversation POST may include `{ photo }` / `{ photos }`
 (JPEG/PNG/WebP, ≤10, every kind; empty text is allowed only when at least one photo is present). Photo-bearing rows skip Nostr; text-only Direct/Contact/Damus stay pending. Bytes via authenticated GET

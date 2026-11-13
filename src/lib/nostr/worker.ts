@@ -118,6 +118,16 @@ export const HOT_ZAP_SINCE_SLACK_S = 600;
 /** Newest invoice attempts scanned for hot zap targets. */
 export const HOT_ZAP_INVOICE_LIMIT = 50;
 
+/**
+ * Look-back of the inbound direct-message REQ (`since` = now minus this, in
+ * seconds). NIP-59 gift wraps (kind 1059) carry a `created_at` randomised up
+ * to two days into the past; three days covers that plus slack.
+ */
+export const INBOUND_DM_SINCE_S = 3 * 24 * 60 * 60;
+
+/** Most remembered inbound direct-message decrypt outcomes per conversation store. */
+const INBOUND_DM_SKIP_CACHE_MAX = 10_000;
+
 /** Which part of the worker a tick runs. */
 export type NostrWorkerTickMode = 'all' | 'fast' | 'ingest';
 
@@ -147,6 +157,11 @@ export interface NostrWorkerDeps {
   verifyKind1?: (event: NostrEventFrame) => boolean;
   /** Optional external-reply limiter; one instance is retained per worker/store by default. */
   externalLimiter?: ExternalIngestLimiter;
+  /**
+   * Optional limiter for direct messages from external pubkeys; separate from
+   * `externalLimiter`, one instance is retained per conversation store by default.
+   */
+  externalDmLimiter?: ExternalIngestLimiter;
   /** Optional private-message store (skip DMs when omitted). */
   conversations?: ConversationStore;
   /** Optional in-app store: inbound replies, notifyZap, profile-note notifyForumPost. */
@@ -208,6 +223,67 @@ function externalLimiterFor(deps: NostrWorkerDeps): ExternalIngestLimiter {
   const created = new ExternalIngestLimiter();
   externalLimiters.set(deps.messages, created);
   return created;
+}
+
+const externalDmLimiters = new WeakMap<ConversationStore, ExternalIngestLimiter>();
+
+/**
+ * Sender pubkey (or `null` when there is nothing to store) of an inbound
+ * direct message that was decrypted and then skipped, keyed by
+ * `<eventId>:<recipientPubkey>`. Holds no plaintext.
+ */
+type SkippedDirectMessage = { senderPubkey: string | null; createdAtS: number };
+const skippedDirectMessages = new WeakMap<ConversationStore, Map<string, SkippedDirectMessage>>();
+
+/** Resolve the injected direct-message limiter or retain one per conversation store. */
+function externalDmLimiterFor(
+  deps: NostrWorkerDeps,
+  store: ConversationStore,
+): ExternalIngestLimiter {
+  if (deps.externalDmLimiter !== undefined) {
+    return deps.externalDmLimiter;
+  }
+  const existing = externalDmLimiters.get(store);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new ExternalIngestLimiter();
+  externalDmLimiters.set(store, created);
+  return created;
+}
+
+/** Retain skipped direct-message outcomes per conversation store, dropping those older than `sinceS`. */
+function skippedDirectMessagesFor(
+  store: ConversationStore,
+  sinceS: number,
+): Map<string, SkippedDirectMessage> {
+  const existing = skippedDirectMessages.get(store);
+  if (existing === undefined) {
+    const created = new Map<string, SkippedDirectMessage>();
+    skippedDirectMessages.set(store, created);
+    return created;
+  }
+  for (const [key, entry] of existing) {
+    if (entry.createdAtS < sinceS) {
+      existing.delete(key);
+    }
+  }
+  return existing;
+}
+
+/**
+ * Remember a skipped direct message. A full cache keeps its entries and does
+ * not take new keys, so the remembered ones stay hits on every later pass.
+ */
+function rememberSkippedDirectMessage(
+  cache: Map<string, SkippedDirectMessage>,
+  key: string,
+  entry: SkippedDirectMessage,
+): void {
+  if (!cache.has(key) && cache.size >= INBOUND_DM_SKIP_CACHE_MAX) {
+    return;
+  }
+  cache.set(key, entry);
 }
 
 /** Retain external reply event ids currently being processed per message store. */
@@ -445,7 +521,10 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * call `notifyZap`. A member-note gift-reply does not call `notifyForumReply`.
  * When a conversation store is present, `'all'` / `'fast'` also
  * signs/publishes NIP-17 wraps; `'all'` / `'ingest'` REQs inbound kind:1059 /
- * kind:4 to member and platform pubkeys. Fast-lane ticks are not serialised
+ * kind:4 to member and platform pubkeys from now minus
+ * {@link INBOUND_DM_SINCE_S}, and stores one from a pubkey that is not an
+ * account only for an unblocked known contact within the direct-message
+ * limiter (see `indexInboundDirectMessages`). Fast-lane ticks are not serialised
  * (`setInterval` does not await the previous tick), except the S1 shop key
  * backfill and the shop kind 0 and kind 10002 passes, each skipped while its
  * previous pass for the same store is in flight and bounded to `WORKER_BATCH`
@@ -2041,6 +2120,42 @@ async function publishConversationBatch(
   }
 }
 
+/** Per-pubkey and global budget taken for one external direct message. */
+type DirectMessageAcquisition = { pubkey: string; atMs: number };
+
+/**
+ * REQ inbound kind:4 / kind:1059 direct messages to member and platform
+ * pubkeys with `since` = now minus {@link INBOUND_DM_SINCE_S} and store each
+ * on its thread, then notify the recipient.
+ *
+ * Member↔member and member↔platform messages are stored as before. A sender
+ * pubkey that is not a 21.gifts account is admitted only when it is not
+ * blocked (`listBlockedPubkeys` at pass start, then a fresh
+ * `isPubkeyBlocked`), it is a known contact of the recipient (an entitled
+ * external zapper from `listZapperPubkeys`, or the recipient's member↔Damus
+ * thread with that pubkey holds a message the member sent, see
+ * `memberWroteToDamus`), and the direct-message {@link ExternalIngestLimiter}
+ * (separate from the reply limiter) accepts it. Anything else is skipped
+ * silently: no thread, no row, no push, no log. The budget is released when
+ * nothing is stored after it was taken (failed decrypt or failed persist).
+ *
+ * A kind:4 sender is the envelope author, so it is admitted before the
+ * decrypt. A gift wrap's sender is known only after the unwrap; a skipped
+ * wrap's sender (or `null` when it holds nothing to store) is remembered per
+ * conversation store, without plaintext, so later passes in the window decide
+ * it without a second unwrap. A missing account secret is not remembered
+ * (nothing was decrypted), and a full memory takes no new entries.
+ *
+ * The query window is also checked on each received event, so a relay that
+ * ignores `since` changes nothing: an event older than `since` is skipped, and
+ * an event whose `created_at` is later than now plus
+ * {@link EXTERNAL_REPLY_FUTURE_SKEW_MS} is left for a later pass. Neither is
+ * decrypted, stored, or remembered, so no wrap outside the window occupies the
+ * memory.
+ *
+ * @param deps - Worker collaborators.
+ * @param urls - Zap relay URLs (space + public list).
+ */
 async function indexInboundDirectMessages(
   deps: NostrWorkerDeps,
   urls: readonly string[],
@@ -2055,10 +2170,42 @@ async function indexInboundDirectMessages(
     return;
   }
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
+  const sinceS = Math.floor(deps.now() / 1000) - INBOUND_DM_SINCE_S;
+  const latestS = Math.floor((deps.now() + EXTERNAL_REPLY_FUTURE_SKEW_MS) / 1000);
+  const zappers = new Set(
+    (await deps.messages.listZapperPubkeys()).map((value) => value.toLowerCase()),
+  );
+  const blocked = new Set(
+    (await deps.messages.listBlockedPubkeys()).map((value) => value.toLowerCase()),
+  );
+  const limiter = externalDmLimiterFor(deps, store);
+  const skipped = skippedDirectMessagesFor(store, sinceS);
+  const admitExternal = async (
+    recipientId: string,
+    senderPubkey: string,
+  ): Promise<DirectMessageAcquisition | null> => {
+    if (blocked.has(senderPubkey)) {
+      return null;
+    }
+    if (
+      !zappers.has(senderPubkey) &&
+      !(await store.memberWroteToDamus(recipientId, senderPubkey))
+    ) {
+      return null;
+    }
+    if (await deps.messages.isPubkeyBlocked(senderPubkey)) {
+      return null;
+    }
+    const atMs = deps.now();
+    if (!limiter.tryAcquire(senderPubkey, atMs)) {
+      return null;
+    }
+    return { pubkey: senderPubkey, atMs };
+  };
   for (let i = 0; i < ourPubkeys.length; i += REPLY_QUERY_CHUNK) {
     const chunk = ourPubkeys.slice(i, i + REPLY_QUERY_CHUNK);
     const events = await deps.querier.query(
-      { kinds: [4, 1059], '#p': chunk },
+      { kinds: [4, 1059], '#p': chunk, since: sinceS },
       urls,
       RELAY_TIMEOUT_MS,
     );
@@ -2080,6 +2227,9 @@ async function indexInboundDirectMessages(
       if (signed === null) {
         continue;
       }
+      if (signed.created_at < sinceS || signed.created_at > latestS) {
+        continue;
+      }
       const pTags = event.tags.filter((tag) => tag[0] === 'p' && typeof tag[1] === 'string');
       let ingested = false;
       for (const tag of pTags) {
@@ -2093,11 +2243,34 @@ async function indexInboundDirectMessages(
         if (recipient === undefined || ingested) {
           continue;
         }
+        const skipKey = `${signed.id}:${recipientPubkey}`;
+        const remembered = skipped.get(skipKey);
+        if (remembered !== undefined && remembered.senderPubkey === null) {
+          continue;
+        }
+        const knownSender =
+          event.kind === 4 ? event.pubkey.toLowerCase() : (remembered?.senderPubkey ?? null);
+        const remember = (senderPubkey: string | null): void => {
+          rememberSkippedDirectMessage(skipped, skipKey, {
+            senderPubkey,
+            createdAtS: signed.created_at,
+          });
+        };
+        let acquired: DirectMessageAcquisition | null = null;
+        let stored = false;
         try {
+          if (knownSender !== null && !byPubkey.has(knownSender)) {
+            acquired = await admitExternal(recipient.id, knownSender);
+            if (acquired === null) {
+              continue;
+            }
+          }
+          let decrypted = false;
           const plain = await withAccountSecret(
             deps,
             recipient.id,
             (secret): { senderPubkey: string; text: string; createdAt: number } | null => {
+              decrypted = true;
               if (event.kind === 1059) {
                 return unwrapNip17(signed, secret);
               }
@@ -2114,17 +2287,29 @@ async function indexInboundDirectMessages(
             },
           );
           if (plain === null) {
+            if (decrypted) {
+              remember(null);
+            }
             continue;
           }
           const text = normalizeForumText(plain.text, MESSAGE_INBOUND_REPLY_MAX_LENGTH);
           if (text === null || text === '') {
+            remember(null);
             continue;
           }
           const senderPubkey = plain.senderPubkey.toLowerCase();
           if (senderPubkey === recipientPubkey) {
+            remember(null);
             continue;
           }
           const sender = byPubkey.get(senderPubkey);
+          if (sender === undefined && acquired === null) {
+            acquired = await admitExternal(recipient.id, senderPubkey);
+            if (acquired === null) {
+              remember(senderPubkey);
+              continue;
+            }
+          }
           const createdAt = new Date(plain.createdAt * 1000);
           let thread: ConversationThread;
           if (sender !== undefined) {
@@ -2164,6 +2349,8 @@ async function indexInboundDirectMessages(
             },
             claimedUntil: null,
           });
+          stored = true;
+          skipped.delete(skipKey);
           try {
             await notifyConversationMessage({
               conversations: store,
@@ -2184,6 +2371,10 @@ async function indexInboundDirectMessages(
           ingested = true;
         } catch {
           logEvent('nostr.dm.inbound.failed', { eventId: event.id });
+        } finally {
+          if (!stored && acquired !== null) {
+            limiter.release(acquired.pubkey, acquired.atMs);
+          }
         }
       }
     }

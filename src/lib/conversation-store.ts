@@ -291,6 +291,17 @@ export interface ConversationStore {
   ): Promise<ConversationThread>;
 
   /**
+   * Whether the member↔Damus thread of this member and pubkey exists and holds
+   * at least one message the member sent (`senderAccountId` is the member).
+   * Never opens a thread.
+   *
+   * @param memberId - 21.gifts member (`accountA` of the thread).
+   * @param counterpartPubkey - External hex pubkey (matched lowercase).
+   * @returns `true` when the member already wrote in that thread.
+   */
+  memberWroteToDamus(memberId: string, counterpartPubkey: string): Promise<boolean>;
+
+  /**
    * Open or insert the closed singleton `moderator_group` thread.
    * `accountA` is the platform account; `accountB` and `counterpartPubkey`
    * are null. Unique on `kind`. Concurrent unique-violation re-selects.
@@ -938,6 +949,24 @@ export class InMemoryConversationStore implements ConversationStore {
         counterpartPubkey: pubkey,
         now,
       }),
+    );
+  }
+
+  memberWroteToDamus(memberId: string, counterpartPubkey: string): Promise<boolean> {
+    const pubkey = counterpartPubkey.toLowerCase();
+    const thread = this.#threads.find(
+      (row) =>
+        row.kind === 'member_damus' &&
+        row.accountA === memberId &&
+        row.counterpartPubkey === pubkey,
+    );
+    if (thread === undefined) {
+      return Promise.resolve(false);
+    }
+    return Promise.resolve(
+      this.#messages.some(
+        (row) => row.conversationId === thread.id && row.senderAccountId === memberId,
+      ),
     );
   }
 
@@ -1616,6 +1645,22 @@ export class PostgresConversationStore implements ConversationStore {
       throw new Error('conversation open failed');
     }
     return mapThread(row);
+  }
+
+  async memberWroteToDamus(memberId: string, counterpartPubkey: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM conversation c
+         JOIN conversation_message m ON m.conversation_id = c.id
+         WHERE c.kind = 'member_damus'
+           AND c.account_a = $1
+           AND c.counterpart_pubkey = $2
+           AND m.sender_account_id = $1
+       ) AS exists`,
+      [memberId, counterpartPubkey.toLowerCase()],
+    );
+    return rows[0]?.exists === true;
   }
 
   /**

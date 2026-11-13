@@ -600,6 +600,31 @@ describe('InMemoryConversationStore', () => {
     expect((await store.getById(opened.id))?.lastSenderAccountId).toBeNull();
   });
 
+  it('memberWroteToDamus is false when no Damus thread exists and opens none', async () => {
+    const store = new InMemoryConversationStore();
+    expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
+    expect(await store.listAll(10)).toEqual([]);
+  });
+
+  it('memberWroteToDamus is false when the Damus thread holds only inbound messages', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: null }));
+    const other = await store.openMemberDamus('other', 'aa'.repeat(32), NOW);
+    await store.appendMessage(
+      message({ id: 'm-2', conversationId: other.id, senderAccountId: 'other' }),
+    );
+    expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
+  });
+
+  it('memberWroteToDamus is true once the member sent in that Damus thread', async () => {
+    const store = new InMemoryConversationStore();
+    const opened = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'acc' }));
+    expect(await store.memberWroteToDamus('acc', 'AA'.repeat(32))).toBe(true);
+    expect(await store.memberWroteToDamus('acc', 'bb'.repeat(32))).toBe(false);
+  });
+
   it('hasInboundMessage is false for an empty thread', async () => {
     const store = new InMemoryConversationStore();
     const empty = await store.openMemberMember('a', 'b', NOW);
@@ -1207,6 +1232,26 @@ describe('PostgresConversationStore', () => {
     await expect(
       new PostgresConversationStore(sql).ensureModeratorGroup('plat', NOW),
     ).rejects.toThrow(/conversation open failed/);
+  });
+
+  it('memberWroteToDamus binds member and lowercase pubkey and returns true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ exists: true }];
+    const store = new PostgresConversationStore(sql);
+    expect(await store.memberWroteToDamus('acc', 'AA'.repeat(32))).toBe(true);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'aa'.repeat(32)]);
+    expect(sql.queries[0]?.text).toContain("c.kind = 'member_damus'");
+    expect(sql.queries[0]?.text).toContain('m.sender_account_id = $1');
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('memberWroteToDamus is false when EXISTS is false or missing', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ exists: false }];
+    const store = new PostgresConversationStore(sql);
+    expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
+    sql.nextRows = [];
+    expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
   });
 
   it('hasInboundMessage binds EXISTS inbound predicate and returns true', async () => {

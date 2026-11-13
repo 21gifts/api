@@ -11,7 +11,7 @@ import { InMemoryBannerStore } from '@/lib/banner-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
-import { encryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
+import { encryptKind4, unwrapNip17, wrapNip17 as wrapNip17AtWallClock } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -39,6 +39,7 @@ import { PostRateLimiter, REPLY_POST_CAPS } from '@/lib/nostr/rate-limit';
 import {
   HOT_ZAP_SINCE_SLACK_S,
   HOT_ZAP_WINDOW_MS,
+  INBOUND_DM_SINCE_S,
   runNostrWorkerTick,
   startNostrWorker,
   zapReceiptIngest,
@@ -46,7 +47,7 @@ import {
   WORKER_INTERVAL_MS,
   type NostrWorkerDeps,
 } from '@/lib/nostr/worker';
-import { ExternalIngestLimiter } from '@/lib/nostr/external';
+import { EXTERNAL_REPLY_FUTURE_SKEW_MS, ExternalIngestLimiter } from '@/lib/nostr/external';
 import { countingBytes } from '@/__tests__/helpers/counting-bytes';
 import { InMemoryPushStore } from '@/lib/push-store';
 import {
@@ -68,6 +69,19 @@ vi.mock('@/lib/nip05', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nip05')>();
   return { ...actual, nip05Directory: vi.fn(actual.nip05Directory) };
 });
+
+/**
+ * NIP-17 wrap dated as if made at the worker clock these tests pin
+ * (1_700_000_000_000), so its `created_at` is not in that clock's future.
+ */
+function wrapNip17(senderSecret: Uint8Array, recipientPubkeyHex: string, text: string): NostrEvent {
+  vi.useFakeTimers({ now: 1_700_000_000_000, toFake: ['Date'] });
+  try {
+    return wrapNip17AtWallClock(senderSecret, recipientPubkeyHex, text);
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 const mockedDecode = vi.mocked(decodeBolt11);
 
@@ -3416,6 +3430,7 @@ describe('runNostrWorkerTick', () => {
     expect(recipient).toBeDefined();
     const sender = generateSecretKey();
     const wrap = wrapNip17(sender, recipient as string, 'hello from damus');
+    await messages.recordZapper(getPublicKey(sender), 'receipt-dm-zapper', new Date(0));
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -4744,6 +4759,7 @@ describe('runNostrWorkerTick', () => {
     const recipient = (await auth.getNostrPublicKey('acc')) as string;
     const sender = generateSecretKey();
     const wrap = wrapNip17(sender, recipient, 'hello from damus');
+    await messages.recordZapper(getPublicKey(sender), 'receipt-dm-zapper', new Date(0));
     const querier = new RecordingQuerier();
     querier.events = [
       {
@@ -4830,6 +4846,7 @@ describe('runNostrWorkerTick', () => {
       const recipient = (await auth.getNostrPublicKey('acc')) as string;
       const sender = generateSecretKey();
       const wrap = wrapNip17(sender, recipient, 'hello from damus');
+      await messages.recordZapper(getPublicKey(sender), 'receipt-dm-zapper', new Date(0));
       const querier = new RecordingQuerier();
       querier.events = [
         {
@@ -9227,5 +9244,570 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       expect(shopEvents(ctx, identity, 10002)).toHaveLength(1);
     });
   });
+});
+
+describe('inbound direct-message admission', () => {
+  const NOW = 1_700_000_000_000;
+
+  function frame(event: NostrEvent): NostrEventFrame {
+    return {
+      id: event.id,
+      pubkey: event.pubkey,
+      kind: event.kind,
+      tags: event.tags as string[][],
+      content: event.content,
+      created_at: event.created_at,
+      sig: event.sig,
+    };
+  }
+
+  function kind4(secret: Uint8Array, recipient: string, text: string): NostrEventFrame {
+    return frame(
+      finalizeEvent(
+        {
+          kind: 4,
+          created_at: 1_699_999_000,
+          tags: [['p', recipient]],
+          content: encryptKind4(secret, recipient, text),
+        },
+        secret,
+      ),
+    );
+  }
+
+  async function setup(): Promise<{
+    auth: InMemoryAuthStore;
+    messages: InMemoryMessageStore;
+    conversations: InMemoryConversationStore;
+    notifications: InMemoryNotificationStore;
+    pushStore: InMemoryPushStore;
+    querier: RecordingQuerier;
+    recipient: string;
+    decrypts: () => number;
+  }> {
+    const { auth, messages } = await seed();
+    const recipient = (await auth.getNostrPublicKey('acc')) as string;
+    const getSecret = auth.getNostrSecret.bind(auth);
+    let count = 0;
+    auth.getNostrSecret = async (accountId: string) => {
+      count += 1;
+      return getSecret(accountId);
+    };
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/acc',
+      accountId: 'acc',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(0),
+      sessionToken: null,
+    });
+    return {
+      auth,
+      messages,
+      conversations: new InMemoryConversationStore(),
+      notifications: new InMemoryNotificationStore(),
+      pushStore,
+      querier: new RecordingQuerier(),
+      recipient,
+      decrypts: () => count,
+    };
+  }
+
+  type Ctx = Awaited<ReturnType<typeof setup>>;
+
+  async function tick(
+    ctx: Ctx,
+    extra: Partial<NostrWorkerDeps> = {},
+    now: number = NOW,
+  ): Promise<void> {
+    await runNostrWorkerTick(
+      deps({
+        messages: ctx.messages,
+        auth: ctx.auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier: ctx.querier,
+        now: () => now,
+        env: {},
+        conversations: ctx.conversations,
+        notificationStore: ctx.notifications,
+        pushStore: ctx.pushStore,
+        verifyKind1: () => true,
+        ...extra,
+      }),
+      'ingest',
+    );
+  }
+
+  async function expectNothingStored(ctx: Ctx): Promise<void> {
+    expect(await ctx.conversations.listAll(10)).toEqual([]);
+    expect(await ctx.conversations.listAllMessages(10)).toEqual([]);
+    expect(await ctx.notifications.listByRecipient('acc', 10)).toEqual([]);
+    expect(await ctx.pushStore.claimPending(10, NOW, 60_000)).toEqual([]);
+  }
+
+  async function storedTexts(ctx: Ctx): Promise<string[]> {
+    return (await ctx.conversations.listAllMessages(10)).map((row) => row.text);
+  }
+
+  it('queries kind:4 and kind:1059 with a since three days before now', async () => {
+    const ctx = await setup();
+    await tick(ctx);
+    const dmCall = ctx.querier.calls.find((call) => {
+      const kinds = call.filter['kinds'];
+      return Array.isArray(kinds) && kinds.includes(1059);
+    });
+    expect(INBOUND_DM_SINCE_S).toBe(3 * 24 * 60 * 60);
+    expect(dmCall?.filter['kinds']).toEqual([4, 1059]);
+    expect(dmCall?.filter['#p']).toEqual([ctx.recipient]);
+    expect(dmCall?.filter['since']).toBe(Math.floor(NOW / 1000) - INBOUND_DM_SINCE_S);
+  });
+
+  it('skips a kind:4 from an unknown pubkey without decrypting it', async () => {
+    const ctx = await setup();
+    ctx.querier.events = [kind4(generateSecretKey(), ctx.recipient, 'hi')];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(0);
+  });
+
+  it('skips a gift wrap from an unknown pubkey and does not unwrap it again', async () => {
+    const ctx = await setup();
+    ctx.querier.events = [frame(wrapNip17(generateSecretKey(), ctx.recipient, 'hi'))];
+    await tick(ctx);
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(1);
+  });
+
+  it('skips a blocked zapper before decrypting', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const pubkey = getPublicKey(sender);
+    await ctx.messages.recordZapper(pubkey, 'receipt-blocked-dm', new Date(0));
+    await ctx.messages.blockPubkeyAndHideRows(pubkey, new Date(1), 'acc', 'blocked-dm-message');
+    ctx.querier.events = [kind4(sender, ctx.recipient, 'hi')];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(0);
+  });
+
+  it('skips a blocked member-wrote-first contact', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const pubkey = getPublicKey(sender);
+    const thread = await ctx.conversations.openMemberDamus('acc', pubkey, new Date(NOW));
+    await ctx.conversations.appendMessage(memberDamusRow(thread.id, 'first'));
+    await ctx.messages.blockPubkeyAndHideRows(pubkey, new Date(1), 'acc', 'blocked-dm-message');
+    ctx.querier.events = [kind4(sender, ctx.recipient, 'hi')];
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['first']);
+    expect(ctx.decrypts()).toBe(0);
+  });
+
+  it('skips a sender blocked after the pass loaded its block list', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const pubkey = getPublicKey(sender);
+    await ctx.messages.recordZapper(pubkey, 'receipt-late-block', new Date(0));
+    ctx.messages.isPubkeyBlocked = async () => true;
+    const limiter = new ExternalIngestLimiter();
+    const acquire = vi.spyOn(limiter, 'tryAcquire');
+    ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'hi'))];
+    await tick(ctx, { externalDmLimiter: limiter });
+    await expectNothingStored(ctx);
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it('admits a gift wrap from an entitled zapper and notifies the recipient', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-dm', new Date(0));
+    ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'thanks'))];
+    await tick(ctx);
+    const threads = await ctx.conversations.listAll(10);
+    expect(threads.map((thread) => thread.kind)).toEqual(['member_damus']);
+    expect(await storedTexts(ctx)).toEqual(['thanks']);
+    expect(await ctx.pushStore.claimPending(10, NOW, 60_000)).toHaveLength(1);
+  });
+
+  it('admits a remembered gift wrap once its sender becomes a zapper', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'later'))];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-later', new Date(0));
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['later']);
+    expect(ctx.decrypts()).toBe(2);
+    await tick(ctx);
+    expect(ctx.decrypts()).toBe(2);
+  });
+
+  it('leaves an unknown gift wrap dated past the clock skew unread and unremembered', async () => {
+    const ctx = await setup();
+    const wrap = frame(wrapNip17(generateSecretKey(), ctx.recipient, 'ahead'));
+    ctx.querier.events = [{ ...wrap, created_at: Math.floor(NOW / 1000) + 365 * 24 * 60 * 60 }];
+    await tick(ctx);
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(0);
+  });
+
+  it('reads a future-dated gift wrap once its time is within the clock skew', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-ahead', new Date(0));
+    const aheadS = Math.floor((NOW + EXTERNAL_REPLY_FUTURE_SKEW_MS) / 1000) + 1;
+    const wrap = frame(wrapNip17(sender, ctx.recipient, 'soon'));
+    ctx.querier.events = [{ ...wrap, created_at: aheadS }];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(0);
+    await tick(ctx, {}, NOW + 1000);
+    expect(await storedTexts(ctx)).toEqual(['soon']);
+    expect(ctx.decrypts()).toBe(1);
+  });
+
+  function memberDamusRow(
+    conversationId: string,
+    text: string,
+    senderAccountId: string | null = 'acc',
+  ): Parameters<InMemoryConversationStore['appendMessage']>[0] {
+    return {
+      id: crypto.randomUUID(),
+      conversationId,
+      text,
+      createdAt: new Date(NOW - 1000),
+      senderAccountId,
+      senderPubkey: null,
+      name: 'Ada',
+      actorAccountId: senderAccountId,
+      actorName: '',
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+      sats: 0,
+    };
+  }
+
+  it('admits a kind:4 when the member wrote first in the Damus thread', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const thread = await ctx.conversations.openMemberDamus(
+      'acc',
+      getPublicKey(sender),
+      new Date(NOW),
+    );
+    await ctx.conversations.appendMessage(memberDamusRow(thread.id, 'first'));
+    ctx.querier.events = [kind4(sender, ctx.recipient, 'answer')];
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['first', 'answer']);
+  });
+
+  it('skips a kind:4 when the Damus thread holds only inbound messages', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const thread = await ctx.conversations.openMemberDamus(
+      'acc',
+      getPublicKey(sender),
+      new Date(NOW),
+    );
+    await ctx.conversations.appendMessage(memberDamusRow(thread.id, 'old inbound', null));
+    ctx.querier.events = [kind4(sender, ctx.recipient, 'again')];
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['old inbound']);
+    expect(ctx.decrypts()).toBe(0);
+  });
+
+  it('skips an admitted kind:4 when the direct-message limiter is exhausted', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const pubkey = getPublicKey(sender);
+    await ctx.messages.recordZapper(pubkey, 'receipt-limit', new Date(0));
+    const limiter = new ExternalIngestLimiter();
+    for (let i = 0; i < 6; i += 1) {
+      expect(limiter.tryAcquire(pubkey, NOW - 10 - i)).toBe(true);
+    }
+    ctx.querier.events = [kind4(sender, ctx.recipient, 'over')];
+    await tick(ctx, { externalDmLimiter: limiter });
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(0);
+  });
+
+  it('remembers a gift wrap skipped by the limiter and decides it again without an unwrap', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-limit', new Date(0));
+    const limiter = new ExternalIngestLimiter();
+    const acquire = vi.spyOn(limiter, 'tryAcquire').mockReturnValue(false);
+    ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'over'))];
+    await tick(ctx, { externalDmLimiter: limiter });
+    await tick(ctx, { externalDmLimiter: limiter });
+    await expectNothingStored(ctx);
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(ctx.decrypts()).toBe(1);
+  });
+
+  it('does not share its budget with the external reply limiter', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-own', new Date(0));
+    const replyLimiter = new ExternalIngestLimiter();
+    vi.spyOn(replyLimiter, 'tryAcquire').mockReturnValue(false);
+    ctx.querier.events = [kind4(sender, ctx.recipient, 'own budget')];
+    await tick(ctx, { externalLimiter: replyLimiter });
+    expect(await storedTexts(ctx)).toEqual(['own budget']);
+  });
+
+  it('releases the budget when persisting an admitted message fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const ctx = await setup();
+      const sender = generateSecretKey();
+      const pubkey = getPublicKey(sender);
+      await ctx.messages.recordZapper(pubkey, 'receipt-fail', new Date(0));
+      ctx.conversations.appendMessage = async () => {
+        throw new Error('boom');
+      };
+      const limiter = new ExternalIngestLimiter();
+      const release = vi.spyOn(limiter, 'release');
+      ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'fails'))];
+      await tick(ctx, { externalDmLimiter: limiter });
+      expect(release).toHaveBeenCalledWith(pubkey, NOW);
+      expect(await ctx.notifications.listByRecipient('acc', 10)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('releases the budget when an admitted kind:4 does not decrypt', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const pubkey = getPublicKey(sender);
+    await ctx.messages.recordZapper(pubkey, 'receipt-garbled', new Date(0));
+    const limiter = new ExternalIngestLimiter();
+    const release = vi.spyOn(limiter, 'release');
+    ctx.querier.events = [
+      frame(
+        finalizeEvent(
+          { kind: 4, created_at: 1_699_999_000, tags: [['p', ctx.recipient]], content: 'garbled' },
+          sender,
+        ),
+      ),
+    ];
+    await tick(ctx, { externalDmLimiter: limiter });
+    await tick(ctx, { externalDmLimiter: limiter });
+    await expectNothingStored(ctx);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith(pubkey, NOW);
+    expect(ctx.decrypts()).toBe(1);
+  });
+
+  it('keeps member and platform senders on their threads regardless of blocks and limits', async () => {
+    const ctx = await setup();
+    await ctx.auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(ctx.auth, 'bob', KEK);
+    await ctx.auth.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'p'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    await ensureAccountNostrKey(ctx.auth, 'plat', KEK);
+    const bobPubkey = (await ctx.auth.getNostrPublicKey('bob')) as string;
+    const platPubkey = (await ctx.auth.getNostrPublicKey('plat')) as string;
+    await ctx.messages.blockPubkeyAndHideRows(bobPubkey, new Date(1), 'acc', 'blocked-bob');
+    await ctx.messages.blockPubkeyAndHideRows(platPubkey, new Date(1), 'acc', 'blocked-plat');
+    const bob = await decryptNostrSecret((await ctx.auth.getNostrSecret('bob'))!, KEK, 'bob');
+    const plat = await decryptNostrSecret((await ctx.auth.getNostrSecret('plat'))!, KEK, 'plat');
+    ctx.querier.events = [
+      kind4(bob, ctx.recipient, 'from bob'),
+      frame(wrapNip17(plat, ctx.recipient, 'from platform')),
+    ];
+    zeroizeSecret(bob);
+    zeroizeSecret(plat);
+    const limiter = new ExternalIngestLimiter();
+    const acquire = vi.spyOn(limiter, 'tryAcquire').mockReturnValue(false);
+    await tick(ctx, { externalDmLimiter: limiter });
+    const kinds = (await ctx.conversations.listAll(10)).map((thread) => thread.kind).sort();
+    expect(kinds).toEqual(['member_member', 'member_platform']);
+    expect((await storedTexts(ctx)).sort()).toEqual(['from bob', 'from platform']);
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it('skips a remembered gift wrap once it falls out of the query window', async () => {
+    const ctx = await setup();
+    const wrap = wrapNip17(generateSecretKey(), ctx.recipient, 'old');
+    ctx.querier.events = [frame(wrap)];
+    await tick(ctx);
+    expect(ctx.decrypts()).toBe(1);
+    const later = (wrap.created_at + INBOUND_DM_SINCE_S + 60) * 1000;
+    await tick(ctx, {}, later);
+    await tick(ctx, {}, later);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(1);
+  });
+
+  it('reads an event dated at the since bound and skips one a second older', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-since', new Date(0));
+    const sinceS = Math.floor(NOW / 1000) - INBOUND_DM_SINCE_S;
+    ctx.querier.events = [
+      { ...kind4(sender, ctx.recipient, 'too old'), created_at: sinceS - 1 },
+      { ...kind4(sender, ctx.recipient, 'just in time'), created_at: sinceS },
+    ];
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['just in time']);
+    expect(ctx.decrypts()).toBe(1);
+  });
+
+  it('decrypts a member kind:4 without content once and stores nothing', async () => {
+    const ctx = await setup();
+    ctx.querier.events = [
+      {
+        id: 'c4'.repeat(32),
+        pubkey: ctx.recipient,
+        kind: 4,
+        tags: [['p', ctx.recipient]],
+        created_at: 1_699_999_000,
+        sig: 'ef'.repeat(32),
+      },
+    ];
+    await tick(ctx);
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(1);
+  });
+
+  it('retries a message whose account secret is missing on the next pass', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-no-secret', new Date(0));
+    const getSecret = ctx.auth.getNostrSecret.bind(ctx.auth);
+    ctx.auth.getNostrSecret = async () => undefined;
+    ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'once the key is back'))];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    ctx.auth.getNostrSecret = getSecret;
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['once the key is back']);
+  });
+
+  it('admits a remembered gift wrap once the member writes first', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    ctx.querier.events = [frame(wrapNip17(sender, ctx.recipient, 'after you wrote'))];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    const thread = await ctx.conversations.openMemberDamus(
+      'acc',
+      getPublicKey(sender),
+      new Date(NOW),
+    );
+    await ctx.conversations.appendMessage(memberDamusRow(thread.id, 'first'));
+    await tick(ctx);
+    expect((await storedTexts(ctx)).sort()).toEqual(['after you wrote', 'first']);
+    expect(ctx.decrypts()).toBe(2);
+  });
+
+  it('releases the budget of an admitted kind:4 whose account secret is missing', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const pubkey = getPublicKey(sender);
+    await ctx.messages.recordZapper(pubkey, 'receipt-missing', new Date(0));
+    const getSecret = ctx.auth.getNostrSecret.bind(ctx.auth);
+    ctx.auth.getNostrSecret = async () => undefined;
+    const limiter = new ExternalIngestLimiter();
+    const release = vi.spyOn(limiter, 'release');
+    ctx.querier.events = [kind4(sender, ctx.recipient, 'later')];
+    await tick(ctx, { externalDmLimiter: limiter });
+    expect(release).toHaveBeenCalledWith(pubkey, NOW);
+    await expectNothingStored(ctx);
+    ctx.auth.getNostrSecret = getSecret;
+    await tick(ctx, { externalDmLimiter: limiter });
+    expect(await storedTexts(ctx)).toEqual(['later']);
+  });
+
+  it('decides each of our p-tags on its own and stores the message once', async () => {
+    const ctx = await setup();
+    await ctx.auth.createAccount({
+      id: 'bob',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bob',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(ctx.auth, 'bob', KEK);
+    const bobPubkey = (await ctx.auth.getNostrPublicKey('bob')) as string;
+    const sender = generateSecretKey();
+    const thread = await ctx.conversations.openMemberDamus(
+      'bob',
+      getPublicKey(sender),
+      new Date(NOW),
+    );
+    await ctx.conversations.appendMessage({
+      ...memberDamusRow(thread.id, 'bob first'),
+      senderAccountId: 'bob',
+      actorAccountId: 'bob',
+    });
+    const event = kind4(sender, bobPubkey, 'to bob');
+    ctx.querier.events = [
+      {
+        ...event,
+        tags: [
+          ['p', ctx.recipient],
+          ['p', bobPubkey],
+        ],
+      },
+    ];
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['bob first', 'to bob']);
+    expect((await ctx.conversations.listAll(10)).map((row) => row.accountA)).toEqual(['bob']);
+  });
+
+  it('caps the remembered skips and keeps the remembered ones as hits', async () => {
+    const ctx = await setup();
+    const events = Array.from({ length: 10_001 }, (_, index): NostrEventFrame => ({
+      id: index.toString(16).padStart(64, '0'),
+      pubkey: 'zz',
+      kind: 1059,
+      tags: [['p', ctx.recipient]],
+      content: 'unreadable',
+      created_at: 1_699_999_000,
+      sig: 'ef'.repeat(32),
+    }));
+    ctx.querier.events = events;
+    await tick(ctx);
+    expect(ctx.decrypts()).toBe(10_001);
+    await tick(ctx);
+    expect(ctx.decrypts()).toBe(10_002);
+    await tick(ctx);
+    expect(ctx.decrypts()).toBe(10_003);
+  }, 30_000);
 });
 import * as zapIndexForWorkerTest from '@/lib/nostr/zap-index';
