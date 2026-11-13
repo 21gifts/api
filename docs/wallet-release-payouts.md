@@ -39,8 +39,12 @@ what must be true on release day for that to hold.
   7. From deployment of the Spark viewer change, the member's own wallet has
      at least one completed server-verified payment to a live 21.gifts shop on
      the payout UTC day or the day before. There is no start-date setting for
-     this condition. It applies to daily grants and moderator stipends, not to
-     the one-time welcome gift.
+     this condition. It applies to daily grants and moderator stipends. It is
+     omitted for the one-time welcome gift only when the server sees an account
+     at least verified and not welcomed before, normalized USD `1.00`, comment
+     `Welcome`, no `messageId` or `groupMessageId`, and `amountMsat` no greater
+     than `usdToMsat("1.00", spot)` plus 10 percent. Without a usable spot, the
+     shop payment remains required.
   8. For a daily grant, the member has a live top-level photo or video posted
      on that payout UTC day. The spend daily run uses this same fact and sends
      that post id; an older live media post is not enough.
@@ -424,8 +428,10 @@ they are eligible, on the in-app wallet only, when all of these hold:
    server-verified payment to a live 21.gifts shop on that payout UTC day or
    the day before. There is no configured start day. This applies to daily
    grants and moderator stipends, but not the one-time welcome gift when the
-   server sees an account at least verified, not welcomed before, exact USD
-   `1.00` / `Welcome`, and no `messageId` or `groupMessageId`. Those are the
+   server sees an account at least verified, not welcomed before, normalized
+   USD `1.00`, comment `Welcome`, no `messageId` or `groupMessageId`, and
+   `amountMsat` no greater than `usdToMsat("1.00", spot)` plus 10 percent.
+   Without a usable spot, the shop payment remains required. Those are the
    gift's own once-per-account facts, not a public payout-kind override.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one

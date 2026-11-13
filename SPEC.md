@@ -61,7 +61,7 @@ does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
 report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-01, a 21.gifts recovery share for the current verified wallet from `RECOVERY_SHARE_REQUIRED_FROM`, and a completed server-verified shop payment today or yesterday UTC);
-`POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when server-owned facts show that the account is at least `verified`, has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
+its preflight omits only that shop-payment condition while server-owned facts show an account at least `verified` that has not received its welcome gift, and this does not make any other invoice payable. `POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when server-owned facts show that the account is at least `verified`, has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
 Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
@@ -6777,7 +6777,15 @@ reported as `none` (and, from the grant gate day, `eligible: false`), so this an
 recovery share is stored for the member's current verified wallet
 ([docs/social-recovery.md](docs/social-recovery.md)). From that day a member in the grant
 program without that share is `{ "eligible": false, "status": "admitted" }`
-(or `"trial"`): `status` stays the grant status (`ownerFundingStatus`).
+(or `"trial"`): `status` stays the effective grant status.
+Eligibility also requires a completed server-verified shop payment today or
+yesterday UTC. This preflight omits only that shop-payment condition while
+server-owned facts show an account at least `verified` that has not received
+its welcome gift; it does not make any other invoice payable. `POST /invoices`
+still omits the condition only for normalized USD `1.00`, comment `Welcome`, no
+`messageId` or `groupMessageId`, and `amountMsat` no greater than the server's
+USD 1.00 spot conversion plus 10%. A missing or unusable spot fails closed and
+keeps the shop-payment condition.
 
 ### `GET /invoices/posted`
 
