@@ -10072,6 +10072,64 @@ describe('PostgresWalletUsageStore', () => {
         [zapHash, zapReceiptId, at(890)],
       );
 
+      // Two unrelated same-direction rows on different accounts keep their id
+      // but are not a transfer pair, so they must stay two payments.
+      const sharedUnpairedId = `${run}-shared-unpaired`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: sharedUnpairedId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 61,
+        feeSats: 0,
+        paidAt: at(900),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: sharedUnpairedId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 62,
+        feeSats: 0,
+        paidAt: at(901),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: null,
+      });
+      // A proper opposite-direction pair on two accounts is one payment.
+      const sharedPairId = `${run}-shared-pair`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: sharedPairId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 63,
+        feeSats: 1,
+        paidAt: at(902),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: sharedPairId,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 63,
+        feeSats: 0,
+        paidAt: at(903),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+
       const shopPaidAt = at(15);
       const shopPendingAt = at(25);
       const shopOldAt = at(-60);
@@ -10106,7 +10164,22 @@ describe('PostgresWalletUsageStore', () => {
       };
       expect(
         ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
-      ).toEqual([1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 150, 500, 1000, 12321, 69089, 293955]);
+      ).toEqual([
+        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 61, 62, 63, 150, 500, 1000, 12321, 69089, 293955,
+      ]);
+      const pair = ours.filter((row) => row.amountSats === 63);
+      expect(pair).toHaveLength(1);
+      expect(pair[0]?.feeSats).toBe(1);
+      expect(byAmount(61)).toMatchObject({
+        feeSats: 0,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(byAmount(62)).toMatchObject({
+        feeSats: 0,
+        payerAccountId: memberB,
+        payeeAccountId: memberA,
+      });
 
       const grouped = byAmount(150);
       expect(grouped).toMatchObject({
