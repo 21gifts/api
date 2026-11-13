@@ -51,6 +51,8 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 | `goal_repayable`         | Boolean            | `boolean`                  | Yes      | –         | –                            |
 | `goal_term_days`         | Integer            | `integer`                  | Yes      | –         | –                            |
 | `goal_funded_at`         | Date/time          | `timestamp with time zone` | Yes      | –         | –                            |
+| `goal_closed_at`         | Date/time          | `timestamp with time zone` | Yes      | –         | –                            |
+| `goal_debt_frozen`       | Boolean            | `boolean`                  | No       | `false`   | –                            |
 | `received_sats`          | Integer            | `bigint`                   | No       | `0`       | –                            |
 | `received_fiat_usd`      | Decimal            | `numeric(20,2)`            | Yes      | –         | –                            |
 | `received_fiat_chf`      | Decimal            | `numeric(20,2)`            | Yes      | –         | –                            |
@@ -83,17 +85,19 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Referenced by
 
-| Table                 | Column               | Points to |
-| --------------------- | -------------------- | --------- |
-| `account`             | `profile_message_id` | `id`      |
-| `message`             | `parent_id`          | `id`      |
-| `message_edit`        | `message_id`         | `id`      |
-| `message_extra_photo` | `message_id`         | `id`      |
-| `message_repayment`   | `message_id`         | `id`      |
-| `message_translation` | `message_id`         | `id`      |
-| `nostr_zap_receipt`   | `gift_reply_id`      | `id`      |
-| `nostr_zap_receipt`   | `message_id`         | `id`      |
-| `shop_identity`       | `message_id`         | `id`      |
+| Table                           | Column               | Points to |
+| ------------------------------- | -------------------- | --------- |
+| `account`                       | `profile_message_id` | `id`      |
+| `message`                       | `parent_id`          | `id`      |
+| `message_credit_payer_snapshot` | `message_id`         | `id`      |
+| `message_edit`                  | `message_id`         | `id`      |
+| `message_extra_photo`           | `message_id`         | `id`      |
+| `message_repayment`             | `message_id`         | `id`      |
+| `message_repayment_part`        | `message_id`         | `id`      |
+| `message_translation`           | `message_id`         | `id`      |
+| `nostr_zap_receipt`             | `gift_reply_id`      | `id`      |
+| `nostr_zap_receipt`             | `message_id`         | `id`      |
+| `shop_identity`                 | `message_id`         | `id`      |
 
 ## Relations
 
@@ -103,9 +107,11 @@ erDiagram
     "message" }o..o| "account" : "account_id"
     "message" }o..o| "account" : "shop_account_id"
     "message" }o..o| "message" : "parent_id"
+    "message_credit_payer_snapshot" }o--|| "message" : "message_id"
     "message_edit" }o..|| "message" : "message_id"
     "message_extra_photo" }o--|| "message" : "message_id"
     "message_repayment" }o--|| "message" : "message_id"
+    "message_repayment_part" }o--|| "message" : "message_id"
     "message_translation" }o--|| "message" : "message_id"
     "nostr_zap_receipt" |o..o| "message" : "gift_reply_id"
     "nostr_zap_receipt" }o..|| "message" : "message_id"

@@ -2,6 +2,29 @@
 const REPAY_DESCRIPTION =
   /^repay:(\d+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
+/**
+ * Marker for one settled part of a share. The old `repay:` form stays a
+ * whole-share payment. The part form carries its part index and its units
+ * (sats for a BTC loan, cents for a fiat loan) so settlement can store
+ * exactly what the bill was for.
+ */
+const REPAY_PART_DESCRIPTION =
+  /^repayp:(\d+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(\d+):(\d+):(\d+)$/i;
+
+/** One part of a giver's share, as written into an invoice description. */
+export interface RepaymentPartDescription {
+  /** Zero-based day in the term. */
+  dayIndex: number;
+  /** Giver being paid. */
+  recipientAccountId: string;
+  /** Zero-based part number within the giver-day. */
+  partIndex: number;
+  /** Part size in the loan's units: sats for BTC, cents for fiat. */
+  units: bigint;
+  /** Whole giver-day share in the same units. */
+  shareUnits: bigint;
+}
+
 /** One giver's share of a day's repayment. */
 export interface RepaymentShare {
   /** 21.gifts account that funded the credit. */
@@ -22,6 +45,115 @@ export function repaymentDescription(dayIndex: number, recipientAccountId: strin
 }
 
 /**
+ * Invoice description that ties one part of a giver-day share to its exact
+ * units. Used whenever the part is smaller than the share remainder.
+ *
+ * @param dayIndex - Zero-based day in the term.
+ * @param recipientAccountId - Giver being paid.
+ * @param partIndex - Zero-based part number within the giver-day.
+ * @param units - Part size in sats (BTC) or cents (fiat).
+ * @param shareUnits - Full giver-day share in the same units.
+ * @returns The stored description.
+ */
+export function repaymentPartDescription(
+  dayIndex: number,
+  recipientAccountId: string,
+  partIndex: number,
+  units: bigint,
+  shareUnits: bigint,
+): string {
+  return `repayp:${dayIndex}:${recipientAccountId}:${partIndex}:${units.toString()}:${shareUnits.toString()}`;
+}
+
+/**
+ * Read a part repayment marker. The old whole-share marker returns null.
+ *
+ * @param description - Invoice attempt description, or null.
+ * @returns The part fields, or null.
+ */
+export function parseRepaymentPartDescription(
+  description: string | null,
+): RepaymentPartDescription | null {
+  if (description === null) {
+    return null;
+  }
+  const match = REPAY_PART_DESCRIPTION.exec(description);
+  const day = match?.[1];
+  const accountId = match?.[2];
+  const part = match?.[3];
+  const units = match?.[4];
+  const shareUnits = match?.[5];
+  if (
+    day === undefined ||
+    accountId === undefined ||
+    part === undefined ||
+    units === undefined ||
+    shareUnits === undefined
+  ) {
+    return null;
+  }
+  const partIndex = Number(part);
+  const parsedUnits = BigInt(units);
+  const parsedShareUnits = BigInt(shareUnits);
+  if (!Number.isSafeInteger(partIndex) || parsedUnits <= 0n || parsedShareUnits <= 0n) {
+    return null;
+  }
+  return {
+    dayIndex: Number(day),
+    recipientAccountId: accountId,
+    partIndex,
+    units: parsedUnits,
+    shareUnits: parsedShareUnits,
+  };
+}
+
+/**
+ * First unused immutable part index for one giver-day across settlements and
+ * every successfully issued historical part invoice. Invoice descriptions can
+ * retain an account id that was merged away, so invoice ownership follows the
+ * attempt's current author instead.
+ *
+ * @param dayIndex - Zero-based day in the term.
+ * @param recipientAccountIds - Current recipient identities that share the
+ * index space.
+ * @param settledParts - Canonical parts already settled on the credit.
+ * @param invoiceAttempts - Historical invoice attempts on the credit.
+ * @returns One above the greatest historical index, or zero when none exists.
+ */
+export function nextRepaymentPartIndex(
+  dayIndex: number,
+  recipientAccountIds: readonly string[],
+  settledParts: readonly {
+    dayIndex: number;
+    recipientAccountId: string;
+    partIndex: number;
+  }[],
+  invoiceAttempts: readonly {
+    authorAccountId: string;
+    description: string | null;
+    result: string;
+  }[],
+): number {
+  const recipients = new Set(recipientAccountIds);
+  let next = 0;
+  for (const part of settledParts) {
+    if (part.dayIndex === dayIndex && recipients.has(part.recipientAccountId)) {
+      next = Math.max(next, part.partIndex + 1);
+    }
+  }
+  for (const attempt of invoiceAttempts) {
+    if (attempt.result !== 'ok' || !recipients.has(attempt.authorAccountId)) {
+      continue;
+    }
+    const part = parseRepaymentPartDescription(attempt.description);
+    if (part !== null && part.dayIndex === dayIndex) {
+      next = Math.max(next, part.partIndex + 1);
+    }
+  }
+  return next;
+}
+
+/**
  * Read a repayment marker. Anything else is a normal gift invoice.
  *
  * @param description - Invoice attempt description, or null.
@@ -32,6 +164,10 @@ export function parseRepaymentDescription(
 ): { dayIndex: number; recipientAccountId: string } | null {
   if (description === null) {
     return null;
+  }
+  const part = parseRepaymentPartDescription(description);
+  if (part !== null) {
+    return { dayIndex: part.dayIndex, recipientAccountId: part.recipientAccountId };
   }
   const match = REPAY_DESCRIPTION.exec(description);
   const day = match?.[1];
@@ -153,6 +289,142 @@ export interface RepaymentSlice {
   accountId: string;
   /** Whole sats or whole cents. Never zero. */
   units: bigint;
+}
+
+/** One giver-day in a prepayment allocation, with what is already settled or open. */
+export interface RepaymentAllocationShare {
+  /** Zero-based day in the term. */
+  dayIndex: number;
+  /** Giver account id. */
+  accountId: string;
+  /** Whole share in sats or cents. */
+  units: bigint;
+  /** Settled units for this share. */
+  paidUnits: bigint;
+  /** Index after the last settled or open part of this share. */
+  nextPartIndex: number;
+  /** Still-payable bills already minted for this share, in part order. */
+  openParts: readonly RepaymentAllocationPart[];
+  /** Whether the giver can receive right now. */
+  canReceive: boolean;
+}
+
+/** One part to bill, settled or newly allocated. */
+export interface RepaymentAllocationPart {
+  /** Zero-based day in the term. */
+  dayIndex: number;
+  /** Giver account id. */
+  accountId: string;
+  /** Zero-based part number within the giver-day. */
+  partIndex: number;
+  /** Part size in sats or cents. */
+  units: bigint;
+  /** True when this is a still-payable bill that must be returned again. */
+  open: boolean;
+  /** Stored description of an open bill; omitted for a new part. */
+  description?: string;
+  /** Stored invoice sats of an open bill; omitted for a new part. */
+  amountSats?: number;
+}
+
+/** Plan-order allocation of one prepayment. */
+export interface RepaymentAllocation {
+  /** Parts in plan order: open bills and newly minted parts interleaved. */
+  parts: RepaymentAllocationPart[];
+  /** Unpaid remainders whose giver cannot receive. */
+  waiting: Array<{ dayIndex: number; accountId: string; units: bigint }>;
+  /** Sum of every unpaid remainder whose giver can receive. */
+  maxUnits: bigint;
+  /** Amount applied to open and newly minted parts, never above the request. */
+  usedUnits: bigint;
+  /** True when the next open bill is larger than the request remainder. */
+  openBillExceedsAmount: boolean;
+}
+
+/**
+ * Apply a prepayment to the unpaid remainders in plan order.
+ *
+ * Order is the caller's schedule order (day ascending, then repayment-list
+ * order). A share part with an open bill is returned as that same bill and
+ * never minted twice. Shares whose giver cannot receive are listed in
+ * `waiting` and consume nothing. A share may be paid partially; the rest stays
+ * owed. `maxUnits` is the sum of every unpaid remainder whose giver can
+ * receive, including amounts already reserved by open bills. An open bill
+ * larger than the request remainder is reported as a conflict; no part after
+ * that bill is allocated and `usedUnits` never exceeds `amount`.
+ *
+ * @param amount - Whole units to apply (sats or cents). Zero or less allocates nothing.
+ * @param shares - Shares in plan order.
+ * @param maxBills - Largest number of parts this call may return.
+ * @returns Ordered parts, waiting shares, max and used units, and the open-bill conflict flag.
+ */
+export function allocateRepayment(
+  amount: bigint,
+  shares: readonly RepaymentAllocationShare[],
+  maxBills: number = Number.MAX_SAFE_INTEGER,
+): RepaymentAllocation {
+  let maxUnits = 0n;
+  let usedUnits = 0n;
+  const parts: RepaymentAllocationPart[] = [];
+  const waiting: Array<{ dayIndex: number; accountId: string; units: bigint }> = [];
+  const wanted = amount > 0n ? amount : 0n;
+  let bills = 0;
+  let openBillExceedsAmount = false;
+  for (const share of shares) {
+    const paid = share.paidUnits > 0n ? share.paidUnits : 0n;
+    const remainder = share.units > paid ? share.units - paid : 0n;
+    if (remainder <= 0n) {
+      continue;
+    }
+    if (!share.canReceive) {
+      waiting.push({ dayIndex: share.dayIndex, accountId: share.accountId, units: remainder });
+      continue;
+    }
+    maxUnits += remainder;
+    if (bills >= maxBills || openBillExceedsAmount || usedUnits >= wanted) {
+      continue;
+    }
+    let reserved = 0n;
+    for (const open of share.openParts) {
+      if (bills >= maxBills) {
+        break;
+      }
+      const leftToPay = wanted - usedUnits;
+      if (leftToPay <= 0n) {
+        break;
+      }
+      if (open.units > leftToPay) {
+        openBillExceedsAmount = true;
+        break;
+      }
+      parts.push({ ...open, open: true });
+      bills += 1;
+      reserved += open.units;
+      usedUnits += open.units;
+    }
+    if (openBillExceedsAmount) {
+      continue;
+    }
+    const leftInShare = remainder > reserved ? remainder - reserved : 0n;
+    if (bills >= maxBills || leftInShare <= 0n) {
+      continue;
+    }
+    const leftToPay = wanted - usedUnits;
+    if (leftToPay <= 0n) {
+      continue;
+    }
+    const units = leftToPay < leftInShare ? leftToPay : leftInShare;
+    parts.push({
+      dayIndex: share.dayIndex,
+      accountId: share.accountId,
+      partIndex: share.nextPartIndex,
+      units,
+      open: false,
+    });
+    bills += 1;
+    usedUnits += units;
+  }
+  return { parts, waiting, maxUnits, usedUnits, openBillExceedsAmount };
 }
 
 /**
@@ -344,6 +616,8 @@ export interface RepaymentLedgerLine {
   accountId: string;
   /** Whole sats or whole cents. */
   units: bigint;
+  /** Units paid so far, from 0 through `units`. */
+  paidUnits: bigint;
   /** Paid, due today or earlier, or not yet due. */
   status: RepaymentLineStatus;
 }
@@ -379,37 +653,53 @@ export function formatCents(cents: bigint): string {
 /**
  * Every repayment share, in day order, with a date once the credit has filled.
  *
+ * A share is `paid` only when its full remainder is settled. A partially paid
+ * share keeps its `due` or `scheduled` status and carries the settled amount,
+ * so callers can bill only the remainder.
+ *
  * @param days - Term length.
  * @param payers - Positive contributions. Their units are the debt.
- * @param paid - Shares already stored.
+ * @param paid - Shares already paid. `paidUnits` is optional; a missing amount
+ *   means the whole share under the legacy marker.
  * @param fundedAtMs - When the credit filled, or null while it is still open.
  * @param nowMs - Clock.
  * @param messageId - Credit message id; an operator-approved exception starts
  *   the day after it filled, without the 2026-11-16 minimum.
- * @returns One row per non-zero share.
+ * @returns One row per non-zero share, with `paidUnits` and `status`.
  */
 export function repaymentLedger(
   days: number,
   payers: readonly { accountId: string; units: bigint }[],
-  paid: readonly { dayIndex: number; accountId: string }[],
+  paid: readonly { dayIndex: number; accountId: string; paidUnits?: bigint }[],
   fundedAtMs: number | null,
   nowMs: number,
   messageId: string,
 ): RepaymentLedgerLine[] {
   const slices = repaymentSchedule(days, payers);
-  const settled = new Set(paid.map((row) => `${row.dayIndex}:${row.accountId}`));
+  const settled = new Map<string, bigint>();
+  const fullySettled = new Set<string>();
+  for (const row of paid) {
+    const key = `${row.dayIndex}:${row.accountId}`;
+    if (row.paidUnits === undefined) {
+      fullySettled.add(key);
+    } else {
+      settled.set(key, (settled.get(key) ?? 0n) + row.paidUnits);
+    }
+  }
   const daysDue = fundedAtMs === null ? 0 : dueDayCount(fundedAtMs, nowMs, days, messageId);
-  return slices.map((slice) => ({
-    dayIndex: slice.dayIndex,
-    dueOn: fundedAtMs === null ? null : repaymentDueDate(fundedAtMs, slice.dayIndex, messageId),
-    accountId: slice.accountId,
-    units: slice.units,
-    status: settled.has(`${slice.dayIndex}:${slice.accountId}`)
-      ? 'paid'
-      : slice.dayIndex < daysDue
-        ? 'due'
-        : 'scheduled',
-  }));
+  return slices.map((slice) => {
+    const key = `${slice.dayIndex}:${slice.accountId}`;
+    const paidUnits = fullySettled.has(key) ? slice.units : (settled.get(key) ?? 0n);
+    const fullyPaid = paidUnits >= slice.units;
+    return {
+      dayIndex: slice.dayIndex,
+      dueOn: fundedAtMs === null ? null : repaymentDueDate(fundedAtMs, slice.dayIndex, messageId),
+      accountId: slice.accountId,
+      units: slice.units,
+      paidUnits: fullyPaid ? slice.units : paidUnits,
+      status: fullyPaid ? 'paid' : slice.dayIndex < daysDue ? 'due' : 'scheduled',
+    };
+  });
 }
 
 /**

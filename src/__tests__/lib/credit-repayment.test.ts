@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import {
+  allocateRepayment,
   dayUnits,
   dueDayCount,
   fiatAmountToCents,
   formatCents,
+  nextRepaymentPartIndex,
   parseRepaymentDescription,
+  parseRepaymentPartDescription,
   payerDebtUnits,
   repaymentDescription,
   repaymentDueDate,
   repaymentLedger,
+  repaymentPartDescription,
   repaymentSchedule,
   repaymentStartMs,
   shareSats,
@@ -89,6 +94,206 @@ describe('credit repayment', () => {
     expect(parseRepaymentDescription('gift')).toBeNull();
   });
 
+  it('allocates part indexes above settled parts and successful historical invoices', () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const second = '22222222-2222-4222-8222-222222222222';
+    const other = '33333333-3333-4333-8333-333333333333';
+    expect(
+      nextRepaymentPartIndex(
+        0,
+        [first, second],
+        [
+          { dayIndex: 0, recipientAccountId: first, partIndex: 2 },
+          { dayIndex: 1, recipientAccountId: first, partIndex: 8 },
+          { dayIndex: 0, recipientAccountId: other, partIndex: 9 },
+        ],
+        [
+          {
+            authorAccountId: second,
+            description: repaymentPartDescription(0, other, 4, 1n, 10n),
+            result: 'ok',
+          },
+          {
+            authorAccountId: first,
+            description: repaymentPartDescription(0, first, 7, 1n, 10n),
+            result: 'error',
+          },
+          {
+            authorAccountId: other,
+            description: repaymentPartDescription(0, other, 6, 1n, 10n),
+            result: 'ok',
+          },
+          {
+            authorAccountId: first,
+            description: repaymentPartDescription(1, first, 5, 1n, 10n),
+            result: 'ok',
+          },
+          { authorAccountId: first, description: 'not-a-part', result: 'ok' },
+        ],
+      ),
+    ).toBe(5);
+    expect(nextRepaymentPartIndex(0, [first], [], [])).toBe(0);
+  });
+
+  it('parses part repayment descriptions without breaking the old marker', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    expect(repaymentPartDescription(2, id, 4, 500n, 900n)).toBe(`repayp:2:${id}:4:500:900`);
+    expect(parseRepaymentPartDescription(`repayp:2:${id}:4:500:900`)).toEqual({
+      dayIndex: 2,
+      recipientAccountId: id,
+      partIndex: 4,
+      units: 500n,
+      shareUnits: 900n,
+    });
+    expect(parseRepaymentPartDescription(`repay:2:${id}`)).toBeNull();
+    expect(parseRepaymentDescription(`repayp:2:${id}:4:500:900`)).toEqual({
+      dayIndex: 2,
+      recipientAccountId: id,
+    });
+    expect(parseRepaymentPartDescription(`repayp:2:${id}:4:0:900`)).toBeNull();
+    expect(parseRepaymentPartDescription(`repayp:2:${id}:4:500:0`)).toBeNull();
+  });
+
+  it('documents the complete share units parameter of part descriptions', async () => {
+    const source = await readFile(
+      new URL('../../lib/credit-repayment.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toMatch(/@param shareUnits - Full giver-day share in the same units\./);
+  });
+
+  it('allocates prepayments in plan order, skips waiting givers, and caps bills', () => {
+    const shares = [
+      {
+        dayIndex: 0,
+        accountId: 'a',
+        units: 100n,
+        paidUnits: 0n,
+        nextPartIndex: 0,
+        openParts: [],
+        canReceive: true,
+      },
+      {
+        dayIndex: 0,
+        accountId: 'b',
+        units: 100n,
+        paidUnits: 0n,
+        nextPartIndex: 0,
+        openParts: [],
+        canReceive: false,
+      },
+      {
+        dayIndex: 1,
+        accountId: 'a',
+        units: 100n,
+        paidUnits: 40n,
+        nextPartIndex: 2,
+        openParts: [],
+        canReceive: true,
+      },
+      {
+        dayIndex: 2,
+        accountId: 'a',
+        units: 100n,
+        paidUnits: 0n,
+        nextPartIndex: 0,
+        openParts: [],
+        canReceive: true,
+      },
+    ];
+    const partial = allocateRepayment(250n, shares);
+    expect(partial.parts).toEqual([
+      { dayIndex: 0, accountId: 'a', partIndex: 0, units: 100n, open: false },
+      { dayIndex: 1, accountId: 'a', partIndex: 2, units: 60n, open: false },
+      { dayIndex: 2, accountId: 'a', partIndex: 0, units: 90n, open: false },
+    ]);
+    expect(partial.waiting).toEqual([{ dayIndex: 0, accountId: 'b', units: 100n }]);
+    expect(partial.maxUnits).toBe(260n);
+    expect(partial.usedUnits).toBe(250n);
+    expect(allocateRepayment(250n, shares, 2).parts).toHaveLength(2);
+    expect(allocateRepayment(0n, shares).parts).toEqual([]);
+  });
+
+  it('reuses an open bill only when it fits within the requested amount', () => {
+    const shares = [
+      {
+        dayIndex: 0,
+        accountId: 'a',
+        units: 100n,
+        paidUnits: 0n,
+        nextPartIndex: 1,
+        openParts: [{ dayIndex: 0, accountId: 'a', partIndex: 0, units: 30n, open: true }],
+        canReceive: true,
+      },
+    ];
+    const fits = allocateRepayment(30n, shares);
+    expect(fits.parts).toEqual([
+      { dayIndex: 0, accountId: 'a', partIndex: 0, units: 30n, open: true },
+    ]);
+    expect(fits.usedUnits).toBe(30n);
+    expect(fits.openBillExceedsAmount).toBe(false);
+
+    const tooLarge = allocateRepayment(10n, shares);
+    expect(tooLarge.parts).toEqual([]);
+    expect(tooLarge.usedUnits).toBe(0n);
+    expect(tooLarge.openBillExceedsAmount).toBe(true);
+  });
+
+  it('stops reusing open bills at the bill and requested-amount limits', () => {
+    const shares = [
+      {
+        dayIndex: 0,
+        accountId: 'a',
+        units: 100n,
+        paidUnits: 0n,
+        nextPartIndex: 2,
+        openParts: [
+          { dayIndex: 0, accountId: 'a', partIndex: 0, units: 30n, open: true as const },
+          { dayIndex: 0, accountId: 'a', partIndex: 1, units: 20n, open: true as const },
+        ],
+        canReceive: true,
+      },
+    ];
+
+    expect(allocateRepayment(50n, shares, 1).parts).toEqual([shares[0]?.openParts[0]]);
+    expect(allocateRepayment(30n, shares, 2).parts).toEqual([shares[0]?.openParts[0]]);
+  });
+
+  it('counts a part only once and marks the share paid only when the remainder is zero', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const lines = repaymentLedger(
+      1,
+      [{ accountId: id, units: 100n }],
+      [{ dayIndex: 0, accountId: id, paidUnits: 40n }],
+      Date.UTC(2026, 10, 9),
+      Date.UTC(2026, 10, 20),
+      '22222222-2222-4222-8222-222222222222',
+    );
+    expect(lines[0]).toMatchObject({ units: 100n, paidUnits: 40n, status: 'due' });
+    const paid = repaymentLedger(
+      1,
+      [{ accountId: id, units: 100n }],
+      [{ dayIndex: 0, accountId: id, paidUnits: 100n }],
+      Date.UTC(2026, 10, 9),
+      Date.UTC(2026, 10, 20),
+      '22222222-2222-4222-8222-222222222222',
+    );
+    expect(paid[0]).toMatchObject({ units: 100n, paidUnits: 100n, status: 'paid' });
+  });
+
+  it('treats a legacy full-share marker as fully paid in loan units', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const [line] = repaymentLedger(
+      1,
+      [{ accountId: id, units: 100n }],
+      [{ dayIndex: 0, accountId: id }],
+      Date.UTC(2026, 10, 9),
+      Date.UTC(2026, 10, 20),
+      ORDINARY_CREDIT,
+    );
+    expect(line).toMatchObject({ units: 100n, paidUnits: 100n, status: 'paid' });
+  });
+
   it('splits sats across givers and keeps the total', () => {
     const shares = shareSats(10, [
       { accountId: 'b', sats: 1 },
@@ -164,14 +369,21 @@ describe('credit repayment', () => {
     const plan = repaymentLedger(
       2,
       [{ accountId: 'a', units: 2n }],
-      [{ dayIndex: 0, accountId: 'a' }],
+      [{ dayIndex: 0, accountId: 'a', paidUnits: 1n }],
       funded,
       now,
       ORDINARY_CREDIT,
     );
     expect(plan).toEqual([
-      { dayIndex: 0, dueOn: '2026-12-27', accountId: 'a', units: 1n, status: 'paid' },
-      { dayIndex: 1, dueOn: '2026-12-28', accountId: 'a', units: 1n, status: 'due' },
+      {
+        dayIndex: 0,
+        dueOn: '2026-12-27',
+        accountId: 'a',
+        units: 1n,
+        paidUnits: 1n,
+        status: 'paid',
+      },
+      { dayIndex: 1, dueOn: '2026-12-28', accountId: 'a', units: 1n, paidUnits: 0n, status: 'due' },
     ]);
     const later = repaymentLedger(
       2,

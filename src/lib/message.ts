@@ -195,6 +195,13 @@ export interface MessageRow {
    * Null until then, including on donations.
    */
   goalFundedAt?: Date | null;
+  /**
+   * When the author explicitly ended collecting on a repayable ask.
+   * Null until then; a close is final.
+   */
+  goalClosedAt?: Date | null;
+  /** True when an early fiat close froze the per-giver debt units. */
+  goalDebtFrozen?: boolean;
   /** Canonical typed ask amount (dot decimal). Null when there is no currency ask. */
   goalAmount?: string | null;
   /** Gift-day USD snapshot of the frozen ask, or null. */
@@ -326,6 +333,11 @@ export interface PublicMessage {
    * omitted when null. Never `false`.
    */
   goalRepayable?: true;
+  /**
+   * ISO-8601 timestamp when the author ended collecting. Included only when
+   * the stored close timestamp is set; omitted otherwise.
+   */
+  goalClosedAt?: string;
   /**
    * Agreed repayment term in whole days. Included only when the stored
    * column is not null; omitted when null.
@@ -488,6 +500,14 @@ function publicGoalSats(row: MessageRow): number | undefined {
  */
 function publicGoalRepayable(row: MessageRow): true | undefined {
   return row.goalRepayable === true ? true : undefined;
+}
+
+/**
+ * Public/debug/hidden JSON `goalClosedAt` when the stored timestamp is set.
+ * Omitted when null or unset.
+ */
+function publicGoalClosedAt(row: MessageRow): string | undefined {
+  return row.goalClosedAt instanceof Date ? row.goalClosedAt.toISOString() : undefined;
 }
 
 /**
@@ -731,6 +751,7 @@ export function messagePay(
  * `row.parentId !== null`; optional `mentions` (`{ username, accountId }[]`) when `includeAccountId` is true and the stored list is non-empty; optional `goalSats` when the stored value is a
  * positive integer on a top-level note; optional `goalRepayable: true` when
  * the stored column is true (omitted when null; never false); optional
+ * `goalClosedAt` ISO-8601 when the stored close timestamp is set; optional
  * `goalTermDays` when the stored column is not null (omitted when null);
  * optional currency-ask keys when `goalCurrency` is stored; optional `place` when stored;
  * optional `shopAccount` when stored and the till account has a username (also when
@@ -740,6 +761,7 @@ export function messagePay(
  * never includes `contentFp`. Omits the `parentId` key on top-level notes.
  * Omits `goalSats` on replies and when the stored value is null, 0, or unset.
  * Omits `goalRepayable` when the stored column is null.
+ * Omits `goalClosedAt` when the stored timestamp is null or unset.
  * Omits `goalTermDays` when the stored column is null.
  * Omits `goalCurrency` / `goalAmount` / `goalAmountUsd` / `goalAmountChf` /
  * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
@@ -819,6 +841,10 @@ export function serializeMessage(
   if (goalRepayable !== undefined) {
     body.goalRepayable = goalRepayable;
   }
+  const goalClosedAt = publicGoalClosedAt(row);
+  if (goalClosedAt !== undefined) {
+    body.goalClosedAt = goalClosedAt;
+  }
   const goalTermDays = publicGoalTermDays(row);
   if (goalTermDays !== undefined) {
     body.goalTermDays = goalTermDays;
@@ -879,9 +905,10 @@ export interface DebugMessagePhotoMeta {
  *   otherwise); `createdAt` / `deletedAt` ISO-8601 (`deletedAt` null when
  *   live). `goalSats` is the stored column (JSON `null` when unset).
  *   `goalRepayable` is included only when the stored column is true (omitted
- *   when null; never false). `goalTermDays` is included only when the stored
- *   column is not null (omitted when null). Currency-ask keys are included only when
- *   `goalCurrency` is stored. Always includes `placeLat` / `placeLng` /
+ *   when null; never false). `goalClosedAt` is the stored timestamp as
+ *   ISO-8601 and is omitted when null. `goalTermDays` is included only when
+ *   the stored column is not null (omitted when null). Currency-ask keys are
+ *   included only when `goalCurrency` is stored. Always includes `placeLat` / `placeLng` /
  *   `placeLabel` / `placeStreet` / `placeHouseNumber` / `placePostalCode` /
  *   `placeCity` / `placeCountry` (JSON `null` when unset). Always includes
  *   `shopAccountId` (`null` when unset). Does not include the shop username
@@ -895,6 +922,7 @@ export function serializeDebugMessage(
   const deletedAt = row.deletedAt ?? null;
   const taken = photoTakenJson(row);
   const goalCurrency = publicGoalCurrency(row);
+  const goalClosedAt = publicGoalClosedAt(row);
   return {
     id: row.id,
     name: row.name,
@@ -926,6 +954,7 @@ export function serializeDebugMessage(
     accountId: row.accountId ?? null,
     goalSats: row.goalSats ?? null,
     ...(row.goalRepayable === true ? { goalRepayable: true } : {}),
+    ...(goalClosedAt === undefined ? {} : { goalClosedAt }),
     ...(typeof row.goalTermDays === 'number' && Number.isInteger(row.goalTermDays)
       ? { goalTermDays: row.goalTermDays }
       : {}),
@@ -975,7 +1004,8 @@ export function serializeDebugMessage(
  *   photoCount === 1 (equal to slot 0, null allowed; omitted otherwise),
  *   `parentId`, `deletedAt`, `deletedBy`, optional `via`, optional
  *   `goalSats`, optional `goalRepayable: true` when the stored column is true
- *   (omitted when null; never false), optional `goalTermDays` when the stored
+ *   (omitted when null; never false), optional `goalClosedAt` ISO-8601 when
+ *   the stored close timestamp is set, optional `goalTermDays` when the stored
  *   column is not null (omitted when null), optional currency-ask keys, and optional
  *   `place`); `createdAt` / `deletedAt` are
  *   ISO-8601 (`deletedAt` null when live). Optional `goalSats` when the
@@ -993,6 +1023,7 @@ export function serializeHiddenMessage(
   const deletedAt = row.deletedAt ?? null;
   const goalSats = publicGoalSats(row);
   const goalRepayable = publicGoalRepayable(row);
+  const goalClosedAt = publicGoalClosedAt(row);
   const goalTermDays = publicGoalTermDays(row);
   const goalCurrency = publicGoalCurrency(row);
   const taken = photoTakenJson(row);
@@ -1019,6 +1050,7 @@ export function serializeHiddenMessage(
     deletedBy,
     ...(goalSats === undefined ? {} : { goalSats }),
     ...(goalRepayable === undefined ? {} : { goalRepayable }),
+    ...(goalClosedAt === undefined ? {} : { goalClosedAt }),
     ...(goalTermDays === undefined ? {} : { goalTermDays }),
     ...(goalCurrency === undefined
       ? {}

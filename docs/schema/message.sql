@@ -120,6 +120,11 @@ CREATE INDEX IF NOT EXISTS message_invoice_created_at_idx
   ON message_invoice (created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS message_invoice_message_id_idx
   ON message_invoice (message_id, created_at DESC);
+-- A giver-day part description is reserved once. Expired attempts receive a
+-- new part index, so the same marker is never minted twice.
+CREATE UNIQUE INDEX IF NOT EXISTS message_invoice_repayment_part_description_uidx
+  ON message_invoice (message_id, description)
+  WHERE result = 'ok' AND description LIKE 'repayp:%';
 
 -- Cached DeepL output per message and UI locale. source_sha256 is SHA-256 of
 -- the stored `message.text` so an edit invalidates the row. ON DELETE CASCADE
@@ -284,6 +289,10 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer;
 -- Set once, when collected sats first reach the ask. Null until then.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_funded_at timestamptz;
+-- Set once when the author ends collecting. Null until then; a close is final.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_closed_at timestamptz;
+-- True only when an early fiat close froze per-giver debt cents.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_debt_frozen boolean NOT NULL DEFAULT false;
 -- Asks already full before this column existed start their term now, before receipt times are filled.
 UPDATE message
 SET goal_funded_at = now()
@@ -304,6 +313,28 @@ CREATE TABLE IF NOT EXISTS message_repayment (
   due_sats bigint NOT NULL,
   paid_at timestamptz NOT NULL,
   PRIMARY KEY (message_id, day_index, recipient_account_id)
+);
+-- One settled part of a giver-day share. Units are sats for BTC loans and
+-- cents for fiat loans. Sats is the exact amount the part was billed for.
+-- Part-based shares stay exclusively in this table, including when complete.
+CREATE TABLE IF NOT EXISTS message_repayment_part (
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  day_index integer NOT NULL,
+  recipient_account_id uuid NOT NULL,
+  part_index integer NOT NULL,
+  units bigint NOT NULL CHECK (units > 0),
+  sats bigint NOT NULL CHECK (sats >= 0),
+  paid_at timestamptz NOT NULL,
+  PRIMARY KEY (message_id, day_index, recipient_account_id, part_index)
+);
+-- Per-giver cents frozen only when a fiat loan is closed before filling. Loans
+-- that filled on their own continue to use their payment-time snapshots.
+CREATE TABLE IF NOT EXISTS message_credit_payer_snapshot (
+  message_id uuid NOT NULL REFERENCES message (id) ON DELETE CASCADE,
+  account_id uuid NOT NULL,
+  currency text NOT NULL CHECK (currency IN ('USD','CHF','EUR','PHP')),
+  units bigint NOT NULL CHECK (units >= 0),
+  PRIMARY KEY (message_id, account_id)
 );
 DO $message_goal_repayable$
 BEGIN
