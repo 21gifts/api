@@ -211,6 +211,7 @@ if (import.meta.main) {
     welcomeInvoiceReservationStore,
     sparkViewer,
     walletViewerPublicKey,
+    usageStore,
     memberEventStore,
     trustStore,
     fundingStore,
@@ -324,6 +325,7 @@ if (import.meta.main) {
       ? {}
       : { walletTransferStore, walletCounterparties: walletTransferStore }),
     walletViewerPublicKey,
+    ...(usageStore === undefined ? {} : { usageStore }),
     ...(memberEventStore === undefined ? {} : { memberEventStore }),
     conversationStore,
     notificationStore,

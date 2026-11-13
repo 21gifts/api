@@ -92,6 +92,7 @@ import {
   type ObservedCounterpartyStore,
   type WalletTransferStore,
 } from '@/lib/wallet-transfer-store';
+import { InMemoryWalletUsageStore, type WalletUsageStore } from '@/lib/wallet-usage-store';
 import { InMemoryMemberEventStore, type MemberEventStore } from '@/lib/member-event-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
@@ -239,6 +240,12 @@ export interface AppDeps {
   walletCounterparties?: ObservedCounterpartyStore;
   /** Spark viewer identity key returned in owner JSON, or null when unavailable. */
   walletViewerPublicKey?: string | null;
+  /**
+   * Public wallet-usage reads (default: empty {@link InMemoryWalletUsageStore}).
+   * Boot injects {@link PostgresWalletUsageStore} when `DATABASE_URL` is set.
+   * `GET /wallets/usage` is the only reader.
+   */
+  usageStore?: WalletUsageStore;
   /**
    * Member interaction-log events (default: empty
    * {@link InMemoryMemberEventStore}). Boot injects
@@ -539,10 +546,13 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`),
  *   walletStore (optional; default {@link InMemoryWalletStore}; mounts
- *   `POST /me/wallet/report`, `GET /wallets/stats`,
+ *   `POST /me/wallet/report`, `GET /wallets/stats`, `GET /wallets/usage`,
  *   `GET /debug/accounts/:id/wallet`, and `POST /me/wallet/counterparties`;
  *   SQL boot injects
  *   {@link PostgresWalletStore}),
+ *   usageStore (optional; default empty {@link InMemoryWalletUsageStore};
+ *   `GET /wallets/usage` reads it; SQL boot injects
+ *   {@link PostgresWalletUsageStore}),
  *   and memberEventStore (optional; default {@link InMemoryMemberEventStore};
  *   mounts `POST /me/events`; SQL boot injects
  *   {@link PostgresMemberEventStore}), and loginGateStore (optional; default
@@ -658,6 +668,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const memoryTransfers = new InMemoryWalletTransferStore();
   const walletTransferStore = deps.walletTransferStore ?? memoryTransfers;
   const walletCounterparties = deps.walletCounterparties ?? memoryTransfers;
+  const usageStore = deps.usageStore ?? new InMemoryWalletUsageStore();
   const memberEventStore = deps.memberEventStore ?? new InMemoryMemberEventStore();
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -1125,7 +1136,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/gifts/stats',
     giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }),
   );
-  app.route('/wallets', walletStatsRoutes({ store: walletStore, now }));
+  app.route('/wallets', walletStatsRoutes({ store: walletStore, usageStore, now }));
   app.route('/fx', fxRoutes({ store: fxSpotStore }));
   app.route(
     '/messages',
