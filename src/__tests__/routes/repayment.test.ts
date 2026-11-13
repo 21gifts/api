@@ -4118,6 +4118,37 @@ describe('repayment from the in-app wallet', () => {
     expect(listed).not.toHaveBeenCalled();
   });
 
+  it('counts only the unpaid remainder waiting for a lender without a wallet', async () => {
+    const { app, messages, auth } = await loanSetup({
+      now: SUNDAY,
+      termDays: 2,
+      givers: [{ id: NO_WALLET, sats: 250, wallet: false }],
+    });
+    await auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: SUNDAY });
+    await messages.recordInvoiceAttempt(lenderInvoice('inv-partly-repaid', CREDIT, NO_WALLET));
+    await messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: NO_WALLET,
+      partIndex: 0,
+      units: 25n,
+      sats: 25,
+      shareUnits: 125n,
+      paidAt: new Date(SUNDAY),
+    });
+
+    const response = await app.request('/me/loans', {
+      headers: { authorization: `Bearer ${NO_WALLET}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as Record<string, unknown>)['lenderWaiting']).toEqual({
+      shares: 1,
+      loans: 1,
+      sats: 100,
+    });
+  });
+
   it('leaves the lender sum null without a rate and answers 503 when a lent loan cannot be computed', async () => {
     const fiat = await loanSetup({ goalCurrency: 'USD', termDays: 4 });
     await fiat.auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: MONDAY });

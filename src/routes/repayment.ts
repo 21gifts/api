@@ -1737,7 +1737,7 @@ async function nextShare(
   // loader that fails is the same 503 as a missing rate.
   const price =
     prepared === undefined ? await sharePricer(deps, row).catch(() => null) : prepared.price;
-  if (price === null || plan.due.some((share) => price(share.units) === null)) {
+  if (price === null || plan.due.some((share) => price(share.units - share.paidUnits) === null)) {
     return {
       daysDue,
       daysPaid,
@@ -2047,7 +2047,12 @@ async function lenderWaiting(
       return 'unavailable';
     }
     shares += mine.length;
-    loanSats.push(pricedSum(price, mine));
+    loanSats.push(
+      pricedSum(
+        price,
+        mine.map((share) => ({ units: share.units - share.paidUnits })),
+      ),
+    );
   }
   return {
     shares,
