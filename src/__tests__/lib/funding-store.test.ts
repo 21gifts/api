@@ -87,13 +87,22 @@ const LATE = grant({
 
 describe('FUNDING_SCHEMA_SQL', () => {
   it('creates funding_grant with the expected columns and status check', () => {
-    expect(FUNDING_SCHEMA_SQL).toHaveLength(1);
+    expect(FUNDING_SCHEMA_SQL).toHaveLength(3);
     expect(FUNDING_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS funding_grant/i);
     expect(FUNDING_SCHEMA_SQL[0]).toMatch(/account_id uuid PRIMARY KEY REFERENCES account/i);
     expect(FUNDING_SCHEMA_SQL[0]).toMatch(
-      /CHECK \(status IN \('pending', 'trial', 'admitted', 'rejected'\)\)/,
+      /CHECK \(status IN \('pending', 'trial', 'admitted', 'rejected', 'withdrawn'\)\)/,
     );
     expect(FUNDING_SCHEMA_SQL[0]).toMatch(/trial_utc_date date/);
+  });
+
+  it('replaces the status check so a table from before withdrawn gains it', () => {
+    expect(FUNDING_SCHEMA_SQL[1]).toBe(
+      'ALTER TABLE funding_grant DROP CONSTRAINT IF EXISTS funding_grant_status_check',
+    );
+    expect(FUNDING_SCHEMA_SQL[2]).toMatch(
+      /^ALTER TABLE funding_grant ADD CONSTRAINT funding_grant_status_check\s+CHECK \(status IN \('pending', 'trial', 'admitted', 'rejected', 'withdrawn'\)\)$/,
+    );
   });
 });
 
@@ -173,6 +182,16 @@ describe('InMemoryFundingStore', () => {
       await store.transition(grant({ status: 'rejected' }), ['pending', 'trial']),
     ).toBeUndefined();
     expect((await store.getByAccountId('acc-a'))?.status).toBe('admitted');
+  });
+
+  it('transition moves a grant to withdrawn and back to pending on a new application', async () => {
+    const store = new InMemoryFundingStore([grant({ status: 'admitted', admittedAt: ADMITTED })]);
+    const withdrawn = grant({ status: 'withdrawn', decidedAt: DECIDED, decidedBy: 'acc-a' });
+    expect(await store.transition(withdrawn, ['pending'])).toBeUndefined();
+    expect(await store.transition(withdrawn, ['admitted'])).toEqual(withdrawn);
+    expect(await store.transition(withdrawn, ['admitted'])).toBeUndefined();
+    const again = grant({ status: 'pending', appliedAt: DECIDED + 1 });
+    expect(await store.transition(again, ['none', 'rejected', 'withdrawn'])).toEqual(again);
   });
 
   it('copies seed, listed, got, and upserted objects so callers cannot mutate store state', async () => {
@@ -595,6 +614,19 @@ describe('PostgresFundingStore', () => {
     expect(sql.queries[0]?.text).toMatch(/UPDATE funding_grant SET/);
     expect(sql.queries[0]?.text).toMatch(/status = ANY\(\$9::text\[\]\)/);
     expect(sql.queries[0]?.params[8]).toBe('{"pending","trial"}');
+    expect(missed).toBeUndefined();
+  });
+
+  it('transition binds a withdrawn write as a status CAS on the status read', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const missed = await new PostgresFundingStore(sql).transition(
+      grant({ status: 'withdrawn', decidedAt: DECIDED, decidedBy: 'acc-a' }),
+      ['trial'],
+    );
+    expect(sql.queries[0]?.text).toMatch(/UPDATE funding_grant SET/);
+    expect(sql.queries[0]?.params[1]).toBe('withdrawn');
+    expect(sql.queries[0]?.params[8]).toBe('{"trial"}');
     expect(missed).toBeUndefined();
   });
 });

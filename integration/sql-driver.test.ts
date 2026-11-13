@@ -271,6 +271,85 @@ VALUES ($1, 'verified', false, false, $2)`,
     }
   });
 
+  test('migrateFundingSchema lets a table with the old status check store withdrawn', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const accountId = crypto.randomUUID();
+    try {
+      await migrateAuthSchema(client);
+      await migrateFundingSchema(client);
+      await client.execute(
+        `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at)
+VALUES ($1, 'verified', false, false, $2)`,
+        [accountId, new Date()],
+      );
+      // The check as it was before `withdrawn` existed. NOT VALID keeps rows of
+      // other tests out of the way; new writes are still checked.
+      await client.execute(
+        'ALTER TABLE funding_grant DROP CONSTRAINT IF EXISTS funding_grant_status_check',
+      );
+      await client.execute(
+        `ALTER TABLE funding_grant ADD CONSTRAINT funding_grant_status_check
+          CHECK (status IN ('pending', 'trial', 'admitted', 'rejected')) NOT VALID`,
+      );
+      const store = new PostgresFundingStore(client);
+      const admitted: FundingGrant = {
+        accountId,
+        status: 'admitted',
+        appliedAt: 1_000,
+        decidedAt: 2_000,
+        decidedBy: null,
+        trialUtcDate: null,
+        admittedAt: 2_000,
+        note: 'kept',
+      };
+      await store.upsert(admitted);
+      const withdrawn: FundingGrant = {
+        ...admitted,
+        status: 'withdrawn',
+        decidedAt: 3_000,
+        decidedBy: accountId,
+        admittedAt: null,
+      };
+      let refused: unknown;
+      try {
+        await store.transition(withdrawn, ['admitted']);
+      } catch (err) {
+        refused = err;
+      }
+      expect(sqlState(refused)).toBe('23514');
+
+      await migrateFundingSchema(client);
+      await migrateFundingSchema(client);
+      const checks = await client.query<{ def: string; validated: boolean }>(
+        `SELECT pg_get_constraintdef(oid) AS def, convalidated AS validated FROM pg_constraint
+         WHERE conrelid = 'funding_grant'::regclass AND conname = 'funding_grant_status_check'`,
+      );
+      expect(checks).toHaveLength(1);
+      expect(checks[0]?.validated).toBe(true);
+      expect(checks[0]?.def).toContain("'withdrawn'::text");
+
+      expect(await store.transition(withdrawn, ['pending'])).toBeUndefined();
+      expect(await store.transition(withdrawn, ['admitted'])).toEqual(withdrawn);
+      expect(await store.getByAccountId(accountId)).toEqual(withdrawn);
+      expect(await store.transition(withdrawn, ['admitted'])).toBeUndefined();
+
+      const again: FundingGrant = {
+        accountId,
+        status: 'pending',
+        appliedAt: 4_000,
+        decidedAt: null,
+        decidedBy: null,
+        trialUtcDate: null,
+        admittedAt: null,
+        note: null,
+      };
+      expect(await store.transition(again, ['none', 'rejected', 'withdrawn'])).toEqual(again);
+    } finally {
+      await client.execute('DELETE FROM funding_grant WHERE account_id = $1', [accountId]);
+      await closeIfPossible(sql);
+    }
+  });
+
   test('funding apply through PostgresFundingStore', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {

@@ -89,11 +89,15 @@ export interface FundingStore {
 /** Advisory lock key that serialises admissions across API processes. */
 const ADMIT_PLACES_LOCK_KEY = 2_102_610_160;
 
-/** Idempotent DDL for the funding_grant table (matches `docs/schema/funding_grant.sql`). */
+/**
+ * Idempotent DDL for the funding_grant table (matches `docs/schema/funding_grant.sql`).
+ * The status check is dropped and added again, so a table created before
+ * `withdrawn` existed gains it on the next boot and a fresh table ends the same.
+ */
 export const FUNDING_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS funding_grant (
   account_id uuid PRIMARY KEY REFERENCES account (id),
-  status text NOT NULL CHECK (status IN ('pending', 'trial', 'admitted', 'rejected')),
+  status text NOT NULL CHECK (status IN ('pending', 'trial', 'admitted', 'rejected', 'withdrawn')),
   applied_at timestamptz NOT NULL,
   decided_at timestamptz,
   decided_by uuid REFERENCES account (id),
@@ -101,6 +105,9 @@ export const FUNDING_SCHEMA_SQL: readonly string[] = [
   admitted_at timestamptz,
   note text
 )`,
+  `ALTER TABLE funding_grant DROP CONSTRAINT IF EXISTS funding_grant_status_check`,
+  `ALTER TABLE funding_grant ADD CONSTRAINT funding_grant_status_check
+    CHECK (status IN ('pending', 'trial', 'admitted', 'rejected', 'withdrawn'))`,
 ];
 
 const FUNDING_SELECT =

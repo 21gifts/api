@@ -3453,6 +3453,32 @@ test('Function: dailyPayoutStoppedNotice — default boot has no DATABASE_URL', 
 test('Function: serializeOwnerFunding — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: ownerFundingStatus — GET /me reads none and POST /funding/withdraw is 403 then 409', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const headers = { authorization: member.authorization };
+  const basis = await request.post('/funding/withdraw', { headers });
+  expect(basis.status()).toBe(403);
+  expect(await basis.json()).toEqual({ error: 'Forbidden' });
+  const patched = await request.patch(`/debug/accounts/${member.id}`, {
+    headers: DEBUG,
+    data: { role: 'verified' },
+  });
+  expect(patched.status()).toBe(200);
+  const me = await request.get('/me', { headers });
+  expect(me.status()).toBe(200);
+  expect(((await me.json()) as { funding: unknown }).funding).toEqual({
+    status: 'none',
+    trialUtcDate: null,
+    admittedAt: null,
+    reviewedByName: null,
+    dailyPayoutStoppedNotice: false,
+  });
+  const none = await request.post('/funding/withdraw', { headers, data: { accountId: member.id } });
+  expect(none.status()).toBe(409);
+  expect(await none.json()).toEqual({ error: 'Conflict' });
+});
 test('Function: fundingReviewedAt — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

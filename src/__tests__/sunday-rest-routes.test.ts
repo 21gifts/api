@@ -141,6 +141,21 @@ describe('sunday rest routes', () => {
     expect(((await res.json()) as { error?: string }).error).not.toBe('SUNDAY_REST');
   });
 
+  it('does not refuse POST /funding/withdraw with Time-Zone Europe/Zurich on Sunday', async () => {
+    const res = await app().request('/funding/withdraw', {
+      method: 'POST',
+      headers: { 'Time-Zone': 'Europe/Zurich' },
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    const apply = await app().request('/funding/apply', {
+      method: 'POST',
+      headers: { 'Time-Zone': 'Europe/Zurich' },
+    });
+    expect(apply.status).toBe(403);
+    expect(await apply.json()).toEqual({ error: 'SUNDAY_REST' });
+  });
+
   it('refuses PUT /pictures/me and PUT /banners/me when the device zone is Sunday', async () => {
     const picture = await app().request('/pictures/me', {
       method: 'PUT',

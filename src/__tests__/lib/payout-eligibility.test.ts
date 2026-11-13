@@ -121,6 +121,20 @@ describe('loadPayoutEligibility', () => {
     }
   });
 
+  it('is not eligible for a withdrawn grant from the moment it is written', async () => {
+    for (const stored of [
+      grant({ status: 'withdrawn', admittedAt: null, decidedAt: GATE_MS - 1, decidedBy: 'acc' }),
+      grant({ status: 'withdrawn', admittedAt: 2, trialUtcDate: GATE_DAY }),
+    ]) {
+      for (const role of ['verified', 'fond'] as const) {
+        expect(await load(role, stored, true, GATE_MS)).toEqual({
+          result: { grant: stored, eligible: false },
+          shareReads: 0,
+        });
+      }
+    }
+  });
+
   it('propagates a grant read failure without reading the share', async () => {
     const hasRecoveryShareForVerifiedWallet = vi.fn(async () => true);
     await expect(

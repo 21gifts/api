@@ -52,7 +52,7 @@ import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Member apply (open), staff review with a per-round admission limit, the
+ * Member apply (open), member withdrawal, staff review with a per-round admission limit, the
  * public places count, and the initiator/founder daily payout roster.
  * Bearer session required except the public `GET /funding/places`. Grant
  * routes are independent of `account.role`
@@ -567,7 +567,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `GET /funding/places`,
  * `GET /funding/applications`, `GET /funding/applications/:accountId`,
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
- * `GET /funding/payout-days`, `GET /funding/daily-roster`,
+ * `POST /funding/withdraw`, `GET /funding/payout-days`, `GET /funding/daily-roster`,
  * `GET /funding/daily-roster/links`,
  * `POST /funding/daily-roster/comment`, `POST /funding/daily-roster/payments`,
  * `POST /funding/daily-roster/recipients`,
@@ -595,7 +595,13 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `{ error: 'About me photo is required' }`, 400
  * `{ error: 'Location is required' }`, 409 `{ error: 'Conflict' }`,
  * 200 `{ funding }` (log `funding.applied`), or 503
- * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden.
+ * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden. A
+ * withdrawn grant may apply again like `none` or `rejected`.
+ *
+ * `POST /withdraw` lets the caller leave the program on their own: an
+ * effective `pending`, `trial`, or `admitted` grant becomes `withdrawn`
+ * (compare-and-set on the status read, log `funding.withdrawn`); any other
+ * status is 409 `{ error: 'Conflict' }`. `basis` is 403 Forbidden.
  *
  * `GET /places` needs no session and returns the current round's places
  * count, or 503 `{ error: 'Funding is unavailable' }`. `POST /admit` admits
@@ -605,7 +611,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * @param deps - Auth store, funding store, message store, gift store, clock,
  *   optional spend ping, optional roster store, optional spend token,
  *   optional LNURL server, and optional admission round.
- * @returns A Hono app with member apply, staff review, the public places
+ * @returns A Hono app with member apply and withdrawal, staff review, the public places
  *   count, and daily roster routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
@@ -648,7 +654,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
             admittedAt: null,
             note: null,
           },
-          ['none', 'rejected'],
+          ['none', 'rejected', 'withdrawn'],
         );
         if (grant === undefined) {
           return c.json({ error: 'Conflict' }, 409);
@@ -934,6 +940,50 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         }
         logEvent('funding.rejected', { accountId: subject.id, actorId: staff.caller.id });
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
+      } catch {
+        logEvent('funding.write.failed');
+        return c.json({ error: 'Funding is unavailable' }, 503);
+      }
+    })
+    .post('/withdraw', async (c) => {
+      const caller = await authedAccount(deps, c.req.header('authorization'));
+      if (caller === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (!roleAtLeast(caller.role, 'verified')) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      const nowMs = deps.now();
+      try {
+        const observed = await loadGrantEffective(deps.fundingStore, caller.id, nowMs);
+        const from = effectiveStatus(observed, nowMs);
+        if (
+          observed === undefined ||
+          (from !== 'pending' && from !== 'trial' && from !== 'admitted')
+        ) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        const grant = await deps.fundingStore.transition(
+          {
+            accountId: caller.id,
+            status: 'withdrawn',
+            appliedAt: observed.appliedAt,
+            decidedAt: nowMs,
+            decidedBy: caller.id,
+            trialUtcDate: null,
+            admittedAt: null,
+            note: observed.note,
+          },
+          [observed.status],
+        );
+        if (grant === undefined) {
+          return c.json({ error: 'Conflict' }, 409);
+        }
+        logEvent('funding.withdrawn', { accountId: caller.id, from });
+        return c.json(
+          { funding: serializeOwnerFunding(caller.role, grant, nowMs, null, caller.id) },
+          200,
+        );
       } catch {
         logEvent('funding.write.failed');
         return c.json({ error: 'Funding is unavailable' }, 503);

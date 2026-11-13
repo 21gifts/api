@@ -10,11 +10,21 @@ import { isUtcDay } from '@/lib/gift';
  * this module does not score posts.
  */
 
-/** Stored grant status. Missing row is not stored (`none` is effective-only). */
-export type FundingStatus = 'pending' | 'trial' | 'admitted' | 'rejected';
+/**
+ * Stored grant status. Missing row is not stored (`none` is effective-only).
+ * `withdrawn` is a member who left the program on their own
+ * (`POST /funding/withdraw`); staff see it, the owner sees `none`.
+ */
+export type FundingStatus = 'pending' | 'trial' | 'admitted' | 'rejected' | 'withdrawn';
 
 /** Status after lazy trial expiry. `none` when no row exists. */
 export type EffectiveFundingStatus = 'none' | FundingStatus;
+
+/**
+ * Status on the owner wire. A withdrawn grant is shown as `none`, so the
+ * owner never sees `withdrawn`.
+ */
+export type OwnerFundingStatus = Exclude<EffectiveFundingStatus, 'withdrawn'>;
 
 /** One persisted funding-program grant (unique on `accountId`). */
 export interface FundingGrant {
@@ -38,8 +48,8 @@ export interface FundingGrant {
 
 /** Owner-facing funding JSON on `GET /me` / passkey finish (`role !== 'basis'`). */
 export interface OwnerFundingJson {
-  /** Effective status; never omit. `'none'` when there is no row. */
-  status: EffectiveFundingStatus;
+  /** Effective status; never omit. `'none'` when there is no row or the grant is withdrawn. */
+  status: OwnerFundingStatus;
   /** Trial UTC day when effective status is `trial`, else `null`. */
   trialUtcDate: string | null;
   /** Admission time when effective status is `admitted`, else `null`. */
@@ -93,6 +103,23 @@ export function effectiveStatus(
     return 'pending';
   }
   return grant.status;
+}
+
+/**
+ * Effective status as the member and the spend worker see it: a withdrawn
+ * grant reads exactly like no grant (`'none'`). Staff views keep
+ * {@link effectiveStatus}, which reports `'withdrawn'`.
+ *
+ * @param grant - Stored grant, or `undefined` when no row.
+ * @param nowMs - Epoch milliseconds (UTC day).
+ * @returns {@link effectiveStatus}, with `'withdrawn'` mapped to `'none'`.
+ */
+export function ownerFundingStatus(
+  grant: FundingGrant | undefined,
+  nowMs: number,
+): OwnerFundingStatus {
+  const status = effectiveStatus(grant, nowMs);
+  return status === 'withdrawn' ? 'none' : status;
 }
 
 /**
@@ -191,7 +218,8 @@ export function fundingGrantRequired(nowMs: number): boolean {
 /**
  * Whether the member is in the grant program on this UTC day: admitted, or
  * on trial with `trialUtcDate === utcDayKey(nowMs)`. Expired or future
- * trials, pending, rejected, and missing grants are not.
+ * trials, pending, rejected, withdrawn, and missing grants are not. A
+ * withdrawn grant is out of the program from the moment it is written.
  *
  * @param grant - Stored grant, or `undefined` when no row.
  * @param nowMs - Epoch milliseconds (UTC day).
@@ -248,8 +276,8 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
  * living-room post still gate issue). From that UTC day, true iff
  * {@link inGrantProgramToday} and, once
  * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
- * rejected, and missing grants are then false, and so is a grant without a
- * required share.
+ * rejected, withdrawn, and missing grants are then false, and so is a grant
+ * without a required share.
  *
  * @param role - Live account role.
  * @param grant - Stored grant, or `undefined` when no row.
@@ -296,7 +324,8 @@ const DAILY_PAYOUT_STOPPED_NOTICE_IDS: ReadonlySet<string> = new Set([
 /**
  * Whether the owner funding JSON should show the legacy daily-payout
  * stopped notice. True only for the six listed accounts when effective
- * status is `'none'` (no stored grant row).
+ * status is `'none'` (no stored grant row). A withdrawn grant is a row, so
+ * the notice stays false: it is for accounts that never applied.
  *
  * @param accountId - Subject account id (empty when the grant was not loaded).
  * @param grant - Stored grant, or `undefined` when no row.
@@ -316,7 +345,9 @@ export function dailyPayoutStoppedNotice(
 
 /**
  * Owner `funding` field: `null` for `basis` (do not leak grants), else
- * always an object (`none` when there is no row).
+ * always an object (`none` when there is no row). A withdrawn grant
+ * serializes exactly like no grant: `none`, trial and admission fields
+ * `null`, and `dailyPayoutStoppedNotice` false.
  *
  * @param role - Live account role.
  * @param grant - Observed grant (lazy-persisted), or `undefined`.
@@ -335,7 +366,7 @@ export function serializeOwnerFunding(
   if (role === 'basis') {
     return null;
   }
-  const status = effectiveStatus(grant, nowMs);
+  const status = ownerFundingStatus(grant, nowMs);
   const admitted = status === 'admitted';
   const trial = status === 'trial';
   return {
@@ -349,7 +380,8 @@ export function serializeOwnerFunding(
 
 /**
  * Member-card `fundingReviewedAt`: `grant.admittedAt` when effective
- * status is admitted, else `null`. Does not expose pending/trial/rejected.
+ * status is admitted, else `null`. Does not expose pending, trial, rejected,
+ * or withdrawn.
  *
  * @param grant - Stored grant, or `undefined`.
  * @param nowMs - Epoch milliseconds.
@@ -365,7 +397,8 @@ export function fundingReviewedAt(grant: FundingGrant | undefined, nowMs: number
 /**
  * Member-card `fundingReviewedByName`: live display name of `decidedBy`
  * when {@link fundingReviewedAt} is a number and the trimmed name is
- * non-empty. Otherwise `null`. Does not expose pending, trial, or rejected.
+ * non-empty. Otherwise `null`. Does not expose pending, trial, rejected, or
+ * withdrawn (a withdrawn grant's `decidedBy` is the member, never shown).
  *
  * @param grant - Stored grant, or `undefined`.
  * @param nowMs - Epoch milliseconds.
