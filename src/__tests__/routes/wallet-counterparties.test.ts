@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FREE_PAYMENTS_ENV } from '@/__tests__/helpers/wallet-lnurl';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
+import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryWalletStore, type WalletPaymentRecord } from '@/lib/wallet-store';
 import { walletCounterpartyRoutes } from '@/routes/wallet-counterparties';
+import { createApp } from '@/server';
 
 const receiver = '11111111-1111-4111-8111-111111111111';
 const sender = '22222222-2222-4222-8222-222222222222';
@@ -252,6 +255,7 @@ describe('POST /me/wallet/counterparties', () => {
       row,
       { ...row, accountId: receiver, direction: 'in' },
       { ...row, paymentId: 'out', accountId: receiver, counterpartyAccountId: sender },
+      { ...row, paymentId: 'out', accountId: sender, direction: 'in' },
       { ...row, paymentId: 'null', accountId: receiver },
       { ...row, paymentId: 'self', accountId: receiver, counterpartyAccountId: receiver },
       { ...row, paymentId: 'pending-own' },
@@ -307,6 +311,86 @@ describe('POST /me/wallet/counterparties', () => {
     expect(await response.json()).toEqual({ error: 'Counterparty lookup is unavailable' });
     expect(String(warn.mock.calls[0]?.[0])).toContain('wallet_counterparties.lookup.failed');
     expect(String(warn.mock.calls[0]?.[0])).not.toContain('secret');
+  });
+
+  it('uses issued invoices through the route and createApp, and returns 503 on lookup failure', async () => {
+    const { auth, wallet } = await setup();
+    const time = new Date(now);
+    await wallet.upsertPayments([
+      {
+        accountId: receiver,
+        paymentId: 'invoice',
+        direction: 'out',
+        status: 'completed',
+        amountSats: 1,
+        feeSats: 0,
+        paidAt: time,
+        method: 'spark',
+        paymentHash: null,
+        invoice: 'spark1invoice',
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'member',
+        counterpartyAccountId: sender,
+        firstSeenAt: time,
+        updatedAt: time,
+      },
+    ]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const app = walletCounterpartyRoutes({
+      authStore: auth,
+      walletStore: wallet,
+      now: () => now,
+      memberInvoices: { memberInvoiceAccountId: () => Promise.reject(new Error('secret')) },
+    });
+    const response = await app.request('/me/wallet/counterparties', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ payments: [{ id: 'invoice', direction: 'out' }] }),
+    });
+    expect(response.status).toBe(503);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('wallet_counterparties.lookup.failed');
+    expect(await response.json()).toEqual({ error: 'Counterparty lookup is unavailable' });
+    const withInvoices = walletCounterpartyRoutes({
+      authStore: auth,
+      walletStore: wallet,
+      now: () => now,
+      memberInvoices: { memberInvoiceAccountId: async () => sender },
+    });
+    const success = await withInvoices.request('/me/wallet/counterparties', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ payments: [{ id: 'invoice', direction: 'out' }] }),
+    });
+    expect(await success.json()).toEqual({
+      counterparties: [{ id: 'invoice', accountId: sender, username: 'sender' }],
+    });
+    const invoices = new InMemorySparkInvoiceStore();
+    await invoices.issueMember({
+      invoice: 'spark1invoice',
+      kind: 'pay',
+      accountId: sender,
+      receiverPubkey: `02${'a'.repeat(64)}`,
+      amountSats: 1,
+      createdAt: time,
+      expiresAt: new Date(now + 60 * 60_000),
+    });
+    const mounted = createApp({
+      env: FREE_PAYMENTS_ENV,
+      authStore: auth,
+      walletStore: wallet,
+      sparkInvoiceStore: invoices,
+      now: () => now,
+    });
+    const mountedResponse = await mounted.request('/me/wallet/counterparties', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ payments: [{ id: 'invoice', direction: 'out' }] }),
+    });
+    expect(await mountedResponse.json()).toEqual({
+      counterparties: [{ id: 'invoice', accountId: sender, username: 'sender' }],
+    });
   });
 
   it.each(['in', 'out'] as const)(

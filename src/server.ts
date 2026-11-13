@@ -783,7 +783,15 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/', walletHeartRoutes({ authStore: store, messages: messageStore, now }));
-  app.route('/', walletCounterpartyRoutes({ authStore: store, walletStore, now }));
+  app.route(
+    '/',
+    walletCounterpartyRoutes({
+      authStore: store,
+      walletStore,
+      now,
+      ...(sparkInvoices === undefined ? {} : { memberInvoices: sparkInvoices }),
+    }),
+  );
   app.route('/', memberEventRoutes({ authStore: store, store: memberEventStore, now }));
   app.route(
     '/',
