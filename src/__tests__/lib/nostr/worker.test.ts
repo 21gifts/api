@@ -11,7 +11,7 @@ import { InMemoryBannerStore } from '@/lib/banner-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
-import { encryptKind4, unwrapNip17, wrapNip17 } from '@/lib/nostr/dm';
+import { encryptKind4, unwrapNip17, wrapNip17 as wrapNip17AtWallClock } from '@/lib/nostr/dm';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -47,7 +47,7 @@ import {
   WORKER_INTERVAL_MS,
   type NostrWorkerDeps,
 } from '@/lib/nostr/worker';
-import { ExternalIngestLimiter } from '@/lib/nostr/external';
+import { EXTERNAL_REPLY_FUTURE_SKEW_MS, ExternalIngestLimiter } from '@/lib/nostr/external';
 import { countingBytes } from '@/__tests__/helpers/counting-bytes';
 import { InMemoryPushStore } from '@/lib/push-store';
 import {
@@ -69,6 +69,19 @@ vi.mock('@/lib/nip05', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nip05')>();
   return { ...actual, nip05Directory: vi.fn(actual.nip05Directory) };
 });
+
+/**
+ * NIP-17 wrap dated as if made at the worker clock these tests pin
+ * (1_700_000_000_000), so its `created_at` is not in that clock's future.
+ */
+function wrapNip17(senderSecret: Uint8Array, recipientPubkeyHex: string, text: string): NostrEvent {
+  vi.useFakeTimers({ now: 1_700_000_000_000, toFake: ['Date'] });
+  try {
+    return wrapNip17AtWallClock(senderSecret, recipientPubkeyHex, text);
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 const mockedDecode = vi.mocked(decodeBolt11);
 
@@ -9366,6 +9379,31 @@ describe('inbound direct-message admission', () => {
     expect(ctx.decrypts()).toBe(2);
     await tick(ctx);
     expect(ctx.decrypts()).toBe(2);
+  });
+
+  it('leaves an unknown gift wrap dated past the clock skew unread and unremembered', async () => {
+    const ctx = await setup();
+    const wrap = frame(wrapNip17(generateSecretKey(), ctx.recipient, 'ahead'));
+    ctx.querier.events = [{ ...wrap, created_at: Math.floor(NOW / 1000) + 365 * 24 * 60 * 60 }];
+    await tick(ctx);
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(0);
+  });
+
+  it('reads a future-dated gift wrap once its time is within the clock skew', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-ahead', new Date(0));
+    const aheadS = Math.floor((NOW + EXTERNAL_REPLY_FUTURE_SKEW_MS) / 1000) + 1;
+    const wrap = frame(wrapNip17(sender, ctx.recipient, 'soon'));
+    ctx.querier.events = [{ ...wrap, created_at: aheadS }];
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(0);
+    await tick(ctx, {}, NOW + 1000);
+    expect(await storedTexts(ctx)).toEqual(['soon']);
+    expect(ctx.decrypts()).toBe(1);
   });
 
   function memberDamusRow(

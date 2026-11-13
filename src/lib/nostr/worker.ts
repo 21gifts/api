@@ -2141,6 +2141,11 @@ type DirectMessageAcquisition = { pubkey: string; atMs: number };
  * it without a second unwrap. A missing account secret is not remembered
  * (nothing was decrypted), and a full memory takes no new entries.
  *
+ * An event whose `created_at` is later than now plus
+ * {@link EXTERNAL_REPLY_FUTURE_SKEW_MS} is left for a later pass: it is not
+ * decrypted, stored, or remembered, so future-dated wraps cannot occupy the
+ * memory beyond the query window.
+ *
  * @param deps - Worker collaborators.
  * @param urls - Zap relay URLs (space + public list).
  */
@@ -2159,6 +2164,7 @@ async function indexInboundDirectMessages(
   }
   const verify = deps.verifyKind1 ?? defaultVerifyKind1;
   const sinceS = Math.floor(deps.now() / 1000) - INBOUND_DM_SINCE_S;
+  const latestS = Math.floor((deps.now() + EXTERNAL_REPLY_FUTURE_SKEW_MS) / 1000);
   const zappers = new Set(
     (await deps.messages.listZapperPubkeys()).map((value) => value.toLowerCase()),
   );
@@ -2212,6 +2218,9 @@ async function indexInboundDirectMessages(
       }
       const signed = asNostrEvent(event);
       if (signed === null) {
+        continue;
+      }
+      if (signed.created_at > latestS) {
         continue;
       }
       const pTags = event.tags.filter((tag) => tag[0] === 'p' && typeof tag[1] === 'string');
