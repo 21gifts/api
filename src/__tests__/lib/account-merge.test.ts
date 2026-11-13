@@ -80,6 +80,8 @@ interface FakeDatabaseOptions {
   unassignedRepaymentSats?: number;
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
+  /** Existing source/survivor rows with the same immutable part key. */
+  partKeyCollisions?: readonly { message_id: string }[];
   /** Successful repayment invoice candidates on affected source-funded credits. */
   openRepaymentInvoices?: readonly {
     message_id: string;
@@ -122,6 +124,12 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           }
           if (text.includes('FROM message AS credit') && text.includes('source_gift')) {
             return (options.repaymentConflicts ?? []) as T[];
+          }
+          if (
+            text.includes('FROM message_repayment_part AS source') &&
+            text.includes('survivor.part_index = source.part_index')
+          ) {
+            return (options.partKeyCollisions ?? []) as T[];
           }
           if (text.includes('FROM message_invoice AS invoice')) {
             return (options.openRepaymentInvoices ?? []) as T[];
@@ -235,7 +243,7 @@ function doomedReadIndex(queries: readonly RecordedQuery[]): number {
 }
 
 describe('mergeAccounts', () => {
-  it('combines frozen snapshots and reindexes canonical repayment parts without loss', async () => {
+  it('takes account then message locks and moves canonical parts without changing indexes', async () => {
     const { db, queries } = fakeDatabase();
     await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
 
@@ -244,19 +252,15 @@ describe('mergeAccounts', () => {
     );
     const parts = queries.findIndex(
       (query) =>
-        query.text.includes('UPDATE message_repayment_part AS part') &&
-        query.text.includes('row_number() OVER'),
-    );
-    const normalized = queries.findIndex(
-      (query) =>
         query.text.includes('UPDATE message_repayment_part') &&
-        query.text.includes('SET part_index = -part_index - 1'),
+        query.text.includes('SET recipient_account_id = $2::uuid'),
     );
     const accountDelete = queries.findIndex((query) =>
       query.text.includes('DELETE FROM account WHERE id = $1'),
     );
-    const messageLocks = queries.findIndex((query) => query.text.includes('pg_advisory_xact_lock'));
-    const accountLocks = queries.findIndex(
+    const accountAdvisoryLocks = queries.findIndex((query) => query.params[2] === 21002101);
+    const messageLocks = queries.findIndex((query) => query.params[2] === 21002102);
+    const accountRowLocks = queries.findIndex(
       (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
     );
     const repaymentRowLocks = queries.findIndex(
@@ -265,19 +269,20 @@ describe('mergeAccounts', () => {
         query.text.includes('FOR UPDATE OF legacy, message'),
     );
 
-    expect(messageLocks).toBe(0);
+    expect(accountAdvisoryLocks).toBe(0);
+    expect(queries[accountAdvisoryLocks]?.text).toContain('ORDER BY locked.account_id');
+    expect(messageLocks).toBeGreaterThan(accountAdvisoryLocks);
     expect(queries[messageLocks]?.text).toContain('ORDER BY affected.message_id');
-    expect(accountLocks).toBeGreaterThan(messageLocks);
-    expect(repaymentRowLocks).toBeGreaterThan(accountLocks);
+    expect(accountRowLocks).toBeGreaterThan(messageLocks);
+    expect(repaymentRowLocks).toBeGreaterThan(accountRowLocks);
     expect(snapshot).toBeGreaterThanOrEqual(0);
     expect(queries[snapshot]?.text).toContain('SUM(units)::bigint');
     expect(queries[snapshot]?.text).toContain('ON CONFLICT (message_id, account_id) DO UPDATE');
     expect(parts).toBeGreaterThan(snapshot);
     expect(queries[parts]?.text).toContain('SET recipient_account_id = $2');
-    expect(normalized).toBeGreaterThan(parts);
-    expect(normalized).toBeLessThan(accountDelete);
-    expect(queries[normalized]?.text).toContain('recipient_account_id = $1::uuid');
-    expect(queries[normalized]?.params).toEqual([INTO]);
+    expect(queries[parts]?.text).not.toContain('part_index');
+    expect(parts).toBeLessThan(accountDelete);
+    expect(queries[parts]?.params).toEqual([FROM, INTO]);
   });
 
   it('locks invoice and receipt messages for either identity before account rows', async () => {
@@ -285,10 +290,12 @@ describe('mergeAccounts', () => {
 
     await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
 
-    const messageLocks = queries.findIndex((query) => query.text.includes('pg_advisory_xact_lock'));
+    const accountAdvisoryLocks = queries.findIndex((query) => query.params[2] === 21002101);
+    const messageLocks = queries.findIndex((query) => query.params[2] === 21002102);
     const accountLocks = queries.findIndex(
       (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
     );
+    expect(accountAdvisoryLocks).toBeLessThan(messageLocks);
     expect(queries[messageLocks]?.text).toContain('SELECT id AS message_id FROM message');
     expect(queries[messageLocks]?.text).toContain('account_id = $1::uuid OR account_id = $2::uuid');
     expect(queries[messageLocks]?.text).toContain('SELECT message_id FROM message_invoice');
@@ -301,6 +308,21 @@ describe('mergeAccounts', () => {
     expect(queries[messageLocks]?.text).not.toContain('UNION ALL');
     expect(queries[messageLocks]?.text.match(/ORDER BY affected\.message_id/g)).toHaveLength(1);
     expect(messageLocks).toBeLessThan(accountLocks);
+  });
+
+  it('refuses an immutable repayment part-key collision before any write', async () => {
+    const { db, queries } = fakeDatabase({
+      partKeyCollisions: [{ message_id: '33333333-3333-4333-8333-333333333333' }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    const collision = queries.at(-1);
+    expect(collision?.text).toContain('survivor.part_index = source.part_index');
+    expect(collision?.params).toEqual([FROM, INTO]);
+    expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
   });
 
   it('uses oldest ingests to convert a legacy fiat share before merging', async () => {
@@ -339,11 +361,11 @@ describe('mergeAccounts', () => {
         query.text.includes('DELETE FROM message_repayment') && query.params[0] === messageId,
     );
     const identityMove = queries.findIndex((query) =>
-      query.text.includes('UPDATE message_repayment_part AS part'),
+      query.text.includes('UPDATE message_repayment_part'),
     );
     const canonicalPayers = queries.find((query) => query.text.includes('nostr_zap_ingest'));
 
-    expect(converted?.params).toEqual([messageId, 0, FROM, '100', 5000, paidAt]);
+    expect(converted?.params).toEqual([messageId, 0, FROM, '100', 5000, paidAt, INTO]);
     expect(converted?.text).toContain('SELECT $1::uuid, $2::integer, $3::uuid');
     expect(converted?.text).toContain('$4::bigint, $5::bigint, $6::timestamptz');
     expect(canonicalPayers?.text).toContain('ORDER BY created_at ASC, id ASC');
@@ -361,7 +383,7 @@ describe('mergeAccounts', () => {
         {
           message_id: messageId,
           day_index: 0,
-          recipient_account_id: FROM,
+          recipient_account_id: INTO,
           due_sats: 4000,
           paid_at: paidAt,
           goal_currency: 'USD',
@@ -372,7 +394,7 @@ describe('mergeAccounts', () => {
       ],
       repaymentPayers: [
         {
-          account_id: FROM,
+          account_id: INTO,
           sats: 40,
           usd: null,
           chf: null,
@@ -395,7 +417,7 @@ describe('mergeAccounts', () => {
       (query) =>
         query.text.includes('INSERT INTO message_repayment_part') && query.params[0] === messageId,
     );
-    expect(converted?.params).toEqual([messageId, 0, FROM, '40', 4000, paidAt]);
+    expect(converted?.params).toEqual([messageId, 0, INTO, '40', 4000, paidAt, FROM]);
     expect(queries.some((query) => query.text.includes('payer_account_id IS NULL'))).toBe(false);
   });
 
@@ -910,8 +932,8 @@ describe('mergeAccounts', () => {
     expect(flat).toBe(
       "SELECT p.id FROM shop_payment AS p WHERE p.account_id = $2 AND p.status = 'open' AND EXISTS ( SELECT 1 FROM pos_charge AS c WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now() ) AND NOT EXISTS ( SELECT 1 FROM pos_charge AS s WHERE s.account_id = $2 AND s.status = 'pending' AND s.expires_at > now() ) LIMIT 1",
     );
-    // Checked under both account locks, which follow the affected message locks,
-    // after the merged account's own check and before any write.
+    // Checked under account advisory locks, affected message locks, and both
+    // account row locks, after the source's own check and before any write.
     expect(queries[0]?.text).toContain('pg_advisory_xact_lock');
     expect(
       queries.findIndex(

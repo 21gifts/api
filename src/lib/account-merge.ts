@@ -7,7 +7,11 @@ import {
   payerDebtUnits,
   repaymentSchedule,
 } from '@/lib/credit-repayment';
-import { PostgresMessageStore } from '@/lib/message-store';
+import {
+  ACCOUNT_ADVISORY_LOCK_NAMESPACE,
+  MESSAGE_ADVISORY_LOCK_NAMESPACE,
+  PostgresMessageStore,
+} from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** One reserved database transaction connection used by an account merge. */
@@ -134,7 +138,8 @@ function quoteIdentifier(identifier: string): string {
  * legacy full-share repayments are reconstructed from the original loan
  * schedule and converted to canonical parts. A schedule that cannot be
  * reconstructed refuses the merge without writes. Parts from both identities
- * are then moved and reindexed without losing units or sats.
+ * are then moved without changing their immutable part indexes. A remaining
+ * source/survivor part-key collision refuses the merge before any write.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -152,12 +157,18 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
   return db.begin(async (tx) => {
     const accountParams = [input.from, input.into] as const;
 
-    // Receipt settlement and repayment writes take the message advisory lock
-    // before any row lock. Follow that order here too: take every affected
-    // message lock in stable id order before locking either account or any
-    // invoice, receipt, repayment, or message row.
+    // Global order: account advisory locks, message advisory locks, row locks.
+    // Both identities are stable before the affected-message query runs, so a
+    // concurrent invoice mint cannot add a payer reference after this set was
+    // collected and before the source account is deleted.
     await tx.query(
-      `SELECT pg_advisory_xact_lock(hashtextextended('message:' || affected.message_id::text, 0))
+      `SELECT pg_advisory_xact_lock($3::integer, hashtext(locked.account_id::text))
+       FROM unnest(ARRAY[$1::uuid, $2::uuid]) AS locked(account_id)
+       ORDER BY locked.account_id`,
+      [...accountParams, ACCOUNT_ADVISORY_LOCK_NAMESPACE],
+    );
+    await tx.query(
+      `SELECT pg_advisory_xact_lock($3::integer, hashtext(affected.message_id::text))
        FROM (
          SELECT message_id FROM message_repayment
          WHERE recipient_account_id = $1::uuid OR recipient_account_id = $2::uuid
@@ -197,12 +208,12 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
            AND (account_id = $1::uuid OR account_id = $2::uuid)
        ) AS affected
        ORDER BY affected.message_id`,
-      accountParams,
+      [...accountParams, MESSAGE_ADVISORY_LOCK_NAMESPACE],
     );
     const locked = await tx.query<LockedAccountRow>(
       `SELECT id, is_platform, role, profile_message_id
        FROM account
-       WHERE id = $1 OR id = $2
+       WHERE id = $1::uuid OR id = $2::uuid
        FOR UPDATE`,
       accountParams,
     );
@@ -306,6 +317,23 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     if (settledMergeConflicts.length > 0) {
+      return { ok: false, error: 'repayment_unavailable' };
+    }
+    // Part indexes are immutable invoice identity. Moving the source recipient
+    // must not renumber either side; refuse the unique key that would collide.
+    const partKeyCollisions = await tx.query<{ message_id: string }>(
+      `SELECT source.message_id
+       FROM message_repayment_part AS source
+       JOIN message_repayment_part AS survivor
+         ON survivor.message_id = source.message_id
+        AND survivor.day_index = source.day_index
+        AND survivor.part_index = source.part_index
+       WHERE source.recipient_account_id = $1::uuid
+         AND survivor.recipient_account_id = $2::uuid
+       LIMIT 1`,
+      accountParams,
+    );
+    if (partKeyCollisions.length > 0) {
       return { ok: false, error: 'repayment_unavailable' };
     }
     // A repayment description is settlement metadata and embeds its original
@@ -446,7 +474,9 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
                 COALESCE(MAX(part_index) + 1, 0),
                 $4::bigint, $5::bigint, $6::timestamptz
          FROM message_repayment_part
-         WHERE message_id = $1 AND day_index = $2 AND recipient_account_id = $3`,
+         WHERE message_id = $1::uuid
+           AND day_index = $2::integer
+           AND recipient_account_id IN ($3::uuid, $7::uuid)`,
         [
           legacy.message_id,
           Number(legacy.day_index),
@@ -454,6 +484,7 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
           legacy.units.toString(),
           legacy.due_sats,
           legacy.paid_at,
+          legacy.recipient_account_id === input.from ? input.into : input.from,
         ],
       );
       await tx.query(
@@ -637,42 +668,13 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     );
     await tx.query('DELETE FROM message_credit_payer_snapshot WHERE account_id = $1', [input.from]);
 
-    // Parts are the canonical source whenever either merged identity has a
-    // part for the same giver-day. Move both identities through unique
-    // negative indexes first, then normalize to consecutive non-negative
-    // indexes without dropping any settled units or sats.
-    await tx.query(
-      `WITH ranked AS (
-         SELECT candidate.ctid,
-                row_number() OVER (
-                  PARTITION BY message_id, day_index
-                  ORDER BY paid_at, recipient_account_id, part_index
-                )::integer AS new_index
-         FROM message_repayment_part AS candidate
-         WHERE candidate.recipient_account_id = $1
-            OR (
-              candidate.recipient_account_id = $2
-              AND EXISTS (
-                SELECT 1
-                FROM message_repayment_part AS source
-                WHERE source.message_id = candidate.message_id
-                  AND source.day_index = candidate.day_index
-                  AND source.recipient_account_id = $1
-              )
-            )
-       )
-       UPDATE message_repayment_part AS part
-       SET recipient_account_id = $2,
-           part_index = -ranked.new_index
-       FROM ranked
-       WHERE part.ctid = ranked.ctid`,
-      accountParams,
-    );
+    // Part indexes are encoded into repayment invoices and remain immutable.
+    // The collision check above makes the direct recipient move safe.
     await tx.query(
       `UPDATE message_repayment_part
-       SET part_index = -part_index - 1
-       WHERE recipient_account_id = $1::uuid AND part_index < 0`,
-      [input.into],
+       SET recipient_account_id = $2::uuid
+       WHERE recipient_account_id = $1::uuid`,
+      accountParams,
     );
 
     // The source's social recovery rows belong to its own wallets, which go

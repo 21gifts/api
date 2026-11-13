@@ -208,6 +208,18 @@ async function persistInvoiceAttempt(
   }
 }
 
+/** Hold the payer account lock before the target message lock in one store transaction. */
+function withPayerMessageLocks<T>(
+  store: MessageStore,
+  payerAccountId: string,
+  messageId: string,
+  run: (lockedStore: MessageStore) => Promise<T>,
+): Promise<T> {
+  return store.withAccountLocks([payerAccountId], (accountLockedStore) =>
+    accountLockedStore.withMessageLock(messageId, run),
+  );
+}
+
 /**
  * Build an invoice-attempt row (caller sets result-specific fields).
  *
@@ -3539,7 +3551,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: POSITIVE_SATS_BODY_ERROR }, 400);
       }
-      return deps.store.withMessageLock(messageIdParam, async (lockedStore) => {
+      const issueInvoice = async (lockedStore: MessageStore): Promise<Response> => {
+        // The session was resolved before a potentially slow invoice mint. A
+        // merge that won the account lock may have deleted this identity, so
+        // do not persist or return an invoice for its stale id.
+        if ((await deps.authStore.getAccount(account.id)) === undefined) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
         const row = await lockedStore.getById(messageId);
         if (row === undefined || row.deletedAt !== null) {
           await persistInvoiceAttempt(
@@ -3925,6 +3943,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           );
           return c.json({ error: HEART_UNAVAILABLE }, 503);
         }
+        if ((await deps.authStore.getAccount(account.id)) === undefined) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
         await persistInvoiceAttempt(
           lockedStore,
           invoiceAttemptBase({
@@ -3947,6 +3968,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }),
         );
         return c.json({ pr: zap.pr, amountSats: zap.amountSats, sparkInvoice }, 200);
-      });
+      };
+      return withPayerMessageLocks(deps.store, account.id, messageIdParam, issueInvoice);
     });
 }

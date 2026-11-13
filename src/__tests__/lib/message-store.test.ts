@@ -11256,8 +11256,100 @@ describe('PostgresMessageStore', () => {
     );
     expect(result).toBe('transaction');
     expect(sql.queries[0]?.text).toMatch(/pg_advisory_xact_lock/);
-    expect(sql.queries[0]?.text).toContain('$1::text');
-    expect(sql.queries[0]?.params).toEqual(['message:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']);
+    expect(sql.queries[0]?.text).toContain('$1::integer');
+    expect(sql.queries[0]?.text).toContain('hashtext($2::text)');
+    expect(sql.queries[0]?.params).toEqual([21002102, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']);
+  });
+
+  it('takes sorted account locks before a nested message lock in distinct namespaces', async () => {
+    const sql = new MockSql();
+    const tx = new MockSql();
+    sql.transaction = async (run) => run(tx);
+    const store = new PostgresMessageStore(sql);
+
+    await store.withAccountLocks(
+      ['BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      (accountLocked) => accountLocked.withMessageLock('message', async () => undefined),
+    );
+
+    expect(tx.queries.map((query) => query.params)).toEqual([
+      [21002101, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      [21002101, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+      [21002102, 'message'],
+    ]);
+  });
+
+  it('takes nested account locks on the current transaction-scoped Postgres client', async () => {
+    const sql = new MockSql();
+    const tx = new MockSql();
+    let transactions = 0;
+    let nestedTransactions = 0;
+    sql.transaction = async (run) => {
+      transactions += 1;
+      return run(tx);
+    };
+    tx.transaction = async (run) => {
+      nestedTransactions += 1;
+      return run(tx);
+    };
+    const store = new PostgresMessageStore(sql);
+
+    await store.withMessageLock('message', (messageLocked) =>
+      messageLocked.withAccountLocks(
+        ['BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+        async () => undefined,
+      ),
+    );
+
+    expect(transactions).toBe(1);
+    expect(nestedTransactions).toBe(0);
+    expect(tx.queries.map((query) => query.params)).toEqual([
+      [21002102, 'message'],
+      [21002101, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      [21002101, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+    ]);
+    expect(tx.queries[1]?.text).toContain('pg_advisory_xact_lock');
+    expect(tx.queries[2]?.text).toContain('pg_advisory_xact_lock');
+  });
+
+  it('uses the current store when an account-lock SQL port has no transaction', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+
+    await expect(store.withAccountLocks([], async (locked) => locked === store)).resolves.toBe(
+      true,
+    );
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('queues memory account locks by sorted canonical id', async () => {
+    const memory = new InMemoryMessageStore();
+    const accountA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const accountB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const order: string[] = [];
+    const held = memory.withAccountLocks([accountB, accountA], async () => {
+      order.push('first');
+      entered();
+      await gate;
+    });
+    await firstEntered;
+    const queued = memory.withAccountLocks([accountA.toUpperCase(), accountA], async () => {
+      order.push('second');
+    });
+    await Promise.resolve();
+    expect(order).toEqual(['first']);
+
+    release();
+    await Promise.all([held, queued]);
+    expect(order).toEqual(['first', 'second']);
   });
 
   it('takes the Postgres message lock before stamping a gift receipt', async () => {
@@ -14361,7 +14453,7 @@ describe('shop identity on message rows', () => {
     expect(legacyConflictSql.queries[1]?.text).toContain('message_repayment_part');
     expect(legacyConflictSql.executes.at(-1)).toEqual({
       text: `DELETE FROM nostr_zap_payment
-               WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
+             WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
       params: ['ac', 'legacy-conflict'],
     });
 
@@ -14439,7 +14531,7 @@ describe('shop identity on message rows', () => {
     ).toBe(false);
     expect(conflictSql.executes.at(-1)).toEqual({
       text: `DELETE FROM nostr_zap_payment
-               WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
+             WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
       params: ['dd', 'conflicting-receipt'],
     });
 

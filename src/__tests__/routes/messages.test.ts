@@ -334,11 +334,13 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listLoanLedger: boom,
     markRepaymentPaid: boom,
     listRepaymentParts: boom,
+    withAccountLocks: async () => boom(),
     withMessageLock: async () => boom(),
     withRepaymentLock: async () => boom(),
     markRepaymentPartPaid: boom,
     isClaimOnlyRepaymentInvoice: boom,
     settleRepaymentPayment: boom,
+    settleRepaymentPaymentLocked: boom,
     closeCredit: boom,
     ...overrides,
   };
@@ -4581,6 +4583,7 @@ describe('POST /messages', () => {
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, () => run(store)),
       withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
       withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
         base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
@@ -4589,6 +4592,8 @@ describe('POST /messages', () => {
         base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
       settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
         base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
       closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
@@ -4745,6 +4750,7 @@ describe('POST /messages', () => {
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, () => run(store)),
       withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
       withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
         base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
@@ -4753,6 +4759,8 @@ describe('POST /messages', () => {
         base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
       settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
         base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
       closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
@@ -5083,6 +5091,172 @@ describe('POST /messages/:id/invoice', () => {
       expect(await hit()).toBe(200);
     });
     expect(await hit()).toBe(429);
+  });
+
+  it('does not let an account merge delete the payer during a paused invoice mint', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    const messageId = '57575757-5757-4757-8757-575757575757';
+    await messageStore.create({
+      id: messageId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    let releaseMint!: () => void;
+    const mintGate = new Promise<void>((resolve) => {
+      releaseMint = resolve;
+    });
+    let mintPaused!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      mintPaused = resolve;
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://example.test/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      mintPaused();
+      await mintGate;
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const app = mount(authStore, messageStore, {
+      nostrKek: kek,
+      lnurlServer: LNURL_SERVER,
+      fetchImpl,
+    });
+
+    await withNip57True(async () => {
+      const mint = app.request(`/messages/${messageId}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      await paused;
+      let mergeEntered = false;
+      const merge = messageStore.withAccountLocks(['acc'], async () => {
+        mergeEntered = true;
+        await authStore.deleteAccount('acc');
+      });
+      await Promise.resolve();
+      expect(mergeEntered).toBe(false);
+
+      releaseMint();
+      expect((await mint).status).toBe(200);
+      await merge;
+      expect(mergeEntered).toBe(true);
+    });
+  });
+
+  it('does not persist a minted invoice when the payer is gone at the final re-read', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    const messageId = '58585858-5858-4858-8858-585858585858';
+    await messageStore.create({
+      id: messageId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://example.test/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      await authStore.deleteAccount('acc');
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const app = mount(authStore, messageStore, {
+      nostrKek: kek,
+      lnurlServer: LNURL_SERVER,
+      fetchImpl,
+    });
+
+    await withNip57True(async () => {
+      const response = await app.request(`/messages/${messageId}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+
+      expect(response.status).toBe(401);
+      expect(await messageStore.listInvoiceAttemptsForMessage(messageId)).toEqual([]);
+    });
+  });
+
+  it('rechecks a payer deleted by the merge that held the account lock first', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    let releaseMerge!: () => void;
+    const mergeGate = new Promise<void>((resolve) => {
+      releaseMerge = resolve;
+    });
+    let mergeEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      mergeEntered = resolve;
+    });
+    const held = messageStore.withAccountLocks(['acc'], async () => {
+      mergeEntered();
+      await mergeGate;
+    });
+    await entered;
+    const withAccountLocks = messageStore.withAccountLocks.bind(messageStore);
+    let invoiceLockRequested!: () => void;
+    const requested = new Promise<void>((resolve) => {
+      invoiceLockRequested = resolve;
+    });
+    vi.spyOn(messageStore, 'withAccountLocks').mockImplementation((accountIds, run) => {
+      invoiceLockRequested();
+      return withAccountLocks(accountIds, run);
+    });
+    const app = mount(authStore, messageStore);
+    const request = app.request('/messages/59595959-5959-4959-8959-595959595959/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    await requested;
+    await authStore.deleteAccount('acc');
+    releaseMerge();
+    await held;
+
+    expect((await request).status).toBe(401);
   });
 
   it('locks an uppercase direct gift id until mint storage finishes before close', async () => {
@@ -6966,6 +7140,7 @@ describe('POST /messages/:id/invoice', () => {
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
       listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, () => run(store)),
       withMessageLock: (messageId, run) => base.withMessageLock(messageId, () => run(store)),
       withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
         base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
@@ -6974,6 +7149,8 @@ describe('POST /messages/:id/invoice', () => {
         base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
       settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
         base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
       closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>

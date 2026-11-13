@@ -1627,7 +1627,7 @@ describe('manual invoice settlement', () => {
       description: repaymentDescription(0, giver),
     });
     await store.claimZapPayment(paymentHash, 'foreign-receipt', new Date(1));
-    const settleRepayment = vi.spyOn(store, 'settleRepaymentPayment');
+    const settleRepayment = vi.spyOn(store, 'settleRepaymentPaymentLocked');
 
     await expect(
       settleInvoiceManually({
@@ -1659,6 +1659,102 @@ describe('manual invoice settlement', () => {
     expect(await store.getZapReceiptGift(receiptId)).toBeUndefined();
     expect(await store.listZapIngests(10)).toEqual([]);
     expect(await store.zapPaymentReceiptId(paymentHash)).toBe('foreign-receipt');
+  });
+
+  it('manual repayment settlement uses the survivor from the invoice read under lock', async () => {
+    const mergedSource = '11111111-1111-4111-8111-111111111111';
+    const mergeSurvivor = '22222222-2222-4222-8222-222222222222';
+    class MergedRepaymentStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override async findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): Promise<MessageInvoiceAttempt | undefined> {
+        const found = await super.findOkInvoiceByPaymentHash(...args);
+        this.lookups += 1;
+        return found === undefined
+          ? undefined
+          : {
+              ...found,
+              authorAccountId: this.lookups === 1 ? mergedSource : mergeSurvivor,
+            };
+      }
+    }
+    const store = new MergedRepaymentStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const paymentHash = 'b5'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      amountSats: 21,
+      description: repaymentDescription(0, mergedSource),
+    });
+
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1_790,
+        paymentHash,
+        note: 'merge completed before settlement lock',
+      }),
+    ).resolves.toMatchObject({ ok: true, messageId, amountSats: 21 });
+    expect(store.lookups).toBe(2);
+    expect(await store.listRepayments(messageId)).toEqual([
+      {
+        dayIndex: 0,
+        recipientAccountId: mergeSurvivor,
+        dueSats: 21,
+        paidAt: new Date(1_790),
+      },
+    ]);
+  });
+
+  it('rejects a manual repayment that is no longer a repayment under the message lock', async () => {
+    class ChangedRepaymentInvoiceStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override async findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): Promise<MessageInvoiceAttempt | undefined> {
+        const found = await super.findOkInvoiceByPaymentHash(...args);
+        this.lookups += 1;
+        if (found === undefined || this.lookups === 1) {
+          return found;
+        }
+        return { ...found, description: null };
+      }
+    }
+    const store = new ChangedRepaymentInvoiceStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const paymentHash = 'b6'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      amountSats: 21,
+      description: repaymentDescription(0, '33333333-3333-4333-8333-333333333333'),
+    });
+
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1_800,
+        paymentHash,
+        note: 'locked invoice changed',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'invoice' });
+    expect(store.lookups).toBe(2);
+    expect(await store.zapPaymentReceiptId(paymentHash)).toBeUndefined();
+    expect(await store.listRepayments('manual-message')).toEqual([]);
   });
 
   it('records a repayment-part invoice as a paid part and does not raise the ask', async () => {
@@ -5755,6 +5851,7 @@ describe('indexOpenZapReceipts', () => {
       markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
         base.markRepaymentPaid(row),
       listRepaymentParts: (messageId: string) => base.listRepaymentParts(messageId),
+      withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, run),
       withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
       withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
         base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
@@ -5764,6 +5861,8 @@ describe('indexOpenZapReceipts', () => {
         base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
       settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
         base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
       closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>
         base.closeCredit(...args),
       claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
@@ -6061,6 +6160,7 @@ describe('indexOpenZapReceipts', () => {
         markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
           base.markRepaymentPaid(row),
         listRepaymentParts: (messageId: string) => base.listRepaymentParts(messageId),
+        withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, () => run(store)),
         withMessageLock: (messageId, run) => base.withMessageLock(messageId, () => run(store)),
         withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
           base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
@@ -6071,6 +6171,8 @@ describe('indexOpenZapReceipts', () => {
           base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
         settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
           base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+        settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+          base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
         closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>
           base.closeCredit(...args),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
@@ -6753,7 +6855,7 @@ describe('indexOpenZapReceipts', () => {
       createdAt: new Date(1),
       messageId,
       payerAccountId: 'acc-nogiver',
-      authorAccountId: 'acc-nogiver',
+      authorAccountId: giver,
       amountSats: 21,
       lightningAddress: 'gone@example.com',
       zapRequest: null,
@@ -6859,6 +6961,175 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listIndexedZapIngests()).toEqual([
       expect.objectContaining({ receiptId, outcome: 'indexed', reason: null }),
     ]);
+  });
+
+  it('receipt settlement keeps part index 3 and uses the survivor read under lock', async () => {
+    const mergedSource = '77777777-7777-4777-8777-777777777777';
+    const mergeSurvivor = '88888888-8888-4888-8888-888888888888';
+    class MergedPartInvoiceStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override async findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): Promise<MessageInvoiceAttempt | undefined> {
+        const found = await super.findOkInvoiceByPaymentHash(...args);
+        this.lookups += 1;
+        return found === undefined
+          ? undefined
+          : {
+              ...found,
+              authorAccountId: this.lookups === 1 ? mergedSource : mergeSurvivor,
+            };
+      }
+    }
+    const store = new MergedPartInvoiceStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-part-repair' });
+    const paymentHash = '1a'.repeat(32);
+    const receiptId = 'r-part-repair';
+    await store.recordInvoiceAttempt({
+      id: 'inv-part-repair',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-part-repair',
+      authorAccountId: mergedSource,
+      amountSats: 21,
+      lightningAddress: 'gone@example.test',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-part-repair',
+      paymentHash,
+      description: repaymentPartDescription(0, mergedSource, 3, 21n, 21n),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    expect(await store.claimZapPayment(paymentHash, receiptId, new Date(1))).toBe(true);
+    const settleRepayment = vi.spyOn(store, 'settleRepaymentPaymentLocked');
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: receiptId,
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-part-repair'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 13,
+      fetchImpl: vi.fn<typeof fetch>(),
+    });
+
+    expect(store.lookups).toBe(3);
+    expect(settleRepayment).toHaveBeenCalledTimes(1);
+    expect(settleRepayment).toHaveBeenCalledWith(
+      paymentHash,
+      receiptId,
+      new Date(13),
+      {
+        kind: 'part',
+        messageId,
+        dayIndex: 0,
+        recipientAccountId: mergeSurvivor,
+        partIndex: 3,
+        units: 21n,
+        sats: 21,
+        shareUnits: 21n,
+        paidAt: new Date(13),
+      },
+      true,
+    );
+    expect(await store.listRepaymentParts(messageId)).toEqual([
+      expect.objectContaining({
+        recipientAccountId: mergeSurvivor,
+        partIndex: 3,
+        units: 21n,
+        sats: 21,
+      }),
+    ]);
+    expect(await store.listIndexedZapIngests()).toEqual([
+      expect.objectContaining({ receiptId, outcome: 'indexed', reason: null }),
+    ]);
+  });
+
+  it('rejects a repayment receipt when the invoice disappears before the message lock', async () => {
+    const vanishingGiver = '99999999-9999-4999-8999-999999999999';
+    class VanishingRepaymentInvoiceStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override async findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): Promise<MessageInvoiceAttempt | undefined> {
+        const found = await super.findOkInvoiceByPaymentHash(...args);
+        this.lookups += 1;
+        return this.lookups < 3 ? found : undefined;
+      }
+    }
+    const store = new VanishingRepaymentInvoiceStore();
+    const auth = new InMemoryAuthStore();
+    const messageId = await seedStore({ store, auth, accountId: 'acc-vanishing-repayment' });
+    const paymentHash = '1b'.repeat(32);
+    const receiptId = 'r-vanishing-repayment';
+    await store.recordInvoiceAttempt({
+      id: 'inv-vanishing-repayment',
+      createdAt: new Date(1),
+      messageId,
+      payerAccountId: 'acc-vanishing-repayment',
+      authorAccountId: vanishingGiver,
+      amountSats: 21,
+      lightningAddress: 'gone@example.test',
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-vanishing-repayment',
+      paymentHash,
+      description: repaymentDescription(0, vanishingGiver),
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: receiptId,
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-vanishing-repayment'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 14,
+      fetchImpl: vi.fn<typeof fetch>(),
+    });
+
+    expect(store.lookups).toBe(3);
+    expect(await store.listZapIngests(10)).toEqual([
+      expect.objectContaining({ receiptId, outcome: 'rejected', reason: 'settled' }),
+    ]);
+    expect(await store.zapPaymentReceiptId(paymentHash)).toBeUndefined();
+    expect(await store.listZapReceipts(10)).toEqual([]);
+    expect(await store.listRepayments(messageId)).toEqual([]);
   });
 
   it('logs nostr.zap.ingest.record_failed when recordZapIngest throws', async () => {
@@ -6995,6 +7266,7 @@ describe('indexOpenZapReceipts', () => {
         markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
           base.markRepaymentPaid(row),
         listRepaymentParts: (messageId: string) => base.listRepaymentParts(messageId),
+        withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, () => run(store)),
         withMessageLock: (messageId, run) => base.withMessageLock(messageId, () => run(store)),
         withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
           base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
@@ -7005,6 +7277,8 @@ describe('indexOpenZapReceipts', () => {
           base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
         settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
           base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+        settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+          base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
         closeCredit: (...args: Parameters<InMemoryMessageStore['closeCredit']>) =>
           base.closeCredit(...args),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>

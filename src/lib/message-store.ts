@@ -103,9 +103,13 @@ const MAX_PUBLISH_ATTEMPTS = 5;
 /** Canonical UUID text, the only shape allowed into a `uuid[]` array literal. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Stable key segment shared by every per-message lock implementation. */
-function messageLockKey(messageId: string): string {
-  return UUID_RE.test(messageId) ? messageId.toLowerCase() : messageId;
+/** Two-key advisory-lock namespaces; account and message locks never overlap. */
+export const ACCOUNT_ADVISORY_LOCK_NAMESPACE = 21002101;
+export const MESSAGE_ADVISORY_LOCK_NAMESPACE = 21002102;
+
+/** Stable key segment shared by every per-account and per-message lock implementation. */
+function advisoryLockKey(id: string): string {
+  return UUID_RE.test(id) ? id.toLowerCase() : id;
 }
 
 interface PaymentFiatStoreOptions {
@@ -1398,6 +1402,22 @@ export interface MessageStore {
   listRepaymentParts(messageId: string): Promise<RepaymentPartRow[]>;
 
   /**
+   * Serialize work for accounts before taking any message or row lock. Account
+   * ids are de-duplicated and sorted. Postgres holds transaction-scoped
+   * advisory locks in a namespace disjoint from message locks; memory queues
+   * callbacks on the same canonical ids. The callback must use the supplied
+   * locked store.
+   *
+   * @param accountIds - Accounts whose identities must remain live and stable.
+   * @param run - Work performed while every account lock is held.
+   * @returns The callback result.
+   */
+  withAccountLocks<T>(
+    accountIds: readonly string[],
+    run: (store: MessageStore) => Promise<T>,
+  ): Promise<T>;
+
+  /**
    * Serialize close, gift mint, repayment reservation, and settlement for one message.
    * Postgres holds a transaction-scoped advisory lock; memory queues callbacks
    * on the stable message id. Valid UUIDs are lowercased in both lock keys. The
@@ -1469,6 +1489,18 @@ export interface MessageStore {
    *   fallback verification requires the same exact invoice identity.
    */
   settleRepaymentPayment(
+    paymentHash: string,
+    receiptEventId: string,
+    claimedAt: Date,
+    settlement: RepaymentSettlement,
+    requireExactPartSats?: boolean,
+  ): Promise<boolean>;
+
+  /**
+   * Already-locked form of {@link MessageStore.settleRepaymentPayment}.
+   * Call only from the matching `withMessageLock` callback.
+   */
+  settleRepaymentPaymentLocked(
     paymentHash: string,
     receiptEventId: string,
     claimedAt: Date,
@@ -2084,7 +2116,7 @@ interface CreditPayerQueryRow {
 }
 
 /** A repayment row written together with its payment-hash claim. */
-type RepaymentSettlement =
+export type RepaymentSettlement =
   | {
       /** Legacy whole-share settlement. */
       kind: 'legacy';
@@ -2956,6 +2988,7 @@ export class InMemoryMessageStore implements MessageStore {
    */
   readonly #creditFreezeAt = new Map<string, number>();
   readonly #repaymentParts: Array<RepaymentPartRow & { paidAt: Date }> = [];
+  readonly #accountLocks = new Map<string, Promise<void>>();
   readonly #messageLocks = new Map<string, Promise<void>>();
   readonly #creditPayerSnapshots = new Map<
     string,
@@ -4823,7 +4856,7 @@ export class InMemoryMessageStore implements MessageStore {
     messageId: string,
     run: (store: MessageStore) => Promise<T>,
   ): Promise<T> {
-    const key = messageLockKey(messageId);
+    const key = advisoryLockKey(messageId);
     const previous = this.#messageLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -4838,6 +4871,37 @@ export class InMemoryMessageStore implements MessageStore {
       release();
       if (this.#messageLocks.get(key) === tail) {
         this.#messageLocks.delete(key);
+      }
+    }
+  }
+
+  async withAccountLocks<T>(
+    accountIds: readonly string[],
+    run: (store: MessageStore) => Promise<T>,
+  ): Promise<T> {
+    const keys = [...new Set(accountIds.map(advisoryLockKey))].sort();
+    const releases: Array<() => void> = [];
+    try {
+      for (const key of keys) {
+        const previous = this.#accountLocks.get(key) ?? Promise.resolve();
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const tail = previous.then(() => gate);
+        this.#accountLocks.set(key, tail);
+        await previous;
+        releases.push(() => {
+          release();
+          if (this.#accountLocks.get(key) === tail) {
+            this.#accountLocks.delete(key);
+          }
+        });
+      }
+      return await run(this);
+    } finally {
+      for (const release of releases.reverse()) {
+        release();
       }
     }
   }
@@ -4932,55 +4996,71 @@ export class InMemoryMessageStore implements MessageStore {
     settlement: RepaymentSettlement,
     requireExactPartSats = false,
   ): Promise<boolean> {
-    return this.withMessageLock(settlement.messageId, async () => {
-      if (
-        settlement.kind === 'part' &&
-        requireExactPartSats &&
-        settlement.sats !== Number(settlement.units)
-      ) {
+    return this.withMessageLock(settlement.messageId, (locked) =>
+      locked.settleRepaymentPaymentLocked(
+        paymentHash,
+        receiptEventId,
+        claimedAt,
+        settlement,
+        requireExactPartSats,
+      ),
+    );
+  }
+
+  async settleRepaymentPaymentLocked(
+    paymentHash: string,
+    receiptEventId: string,
+    claimedAt: Date,
+    settlement: RepaymentSettlement,
+    requireExactPartSats = false,
+  ): Promise<boolean> {
+    if (
+      settlement.kind === 'part' &&
+      requireExactPartSats &&
+      settlement.sats !== Number(settlement.units)
+    ) {
+      return false;
+    }
+    const claim = await this.#claimZapPayment(paymentHash, receiptEventId, claimedAt);
+    if (claim === 'conflict') {
+      return false;
+    }
+    if (settlement.kind === 'legacy') {
+      const stored = await this.#markRepaymentPaidUnlocked(settlement);
+      if (!stored) {
+        if (
+          claim === 'existing' &&
+          !(await this.isClaimOnlyRepaymentInvoice(
+            paymentHash,
+            repaymentInvoiceIdentity(settlement),
+          ))
+        ) {
+          return true;
+        }
+        if (claim === 'inserted') {
+          this.#zapPayments.delete(paymentHash.toLowerCase());
+        }
+        logEvent('repayment.settlement.conflict', {
+          messageId: settlement.messageId,
+          dayIndex: settlement.dayIndex,
+        });
         return false;
       }
-      const claim = await this.#claimZapPayment(paymentHash, receiptEventId, claimedAt);
-      if (claim === 'conflict') {
+    } else {
+      const stored = await this.#markRepaymentPartPaidUnlocked(settlement);
+      if (stored === undefined) {
+        if (claim === 'inserted') {
+          this.#zapPayments.delete(paymentHash.toLowerCase());
+        }
+        logEvent('repayment.settlement.conflict', {
+          messageId: settlement.messageId,
+          dayIndex: settlement.dayIndex,
+          partIndex: settlement.partIndex,
+        });
         return false;
       }
-      if (settlement.kind === 'legacy') {
-        const stored = await this.#markRepaymentPaidUnlocked(settlement);
-        if (!stored) {
-          if (
-            claim === 'existing' &&
-            !(await this.isClaimOnlyRepaymentInvoice(
-              paymentHash,
-              repaymentInvoiceIdentity(settlement),
-            ))
-          ) {
-            return true;
-          }
-          if (claim === 'inserted') {
-            this.#zapPayments.delete(paymentHash.toLowerCase());
-          }
-          logEvent('repayment.settlement.conflict', {
-            messageId: settlement.messageId,
-            dayIndex: settlement.dayIndex,
-          });
-          return false;
-        }
-      } else {
-        const stored = await this.#markRepaymentPartPaidUnlocked(settlement);
-        if (stored === undefined) {
-          if (claim === 'inserted') {
-            this.#zapPayments.delete(paymentHash.toLowerCase());
-          }
-          logEvent('repayment.settlement.conflict', {
-            messageId: settlement.messageId,
-            dayIndex: settlement.dayIndex,
-            partIndex: settlement.partIndex,
-          });
-          return false;
-        }
-      }
-      return true;
-    });
+    }
+    return true;
   }
 
   async closeCredit(
@@ -6363,12 +6443,16 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
 export class PostgresMessageStore implements MessageStore {
   readonly #sql: SqlClient;
   readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
+  readonly #transactionScoped: boolean;
 
   /**
    * @param sql - Parameter-bound SQL client (already migrated).
+   * @param options - Optional fiat snapshot collaborators.
+   * @param transactionScoped - Whether `sql` is an already-open transaction.
    */
-  constructor(sql: SqlClient, options: PaymentFiatStoreOptions = {}) {
+  constructor(sql: SqlClient, options: PaymentFiatStoreOptions = {}, transactionScoped = false) {
     this.#sql = sql;
+    this.#transactionScoped = transactionScoped;
     this.#paymentFiat = {
       fetchImpl: options.fetchImpl ?? globalThis.fetch,
       fiatRates: options.fiatRates ?? new InMemoryFiatStore(),
@@ -8915,16 +8999,38 @@ export class PostgresMessageStore implements MessageStore {
     messageId: string,
     run: (store: MessageStore) => Promise<T>,
   ): Promise<T> {
-    if (this.#sql.transaction === undefined) {
-      return run(this);
-    }
-    const key = messageLockKey(messageId);
-    return this.#sql.transaction(async (tx) => {
-      await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, [
-        `message:${key}`,
+    const key = advisoryLockKey(messageId);
+    const locked = async (tx: SqlClient): Promise<T> => {
+      await tx.query(`SELECT pg_advisory_xact_lock($1::integer, hashtext($2::text))`, [
+        MESSAGE_ADVISORY_LOCK_NAMESPACE,
+        key,
       ]);
-      return run(new PostgresMessageStore(tx, this.#paymentFiat));
-    });
+      return run(new PostgresMessageStore(tx, this.#paymentFiat, true));
+    };
+    if (this.#transactionScoped) {
+      return locked(this.#sql);
+    }
+    return this.#sql.transaction === undefined ? run(this) : this.#sql.transaction(locked);
+  }
+
+  async withAccountLocks<T>(
+    accountIds: readonly string[],
+    run: (store: MessageStore) => Promise<T>,
+  ): Promise<T> {
+    const keys = [...new Set(accountIds.map(advisoryLockKey))].sort();
+    const locked = async (tx: SqlClient): Promise<T> => {
+      for (const key of keys) {
+        await tx.query(`SELECT pg_advisory_xact_lock($1::integer, hashtext($2::text))`, [
+          ACCOUNT_ADVISORY_LOCK_NAMESPACE,
+          key,
+        ]);
+      }
+      return run(new PostgresMessageStore(tx, this.#paymentFiat, true));
+    };
+    if (this.#transactionScoped) {
+      return locked(this.#sql);
+    }
+    return this.#sql.transaction === undefined ? run(this) : this.#sql.transaction(locked);
   }
 
   withRepaymentLock<T>(
@@ -9070,73 +9176,88 @@ export class PostgresMessageStore implements MessageStore {
     settlement: RepaymentSettlement,
     requireExactPartSats = false,
   ): Promise<boolean> {
-    return this.withMessageLock(settlement.messageId, async (locked) => {
-      const store = locked as PostgresMessageStore;
-      if (
-        settlement.kind === 'part' &&
-        requireExactPartSats &&
-        settlement.sats !== Number(settlement.units)
-      ) {
+    return this.withMessageLock(settlement.messageId, (locked) =>
+      locked.settleRepaymentPaymentLocked(
+        paymentHash,
+        receiptEventId,
+        claimedAt,
+        settlement,
+        requireExactPartSats,
+      ),
+    );
+  }
+
+  async settleRepaymentPaymentLocked(
+    paymentHash: string,
+    receiptEventId: string,
+    claimedAt: Date,
+    settlement: RepaymentSettlement,
+    requireExactPartSats = false,
+  ): Promise<boolean> {
+    if (
+      settlement.kind === 'part' &&
+      requireExactPartSats &&
+      settlement.sats !== Number(settlement.units)
+    ) {
+      return false;
+    }
+    const claim = await this.#claimZapPayment(paymentHash, receiptEventId, claimedAt);
+    if (claim === 'conflict') {
+      return false;
+    }
+    if (settlement.kind === 'legacy') {
+      const stored = await this.#markRepaymentPaidUnlocked(settlement);
+      if (!stored) {
+        if (
+          claim === 'existing' &&
+          !(await this.isClaimOnlyRepaymentInvoice(
+            paymentHash,
+            repaymentInvoiceIdentity(settlement),
+          ))
+        ) {
+          return true;
+        }
+        if (claim === 'inserted') {
+          await this.#sql.execute(
+            `DELETE FROM nostr_zap_payment
+             WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
+            [paymentHash.toLowerCase(), receiptEventId],
+          );
+        }
+        logEvent('repayment.settlement.conflict', {
+          messageId: settlement.messageId,
+          dayIndex: settlement.dayIndex,
+        });
         return false;
       }
-      const claim = await store.#claimZapPayment(paymentHash, receiptEventId, claimedAt);
-      if (claim === 'conflict') {
+    } else {
+      const stored = await this.#markRepaymentPartPaidUnlocked(settlement);
+      if (stored === undefined) {
+        if (
+          claim === 'existing' &&
+          !(await this.isClaimOnlyRepaymentInvoice(
+            paymentHash,
+            repaymentInvoiceIdentity(settlement),
+          ))
+        ) {
+          return true;
+        }
+        if (claim === 'inserted') {
+          await this.#sql.execute(
+            `DELETE FROM nostr_zap_payment
+             WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
+            [paymentHash.toLowerCase(), receiptEventId],
+          );
+        }
+        logEvent('repayment.settlement.conflict', {
+          messageId: settlement.messageId,
+          dayIndex: settlement.dayIndex,
+          partIndex: settlement.partIndex,
+        });
         return false;
       }
-      if (settlement.kind === 'legacy') {
-        const stored = await store.#markRepaymentPaidUnlocked(settlement);
-        if (!stored) {
-          if (
-            claim === 'existing' &&
-            !(await store.isClaimOnlyRepaymentInvoice(
-              paymentHash,
-              repaymentInvoiceIdentity(settlement),
-            ))
-          ) {
-            return true;
-          }
-          if (claim === 'inserted') {
-            await store.#sql.execute(
-              `DELETE FROM nostr_zap_payment
-               WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
-              [paymentHash.toLowerCase(), receiptEventId],
-            );
-          }
-          logEvent('repayment.settlement.conflict', {
-            messageId: settlement.messageId,
-            dayIndex: settlement.dayIndex,
-          });
-          return false;
-        }
-      } else {
-        const stored = await store.#markRepaymentPartPaidUnlocked(settlement);
-        if (stored === undefined) {
-          if (
-            claim === 'existing' &&
-            !(await store.isClaimOnlyRepaymentInvoice(
-              paymentHash,
-              repaymentInvoiceIdentity(settlement),
-            ))
-          ) {
-            return true;
-          }
-          if (claim === 'inserted') {
-            await store.#sql.execute(
-              `DELETE FROM nostr_zap_payment
-               WHERE payment_hash = $1::text AND receipt_event_id = $2::text`,
-              [paymentHash.toLowerCase(), receiptEventId],
-            );
-          }
-          logEvent('repayment.settlement.conflict', {
-            messageId: settlement.messageId,
-            dayIndex: settlement.dayIndex,
-            partIndex: settlement.partIndex,
-          });
-          return false;
-        }
-      }
-      return true;
-    });
+    }
+    return true;
   }
 
   async closeCredit(
