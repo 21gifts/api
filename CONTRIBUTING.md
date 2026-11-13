@@ -376,6 +376,29 @@ The wallet rule in detail:
     transaction list is separate work.
   - `GET /wallets/stats` publishes totals over all wallets that never name or
     single out one account.
+  - `GET /wallets/usage` publishes usage aggregates over all wallets for
+    payments since the in-app wallet release at 2026-11-09 11:17 UTC, without
+    any account, person, shop, or payment identifier. A purpose is one of
+    deposit, withdrawal, shop purchase, forum gift, transfer, fund deposit, fund
+    payout, or other. A party is one of outside, members, the Fond, or the
+    platform, and a party pair is a sending and a receiving party; shops count
+    as members. An amount bucket is one of 1, 2–10, 11–100, 101–1,000,
+    1,001–10,000, 10,001–100,000, or more than 100,000 sats. It publishes:
+    counts and sats per UTC day and purpose; counts, sats, and fees per UTC day,
+    party pair, and purpose; counts and sats per amount bucket; counts per UTC
+    hour of day (0 to 23), summed over the whole window; the payment count, the
+    volume and fees in sats, and the median and average payment amount in sats;
+    and the number of distinct active, sending, and receiving wallets in total
+    and per UTC day. An active wallet is a member or Fond wallet that sent or
+    received at least one counted payment; a sending or receiving wallet is one
+    that sent or received one. It also publishes the share of the five largest
+    senders in the volume, where a sender is a sending wallet ranked by the sats
+    it sent in counted payments, and the time of the newest counted payment. For
+    shops it publishes only totals over all shops: shop purchases inside the
+    figures above, and, for till charges created on or after 2026-10-26 11:17
+    UTC (14 days before the release), two counts per UTC day of the charge's
+    creation time: the charges created that day, and how many of those charges
+    are paid. Per-shop till data stays private with the shop's own `GET /pos`.
   - The owner's previous-wallet lookup (`GET /me/previous-wallets`) returns
     the stored `sparkPubkey`, `sparkAddress`, and `replacedAt`, plus the soft
     balance a public Spark explorer already shows (or `null`), only to the
