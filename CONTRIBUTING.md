@@ -370,11 +370,14 @@ The wallet rule in detail:
     1, 2–10, 11–100, 101–1,000, 1,001–10,000, 10,001–100,000, or more than
     100,000 sats. It publishes: counts and sats per UTC day and purpose; counts,
     sats, and fees per UTC day, party pair, and purpose; counts and sats per
-    amount bucket; counts per UTC hour; the payment count, the volume and fees
-    in sats, and the median and average payment amount in sats; the number of
-    distinct active, sending, and receiving wallets in total and per UTC day;
-    the share of the five largest senders in the volume; and the time of the
-    newest counted payment.
+    amount bucket; counts per UTC hour of day (0 to 23), summed over the whole
+    window; the payment count, the volume and fees in sats, and the median and
+    average payment amount in sats; the number of distinct active, sending, and
+    receiving wallets in total and per UTC day. An active wallet is a member or
+    Fond wallet that sent or received at least one counted payment; a sending or
+    receiving wallet is one that sent or received one. It also publishes the
+    share of the five largest senders in the volume and the time of the newest
+    counted payment.
   - The owner's previous-wallet lookup (`GET /me/previous-wallets`) reads only
     what a public Spark explorer already shows and returns it only to the
     owner.
