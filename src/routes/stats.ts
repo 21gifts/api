@@ -1,11 +1,5 @@
 import { Hono } from 'hono';
-import {
-  buildGiftStats,
-  giftsForRecipient,
-  utcDayFromPaidAt,
-  type GiftRow,
-  type GiftStats,
-} from '@/lib/gift';
+import { buildGiftStats, utcDayFromPaidAt, type GiftRow, type GiftStats } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import type { BtcUsdRateBook } from '@/lib/btc-usd-store';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
@@ -104,21 +98,17 @@ export function bindGoalRateDay(deps: {
  * Build the `/gifts/stats` route group.
  *
  * Mounted at `/gifts/stats` so the public path is `GET /gifts/stats`.
- * Optional `?recipient=` filters outbound gifts to one recipient handle (the
- * local part of the receiving address) before aggregation (see {@link giftsForRecipient}).
+ * Every outbound row is aggregated. A `recipient` query parameter is ignored.
  *
  * @param deps - Gift store, optional BTC-USD book, optional fiat book, and clock.
  * @returns A Hono app with `GET /`.
  */
-
 export function giftsStatsRoutes(deps: GiftsStatsRouteDeps): Hono {
   return new Hono().get('/', async (c) => {
     try {
-      const raw = (c.req.query('recipient') ?? '').trim();
       const rows = await deps.store.listOutbound();
-      const selected = raw === '' ? rows : giftsForRecipient(rows, raw);
       const loaded = await loadGiftStatsSnapshot(
-        selected,
+        rows,
         deps.rates,
         deps.fiatRates,
         deps.now === undefined ? undefined : deps.now(),

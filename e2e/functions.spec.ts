@@ -956,21 +956,7 @@ test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot',
   const body = (await res.json()) as { giftCount: number; totalSats: number };
   expect(body.giftCount).toBe(0);
   expect(body.totalSats).toBe(0);
-});
-
-test('Function: giftsForRecipient — GET /gifts/stats?recipient= is empty on default boot', async ({
-  request,
-}) => {
-  const res = await request.get('/gifts/stats?recipient=alice');
-  expect(res.status()).toBe(200);
-  const body = (await res.json()) as {
-    giftCount: number;
-    totalSats: number;
-    spendOverTime: unknown[];
-  };
-  expect(body.giftCount).toBe(0);
-  expect(body.totalSats).toBe(0);
-  expect(body.spendOverTime).toEqual([]);
+  expect(body).not.toHaveProperty('byRecipient');
 });
 
 test('Function: InMemoryGiftStore — GET /gifts/stats is empty on default boot', async ({
@@ -992,6 +978,7 @@ test('Function: buildGiftStats — GET /gifts/stats is empty on default boot', a
   };
   expect(body.spendOverTime).toEqual([]);
   expect(body.firstPaidAt).toBeNull();
+  expect(body).not.toHaveProperty('byRecipient');
 });
 
 test('Function: loadGiftStatsSnapshot — GET /gifts/stats has no spend on default boot', async ({
