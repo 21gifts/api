@@ -339,9 +339,9 @@ LEFT JOIN account payee
  * `PostgresMessageStore.heartSenders`: the stored hash equals
  * `lower(message_invoice.payment_hash)`. Conversation invoices and credit
  * repayments (`repay:` / `repayp:`) stay out. The invoice's note must also be
- * living (`message.deleted_at IS NULL`), joined through `message_invoice
- * .message_id = message.id`; a gift or heart on a note hidden by staff is not
- * public application data.
+ * living (`message.deleted_at IS NULL`), joined through
+ * `message_invoice.message_id = message.id`; a gift or heart on a note hidden
+ * by staff is not public application data.
  */
 const FORUM_SQL = `SELECT invoice.created_at, invoice.amount_sats, COALESCE(invoice.heart, false) AS heart
 FROM message_invoice invoice
