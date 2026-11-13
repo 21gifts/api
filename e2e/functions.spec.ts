@@ -169,6 +169,13 @@ test('Function: accountWelcomed — posted lookup is up', async ({ request }) =>
   expect(res.status()).toBe(503);
 });
 
+test('Function: isWelcomeRecipient — welcome dry-run applies the shared rule', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/welcome-sweep', { headers: DEBUG });
+  expect(res.status()).toBe(200);
+});
+
 test('Function: welcomeSweepCandidates — dry-run lists nobody without the LNURL server', async ({
   request,
 }) => {

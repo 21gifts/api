@@ -28,6 +28,7 @@ const WITHDRAWN: FundingGrant = {
 type ScenarioOptions = {
   gifts?: readonly GiftRow[];
   role?: Account['role'];
+  isPlatform?: boolean;
   username?: string | null;
   grant?: FundingGrant | undefined;
   wallet?: boolean;
@@ -39,7 +40,7 @@ type ScenarioOptions = {
 };
 
 function scenario(options: ScenarioOptions = {}): {
-  account: Pick<Account, 'id' | 'role' | 'username' | 'sparkPubkeyVerifiedAt'>;
+  account: Pick<Account, 'id' | 'role' | 'username' | 'sparkPubkeyVerifiedAt' | 'isPlatform'>;
   deps: FundingPayoutTodayDeps;
   reads: string[];
 } {
@@ -49,6 +50,7 @@ function scenario(options: ScenarioOptions = {}): {
     account: {
       id: 'account',
       role: options.role ?? 'verified',
+      ...(options.isPlatform === undefined ? {} : { isPlatform: options.isPlatform }),
       username: options.username === undefined ? 'Alice' : options.username,
       sparkPubkeyVerifiedAt: options.wallet === false ? null : NOW,
     },
@@ -130,6 +132,18 @@ describe('loadFundingPayoutToday', () => {
     await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
       state: 'paid',
       reason: 'welcome',
+    });
+    expect(reads).toEqual(['gifts']);
+  });
+
+  it.each([
+    { name: 'promoted', options: { role: 'moderator' as const } },
+    { name: 'platform', options: { isPlatform: true } },
+  ])('suppresses a same-day welcome reason for a $name account', async ({ options }) => {
+    const { account, deps, reads } = scenario({ gifts: [gift('welcome')], ...options });
+    await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
+      state: 'paid',
+      reason: null,
     });
     expect(reads).toEqual(['gifts']);
   });
