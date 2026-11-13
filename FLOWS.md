@@ -287,18 +287,18 @@ a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
 `{ address, messageId }`, `address` being the author's wallet address, and Bearer `SPEND_API_TOKEN`) only when the author
 is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
-`not_eligible` or `no_media` and still 200; when `role === 'verified'` and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
+`not_eligible` or `no_media` and still 200; when the author is an exactly `verified` non-platform account and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 the welcome gift is once per account: an account that already has a
 platform `Welcome` reply under one of its notes, a recorded `welcome` gift paid to its legacy
 external address, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification, is not pinged again; becoming
-verified and saving About me while verified also welcome-ping; while an operator has turned
+exactly `verified` while non-platform and saving About me while welcome-eligible also welcome-ping; while an operator has turned
 the welcome sweep on (`PUT /debug/welcome-sweep`; it starts off on every boot, so the run at
-boot pings nobody), a 15-minute timer welcome-pings every verified account that already has a
+boot pings nobody), a 15-minute timer welcome-pings every exactly `verified` non-platform account that already has a
 photo or video post;
-replies and any role other than `verified` do not welcome-ping); replies and media replay do
+replies, basis accounts, and the platform account do not welcome-ping); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
 snapshotted at post, `sats`, `payable`, `authorCanReceive`, `hasPhoto`, and live author `role`

@@ -5046,6 +5046,108 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateWelcomeInvoiceReservationSchema(client);
 }
 
+describe('Postgres wallet-transfer account merge reconciliation', () => {
+  const hex64 = (): string =>
+    `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+
+  for (const completedSide of ['source', 'survivor'] as const) {
+    test(`keeps a completed ${completedSide} when both operator update times are null`, async () => {
+      const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+      const from = crypto.randomUUID();
+      const into = crypto.randomUUID();
+      const shop = crypto.randomUUID();
+      const shopMessageId = crypto.randomUUID();
+      const walletPubkey = `02${hex64()}`;
+      const shopPubkey = `03${hex64()}`;
+      const transferId = crypto.randomUUID();
+      try {
+        await migrateMergeTables(client);
+        const auth = new PostgresAuthStore(client);
+        for (const [id, username] of [
+          [from, `merge_transfer_from_${from.slice(0, 8)}`],
+          [into, `merge_transfer_into_${into.slice(0, 8)}`],
+          [shop, `merge_transfer_shop_${shop.slice(0, 8)}`],
+        ] as const) {
+          await auth.createAccount({
+            id,
+            linkingKey: null,
+            role: 'basis',
+            name: null,
+            username,
+            location: null,
+            forumLawsDismissed: false,
+            viewKey: hex64(),
+            createdAt: Date.now(),
+            rulesAgreedAt: null,
+            walletRequired: true,
+          });
+        }
+        await client.execute(
+          'UPDATE account SET spark_pubkey = $2, spark_pubkey_verified_at = now() WHERE id = $1',
+          [shop, shopPubkey],
+        );
+        await new PostgresMessageStore(client).create({
+          id: shopMessageId,
+          accountId: shop,
+          name: 'Merge shop',
+          text: 'Open #21GiftsShop',
+          createdAt: new Date('2026-11-12T10:00:00.000Z'),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+          shopAccount: { id: shop, username: null, name: 'Merge shop' },
+        });
+        const completedAccount = completedSide === 'source' ? from : into;
+        const pendingAccount = completedSide === 'source' ? into : from;
+        await client.execute(
+          `INSERT INTO wallet_transfer (
+             account_id, wallet_pubkey, transfer_id, direction, type, status,
+             amount_sats, counterparty_pubkey, counterparty_pubkeys,
+             counterparty_account_id, spark_invoice, transfer_created_at,
+             transfer_updated_at, first_seen_at, last_seen_at
+           ) VALUES
+             ($1, $3, $4, 'out', 'transfer', 'completed', 21, $5, ARRAY[$5],
+              NULL, NULL, $6, NULL, $6, $6),
+             ($2, $3, $4, 'in', 'transfer', 'pending', 1, $5, ARRAY[$5],
+              NULL, NULL, $6, NULL, $6, $7)`,
+          [
+            completedAccount,
+            pendingAccount,
+            walletPubkey,
+            transferId,
+            shopPubkey,
+            new Date('2026-11-12T12:00:00.000Z'),
+            new Date('2026-11-12T13:00:00.000Z'),
+          ],
+        );
+
+        expect(await mergeAccounts(mergeDb, { from, into, verify: 'into' })).toEqual({
+          ok: true,
+          messages: 0,
+        });
+        await expect(
+          client.query<{ status: string; direction: string; amount_sats: string }>(
+            `SELECT status, direction, amount_sats::text AS amount_sats
+             FROM wallet_transfer
+             WHERE account_id = $1 AND wallet_pubkey = $2 AND transfer_id = $3`,
+            [into, walletPubkey, transferId],
+          ),
+        ).resolves.toEqual([{ status: 'completed', direction: 'out', amount_sats: '21' }]);
+        await expect(
+          new PostgresWalletTransferStore(client).hasShopPayment(into, '2026-11-11', '2026-11-13'),
+        ).resolves.toBe(true);
+      } finally {
+        await client.execute('DELETE FROM wallet_transfer WHERE account_id IN ($1, $2)', [
+          from,
+          into,
+        ]);
+        await client.execute('DELETE FROM message WHERE id = $1', [shopMessageId]);
+        await client.execute('DELETE FROM account WHERE id IN ($1, $2, $3)', [from, into, shop]);
+        await closeIfPossible(sql);
+      }
+    });
+  }
+});
+
 describe('Postgres welcome reservation account merge', () => {
   test('keeps the later lease without colliding its unique reservation id', async () => {
     const cases = [

@@ -1137,7 +1137,13 @@ describe('mergeAccounts', () => {
     expect(queries[transferReconcile]?.text).toContain(
       'CASE WHEN src.state_from_src THEN src.status ELSE dst.status END',
     );
-    expect(queries[transferReconcile]?.text).toContain('WHEN src.transfer_updated_at IS NOT NULL');
+    expect(queries[transferReconcile]?.text).toContain(
+      "WHEN src.status <> 'pending' AND dst.status = 'pending' THEN true",
+    );
+    expect(queries[transferReconcile]?.text).toContain(
+      'AND src.transfer_updated_at <> dst.transfer_updated_at',
+    );
+    expect(queries[transferReconcile]?.text).toContain('ELSE src.last_seen_at > dst.last_seen_at');
     expect(queries[transferReconcile]?.text).toContain(
       'first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at)',
     );

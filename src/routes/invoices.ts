@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { earnsModeratorGroupPay, isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
+import { earnsModeratorGroupPay, isModeratorGroupMember } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
@@ -40,7 +40,7 @@ import {
   type GiftRecorder,
 } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
-import { accountWelcomed } from '@/lib/welcome-media';
+import { accountWelcomed, isWelcomeRecipient } from '@/lib/welcome-media';
 import {
   InMemoryWelcomeInvoiceReservationStore,
   type WelcomeInvoiceReservationStore,
@@ -348,10 +348,6 @@ async function welcomePostedFields(
     welcomeHasMedia: welcomeMessageId !== null,
     welcomeMessageId,
   };
-}
-
-function isWelcomeRecipient(account: Pick<Account, 'role' | 'isPlatform'>): boolean {
-  return roleAtLeast(account.role, 'verified') && account.isPlatform !== true;
 }
 
 /**

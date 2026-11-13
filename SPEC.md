@@ -61,7 +61,7 @@ does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
 report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `ownerFundingStatus`, the effective status with a withdrawn grant read as `none`; grant required from UTC 2026-10-01, a 21.gifts recovery share for the current verified wallet from `RECOVERY_SHARE_REQUIRED_FROM`, and a completed server-verified shop payment today or yesterday UTC);
-its preflight omits only that shop-payment condition while server-owned facts satisfy the welcome path's exact recipient rule (role `verified`, not the platform account) and show that account has not received its welcome gift; this does not make any other invoice payable. `POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when those same recipient facts hold, the account has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
+its preflight omits only that shop-payment condition while server-owned facts satisfy the welcome path's recipient rule (role exactly `verified`, not the platform account) and show that account has not received its welcome gift; this does not make any other invoice payable. `POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when those same recipient facts hold, the account has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
 Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
@@ -3334,10 +3334,10 @@ still take `{ "accountId" }` and the original accountId 400 sentence.
 Idempotent **200** when the existing verify edge's actor is the caller and
 the subject is already `verified` (no second insert). If that caller-owned
 edge exists and the subject is still `basis`, completes the role write and
-returns **200**. After a **200** that leaves the subject `verified` (new
-edge, completed role write, or this idempotent repeat), the subject is
-welcome-pinged when a live top-level photo or video exists, including About
-me. An account without a receiving address (no verified wallet, or the
+returns **200**. After a **200** that leaves the subject exactly `verified`
+(new edge, completed role write, or this idempotent repeat), the subject is
+welcome-pinged only when it is non-platform and a live top-level photo or
+video exists, including About me. An account without a receiving address (no verified wallet, or the
 LNURL server off), or one that already has the welcome gift (once per
 account, as for `POST /messages`), is not pinged. Omitted messages or spend
 ping skips that ping. A ping failure still returns **200**.
@@ -4179,8 +4179,9 @@ About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the
 note text still equals the stored profile-note `name` (Ada→Grace with
 text `Ada` stays `null`)). `aboutMeHasPhoto` is true when the live note
-has a stored photo. After that successful save, a verified account with a
-live top-level photo or video (including this note) is welcome-pinged. An
+has a stored photo. After that successful save, an exactly `verified`
+non-platform account with a live top-level photo or video (including this note)
+is welcome-pinged. An
 account without a receiving address (no verified wallet, or the LNURL
 server off), or one that already has the welcome gift (once per account, as
 for `POST /messages`), is not pinged. Omitted spend ping skips. A ping
@@ -4572,16 +4573,17 @@ record of the value-movement facts those two sources observe or report.
   current/previous-wallet account cache), optional Spark invoice,
   operator creation/update times, and first/last server observation times.
   Operator update times are ordered only when both observations have one;
-  `last_seen_at` is never an ordering substitute. An incoming operator time is
+  in ordinary observation upserts, `last_seen_at` is never an ordering substitute.
+  An incoming operator time is
   accepted over a row without one. An observation without an operator time
   advances `last_seen_at` but neither clears a stored operator time nor changes
   a final status back to `pending`.
   Rows are retained; account merge moves them to the survivor like
   `wallet_payment`. If both accounts have this composite key, the survivor row
   keeps the earliest `first_seen_at` and greatest `last_seen_at`; mutable state
-  comes from the later operator update time, a timed row wins over an untimed
-  row, and the survivor keeps mutable state when operator times are equal or
-  both absent. The source duplicate is then deleted.
+  comes from the later operator update time only when both rows have one.
+  Otherwise a final state wins over `pending`, and equivalent states use the
+  later `last_seen_at`. The source duplicate is then deleted.
 - `wallet_token_transaction`: one row per
   `(account_id, wallet_pubkey, transaction_hash)`. It stores only the token
   identifier, owner-relative direction and decimal amount, counterparty keys,
@@ -6105,7 +6107,7 @@ two rows or by two rows of the same direction is not paired. A paired row moves
 `updated_at` (never backwards) but not `last_observed_at`. Like any resolved
 category, a later re-send without details keeps it.
 
-**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, reconciles duplicate viewer rows to the earliest first observation and greatest last observation while transfer state follows operator time and token projection fields come from the better-resolved duplicate, keeps the maximum duplicate full-sync time, clears a counterparty that is one of the two merged accounts, then moves the rest.
+**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, reconciles duplicate viewer rows to the earliest first observation and greatest last observation while transfer state follows the later operator time only when both rows have one, otherwise prefers a final state over `pending` and uses `last_seen_at` for equivalent states, and token projection fields come from the better-resolved duplicate, keeps the maximum duplicate full-sync time, clears a counterparty that is one of the two merged accounts, then moves the rest.
 
 The app report is supplementary and is not the source of truth for complete
 wallet history. At boot the api loads one deployment viewer from
@@ -6183,7 +6185,7 @@ resolves to the till account of a live top-level `#21GiftsShop` note. Its update
 (creation time fallback) must be the payout UTC day or the day before. This
 condition applies to posts, zap-paid notes, spend daily runs, spend invoices,
 operator replay, and moderator stipends. The one-time welcome gift is exempt
-only when server-owned facts show an account at least `verified` with no stored
+only when server-owned facts show an exactly `verified` non-platform account with no stored
 welcome, comment exactly `Welcome`, neither `messageId` nor `groupMessageId`,
 and a normalized exact USD `1.00`, and `amountMsat` is at most the server's
 `usdToMsat("1.00", spot)` conversion plus the fixed 10% spot-drift tolerance.
@@ -6446,8 +6448,8 @@ Success → **Response** `200`: the same JSON as `GET /debug/logins`.
 
 Operator dry-run of the 15-minute welcome sweep. Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
-Lists every account the sweep would welcome-ping now: role `verified`, a
-verified wallet with the LNURL server on, a live top-level photo or video
+Lists every account the sweep would welcome-ping now: non-platform, role exactly
+`verified`, a verified wallet with the LNURL server on, a live top-level photo or video
 (About me included), and not welcomed before (a platform `Welcome` reply, a
 `welcome` gift paid to its legacy external address, or a `21gifts welcome`
 gift under its username at or after its wallet verification). Reads only:
@@ -6836,7 +6838,7 @@ program without that share is `{ "eligible": false, "status": "admitted" }`
 (or `"trial"`): `status` stays the grant status (`ownerFundingStatus`).
 Eligibility also requires a completed server-verified shop payment today or
 yesterday UTC. This preflight omits only that shop-payment condition while
-server-owned facts show an account at least `verified` that has not received
+server-owned facts show an exactly `verified` non-platform account that has not received
 its welcome gift; it does not make any other invoice payable. `POST /invoices`
 still omits the condition only for normalized USD `1.00`, comment `Welcome`, no
 `messageId` or `groupMessageId`, and `amountMsat` no greater than the server's
@@ -7652,17 +7654,18 @@ server-verified shop payment today or yesterday UTC, **and** the new row has med
 `hasVideo` / `photoCount > 0`).
 Otherwise no ping, log `spend.ping.skipped` / `no_shop_payment` for that
 missing condition, `not_eligible` for another ineligible condition, or
-`no_media` (eligible text-only). When `role === 'verified'` and any live
-top-level photo or video exists, including the About-me note, the api also
+`no_media` (eligible text-only). When the author is an exactly `verified`
+non-platform account and any live top-level photo or video exists, including
+the About-me note, the api also
 POSTs `{ address, kind: "welcome" }` for that note, independent
 of `eligibleToday` and independent of whether the new row itself has media.
 Spend pays the welcome gift and does not also pay the daily gift on that
 same UTC day. A later UTC day still pays the daily gift.
-The same ping runs when the account becomes verified and when About me is
-saved while verified. Every 15 minutes, while an operator has turned it on
-with `PUT /debug/welcome-sweep`, the welcome sweep welcome-pings every
-verified account that already has a live top-level photo or video (About me
-or a living-room post), so the gift still goes out when the photo post and
+The same ping runs when the account becomes exactly `verified` and is
+non-platform, and when About me is saved while welcome-eligible. Every 15 minutes, while an operator has turned it on
+with `PUT /debug/welcome-sweep`, the welcome sweep welcome-pings every exactly
+`verified` non-platform account that already has a live top-level photo
+or video (About me or a living-room post), so the gift still goes out when the photo post and
 verification happened in either order. A process starts with the sweep off,
 so its run at boot pings nobody (`spend.ping.skipped` / `sweep_off`).
 `GET /debug/welcome-sweep` lists the accounts it would ping without pinging.
@@ -7673,8 +7676,9 @@ address (the local part of `account.lightning_address` equals the gift's
 recipient handle), or a recorded `welcome` gift with description
 `21gifts welcome` under its username at or after its wallet verification, is
 not pinged again (`spend.ping.skipped` / `welcomed` for a single-account
-ping), whichever address the gift went to, so a member whose receiving address changed is not paid twice. Replies, and any role other than `verified`, do not
-welcome-ping. A verified text-only post with no photo or video anywhere does
+ping), whichever address the gift went to, so a member whose receiving address
+changed is not paid twice. Replies, basis accounts, and the platform account do
+not welcome-ping. An eligible text-only post with no photo or video anywhere does
 not welcome-ping.
 Errors are logged; the POST still
 returns **200**. Replies do not ping. Idempotent media replay does not ping

@@ -20,7 +20,7 @@ import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { TrustStore } from '@/lib/trust-store';
-import { syncWelcomePing } from '@/lib/welcome-media';
+import { isWelcomeRecipient, syncWelcomePing } from '@/lib/welcome-media';
 
 /** What triggered a replayed payout. */
 export type ReplayTrigger = 'post' | 'moderator' | 'trial' | 'admit' | 'welcome';
@@ -351,11 +351,12 @@ export async function replayPayoutWindow(
         : trigger.trigger === 'welcome'
           ? 'welcome'
           : 'daily';
-    // Only a verified account earns a welcome, once; other welcome triggers are not events.
+    // Only an exactly verified non-platform account earns a welcome, once;
+    // other welcome triggers are not events.
     if (payout === 'welcome') {
       if (
         account === undefined ||
-        account.role !== 'verified' ||
+        !isWelcomeRecipient(account) ||
         booked.has(`${account.id}|welcome`)
       ) {
         continue;

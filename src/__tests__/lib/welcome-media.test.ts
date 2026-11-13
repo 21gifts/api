@@ -96,7 +96,7 @@ describe('syncWelcomePing', () => {
     expect(parsedEvents(warn)).toEqual([]);
   });
 
-  it('does nothing without a receiving wallet or when the role is not verified', async () => {
+  it('does nothing without a receiving wallet, for another role, or for the platform', async () => {
     const ping = vi.fn(async () => undefined);
     const messages = await photoStore();
     const spendPing = { ping };
@@ -472,6 +472,41 @@ describe('syncWelcomePing', () => {
       'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       'welcome',
     );
+  });
+
+  it('does not sweep a moderator without a welcome gift', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    const messageId = '11111111-aaaa-4aaa-8aaa-111111111111';
+    await auth.createAccount(
+      account({ id: 'moderator', role: 'moderator', profileMessageId: messageId }),
+    );
+    await verifyWallet(auth, 'moderator', '1');
+    await messages.create(
+      {
+        id: messageId,
+        accountId: 'moderator',
+        name: 'Moderator',
+        text: 'photo',
+        createdAt: new Date(1),
+        hasPhoto: true,
+        hasVideo: false,
+        videoContentType: null,
+        ...unsignedNostrDefaults(),
+      },
+      JPEG,
+    );
+
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      sweep: { enabled: true },
+    });
+
+    expect(ping).not.toHaveBeenCalled();
   });
 
   it('logs when the account list or the media check throws during catch-up', async () => {

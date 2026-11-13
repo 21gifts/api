@@ -5054,14 +5054,13 @@ describe('GET /invoices/eligible', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('keeps the server welcome exception for a higher-ranked role', async () => {
+  it('does not give a moderator the server welcome exception', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const account = await authStore.getAccount('acc-alice');
     if (account === undefined) throw new Error('missing seeded account');
-    await authStore.updateAccount({ ...account, role: 'founder' });
+    await authStore.updateAccount({ ...account, role: 'moderator' });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    mockedSpot.mockResolvedValueOnce('100000');
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
@@ -5081,8 +5080,9 @@ describe('GET /invoices/eligible', () => {
         }),
       }),
     );
-    expect(res.status).toBe(200);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('does not treat the platform account as the server welcome exception', async () => {
