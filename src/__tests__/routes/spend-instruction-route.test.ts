@@ -390,6 +390,33 @@ describe('POST /spend/daily-instruction', () => {
     expect(await res.json()).toMatchObject({ action: 'pay' });
   });
 
+  it('returns not_eligible for a withdrawn member even while the roster lists them', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+      fundingStore: new InMemoryFundingStore([
+        {
+          accountId: 'acc-alice',
+          status: 'withdrawn',
+          appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+          decidedAt: NOW_MS - 60_000,
+          decidedBy: 'acc-alice',
+          trialUtcDate: null,
+          admittedAt: null,
+          note: null,
+        },
+      ]),
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(PAYING_ROSTER.recipients).toEqual([{ accountId: 'acc-alice', amountUsd: 2 }]);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
+  });
+
   it('returns not_eligible for an admitted member without a recovery share', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore, 'verified', false);

@@ -9,7 +9,8 @@ import { logEvent } from '@/lib/log';
  * end-user session. `DEBUG_READ_TOKEN` is GET and HEAD on this route, opens
  * `GET /debug/accounts/:id/wallet`, and otherwise opens only
  * `GET /funding/goal`, the operator reads on staff GET routes, and the
- * operator-only `GET /funding/daily-roster/links` (`isOperatorBearer`).
+ * operator-only `GET /funding/daily-roster/links` and `GET /funding/withdrawals`
+ * (`isOperatorBearer`).
  * `GET /` lists ordinary public tables or one keyset page. It does not
  * create or update rows.
  */

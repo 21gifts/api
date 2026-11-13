@@ -271,6 +271,176 @@ VALUES ($1, 'verified', false, false, $2)`,
     }
   });
 
+  test('migrateFundingSchema lets a table with the old status check store withdrawn', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const accountId = crypto.randomUUID();
+    try {
+      await migrateAuthSchema(client);
+      await migrateFundingSchema(client);
+      await client.execute(
+        `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at)
+VALUES ($1, 'verified', false, false, $2)`,
+        [accountId, new Date()],
+      );
+      // The check as it was before `withdrawn` existed. NOT VALID keeps rows of
+      // other tests out of the way; new writes are still checked.
+      await client.execute(
+        'ALTER TABLE funding_grant DROP CONSTRAINT IF EXISTS funding_grant_status_check',
+      );
+      await client.execute(
+        `ALTER TABLE funding_grant ADD CONSTRAINT funding_grant_status_check
+          CHECK (status IN ('pending', 'trial', 'admitted', 'rejected')) NOT VALID`,
+      );
+      const store = new PostgresFundingStore(client);
+      const admitted: FundingGrant = {
+        accountId,
+        status: 'admitted',
+        appliedAt: 1_000,
+        decidedAt: 2_000,
+        decidedBy: null,
+        trialUtcDate: null,
+        admittedAt: 2_000,
+        note: 'kept',
+      };
+      await store.upsert(admitted);
+      const withdrawn: FundingGrant = {
+        ...admitted,
+        status: 'withdrawn',
+        decidedAt: 3_000,
+        decidedBy: accountId,
+        admittedAt: null,
+      };
+      let refused: unknown;
+      try {
+        await store.transition(withdrawn, ['admitted']);
+      } catch (err) {
+        refused = err;
+      }
+      expect(sqlState(refused)).toBe('23514');
+
+      await migrateFundingSchema(client);
+      await migrateFundingSchema(client);
+      const checks = await client.query<{ def: string; validated: boolean }>(
+        `SELECT pg_get_constraintdef(oid) AS def, convalidated AS validated FROM pg_constraint
+         WHERE conrelid = 'funding_grant'::regclass AND conname = 'funding_grant_status_check'`,
+      );
+      expect(checks).toHaveLength(1);
+      expect(checks[0]?.validated).toBe(true);
+      expect(checks[0]?.def).toContain("'withdrawn'::text");
+
+      expect(await store.transition(withdrawn, ['pending'])).toBeUndefined();
+      expect(await store.transition(withdrawn, ['admitted'])).toEqual(withdrawn);
+      expect(await store.getByAccountId(accountId)).toEqual(withdrawn);
+      expect(await store.transition(withdrawn, ['admitted'])).toBeUndefined();
+
+      const again: FundingGrant = {
+        accountId,
+        status: 'pending',
+        appliedAt: 4_000,
+        decidedAt: null,
+        decidedBy: null,
+        trialUtcDate: null,
+        admittedAt: null,
+        note: null,
+      };
+      expect(await store.transition(again, ['none', 'rejected', 'withdrawn'])).toEqual(again);
+    } finally {
+      await client.execute('DELETE FROM funding_grant WHERE account_id = $1', [accountId]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('db_change keeps a withdrawal after the member applies again', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const accountId = crypto.randomUUID();
+    const staffId = crypto.randomUUID();
+    try {
+      await migrateAuthSchema(client);
+      await migrateFundingSchema(client);
+      await migrateDbChangeSchema(client);
+      for (const id of [accountId, staffId]) {
+        await client.execute(
+          `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at)
+VALUES ($1, 'verified', false, false, $2)`,
+          [id, new Date()],
+        );
+      }
+      const store = new PostgresFundingStore(client);
+      const appliedAt = Date.parse('2026-11-01T08:00:00.000Z');
+      const admittedAt = Date.parse('2026-11-02T08:00:00.000Z');
+      const withdrawnAt = Date.parse('2026-11-03T08:00:00.000Z');
+      const reappliedAt = Date.parse('2026-11-04T08:00:00.000Z');
+      const base: FundingGrant = {
+        accountId,
+        status: 'pending',
+        appliedAt,
+        decidedAt: null,
+        decidedBy: null,
+        trialUtcDate: null,
+        admittedAt: null,
+        note: null,
+      };
+      expect(await store.transition(base, ['none', 'rejected', 'withdrawn'])).toEqual(base);
+      const admitted: FundingGrant = {
+        ...base,
+        status: 'admitted',
+        decidedAt: admittedAt,
+        decidedBy: staffId,
+        admittedAt,
+      };
+      expect(await store.transition(admitted, ['pending', 'trial'])).toEqual(admitted);
+      const withdrawn: FundingGrant = {
+        ...base,
+        status: 'withdrawn',
+        decidedAt: withdrawnAt,
+        decidedBy: accountId,
+      };
+      expect(await store.transition(withdrawn, ['admitted'])).toEqual(withdrawn);
+      const again: FundingGrant = { ...base, appliedAt: reappliedAt };
+      expect(await store.transition(again, ['none', 'rejected', 'withdrawn'])).toEqual(again);
+      expect((await store.getByAccountId(accountId))?.status).toBe('pending');
+
+      const changes = await client.query<{
+        op: string;
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT op, before, after FROM db_change
+         WHERE table_name = 'funding_grant' AND after->>'account_id' = $1
+         ORDER BY id ASC`,
+        [accountId],
+      );
+      const statuses = changes.map((row) => [
+        row.before?.['status'] ?? null,
+        row.after?.['status'],
+      ]);
+      expect(statuses).toEqual([
+        [null, 'pending'],
+        ['pending', 'admitted'],
+        ['admitted', 'withdrawn'],
+        ['withdrawn', 'pending'],
+      ]);
+      const leaving = changes[2];
+      expect(leaving?.op).toBe('UPDATE');
+      expect(leaving?.after?.['decided_by']).toBe(accountId);
+      expect(Date.parse(String(leaving?.after?.['decided_at']))).toBe(withdrawnAt);
+      expect(leaving?.after?.['admitted_at']).toBeNull();
+      expect(leaving?.before?.['decided_by']).toBe(staffId);
+      expect(Date.parse(String(leaving?.before?.['admitted_at']))).toBe(admittedAt);
+      const returning = changes[3];
+      expect(returning?.op).toBe('UPDATE');
+      expect(returning?.before?.['decided_by']).toBe(accountId);
+      expect(Date.parse(String(returning?.before?.['decided_at']))).toBe(withdrawnAt);
+      expect(Date.parse(String(returning?.after?.['applied_at']))).toBe(reappliedAt);
+
+      const listed = (await store.listWithdrawals()).filter((row) => row.accountId === accountId);
+      expect(listed).toEqual([{ accountId, withdrawnAt, from: 'admitted', admittedAt }]);
+    } finally {
+      await client.execute('DELETE FROM funding_grant WHERE account_id = $1', [accountId]);
+      await closeIfPossible(sql);
+    }
+  });
+
   test('funding apply through PostgresFundingStore', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {

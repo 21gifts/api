@@ -5,8 +5,11 @@
 import { DAILY_ROSTER_DEFAULT_AMOUNT_USD } from '@/lib/daily-roster-store';
 import type { GiftRow } from '@/lib/gift';
 
-/** Effective funding status used when an unlisted daily address is paid. */
-export type SpendGrantStatus = 'none' | 'pending' | 'trial' | 'admitted' | 'rejected';
+/**
+ * Effective funding status used when an unlisted daily address is paid.
+ * `withdrawn` is a member who left the grant program; it is never paid the default.
+ */
+export type SpendGrantStatus = 'none' | 'pending' | 'trial' | 'admitted' | 'rejected' | 'withdrawn';
 
 /**
  * Decide whether this ping carries a USD amount and comment.
@@ -49,7 +52,8 @@ export function decideSpendInstruction(input: {
     } else if (
       input.grantStatus === 'none' ||
       input.grantStatus === 'pending' ||
-      input.grantStatus === 'rejected'
+      input.grantStatus === 'rejected' ||
+      input.grantStatus === 'withdrawn'
     ) {
       decided = { skip: 'not_listed' };
     } else {

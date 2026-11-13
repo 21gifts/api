@@ -27,7 +27,7 @@ import type { MessageStore } from '@/lib/message-store';
 import { fiatFromUsd, normalizeAmountUsd, type FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
-import { effectiveStatus } from '@/lib/funding';
+import { ownerFundingStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { checkSpendAuth } from '@/lib/spend-auth';
@@ -1058,7 +1058,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         nowMs,
         deps.recoveryShareRequiredFrom ?? null,
       );
-      return c.json({ eligible, status: effectiveStatus(grant, nowMs) }, 200);
+      return c.json({ eligible, status: ownerFundingStatus(grant, nowMs) }, 200);
     })
     .get('/posted', async (c) => {
       const denied = authGate(

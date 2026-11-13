@@ -392,6 +392,17 @@ describe('decideSpendInstruction', () => {
       ).toEqual({ amountUsd: 9, comment: 'thanks' });
     });
 
+    it('returns not_listed when unlisted and grantStatus is withdrawn, never the default amount', () => {
+      expect(
+        decideSpendInstruction({
+          address: ADDRESS,
+          kind: 'daily',
+          grantStatus: 'withdrawn',
+          roster: { comment: 'thanks', paymentsEnabled: true, defaultAmountUsd: 9, recipients: [] },
+        }),
+      ).toEqual({ skip: 'not_listed' });
+    });
+
     it('returns not_listed when unlisted and grantStatus is none, pending, or rejected', () => {
       const roster = {
         comment: 'thanks',

@@ -13,7 +13,9 @@ import {
   expiredTrialAsPending,
   type FundingGrant,
   type FundingStatus,
+  type FundingWithdrawal,
   type GrantRound,
+  type WithdrawableFundingStatus,
 } from '@/lib/funding';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
@@ -84,16 +86,70 @@ export interface FundingStore {
     from: readonly FundingStatus[],
     round: GrantRound,
   ): Promise<FundingGrant | 'full' | undefined>;
+
+  /**
+   * Every withdrawal ever written: a change of the row from `pending`,
+   * `trial`, or `admitted` to `withdrawn`, also when a later application has
+   * overwritten the row since. Newest `withdrawnAt` first, then `accountId`
+   * ascending.
+   *
+   * @returns Withdrawal copies (caller-owned).
+   */
+  listWithdrawals(): Promise<FundingWithdrawal[]>;
+}
+
+/** Statuses a withdrawal can start from. */
+const WITHDRAWABLE: readonly WithdrawableFundingStatus[] = ['pending', 'trial', 'admitted'];
+
+/**
+ * The withdrawal a write records, when it moves a withdrawable row to `withdrawn`.
+ *
+ * @param before - Stored row before the write, or `undefined`.
+ * @param after - Row written.
+ * @param fallbackMs - Time used when `after.decidedAt` is `null`.
+ * @returns The withdrawal, or `undefined` when the write is not one.
+ */
+function withdrawalOf(
+  before: FundingGrant | undefined,
+  after: FundingGrant,
+  fallbackMs: number,
+): FundingWithdrawal | undefined {
+  if (after.status !== 'withdrawn' || before === undefined) {
+    return undefined;
+  }
+  const from = WITHDRAWABLE.find((status) => status === before.status);
+  if (from === undefined) {
+    return undefined;
+  }
+  return {
+    accountId: after.accountId,
+    withdrawnAt: after.decidedAt ?? fallbackMs,
+    from,
+    admittedAt: before.admittedAt,
+  };
+}
+
+/** Newest `withdrawnAt` first, then `accountId` ascending. */
+function compareWithdrawals(a: FundingWithdrawal, b: FundingWithdrawal): number {
+  const byTime = b.withdrawnAt - a.withdrawnAt;
+  if (byTime !== 0) {
+    return byTime;
+  }
+  return a.accountId.localeCompare(b.accountId);
 }
 
 /** Advisory lock key that serialises admissions across API processes. */
 const ADMIT_PLACES_LOCK_KEY = 2_102_610_160;
 
-/** Idempotent DDL for the funding_grant table (matches `docs/schema/funding_grant.sql`). */
+/**
+ * Idempotent DDL for the funding_grant table (matches `docs/schema/funding_grant.sql`).
+ * The status check is dropped and added again, so a table created before
+ * `withdrawn` existed gains it on the next boot and a fresh table ends the same.
+ */
 export const FUNDING_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS funding_grant (
   account_id uuid PRIMARY KEY REFERENCES account (id),
-  status text NOT NULL CHECK (status IN ('pending', 'trial', 'admitted', 'rejected')),
+  status text NOT NULL CHECK (status IN ('pending', 'trial', 'admitted', 'rejected', 'withdrawn')),
   applied_at timestamptz NOT NULL,
   decided_at timestamptz,
   decided_by uuid REFERENCES account (id),
@@ -101,6 +157,9 @@ export const FUNDING_SCHEMA_SQL: readonly string[] = [
   admitted_at timestamptz,
   note text
 )`,
+  `ALTER TABLE funding_grant DROP CONSTRAINT IF EXISTS funding_grant_status_check`,
+  `ALTER TABLE funding_grant ADD CONSTRAINT funding_grant_status_check
+    CHECK (status IN ('pending', 'trial', 'admitted', 'rejected', 'withdrawn'))`,
 ];
 
 const FUNDING_SELECT =
@@ -171,6 +230,7 @@ async function persistExpiredTrial(
  */
 export class InMemoryFundingStore implements FundingStore {
   readonly #grants = new Map<string, FundingGrant>();
+  readonly #withdrawals: FundingWithdrawal[] = [];
 
   /**
    * @param seed - Optional seed grants; copied into private storage.
@@ -208,9 +268,7 @@ export class InMemoryFundingStore implements FundingStore {
    * @returns A copy of the stored grant.
    */
   upsert(grant: FundingGrant): Promise<FundingGrant> {
-    const stored = copyGrant(grant);
-    this.#grants.set(stored.accountId, stored);
-    return Promise.resolve(copyGrant(stored));
+    return Promise.resolve(this.#write(grant));
   }
 
   /**
@@ -229,9 +287,7 @@ export class InMemoryFundingStore implements FundingStore {
     if (!from.includes(observed)) {
       return Promise.resolve(undefined);
     }
-    const stored = copyGrant(grant);
-    this.#grants.set(stored.accountId, stored);
-    return Promise.resolve(copyGrant(stored));
+    return Promise.resolve(this.#write(grant));
   }
 
   /**
@@ -254,9 +310,7 @@ export class InMemoryFundingStore implements FundingStore {
     if (countRoundAdmissions([...this.#grants.values()], round) >= round.places) {
       return Promise.resolve('full');
     }
-    const stored = copyGrant(grant);
-    this.#grants.set(stored.accountId, stored);
-    return Promise.resolve(copyGrant(stored));
+    return Promise.resolve(this.#write(grant));
   }
 
   /**
@@ -272,12 +326,32 @@ export class InMemoryFundingStore implements FundingStore {
       current.status === 'trial' &&
       current.trialUtcDate === grant.trialUtcDate
     ) {
-      const pending = expiredTrialAsPending(grant);
-      const stored = copyGrant(pending);
-      this.#grants.set(stored.accountId, stored);
-      return Promise.resolve(copyGrant(stored));
+      return Promise.resolve(this.#write(expiredTrialAsPending(grant)));
     }
     return Promise.resolve(current === undefined ? undefined : copyGrant(current));
+  }
+
+  /**
+   * Withdrawals recorded by this store's writes, newest first. They stay
+   * when a later write replaces the row, like the `db_change` log Postgres reads.
+   *
+   * @returns A new array of copies.
+   */
+  listWithdrawals(): Promise<FundingWithdrawal[]> {
+    return Promise.resolve(
+      [...this.#withdrawals].sort(compareWithdrawals).map((row) => ({ ...row })),
+    );
+  }
+
+  /** Store a copy of `grant`, record a withdrawal it makes, and return a copy. */
+  #write(grant: FundingGrant): FundingGrant {
+    const stored = copyGrant(grant);
+    const withdrawal = withdrawalOf(this.#grants.get(stored.accountId), stored, Date.now());
+    if (withdrawal !== undefined) {
+      this.#withdrawals.push(withdrawal);
+    }
+    this.#grants.set(stored.accountId, stored);
+    return copyGrant(stored);
   }
 }
 
@@ -502,6 +576,36 @@ export class PostgresFundingStore implements FundingStore {
   }
 
   /**
+   * Withdrawals from the append-only `db_change` log: `funding_grant` UPDATE
+   * rows whose after image is `withdrawn` and whose before image is
+   * `pending`, `trial`, or `admitted`. The log keeps them after a later
+   * application overwrites the row. `withdrawnAt` is the after image's
+   * `decided_at` (the log time when that is null).
+   *
+   * @returns Withdrawals, newest first, then account id ascending.
+   */
+  async listWithdrawals(): Promise<FundingWithdrawal[]> {
+    const rows = await this.#sql.query<WithdrawalSqlRow>(
+      `SELECT after->>'account_id' AS account_id,
+              before->>'status' AS from_status,
+              COALESCE((after->>'decided_at')::timestamptz, at) AS withdrawn_at,
+              (before->>'admitted_at')::timestamptz AS admitted_at
+       FROM db_change
+       WHERE table_name = 'funding_grant'
+         AND op = 'UPDATE'
+         AND after->>'status' = 'withdrawn'
+         AND before->>'status' IN ('pending', 'trial', 'admitted')
+       ORDER BY withdrawn_at DESC, account_id ASC, id ASC`,
+    );
+    return rows.map((row) => ({
+      accountId: row.account_id,
+      withdrawnAt: epochMs(row.withdrawn_at),
+      from: row.from_status,
+      admittedAt: nullableEpochMs(row.admitted_at),
+    }));
+  }
+
+  /**
    * Persist pending only when the row is still `status='trial'` with
    * `grant.trialUtcDate`. Zero matching rows → current row via
    * {@link getByAccountId}.
@@ -540,6 +644,14 @@ export class PostgresFundingStore implements FundingStore {
     }
     return mapFundingRow(row);
   }
+}
+
+/** Row shape of the withdrawal query over `db_change`. */
+interface WithdrawalSqlRow {
+  account_id: string;
+  from_status: WithdrawableFundingStatus;
+  withdrawn_at: Date | string;
+  admitted_at: Date | string | null;
 }
 
 /** Caller-owned shallow copy. */

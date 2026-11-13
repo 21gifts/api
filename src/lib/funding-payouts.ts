@@ -8,7 +8,7 @@ import type { GiftRow } from '@/lib/gift';
  * `blocked` is not entitled that UTC day. `missed` is entitled and no daily
  * payout was recorded. `paid` is a `daily` gift that UTC day. This is the
  * post-gate grant rule. Cleared trial or admission history and the spend
- * roster are not reconstructed. A welcome gift does not change the cell.
+ * roster are not reconstructed. A withdrawn grant is never `missed`. A welcome gift does not change the cell.
  * Moderator stipends are ignored.
  */
 export type PayoutDayCell = 'blocked' | 'missed' | 'paid';
@@ -96,7 +96,9 @@ function weekDays(nowMs: number): PayoutMatrix['days'] {
  * `basis` is never entitled; `fond` is entitled. Admitted is entitled from
  * `admittedAt`'s UTC day (or every day when `admittedAt` is null). A stored
  * `trialUtcDate` entitles that one day even when the status is no longer
- * `trial`.
+ * `trial`. A withdrawn grant entitles no day: the member left the program,
+ * and the withdrawal cleared the trial and admission fields, so days before
+ * it are not reconstructed either (as for a rejected grant).
  *
  * @param role - Live role.
  * @param grant - Stored grant, if any.
@@ -104,7 +106,7 @@ function weekDays(nowMs: number): PayoutMatrix['days'] {
  * @returns `true` when the day is entitled.
  */
 function entitled(role: AccountRole, grant: FundingGrant | undefined, day: string): boolean {
-  if (role === 'basis' || grant === undefined) {
+  if (role === 'basis' || grant === undefined || grant.status === 'withdrawn') {
     return false;
   }
   const admitted =
