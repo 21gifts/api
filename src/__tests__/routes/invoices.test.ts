@@ -4594,6 +4594,43 @@ describe('GET /invoices/eligible', () => {
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
+    expect(mockedSpot).toHaveBeenCalled();
+  });
+
+  it('does not give a moderator the welcome preflight exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, role: 'moderator' });
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+    expect(mockedSpot).not.toHaveBeenCalled();
+  });
+
+  it('does not give the platform account the welcome preflight exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, role: 'verified', isPlatform: true });
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+    expect(mockedSpot).not.toHaveBeenCalled();
   });
 
   it('requires a shop payment in the welcome preflight when the spot is unavailable', async () => {
@@ -5061,6 +5098,7 @@ describe('GET /invoices/eligible', () => {
     if (account === undefined) throw new Error('missing seeded account');
     await authStore.updateAccount({ ...account, role: 'moderator' });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
@@ -5074,7 +5112,7 @@ describe('GET /invoices/eligible', () => {
         method: 'POST',
         body: JSON.stringify({
           address: ADDRESS,
-          amountMsat: 1000,
+          amountMsat: ONE_USD_AT_100K_MSAT,
           amountUsd: '1.00',
           comment: 'Welcome',
         }),
@@ -5082,6 +5120,7 @@ describe('GET /invoices/eligible', () => {
     );
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(mockedSpot).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -5090,8 +5129,9 @@ describe('GET /invoices/eligible', () => {
     await seedPasskeyAccount(authStore);
     const account = await authStore.getAccount('acc-alice');
     if (account === undefined) throw new Error('missing seeded account');
-    await authStore.updateAccount({ ...account, role: 'founder', isPlatform: true });
+    await authStore.updateAccount({ ...account, role: 'verified', isPlatform: true });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
@@ -5105,7 +5145,7 @@ describe('GET /invoices/eligible', () => {
         method: 'POST',
         body: JSON.stringify({
           address: ADDRESS,
-          amountMsat: 1000,
+          amountMsat: ONE_USD_AT_100K_MSAT,
           amountUsd: '1.00',
           comment: 'Welcome',
         }),
@@ -5113,6 +5153,7 @@ describe('GET /invoices/eligible', () => {
     );
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(mockedSpot).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

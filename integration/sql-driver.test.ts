@@ -5056,6 +5056,7 @@ describe('Postgres wallet-transfer account merge reconciliation', () => {
     amountSats: number;
     updatedAt: string | null;
     seenAt: string;
+    shopPayment?: boolean;
   };
   const completedSource: TransferState = {
     direction: 'out',
@@ -5184,6 +5185,135 @@ describe('Postgres wallet-transfer account merge reconciliation', () => {
       expected: 'survivor',
       hasShopPayment: true,
     },
+    {
+      name: 'keeps a shop-counted source over a later-seen non-shop completed transfer',
+      source: { ...completedSource, amountSats: 38, shopPayment: true },
+      survivor: {
+        ...completedSurvivor,
+        amountSats: 39,
+        seenAt: '2026-11-12T13:00:00.000Z',
+        shopPayment: false,
+      },
+      expected: 'source',
+      hasShopPayment: true,
+    },
+    {
+      name: 'keeps a shop-counted survivor over a later-seen non-shop completed transfer',
+      source: {
+        ...completedSource,
+        amountSats: 40,
+        seenAt: '2026-11-12T13:00:00.000Z',
+        shopPayment: false,
+      },
+      survivor: { ...completedSurvivor, amountSats: 41, shopPayment: true },
+      expected: 'survivor',
+      hasShopPayment: true,
+    },
+    {
+      name: 'keeps a non-shop final source over a later-seen pending survivor',
+      source: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 42,
+        updatedAt: null,
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      survivor: {
+        direction: 'in',
+        type: 'swap',
+        status: 'pending',
+        amountSats: 43,
+        updatedAt: null,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      expected: 'source',
+      hasShopPayment: false,
+    },
+    {
+      name: 'keeps a non-shop final survivor over a later-seen pending source',
+      source: {
+        direction: 'in',
+        type: 'swap',
+        status: 'pending',
+        amountSats: 44,
+        updatedAt: null,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      survivor: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 45,
+        updatedAt: null,
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      expected: 'survivor',
+      hasShopPayment: false,
+    },
+    {
+      name: 'keeps the later-seen source when states are equivalent',
+      source: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 46,
+        updatedAt: null,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      survivor: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 47,
+        updatedAt: null,
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      expected: 'source',
+      hasShopPayment: false,
+    },
+    {
+      name: 'keeps the later-seen survivor when states are equivalent',
+      source: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 48,
+        updatedAt: null,
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      survivor: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 49,
+        updatedAt: null,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      expected: 'survivor',
+      hasShopPayment: false,
+    },
+    {
+      name: 'keeps the survivor when equivalent states have tied observation times',
+      source: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 50,
+        updatedAt: null,
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      survivor: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 51,
+        updatedAt: null,
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      expected: 'survivor',
+      hasShopPayment: false,
+    },
   ];
 
   for (const mergeCase of cases) {
@@ -5235,7 +5365,10 @@ describe('Postgres wallet-transfer account merge reconciliation', () => {
         });
         const insertTransfer = async (accountId: string, state: TransferState): Promise<void> => {
           const shopPayment =
-            state.status === 'completed' && state.direction === 'out' && state.type === 'transfer';
+            state.shopPayment ??
+            (state.status === 'completed' &&
+              state.direction === 'out' &&
+              state.type === 'transfer');
           const counterpartyPubkey = shopPayment ? shopPubkey : externalPubkey;
           const createdAt = new Date(`2026-11-12T10:${String(state.amountSats)}:00.000Z`);
           await client.execute(
@@ -5273,9 +5406,10 @@ describe('Postgres wallet-transfer account merge reconciliation', () => {
         });
         const expected = mergeCase.expected === 'source' ? mergeCase.source : mergeCase.survivor;
         const expectedShopPayment =
-          expected.status === 'completed' &&
-          expected.direction === 'out' &&
-          expected.type === 'transfer';
+          expected.shopPayment ??
+          (expected.status === 'completed' &&
+            expected.direction === 'out' &&
+            expected.type === 'transfer');
         const expectedCounterpartyPubkey = expectedShopPayment ? shopPubkey : externalPubkey;
         await expect(
           client.query<{

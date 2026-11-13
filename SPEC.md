@@ -4586,10 +4586,14 @@ record of the value-movement facts those two sources observe or report.
   comes from the newer operator update time when both rows have one, with equal
   times keeping the survivor; when only one row has an operator update time,
   that row supplies the mutable state. Only when both times are null, a
-  completed outgoing `transfer` (the shop-payment shape) wins first; otherwise
-  a final state (`completed`, `cancelled`, `expired`, or `returned`) wins over
-  `pending`, then the later `last_seen_at` wins, with a tie keeping the
-  survivor. Thus a stored operator update time is never replaced with null.
+  completed outgoing `transfer` wins over a row without that shape. When both
+  rows have that shape, the row the shop-payment check would count wins if only
+  one qualifies: it has a creation time and a counterparty key resolving to a
+  different account with a live top-level `#21GiftsShop` note. If both or
+  neither qualify, a final state (`completed`, `cancelled`, `expired`, or
+  `returned`) wins over `pending`, then the later `last_seen_at` wins, with a
+  tie keeping the survivor. Thus a stored operator update time is never
+  replaced with null.
   The source duplicate is then deleted.
 - `wallet_token_transaction`: one row per
   `(account_id, wallet_pubkey, transaction_hash)`. It stores only the token
@@ -6114,7 +6118,7 @@ two rows or by two rows of the same direction is not paired. A paired row moves
 `updated_at` (never backwards) but not `last_observed_at`. Like any resolved
 category, a later re-send without details keeps it.
 
-**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, reconciles duplicate viewer rows to the earliest first observation and greatest last observation while transfer state follows the later operator time only when both rows have one, otherwise prefers a final state over `pending` and uses `last_seen_at` for equivalent states, and token projection fields come from the better-resolved duplicate, keeps the maximum duplicate full-sync time, clears a counterparty that is one of the two merged accounts, then moves the rest.
+**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has and reconciles duplicate viewer rows to the earliest first observation and greatest last observation. Mutable transfer state comes from the newer operator update time when both rows have one (equal times keep the survivor), or from the only row with an operator update time. Only when both times are null, a completed outgoing `transfer` wins over a row without that shape; when both have that shape, the row counted as a shop payment wins if only one qualifies, based on a present creation time and a counterparty key resolving to another account with a live top-level `#21GiftsShop` note. If both or neither qualify, a final state wins over `pending`, then later `last_seen_at` wins, with a tie keeping the survivor. Thus a stored operator update time is never replaced with null. Token projection fields come from the better-resolved duplicate; the merge keeps the maximum duplicate full-sync time, clears a counterparty that is one of the two merged accounts, then moves the rest.
 
 The app report is supplementary and is not the source of truth for complete
 wallet history. At boot the api loads one deployment viewer from

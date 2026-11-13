@@ -1093,6 +1093,14 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
                   WHEN src.status = 'completed'
                    AND src.direction = 'out'
                    AND src.type = 'transfer'
+                   AND dst.status = 'completed'
+                   AND dst.direction = 'out'
+                   AND dst.type = 'transfer'
+                   AND src_shop.present <> dst_shop.present
+                    THEN src_shop.present
+                  WHEN src.status = 'completed'
+                   AND src.direction = 'out'
+                   AND src.type = 'transfer'
                    AND NOT (
                      dst.status = 'completed'
                      AND dst.direction = 'out'
@@ -1115,6 +1123,54 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
            ON dst.account_id = $2
           AND dst.wallet_pubkey = src.wallet_pubkey
           AND dst.transfer_id = src.transfer_id
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(src.transfer_updated_at, src.transfer_created_at) IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(src.counterparty_pubkeys) AS counterparty(pubkey)
+                JOIN LATERAL (
+                  SELECT COALESCE(
+                    (SELECT id FROM account
+                     WHERE spark_pubkey = counterparty.pubkey
+                       AND spark_pubkey_verified_at IS NOT NULL
+                     ORDER BY id LIMIT 1),
+                    (SELECT account_id FROM previous_wallet
+                     WHERE spark_pubkey = counterparty.pubkey
+                     ORDER BY replaced_at DESC, account_id LIMIT 1)
+                  ) AS account_id
+                ) AS resolved ON resolved.account_id IS NOT NULL
+                JOIN message AS shop
+                  ON shop.shop_account_id = resolved.account_id
+                 AND shop.parent_id IS NULL
+                 AND shop.deleted_at IS NULL
+                 AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
+                WHERE resolved.account_id NOT IN ($1, $2)
+              ) AS present
+         ) AS src_shop
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(dst.transfer_updated_at, dst.transfer_created_at) IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(dst.counterparty_pubkeys) AS counterparty(pubkey)
+                JOIN LATERAL (
+                  SELECT COALESCE(
+                    (SELECT id FROM account
+                     WHERE spark_pubkey = counterparty.pubkey
+                       AND spark_pubkey_verified_at IS NOT NULL
+                     ORDER BY id LIMIT 1),
+                    (SELECT account_id FROM previous_wallet
+                     WHERE spark_pubkey = counterparty.pubkey
+                     ORDER BY replaced_at DESC, account_id LIMIT 1)
+                  ) AS account_id
+                ) AS resolved ON resolved.account_id IS NOT NULL
+                JOIN message AS shop
+                  ON shop.shop_account_id = resolved.account_id
+                 AND shop.parent_id IS NULL
+                 AND shop.deleted_at IS NULL
+                 AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
+                WHERE resolved.account_id NOT IN ($1, $2)
+              ) AS present
+         ) AS dst_shop
          WHERE src.account_id = $1
        )
        UPDATE wallet_transfer AS dst
