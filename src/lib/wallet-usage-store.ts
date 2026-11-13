@@ -225,9 +225,26 @@ LEFT JOIN account payer ON payer.id = outs.payer_account_id
 LEFT JOIN account payee
   ON payee.id = COALESCE(ins.payee_account_id, outs.counterparty_account_id)`;
 
+/**
+ * Paid forum gifts and hearts on or after `$1`.
+ *
+ * A mint writes `result = 'ok'` before anyone pays, so a row counts only when
+ * `nostr_zap_payment` has claimed the hash. The claim matches
+ * `PostgresMessageStore.heartSenders`: the stored hash equals
+ * `lower(message_invoice.payment_hash)`. Conversation invoices and credit
+ * repayments (`repay:` / `repayp:`) stay out.
+ */
 const FORUM_SQL = `SELECT created_at, amount_sats, COALESCE(heart, false) AS heart
 FROM message_invoice
-WHERE result = 'ok' AND created_at >= $1`;
+WHERE result = 'ok'
+  AND conversation_id IS NULL
+  AND coalesce(description, '') NOT LIKE 'repay:%'
+  AND coalesce(description, '') NOT LIKE 'repayp:%'
+  AND created_at >= $1
+  AND EXISTS (
+    SELECT 1 FROM nostr_zap_payment z
+    WHERE z.payment_hash = lower(message_invoice.payment_hash)
+  )`;
 
 const CHARGES_SQL = `SELECT created_at, status
 FROM pos_charge
@@ -257,7 +274,9 @@ export class PostgresWalletUsageStore implements WalletUsageStore {
   }
 
   /**
-   * Read successful forum invoices created on or after `sinceMs`.
+   * Read paid forum gifts and hearts created on or after `sinceMs`.
+   *
+   * Conversation invoices, credit repayments, and unpaid mints are omitted.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds (`$1`).
    * @returns Mapped rows. A null heart is false. Query failures throw.

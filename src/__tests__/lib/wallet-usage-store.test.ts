@@ -146,8 +146,15 @@ describe('PostgresWalletUsageStore', () => {
     expect(payments.text).toContain('HAVING min(paid_at) >= $1');
     expect(forum.text).toContain('message_invoice');
     expect(forum.text).toContain("result = 'ok'");
+    expect(forum.text).toContain('conversation_id IS NULL');
+    expect(forum.text).toContain("coalesce(description, '') NOT LIKE 'repay:%'");
+    expect(forum.text).toContain("coalesce(description, '') NOT LIKE 'repayp:%'");
     expect(forum.text).toContain('COALESCE(heart, false)');
     expect(forum.text).toContain('created_at >= $1');
+    expect(forum.text).toContain('nostr_zap_payment');
+    expect(forum.text).toContain('z.payment_hash = lower(message_invoice.payment_hash)');
+    expect(forum.text).not.toContain('lower(z.payment_hash)');
+    expect(forum.text).not.toContain('$2');
     expect(charges.text).toContain('pos_charge');
     expect(charges.text).toContain('created_at');
     expect(charges.text).toContain('status');

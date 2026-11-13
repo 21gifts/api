@@ -8100,6 +8100,7 @@ describe('PostgresWalletUsageStore', () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     const ids: string[] = [];
     const payoutIds: string[] = [];
+    const paymentHashes: string[] = [];
     let previousPlatform: string | undefined;
     let platformId: string | undefined;
     try {
@@ -8437,33 +8438,136 @@ describe('PostgresWalletUsageStore', () => {
       const forumGiftAt = at(40);
       const forumErrorAt = at(50);
       const forumOldAt = at(-1440);
-      const insertForum = async (
-        createdAt: Date,
-        amountSats: number,
-        result: string,
-        heart: boolean,
-      ): Promise<void> => {
+      const forumConversationAt = at(60);
+      const forumRepayAt = at(70);
+      const forumRepayPartAt = at(80);
+      const forumUnpaidAt = at(90);
+      const insertForum = async (row: {
+        createdAt: Date;
+        amountSats: number;
+        result: string;
+        heart: boolean;
+        paymentHash: string | null;
+        description: string | null;
+        conversationId: string | null;
+        paid: boolean;
+      }): Promise<void> => {
         await client.execute(
           `INSERT INTO message_invoice (
              id, created_at, message_id, payer_account_id, author_account_id,
-             amount_sats, result, http_status, heart
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7,200,$8)`,
+             amount_sats, result, http_status, heart, payment_hash, description,
+             conversation_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,200,$8,$9,$10,$11)`,
           [
             crypto.randomUUID(),
-            createdAt,
+            row.createdAt,
             crypto.randomUUID(),
             memberA,
             memberB,
-            amountSats,
-            result,
-            heart,
+            row.amountSats,
+            row.result,
+            row.heart,
+            row.paymentHash,
+            row.description,
+            row.conversationId,
           ],
         );
+        if (!row.paid) {
+          return;
+        }
+        if (row.paymentHash === null) {
+          throw new Error('paid forum invoice has no payment hash');
+        }
+        const storedHash = row.paymentHash.toLowerCase();
+        await client.execute(
+          `INSERT INTO nostr_zap_payment (payment_hash, receipt_event_id, created_at)
+           VALUES ($1::text, $2::text, $3::timestamptz)`,
+          [storedHash, `usage-receipt-${crypto.randomUUID()}`, row.createdAt],
+        );
+        paymentHashes.push(storedHash);
       };
-      await insertForum(forumHeartAt, 21, 'ok', true);
-      await insertForum(forumGiftAt, 5, 'ok', false);
-      await insertForum(forumErrorAt, 77, 'error', true);
-      await insertForum(forumOldAt, 88, 'ok', true);
+      const heartHash = hex64();
+      const giftHash = hex64();
+      await insertForum({
+        createdAt: forumHeartAt,
+        amountSats: 21,
+        result: 'ok',
+        heart: true,
+        paymentHash: heartHash.toUpperCase(),
+        description: null,
+        conversationId: null,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumGiftAt,
+        amountSats: 5,
+        result: 'ok',
+        heart: false,
+        paymentHash: giftHash,
+        description: null,
+        conversationId: null,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumErrorAt,
+        amountSats: 77,
+        result: 'error',
+        heart: true,
+        paymentHash: hex64(),
+        description: null,
+        conversationId: null,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumOldAt,
+        amountSats: 88,
+        result: 'ok',
+        heart: true,
+        paymentHash: hex64(),
+        description: null,
+        conversationId: null,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumConversationAt,
+        amountSats: 31,
+        result: 'ok',
+        heart: true,
+        paymentHash: hex64(),
+        description: null,
+        conversationId: crypto.randomUUID(),
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumRepayAt,
+        amountSats: 32,
+        result: 'ok',
+        heart: false,
+        paymentHash: hex64(),
+        description: `repay:0:${memberB}`,
+        conversationId: null,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumRepayPartAt,
+        amountSats: 33,
+        result: 'ok',
+        heart: false,
+        paymentHash: hex64(),
+        description: `repayp:0:${memberB}:0:21:21`,
+        conversationId: null,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumUnpaidAt,
+        amountSats: 34,
+        result: 'ok',
+        heart: true,
+        paymentHash: hex64(),
+        description: null,
+        conversationId: null,
+        paid: false,
+      });
 
       const shopPaidAt = at(15);
       const shopPendingAt = at(25);
@@ -8602,6 +8706,10 @@ describe('PostgresWalletUsageStore', () => {
       });
       expect(forumAt(forumErrorAt)).toBeUndefined();
       expect(forumAt(forumOldAt)).toBeUndefined();
+      expect(forumAt(forumConversationAt)).toBeUndefined();
+      expect(forumAt(forumRepayAt)).toBeUndefined();
+      expect(forumAt(forumRepayPartAt)).toBeUndefined();
+      expect(forumAt(forumUnpaidAt)).toBeUndefined();
 
       const charges = await store.shopCharges(since.getTime());
       const chargeAt = (createdAt: Date) =>
@@ -8623,6 +8731,12 @@ describe('PostgresWalletUsageStore', () => {
            WHERE payer_account_id = ANY($1::uuid[]) OR author_account_id = ANY($1::uuid[])`,
           [idList],
         );
+        if (paymentHashes.length > 0) {
+          await client.execute(
+            `DELETE FROM nostr_zap_payment WHERE payment_hash = ANY($1::text[])`,
+            [postgresTextArrayLiteral(paymentHashes)],
+          );
+        }
       }
       if (payoutIds.length > 0) {
         await client.execute(`DELETE FROM fond_payout WHERE id = ANY($1::uuid[])`, [
