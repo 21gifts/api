@@ -165,7 +165,7 @@
 - **Purpose:** Filter outbound gift rows to one recipient handle (the local part of the receiving address; case-insensitive). Used by `GET /gifts/stats?recipient=` so stats reflect that handle's gifts only.
 - **Inputs:** `readonly GiftRow[]` and `recipient` string. Trims `recipient`; when `indexOf('@') > 0` compares the local-part before `@`, otherwise the whole trimmed string. Empty after trim matches nothing — never "all gifts".
 - **Returns / side effects:** Matching `GiftRow[]` in input order, or `[]`. No I/O.
-- **Used by:** `giftsStatsRoutes`.
+- **Used by:** `giftsStatsRoutes`, `buildAccountActivity`.
 
 ## Function: giftsRoutes
 
