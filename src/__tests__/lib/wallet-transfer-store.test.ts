@@ -4,6 +4,7 @@ import {
   InMemoryWalletTransferStore,
   PostgresWalletTransferStore,
   type WalletTransferRecord,
+  type WalletTokenTransactionRecord,
 } from '@/lib/wallet-transfer-store';
 
 const OWNER = `02${'a'.repeat(64)}`;
@@ -21,10 +22,31 @@ function row(partial: Partial<WalletTransferRecord> = {}): WalletTransferRecord 
     status: 'pending',
     amountSats: 21,
     counterpartyPubkey: SHOP,
+    counterpartyPubkeys: partial.counterpartyPubkeys ?? [partial.counterpartyPubkey ?? SHOP],
     sparkInvoice: null,
     transferCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
     transferUpdatedAt: null,
     seenAt: new Date('2026-11-12T08:01:00.000Z'),
+    ...partial,
+  };
+}
+
+function tokenRow(
+  partial: Partial<WalletTokenTransactionRecord> = {},
+): WalletTokenTransactionRecord {
+  return {
+    accountId: 'account',
+    walletPubkey: OWNER,
+    transactionHash: '11'.repeat(32),
+    tokenIdentifier: null,
+    direction: 'in',
+    amount: '21',
+    counterpartyPubkeys: [],
+    type: 'mint',
+    status: 'started',
+    transactionCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
+    transactionExpiryAt: null,
+    seenAt: new Date('2026-11-12T08:00:00.000Z'),
     ...partial,
   };
 }
@@ -39,7 +61,8 @@ describe('InMemoryWalletTransferStore', () => {
     await expect(store.listWallets()).resolves.toEqual([
       { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
     ]);
-    await expect(store.upsertTransfer(row())).resolves.toEqual({
+    const multiRecipient = { counterpartyPubkey: MEMBER, counterpartyPubkeys: [MEMBER, SHOP] };
+    await expect(store.upsertTransfer(row(multiRecipient))).resolves.toEqual({
       inserted: true,
       updated: false,
       shopPaymentBecameCompleted: false,
@@ -48,11 +71,15 @@ describe('InMemoryWalletTransferStore', () => {
       newestCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
       oldestPendingCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
       pendingWithoutCreatedAt: false,
+      newestTokenCreatedAt: null,
+      oldestPendingTokenCreatedAt: null,
+      pendingTokenWithoutCreatedAt: false,
       lastFullSyncAt: null,
     });
     await expect(
       store.upsertTransfer(
         row({
+          ...multiRecipient,
           status: 'completed',
           transferUpdatedAt: new Date('2026-11-12T09:00:00.000Z'),
           seenAt: new Date('2026-11-12T09:01:00.000Z'),
@@ -62,6 +89,7 @@ describe('InMemoryWalletTransferStore', () => {
     await expect(
       store.upsertTransfer(
         row({
+          ...multiRecipient,
           status: 'completed',
           transferUpdatedAt: new Date('2026-11-12T09:00:00.000Z'),
           seenAt: new Date('2026-11-12T09:02:00.000Z'),
@@ -83,14 +111,51 @@ describe('InMemoryWalletTransferStore', () => {
       accountId: 'account',
       walletPubkey: OWNER,
       transactionHash: '11'.repeat(32),
+      tokenIdentifier: '22'.repeat(32),
+      direction: 'in',
+      amount: '21',
+      counterpartyPubkeys: [],
+      type: 'mint',
       status: 'finalized',
       transactionCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
-      payload: { tokenOutputs: [] },
+      transactionExpiryAt: null,
       seenAt: new Date('2026-11-12T08:00:00.000Z'),
     });
     await store.markFullSync('account', OWNER, new Date('2026-11-12T09:00:00.000Z'));
     await expect(store.syncState('account', OWNER)).resolves.toMatchObject({
       lastFullSyncAt: new Date('2026-11-12T09:00:00.000Z'),
+    });
+  });
+
+  it('tracks dated and undated pending token transactions only', async () => {
+    const store = new InMemoryWalletTransferStore();
+    await store.upsertTokenTransaction(tokenRow());
+    await store.upsertTokenTransaction(
+      tokenRow({
+        transactionHash: '22'.repeat(32),
+        status: 'signed',
+        transactionCreatedAt: null,
+      }),
+    );
+    await store.upsertTokenTransaction(
+      tokenRow({
+        transactionHash: '33'.repeat(32),
+        status: 'finalized',
+        transactionCreatedAt: new Date('2026-11-12T09:00:00.000Z'),
+      }),
+    );
+    await store.upsertTokenTransaction(
+      tokenRow({
+        transactionHash: '44'.repeat(32),
+        status: 'cancelled',
+        transactionCreatedAt: null,
+      }),
+    );
+
+    await expect(store.syncState('account', OWNER)).resolves.toMatchObject({
+      newestTokenCreatedAt: new Date('2026-11-12T09:00:00.000Z'),
+      oldestPendingTokenCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
+      pendingTokenWithoutCreatedAt: true,
     });
   });
 
@@ -101,6 +166,9 @@ describe('InMemoryWalletTransferStore', () => {
       newestCreatedAt: null,
       oldestPendingCreatedAt: null,
       pendingWithoutCreatedAt: true,
+      newestTokenCreatedAt: null,
+      oldestPendingTokenCreatedAt: null,
+      pendingTokenWithoutCreatedAt: false,
       lastFullSyncAt: null,
     });
   });
@@ -128,6 +196,9 @@ describe('InMemoryWalletTransferStore', () => {
       newestCreatedAt: null,
       oldestPendingCreatedAt: null,
       pendingWithoutCreatedAt: false,
+      newestTokenCreatedAt: null,
+      oldestPendingTokenCreatedAt: null,
+      pendingTokenWithoutCreatedAt: false,
       lastFullSyncAt: null,
     });
     await expect(defaults.upsertTransfer(row({ status: 'completed' }))).resolves.toEqual({
@@ -181,6 +252,7 @@ describe('InMemoryWalletTransferStore', () => {
       { status: 'completed' },
       { amountSats: 22 },
       { counterpartyPubkey: MEMBER },
+      { counterpartyPubkeys: [MEMBER] },
       { sparkInvoice: 'spark1other' },
       { transferCreatedAt: new Date('2026-11-12T08:00:01.000Z') },
       { transferUpdatedAt: new Date('2026-11-12T08:00:01.000Z') },
@@ -205,6 +277,9 @@ describe('PostgresWalletTransferStore', () => {
             newest_created_at: '2026-11-12T08:00:00.000Z',
             oldest_pending_created_at: new Date('2026-11-12T07:00:00.000Z'),
             pending_without_created_at: true,
+            newest_token_created_at: '2026-11-12T05:00:00.000Z',
+            oldest_pending_token_created_at: '2026-11-12T04:00:00.000Z',
+            pending_token_without_created_at: true,
             last_full_sync_at: '2026-11-12T06:00:00.000Z',
           },
         ];
@@ -218,10 +293,14 @@ describe('PostgresWalletTransferStore', () => {
       newestCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
       oldestPendingCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
       pendingWithoutCreatedAt: true,
+      newestTokenCreatedAt: new Date('2026-11-12T05:00:00.000Z'),
+      oldestPendingTokenCreatedAt: new Date('2026-11-12T04:00:00.000Z'),
+      pendingTokenWithoutCreatedAt: true,
       lastFullSyncAt: new Date('2026-11-12T06:00:00.000Z'),
     });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(true);
     expect(query.mock.calls.at(-1)?.[0]).toContain('JOIN message AS shop');
+    expect(query.mock.calls.at(-1)?.[0]).toContain('unnest(payment.counterparty_pubkeys)');
     expect(query.mock.calls.at(-1)?.[0]).toContain("AT TIME ZONE 'UTC'");
   });
 
@@ -238,6 +317,9 @@ describe('PostgresWalletTransferStore', () => {
       newestCreatedAt: null,
       oldestPendingCreatedAt: null,
       pendingWithoutCreatedAt: false,
+      newestTokenCreatedAt: null,
+      oldestPendingTokenCreatedAt: null,
+      pendingTokenWithoutCreatedAt: false,
       lastFullSyncAt: null,
     });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(false);
@@ -258,14 +340,20 @@ describe('PostgresWalletTransferStore', () => {
       accountId: 'account',
       walletPubkey: OWNER,
       transactionHash: '22'.repeat(32),
+      tokenIdentifier: '33'.repeat(32),
+      direction: 'out',
+      amount: '256',
+      counterpartyPubkeys: [MEMBER, SHOP],
+      type: 'transfer',
       status: 'revealed',
       transactionCreatedAt: null,
-      payload: { version: 2 },
+      transactionExpiryAt: new Date('2026-11-12T08:05:00.000Z'),
       seenAt: new Date('2026-11-12T08:00:00.000Z'),
     });
     await store.markFullSync('account', OWNER, new Date('2026-11-12T09:00:00.000Z'));
     expect(execute.mock.calls[0]?.[0]).toContain('INSERT INTO wallet_token_transaction');
-    expect(execute.mock.calls[0]?.[1]).toContain(JSON.stringify({ version: 2 }));
+    expect(execute.mock.calls[0]?.[0]).not.toContain('payload');
+    expect(execute.mock.calls[0]?.[1]).toContain('256');
     expect(execute.mock.calls[1]?.[0]).toContain('INSERT INTO wallet_transfer_sync');
   });
 
@@ -284,6 +372,7 @@ describe('PostgresWalletTransferStore', () => {
               status: 'pending',
               amount_sats: 21,
               counterparty_pubkey: SHOP,
+              counterparty_pubkeys: [SHOP],
               counterparty_account_id: 'shop-account',
               spark_invoice: null,
               transfer_created_at: new Date('2026-11-12T08:00:00.000Z'),
@@ -322,6 +411,7 @@ describe('PostgresWalletTransferStore', () => {
       status: 'completed' as const,
       amount_sats: '21',
       counterparty_pubkey: SHOP,
+      counterparty_pubkeys: [SHOP],
       counterparty_account_id: 'old-shop',
       spark_invoice: null,
       transfer_created_at: '2026-11-12T08:00:00.000Z',

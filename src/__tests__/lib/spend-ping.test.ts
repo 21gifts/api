@@ -340,7 +340,7 @@ describe('HttpSpendPing', () => {
         ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ status: 'failed' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
     expect(
@@ -361,7 +361,7 @@ describe('HttpSpendPing', () => {
         ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ status: 'failed' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
@@ -376,7 +376,7 @@ describe('HttpSpendPing', () => {
         ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ status: 'failed' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
   });
@@ -393,7 +393,7 @@ describe('HttpSpendPing', () => {
         ...LOOKUP,
         rosterStore,
       }).ping(ADDRESS, MESSAGE_ID),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ status: 'failed' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
@@ -415,7 +415,7 @@ describe('HttpSpendPing', () => {
         ...LOOKUP,
         rosterStore,
       }).ping(ADDRESS, MESSAGE_ID),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ status: 'failed' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
@@ -876,7 +876,7 @@ describe('HttpSpendPing', () => {
         }),
         gifts,
       }).ping(ADDRESS, MESSAGE_ID),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ status: 'failed' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(

@@ -1,7 +1,7 @@
 /**
  * Spend-worker daily instruction: collect passkey, post, media, funding (grant
- * and recovery share), welcome-paid, and roster facts, then return the daily
- * pay-or-skip decision. The api does not pay. Nothing is logged.
+ * and recovery share), today's media post, welcome-paid, and roster facts,
+ * then return the daily pay-or-skip decision. The api does not pay. Nothing is logged.
  */
 
 import { Hono } from 'hono';
@@ -12,8 +12,8 @@ import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-ros
 import { effectiveStatus } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { GiftStore } from '@/lib/gift-store';
+import { latestTodayMediaPostId } from '@/lib/funding-ping';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
-import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
@@ -24,18 +24,6 @@ import {
   welcomeGiftPaidOnUtcDay,
   type SpendGrantStatus,
 } from '@/lib/spend-instruction';
-
-/**
- * Same media test as `POST /invoices`: photo 0, a video, or `photoCount` \> 0.
- *
- * @param row - One listed forum note.
- * @returns Whether that note can be the paid `messageId`.
- */
-function listedPostHasMedia(
-  row: Pick<MessageRow, 'hasPhoto' | 'hasVideo' | 'photoCount'>,
-): boolean {
-  return row.hasPhoto === true || row.hasVideo === true || Number(row.photoCount) > 0;
-}
 
 /** Collaborators the daily-instruction route needs. */
 export interface SpendInstructionRouteDeps {
@@ -61,7 +49,7 @@ export interface SpendInstructionRouteDeps {
    */
   messageStore: Pick<
     MessageStore,
-    'accountHasLiveTopLevelPost' | 'accountHasLiveTopLevelMediaPost' | 'listPostsByAccount'
+    'accountHasLiveTopLevelPost' | 'latestLiveTopLevelMediaId' | 'getById'
   >;
   /** Funding grants for spend eligibility. */
   fundingStore: Pick<FundingStore, 'getByAccountId'>;
@@ -150,10 +138,8 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
       const excludeId = account.profileMessageId ?? null;
       hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
       if (hasPosted) {
-        hasMedia = await deps.messageStore.accountHasLiveTopLevelMediaPost(account.id, excludeId);
-        const posts = await deps.messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
-        const newestMedia = posts.find((row) => row.id !== excludeId && listedPostHasMedia(row));
-        messageId = newestMedia === undefined ? null : newestMedia.id;
+        messageId = await latestTodayMediaPostId(deps.messageStore, account.id, nowMs);
+        hasMedia = messageId !== null;
       }
       if (account.role !== 'basis') {
         const payout = await loadPayoutEligibility(
@@ -217,7 +203,7 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
         action: 'pay',
         amountUsd: decision.amountUsd,
         comment: decision.comment,
-        ...(decision.messageId === undefined ? {} : { messageId: decision.messageId }),
+        messageId: decision.messageId,
       },
       200,
     );

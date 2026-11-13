@@ -3035,18 +3035,25 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
         accountId: buyerId,
         walletPubkey: buyerKey,
         transactionHash: tokenHash,
+        tokenIdentifier: 'ab'.repeat(32),
+        direction: 'in',
+        amount: '21',
+        counterpartyPubkeys: [],
+        type: 'mint',
         status: 'finalized',
         transactionCreatedAt: new Date('2026-11-12T22:00:00.000Z'),
-        payload: { tokenOutputs: [{ tokenAmount: '15', ownerPublicKey: buyerKey }] },
+        transactionExpiryAt: new Date('2026-11-12T22:05:00.000Z'),
         seenAt: new Date('2026-11-12T22:01:00.000Z'),
       });
-      const tokenChanges = await client.query<{ op: string }>(
-        `SELECT op FROM db_change
+      const tokenChanges = await client.query<{ op: string; after: Record<string, unknown> }>(
+        `SELECT op, after FROM db_change
          WHERE table_name = 'wallet_token_transaction'
            AND after ->> 'transaction_hash' = $1`,
         [tokenHash],
       );
       expect(tokenChanges.map((row) => row.op)).toContain('INSERT');
+      expect(tokenChanges.every((row) => !('payload' in row.after))).toBe(true);
+      expect(JSON.stringify(tokenChanges)).not.toContain('revocationSecret');
       const observed = new Date('2026-11-13T00:00:00.000Z');
       const transfer = (id: string, at: string) => ({
         accountId: buyerId,
@@ -3057,6 +3064,7 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
         status: 'completed' as const,
         amountSats: 21,
         counterpartyPubkey: shopKey,
+        counterpartyPubkeys: [shopKey],
         sparkInvoice: null,
         transferCreatedAt: new Date(at),
         transferUpdatedAt: null,

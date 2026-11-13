@@ -5,7 +5,7 @@
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
 - Tables: 67
-- Columns: 638
+- Columns: 644
 - Foreign keys: 63
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
@@ -76,6 +76,6 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`usd_fiat_daily`](tables/usd_fiat_daily.md)                                     | [src/lib/usd-fiat-store.ts](../../src/lib/usd-fiat-store.ts)           | 6       | 0            |
 | [`wallet_balance_snapshot`](tables/wallet_balance_snapshot.md)                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 6       | 1            |
 | [`wallet_payment`](tables/wallet_payment.md)                                     | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 18      | 2            |
-| [`wallet_token_transaction`](tables/wallet_token_transaction.md)                 | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 8       | 1            |
-| [`wallet_transfer`](tables/wallet_transfer.md)                                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 14      | 2            |
+| [`wallet_token_transaction`](tables/wallet_token_transaction.md)                 | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 13      | 1            |
+| [`wallet_transfer`](tables/wallet_transfer.md)                                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 15      | 2            |
 | [`wallet_transfer_sync`](tables/wallet_transfer_sync.md)                         | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 3       | 1            |

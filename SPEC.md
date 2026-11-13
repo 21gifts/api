@@ -318,7 +318,7 @@ Public base URLs used in examples:
 | GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`                                          | Whether the address is funding-eligible today, plus effective grant `status`                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`                                          | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, from `RECOVERY_SHARE_REQUIRED_FROM` the 21.gifts recovery share, and forum post required)                                                                                                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`                                          | Accept payment preimage as proof                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| POST   | `/spend/daily-instruction`                           | Bearer `SPEND_API_TOKEN`                                          | Spend Bearer. Body `{ address }`. The kind is always daily. 503 if the token env is unset; 401 wrong/missing Bearer. Success 200 is `{ action: skip, reason }` or `{ action: pay, amountUsd, comment }`, plus messageId only when the decision includes it.                                                                                                                                                                                                                                                                                               |
+| POST   | `/spend/daily-instruction`                           | Bearer `SPEND_API_TOKEN`                                          | Spend Bearer. Body `{ address }`. The kind is always daily. 503 if the token env is unset; 401 wrong/missing Bearer. Pay requires today's live top-level photo/video and returns it as `messageId`; success 200 is `{ action: skip, reason }` or `{ action: pay, amountUsd, comment, messageId }`.                                                                                                                                                                                                                                                        |
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
@@ -4533,11 +4533,12 @@ redacted. An account merge moves these rows to the surviving account, with the
 two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
 
 `wallet_transfer` is the server-verified ledger of every Bitcoin value
-movement and `wallet_token_transaction` is the complete server-verified token
-ledger. Spark transfer responses have no fee field and no Lightning/on-chain
+movement and `wallet_token_transaction` is the server-verified token ledger
+of explicit non-secret facts. Spark transfer responses have no fee field and no Lightning/on-chain
 destination. The supplementary `wallet_payment` report adds app-side fee,
 destination, invoice, memo, and method details. The viewer ledgers and
-`wallet_payment` together, not either source alone, are the complete record.
+`wallet_payment` together, not either source alone, are the complete non-secret
+value-movement record.
 
 - `wallet_balance_snapshot`: one row per accepted report. `id`, `account_id`
   (reporting member), nullable `wallet_pubkey` (set for an operator-viewer
@@ -4558,15 +4559,18 @@ destination, invoice, memo, and method details. The viewer ledgers and
   accepted report that carried the payment).
 - `wallet_transfer`: one row per `(account_id, wallet_pubkey, transfer_id)`, read directly
   through the deployment viewer. It stores the wallet key read, owner-relative
-  direction, normalized Spark transfer type and status, sats, counterparty key
-  and resolved current/previous-wallet account, optional Spark invoice,
+  direction, normalized Spark transfer type and status, sats, every attributed
+  counterparty key (plus the sorted representative key and its resolved
+  current/previous-wallet account cache), optional Spark invoice,
   operator creation/update times, and first/last server observation times.
   Rows are retained; account merge moves them to the survivor like
   `wallet_payment`.
 - `wallet_token_transaction`: one row per
-  `(account_id, wallet_pubkey, transaction_hash)`. It preserves the complete
-  SDK token-transaction payload (bytes as lowercase hex and dates as ISO-8601),
-  normalized status, client creation time, and first/last observation times.
+  `(account_id, wallet_pubkey, transaction_hash)`. It stores only the token
+  identifier, owner-relative direction and decimal amount, external output
+  keys, normalized type and status, client creation/expiry times, and
+  first/last observation times. Raw SDK rows, signatures, secret keys, commitments,
+  and revocation secrets are never stored in this table or `db_change`.
 - `wallet_transfer_sync`: the durable per-account/per-wallet time of the last
   complete history pass. It drives the daily full reread and is operational
   state, not a payment-history surface for member sessions.
@@ -6082,11 +6086,17 @@ UTC day per wallet it rereads the full history, repairing late-indexed rows and
 newly resolvable counterparties. Every real transfer type is requested
 explicitly. Raw-page length controls termination: a short page or negative
 offset ends the scan, while a repeated offset fails that wallet into backoff.
-Direction and amount come from the authoritative sender/receiver participants
-and their leaves; deprecated single-party fields are used only when both
-participant lists are empty. The worker also pages `getTokenTransactions` and
-stores each complete payload in `wallet_token_transaction`. It normalizes SDK
-enums into `wallet_transfer`, resolves counterparties against current and previous wallet
+Direction and amount come from the authoritative non-empty sender/receiver
+edges and the leaves attributed to those edges; participant `amountSats` is
+never an attribution fallback, and deprecated single-party fields are used
+only when both participant lists are empty. Every outgoing recipient reached
+by an attributed leaf is retained; a self-transfer retains the wallet's own
+key. Incoming is completed only when every own receiver edge is completed,
+and receiver cancellation is stored as `cancelled`. The worker also pages
+`getTokenTransactions` from newest to oldest on every tick, stopping
+incremental passes after their one-hour/pending overlap and performing the
+complete reread once per UTC day. It stores only the explicit non-secret token
+facts listed above. It normalizes SDK enums into `wallet_transfer`, resolves counterparties against current and previous wallet
 keys, and writes an owned balance snapshot. Private wallets that have not yet
 granted the viewer simply return no transfers. Changed wallets log only
 `wallet_transfer.synced { accountId, inserted, updated }`; errors log only
@@ -6095,18 +6105,19 @@ invoice, mnemonic, or amount is logged.
 
 `eligibleToday` additionally requires, from deployment and with no start-day
 configuration, a `wallet_transfer` for that member with direction `out`, type
-`transfer`, status `completed`, and a different resolved counterparty that is
-the till account of a live top-level `#21GiftsShop` note. Its updated time
+`transfer`, status `completed`, and at least one external recipient that
+resolves to the till account of a live top-level `#21GiftsShop` note. Its updated time
 (creation time fallback) must be the payout UTC day or the day before. This
 condition applies to posts, zap-paid notes, spend daily runs, spend invoices,
 operator replay, and moderator stipends. The one-time welcome gift is exempt
 only when the server-selected welcome payout has no stored welcome for that
 account, no forum `messageId`, and the server welcome instruction's exact
 1.00 USD amount. A caller-supplied or daily roster comment `Welcome` is not the
-exception. A failed decision reports `no_shop_payment`. When the worker first
-stores such a payment in the current D-1..D payout window, including a
-pending-to-completed transition or a late-indexed payment from yesterday, it
-calls `pingTodayMedia` so a member who posted first can still be paid once.
+exception. A failed decision reports `no_shop_payment`. On every tick, while
+such a payment is in D-1..D, the member is eligible, today's media exists, and
+no daily payout is recorded today, the worker calls `pingTodayMedia` until a
+delivery succeeds. Failures enter the existing wallet backoff; a successful
+account/day is remembered in the process. Spend still pays at most once daily.
 
 **Response** `200` `{ "acknowledgedIds": ["sdk-payment-id"] }` — every stored
 payment id, once each (a later duplicate in the same report wins).
@@ -7010,10 +7021,12 @@ Success → **Response** `200`:
 
 Spend-worker daily instruction. Bearer `SPEND_API_TOKEN`. Body `{ "address" }`.
 Extra keys are ignored. The kind is always daily. The api collects passkey,
-live top-level post, media, funding eligibility (`eligibleToday`: grant and,
-from `RECOVERY_SHARE_REQUIRED_FROM`, 21.gifts recovery share), the same-UTC-day welcome
+live top-level post, a live top-level photo or video posted today UTC, funding
+eligibility (`eligibleToday`: grant, the completed shop payment today or
+yesterday, and, from `RECOVERY_SHARE_REQUIRED_FROM`, the 21.gifts recovery
+share), the same-UTC-day welcome
 flag, and the daily roster, then returns whether to pay and the amount,
-comment, and optional `messageId`. Spend does not choose those fields. The
+comment, and today's media post as `messageId`. Spend does not choose those fields. The
 address is matched as a member's receiving address (`<username>@<host of
 PUBLIC_BASE_URL>` with a verified wallet); any other address is a missing account.
 
@@ -7036,8 +7049,8 @@ roster request error keeps its status and `{ "error" }`. Any other roster
 throw → **502** `{ "error": "Daily roster is unavailable" }`.
 
 Success is always **200**: `{ "action": "skip", "reason" }` or
-`{ "action": "pay", "amountUsd", "comment" }` plus `messageId` only when
-the decision includes it. A skip is not logged. The token, comments, and
+`{ "action": "pay", "amountUsd", "comment", "messageId" }`, where
+`messageId` is today's qualifying media post. A skip is not logged. The token, comments, and
 Lightning addresses are not logged.
 
 ### `GET /messages`

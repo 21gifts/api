@@ -375,6 +375,7 @@ if (import.meta.main) {
           balances: walletStore,
           auth: authStore,
           funding: appFundingStore,
+          gifts: appGiftStore,
           ping: {
             ...(spendPing === undefined ? {} : { spendPing }),
             ...(lnurlServer === undefined ? {} : { lnurlServer }),

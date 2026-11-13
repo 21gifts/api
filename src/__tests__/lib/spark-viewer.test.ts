@@ -189,7 +189,7 @@ describe('ensureSparkViewer', () => {
     await expect(opened.viewer.balance('spark1address')).resolves.toBe(0);
   });
 
-  it('normalizes complete token transactions and cursor pagination', async () => {
+  it('normalizes allow-listed token facts and cursor pagination', async () => {
     const hash = new Uint8Array(32).fill(5);
     getTokenTransactions
       .mockResolvedValueOnce({
@@ -198,48 +198,56 @@ describe('ensureSparkViewer', () => {
             tokenTransactionHash: hash,
             status: 2,
             tokenTransaction: {
+              tokenInputs: { $case: 'mintInput', mintInput: { tokenIdentifier: hash } },
               clientCreatedTimestamp: new Date('2026-11-12T02:00:00.000Z'),
-              tokenOutputs: [{ ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(21) }],
+              expiryTime: new Date('2026-11-12T02:05:00.000Z'),
+              tokenOutputs: [
+                {
+                  ownerPublicKey: PUBLIC_BYTES,
+                  tokenIdentifier: hash,
+                  tokenAmount: Uint8Array.of(21),
+                },
+              ],
             },
           },
           { tokenTransactionHash: new Uint8Array(32).fill(6), status: 10 },
           { status: 2 },
         ],
-        pageResponse: { hasNextPage: true, nextCursor: 'next' },
+        pageResponse: { hasPreviousPage: true, previousCursor: 'next' },
       })
       .mockResolvedValueOnce({ transactions: null, pageResponse: null });
     const opened = await ensureSparkViewer(undefined, undefined);
     await expect(
-      opened.viewer.tokenTransactions({ sparkAddress: 'spark1address', pageSize: 100 }),
+      opened.viewer.tokenTransactions({
+        sparkAddress: 'spark1address',
+        walletPubkey: PUBLIC_KEY,
+        pageSize: 100,
+      }),
     ).resolves.toEqual({
       transactions: [
         {
           hash: '05'.repeat(32),
+          tokenIdentifier: '05'.repeat(32),
+          direction: 'in',
+          amount: '21',
+          counterpartyPubkeys: [],
+          type: 'mint',
           status: 2,
           createdTime: new Date('2026-11-12T02:00:00.000Z'),
-          payload: {
-            tokenTransactionHash: '05'.repeat(32),
-            status: 2,
-            tokenTransaction: {
-              clientCreatedTimestamp: '2026-11-12T02:00:00.000Z',
-              tokenOutputs: [{ ownerPublicKey: PUBLIC_KEY, tokenAmount: '15' }],
-            },
-          },
-        },
-        {
-          hash: '06'.repeat(32),
-          status: 10,
-          createdTime: undefined,
-          payload: { tokenTransactionHash: '06'.repeat(32), status: 10 },
+          expiryTime: new Date('2026-11-12T02:05:00.000Z'),
         },
       ],
       hasNextPage: true,
       nextCursor: 'next',
       rawCount: 3,
     });
+    expect(getTokenTransactions).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: 'PREVIOUS' }),
+    );
     await expect(
       opened.viewer.tokenTransactions({
         sparkAddress: 'spark1address',
+        walletPubkey: PUBLIC_KEY,
         pageSize: 100,
         cursor: 'next',
       }),
@@ -483,7 +491,11 @@ describe('Spark viewer SDK value mapping', () => {
     const opened = await ensureSparkViewer(undefined, undefined);
 
     await expect(
-      opened.viewer.tokenTransactions({ sparkAddress: 'spark1address', pageSize: 100 }),
+      opened.viewer.tokenTransactions({
+        sparkAddress: 'spark1address',
+        walletPubkey: PUBLIC_KEY,
+        pageSize: 100,
+      }),
     ).resolves.toEqual({
       transactions: [],
       hasNextPage: false,
@@ -492,16 +504,119 @@ describe('Spark viewer SDK value mapping', () => {
     });
   });
 
-  it('maps token fields and serializes the complete SDK payload', async () => {
+  it('maps every token input kind and discards malformed token outputs', async () => {
+    getTokenTransactions.mockResolvedValueOnce({
+      transactions: [
+        {
+          tokenTransactionHash: Uint8Array.of(1),
+          status: 1,
+          tokenTransaction: {
+            tokenInputs: { $case: 'createInput' },
+            clientCreatedTimestamp: 'not-a-date',
+            tokenOutputs: [
+              null,
+              { ownerPublicKey: 'not-bytes', tokenAmount: Uint8Array.of(1) },
+              { ownerPublicKey: Uint8Array.of(2), tokenAmount: Uint8Array.of(1) },
+              { ownerPublicKey: PUBLIC_BYTES, tokenAmount: 'not-bytes' },
+              { ownerPublicKey: PUBLIC_BYTES, tokenAmount: new Uint8Array(17) },
+              { ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(2) },
+            ],
+          },
+        },
+        {
+          tokenTransactionHash: Uint8Array.of(2),
+          status: 2,
+          tokenTransaction: {
+            tokenInputs: {
+              $case: 'mintInput',
+              mintInput: { tokenIdentifier: Uint8Array.of(9) },
+            },
+            tokenOutputs: [],
+          },
+        },
+        {
+          tokenTransactionHash: Uint8Array.of(3),
+          status: 3,
+          tokenTransaction: {
+            tokenInputs: { $case: 'transferInput' },
+            tokenOutputs: null,
+          },
+        },
+        {
+          tokenTransactionHash: Uint8Array.of(4),
+          status: 4,
+          tokenTransaction: { tokenInputs: null, tokenOutputs: [] },
+        },
+      ],
+      pageResponse: null,
+    });
+    const opened = await ensureSparkViewer(undefined, undefined);
+
+    const page = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark1address',
+      walletPubkey: PUBLIC_KEY,
+      pageSize: 100,
+    });
+
+    expect(page.transactions).toEqual([
+      expect.objectContaining({
+        hash: '01',
+        type: 'create',
+        direction: 'in',
+        amount: '2',
+        tokenIdentifier: null,
+        createdTime: undefined,
+      }),
+      expect.objectContaining({
+        hash: '02',
+        type: 'mint',
+        direction: 'in',
+        amount: '0',
+        tokenIdentifier: '09',
+      }),
+      expect.objectContaining({
+        hash: '03',
+        type: 'transfer',
+        direction: 'in',
+        amount: '0',
+        tokenIdentifier: null,
+      }),
+      expect.objectContaining({
+        hash: '04',
+        type: 'unknown',
+        direction: 'in',
+        amount: '0',
+        tokenIdentifier: null,
+      }),
+    ]);
+    expect(page.rawCount).toBe(4);
+  });
+
+  it('stores only allow-listed token facts and excludes revocation secrets', async () => {
     const createdTime = new Date('2025-02-03T04:05:06.000Z');
+    const otherKey = new Uint8Array([3, ...Array<number>(32).fill(8)]);
     getTokenTransactions.mockResolvedValueOnce({
       transactions: [
         {
           tokenTransactionHash: new Uint8Array([0xab, 0xcd]),
           status: 3,
-          tokenTransaction: { clientCreatedTimestamp: createdTime },
-          bytes: new Uint8Array([1, 2]),
-          nested: { date: createdTime },
+          tokenTransaction: {
+            tokenInputs: { $case: 'transferInput', transferInput: { outputsToSpend: [] } },
+            clientCreatedTimestamp: createdTime,
+            tokenOutputs: [
+              {
+                ownerPublicKey: otherKey,
+                tokenIdentifier: Uint8Array.of(9),
+                tokenAmount: Uint8Array.of(1, 0),
+                seWithdrawalSignature: Uint8Array.of(4, 5),
+              },
+            ],
+          },
+          confirmationMetadata: {
+            spentTokenOutputsMetadata: [
+              { outputId: 'secret-output', revocationSecret: Uint8Array.of(1, 2, 3) },
+            ],
+          },
         },
       ],
       pageResponse: null,
@@ -509,22 +624,25 @@ describe('Spark viewer SDK value mapping', () => {
     const opened = await ensureSparkViewer(undefined, undefined);
     const page = await opened.viewer.tokenTransactions({
       sparkAddress: 'spark1address',
+      walletPubkey: PUBLIC_KEY,
       pageSize: 100,
     });
     const mapped = page.transactions[0];
 
     expect(mapped).toEqual({
       hash: 'abcd',
+      tokenIdentifier: '09',
+      direction: 'out',
+      amount: '256',
+      counterpartyPubkeys: [`03${'08'.repeat(32)}`],
+      type: 'transfer',
       status: 3,
       createdTime,
-      payload: {
-        tokenTransactionHash: 'abcd',
-        status: 3,
-        tokenTransaction: { clientCreatedTimestamp: createdTime.toISOString() },
-        bytes: '0102',
-        nested: { date: createdTime.toISOString() },
-      },
+      expiryTime: undefined,
     });
+    expect(JSON.stringify(mapped)).not.toContain('revocationSecret');
+    expect(JSON.stringify(mapped)).not.toContain('010203');
+    expect(JSON.stringify(mapped)).not.toContain('seWithdrawalSignature');
     expect(mapped?.createdTime).not.toBe(createdTime);
   });
 });

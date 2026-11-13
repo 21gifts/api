@@ -229,13 +229,15 @@ export interface SpendPing {
    *   `groupMessageId`).
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
    * @param grantStatus - Effective grant status; daily only.
+   * @returns Delivery outcome when the implementation can report it; legacy
+   *   no-op collaborators may resolve void.
    */
   ping(
     address: string,
     messageId: string,
     kind?: 'daily' | 'moderator' | 'welcome',
     grantStatus?: SpendGrantStatus,
-  ): Promise<void>;
+  ): Promise<void | SpendPingOutcome>;
 
   /**
    * Daily or moderator ping booked on `day` (`YYYY-MM-DD`) instead of the
@@ -355,7 +357,8 @@ export class HttpSpendPing implements SpendPing {
    * instruction through the sink. A skip, including welcome already paid
    * today, logs `spend.ping.skipped` and does not deliver. A store read throw
    * or live GET failure logs `spend.ping.failed` and does not deliver.
-   * Resolves on success and failure. Never throws. Never logs the token.
+   * Resolves with the delivery outcome on success, skip, and failure. Never
+   * throws. Never logs the token.
    *
    * @param address - Recipient Lightning Address (JSON body).
    * @param messageId - Forum post id for daily/welcome pings (JSON
@@ -369,21 +372,21 @@ export class HttpSpendPing implements SpendPing {
     messageId: string,
     kind?: 'daily' | 'moderator' | 'welcome',
     grantStatus?: SpendGrantStatus,
-  ): Promise<void> {
+  ): Promise<SpendPingOutcome> {
     const resolvedKind = kind === 'moderator' || kind === 'welcome' ? kind : 'daily';
     const roster = await this.#loadRoster(address);
     if (roster === undefined) {
-      return;
+      return { status: 'failed' };
     }
     const accountId = await this.#recipientId(address);
     if (accountId === 'failed') {
-      return;
+      return { status: 'failed' };
     }
     let welcomePaidOnUtcDay: boolean | undefined;
     if (resolvedKind === 'daily') {
       const welcomePaid = await this.#welcomePaid(address, utcDay(this.#now()));
       if (welcomePaid === 'failed') {
-        return;
+        return { status: 'failed' };
       }
       welcomePaidOnUtcDay = welcomePaid;
     }
@@ -397,7 +400,7 @@ export class HttpSpendPing implements SpendPing {
     );
     if ('skip' in decision) {
       logEvent('spend.ping.skipped', { address, reason: decision.skip });
-      return;
+      return { status: 'skipped', reason: decision.skip };
     }
     const body =
       resolvedKind === 'moderator'
@@ -425,13 +428,14 @@ export class HttpSpendPing implements SpendPing {
     const outcome = await this.#sink.deliver(address, body);
     if (outcome.outcome === 'accepted') {
       logEvent('spend.ping.ok', { address });
-      return;
+      return { status: 'accepted' };
     }
     if (outcome.outcome === 'skipped') {
       logEvent('spend.ping.skipped', { address, reason: outcome.reason });
-      return;
+      return { status: 'skipped', reason: outcome.reason };
     }
     logEvent('spend.ping.failed', { address });
+    return { status: 'failed' };
   }
 
   /**

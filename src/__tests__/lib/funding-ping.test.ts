@@ -212,10 +212,37 @@ describe('pingTodayMedia', () => {
     });
     await expect(
       pingTodayMedia(deps(authStore, messageStore, ping), account, PRE_GATE_MS, 'admitted', true),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe('failed');
     expect(events()).toEqual([
       expect.objectContaining({ event: 'funding.daily_ping.failed', accountId: ACCOUNT_ID }),
     ]);
+  });
+
+  it('reports a failed spend delivery to the caller', async () => {
+    const { authStore, account } = await member();
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, PHOTO_A, new Date(PRE_GATE_MS));
+    const ping = vi.fn(async () => ({ status: 'failed' as const }));
+
+    await expect(
+      pingTodayMedia(deps(authStore, messageStore, ping), account, PRE_GATE_MS, 'admitted', true),
+    ).resolves.toBe('failed');
+    expect(events()).toEqual([
+      expect.objectContaining({ event: 'funding.daily_ping.failed', accountId: ACCOUNT_ID }),
+    ]);
+  });
+
+  it('reports a skipped spend delivery to the caller', async () => {
+    const { authStore, account } = await member();
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, PHOTO_A, new Date(PRE_GATE_MS));
+    const ping = vi.fn<SpendPing['ping']>(async () => ({ status: 'skipped', reason: 'paid' }));
+
+    await expect(
+      pingTodayMedia(deps(authStore, messageStore, ping), account, PRE_GATE_MS, 'admitted', true),
+    ).resolves.toBe('skipped');
+    expect(ping).toHaveBeenCalledWith(ADDRESS, PHOTO_A, 'daily', 'admitted');
+    expect(events()).toEqual([]);
   });
 
   it('logs funding.daily_ping.failed and resolves when the media lookup throws', async () => {
@@ -297,7 +324,7 @@ describe('pingTodayMedia', () => {
       const ping = vi.fn(async () => undefined);
       await expect(
         pingTodayMedia(deps(authStore, messageStore, ping), account, GATE_MS, 'admitted', true),
-      ).resolves.toBeUndefined();
+      ).resolves.toBe('failed');
       expect(ping).not.toHaveBeenCalled();
       expect(events()).toEqual([
         expect.objectContaining({ event: 'funding.daily_ping.failed', accountId: ACCOUNT_ID }),

@@ -231,8 +231,9 @@ function quoteIdentifier(identifier: string): string {
  * are then moved without changing their immutable part indexes.
  * Viewer-sourced histories follow `wallet_payment`: only duplicate transfer
  * ids or token hashes for the same wallet on the survivor are collapsed,
- * transfer self-counterparties are cleared, and every remaining history and
- * full-sync row moves to the surviving account.
+ * transfer self-counterparty account caches are cleared while the attributed
+ * public-key list (including a self-transfer's own key) is retained, and every
+ * remaining history and full-sync row moves to the surviving account.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.

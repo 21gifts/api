@@ -1,6 +1,7 @@
 /** Persistence for server-verified Spark wallet transfers. */
 
 import type { SqlClient } from '@/lib/auth/sql';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** Direction as seen from the wallet that granted the viewer key. */
 export type WalletTransferDirection = 'in' | 'out';
@@ -18,7 +19,7 @@ export type WalletTransferType =
   | 'unrecognized';
 
 /** Stable transfer status stored independently of SDK enum numbers. */
-export type WalletTransferStatus = 'pending' | 'completed' | 'expired' | 'returned';
+export type WalletTransferStatus = 'pending' | 'completed' | 'cancelled' | 'expired' | 'returned';
 
 /** Stable token-transaction status stored independently of SDK enum numbers. */
 export type WalletTokenTransactionStatus =
@@ -41,20 +42,26 @@ export interface WalletTransferRecord {
   status: WalletTransferStatus;
   amountSats: number;
   counterpartyPubkey: string;
+  counterpartyPubkeys: string[];
   sparkInvoice: string | null;
   transferCreatedAt: Date | null;
   transferUpdatedAt: Date | null;
   seenAt: Date;
 }
 
-/** One complete viewer-sourced Spark token transaction. */
+/** Allow-listed non-secret facts from one viewer-sourced Spark token transaction. */
 export interface WalletTokenTransactionRecord {
   accountId: string;
   walletPubkey: string;
   transactionHash: string;
+  tokenIdentifier: string | null;
+  direction: WalletTransferDirection;
+  amount: string;
+  counterpartyPubkeys: string[];
+  type: 'create' | 'mint' | 'transfer' | 'unknown';
   status: WalletTokenTransactionStatus;
   transactionCreatedAt: Date | null;
-  payload: Record<string, unknown>;
+  transactionExpiryAt: Date | null;
   seenAt: Date;
 }
 
@@ -63,6 +70,9 @@ export interface WalletTransferSyncState {
   newestCreatedAt: Date | null;
   oldestPendingCreatedAt: Date | null;
   pendingWithoutCreatedAt: boolean;
+  newestTokenCreatedAt?: Date | null;
+  oldestPendingTokenCreatedAt?: Date | null;
+  pendingTokenWithoutCreatedAt?: boolean;
   lastFullSyncAt: Date | null;
 }
 
@@ -90,6 +100,7 @@ function dateCopy(value: Date | null): Date | null {
 function copyRecord(row: WalletTransferRecord): WalletTransferRecord {
   return {
     ...row,
+    counterpartyPubkeys: [...row.counterpartyPubkeys],
     transferCreatedAt: dateCopy(row.transferCreatedAt),
     transferUpdatedAt: dateCopy(row.transferUpdatedAt),
     seenAt: new Date(row.seenAt.getTime()),
@@ -104,6 +115,8 @@ function substantiveEqual(left: WalletTransferRecord, right: WalletTransferRecor
     left.status === right.status &&
     left.amountSats === right.amountSats &&
     left.counterpartyPubkey === right.counterpartyPubkey &&
+    left.counterpartyPubkeys.length === right.counterpartyPubkeys.length &&
+    left.counterpartyPubkeys.every((key, index) => key === right.counterpartyPubkeys[index]) &&
     left.sparkInvoice === right.sparkInvoice &&
     left.transferCreatedAt?.getTime() === right.transferCreatedAt?.getTime() &&
     left.transferUpdatedAt?.getTime() === right.transferUpdatedAt?.getTime()
@@ -158,11 +171,32 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
       .map((row) => row.transferCreatedAt)
       .filter((value): value is Date => value !== null)
       .map((value) => value.getTime());
+    const tokens = [...this.#tokens.values()].filter(
+      (row) => row.accountId === accountId && row.walletPubkey === walletPubkey,
+    );
+    const tokenCreated = tokens
+      .map((row) => row.transactionCreatedAt)
+      .filter((value): value is Date => value !== null)
+      .map((value) => value.getTime());
+    const pendingTokenCreated = tokens
+      .filter((row) => row.status !== 'finalized' && row.status !== 'cancelled')
+      .map((row) => row.transactionCreatedAt)
+      .filter((value): value is Date => value !== null)
+      .map((value) => value.getTime());
     return Promise.resolve({
       newestCreatedAt: created.length === 0 ? null : new Date(Math.max(...created)),
       oldestPendingCreatedAt: pending.length === 0 ? null : new Date(Math.min(...pending)),
       pendingWithoutCreatedAt: rows.some(
         (row) => row.status === 'pending' && row.transferCreatedAt === null,
+      ),
+      newestTokenCreatedAt: tokenCreated.length === 0 ? null : new Date(Math.max(...tokenCreated)),
+      oldestPendingTokenCreatedAt:
+        pendingTokenCreated.length === 0 ? null : new Date(Math.min(...pendingTokenCreated)),
+      pendingTokenWithoutCreatedAt: tokens.some(
+        (row) =>
+          row.status !== 'finalized' &&
+          row.status !== 'cancelled' &&
+          row.transactionCreatedAt === null,
       ),
       lastFullSyncAt: dateCopy(this.#fullSyncAt.get(`${accountId}\u0000${walletPubkey}`) ?? null),
     });
@@ -179,26 +213,26 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
         (candidate) =>
           candidate.accountId === row.accountId && candidate.transferId === row.transferId,
       );
-    const counterparty = await this.#accountForPubkey(row.counterpartyPubkey);
-    const existingCounterparty =
-      existing === undefined ? null : await this.#accountForPubkey(existing.counterpartyPubkey);
+    const counterparties = await Promise.all(
+      row.counterpartyPubkeys.map((key) => this.#accountForPubkey(key)),
+    );
+    const existingCounterparties =
+      existing === undefined
+        ? []
+        : await Promise.all(existing.counterpartyPubkeys.map((key) => this.#accountForPubkey(key)));
     const wasShop =
       existing !== undefined &&
       existing.status === 'completed' &&
       existing.direction === 'out' &&
       existing.type === 'transfer' &&
-      existingCounterparty !== null &&
-      existingCounterparty !== existing.accountId &&
-      (await this.#isShop(existingCounterparty));
+      (await hasExternalShop(existingCounterparties, existing.accountId, this.#isShop));
     const next = copyRecord(row);
     this.#rows.set(key, next);
     const isShop =
       next.status === 'completed' &&
       next.direction === 'out' &&
       next.type === 'transfer' &&
-      counterparty !== null &&
-      counterparty !== next.accountId &&
-      (await this.#isShop(counterparty));
+      (await hasExternalShop(counterparties, next.accountId, this.#isShop));
     return {
       inserted: existing === undefined,
       updated: comparable !== undefined && !substantiveEqual(comparable, next),
@@ -211,7 +245,8 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
     this.#tokens.set(key, {
       ...row,
       transactionCreatedAt: dateCopy(row.transactionCreatedAt),
-      payload: structuredClone(row.payload),
+      transactionExpiryAt: dateCopy(row.transactionExpiryAt),
+      counterpartyPubkeys: [...row.counterpartyPubkeys],
       seenAt: new Date(row.seenAt.getTime()),
     });
     return Promise.resolve();
@@ -233,20 +268,33 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
         continue;
       }
       const day = dayOf(row);
-      const counterparty = await this.#accountForPubkey(row.counterpartyPubkey);
+      const counterparties = await Promise.all(
+        row.counterpartyPubkeys.map((key) => this.#accountForPubkey(key)),
+      );
       if (
         day !== null &&
         day >= fromUtcDay &&
         day <= toUtcDay &&
-        counterparty !== null &&
-        counterparty !== accountId &&
-        (await this.#isShop(counterparty))
+        (await hasExternalShop(counterparties, accountId, this.#isShop))
       ) {
         return true;
       }
     }
     return false;
   }
+}
+
+async function hasExternalShop(
+  accountIds: readonly (string | null)[],
+  payerAccountId: string,
+  isShop: (accountId: string) => Promise<boolean>,
+): Promise<boolean> {
+  for (const accountId of accountIds) {
+    if (accountId !== null && accountId !== payerAccountId && (await isShop(accountId))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 interface TransferSqlRow {
@@ -256,6 +304,7 @@ interface TransferSqlRow {
   status: WalletTransferStatus;
   amount_sats: number | string | bigint;
   counterparty_pubkey: string;
+  counterparty_pubkeys: string[];
   counterparty_account_id: string | null;
   spark_invoice: string | null;
   transfer_created_at: Date | string | null;
@@ -264,10 +313,20 @@ interface TransferSqlRow {
 }
 
 const SHOP_EXISTS_SQL = `EXISTS (
-  SELECT 1 FROM message AS shop
-  WHERE shop.parent_id IS NULL
+  SELECT 1
+  FROM unnest(wallet_transfer.counterparty_pubkeys) AS counterparty(pubkey)
+  JOIN LATERAL (
+    SELECT COALESCE(
+      (SELECT id FROM account WHERE spark_pubkey = counterparty.pubkey
+       ORDER BY (spark_pubkey_verified_at IS NOT NULL) DESC LIMIT 1),
+      (SELECT account_id FROM previous_wallet WHERE spark_pubkey = counterparty.pubkey
+       ORDER BY replaced_at DESC, account_id LIMIT 1)
+    ) AS account_id
+  ) AS resolved ON resolved.account_id IS NOT NULL
+  JOIN message AS shop ON shop.shop_account_id = resolved.account_id
+  WHERE resolved.account_id <> wallet_transfer.account_id
+    AND shop.parent_id IS NULL
     AND shop.deleted_at IS NULL
-    AND shop.shop_account_id = wallet_transfer.counterparty_account_id
     AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
 )`;
 
@@ -293,6 +352,7 @@ function recordFromSql(
     status: row.status,
     amountSats: Number(row.amount_sats),
     counterpartyPubkey: row.counterparty_pubkey,
+    counterpartyPubkeys: [...row.counterparty_pubkeys],
     sparkInvoice: row.spark_invoice,
     transferCreatedAt: sqlDate(row.transfer_created_at),
     transferUpdatedAt: sqlDate(row.transfer_updated_at),
@@ -326,11 +386,23 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
       newest_created_at: Date | string | null;
       oldest_pending_created_at: Date | string | null;
       pending_without_created_at: boolean;
+      newest_token_created_at: Date | string | null;
+      oldest_pending_token_created_at: Date | string | null;
+      pending_token_without_created_at: boolean;
       last_full_sync_at: Date | string | null;
     }>(
       `SELECT max(transfer_created_at) AS newest_created_at,
               min(transfer_created_at) FILTER (WHERE status = 'pending') AS oldest_pending_created_at
               , bool_or(status = 'pending' AND transfer_created_at IS NULL) AS pending_without_created_at,
+              (SELECT max(transaction_created_at) FROM wallet_token_transaction
+               WHERE account_id = $1 AND wallet_pubkey = $2) AS newest_token_created_at,
+              (SELECT min(transaction_created_at) FROM wallet_token_transaction
+               WHERE account_id = $1 AND wallet_pubkey = $2
+                 AND status NOT IN ('finalized', 'cancelled')) AS oldest_pending_token_created_at,
+              (SELECT coalesce(bool_or(transaction_created_at IS NULL), false)
+               FROM wallet_token_transaction
+               WHERE account_id = $1 AND wallet_pubkey = $2
+                 AND status NOT IN ('finalized', 'cancelled')) AS pending_token_without_created_at,
               (SELECT last_full_sync_at FROM wallet_transfer_sync
                WHERE account_id = $1 AND wallet_pubkey = $2) AS last_full_sync_at
        FROM wallet_transfer WHERE account_id = $1 AND wallet_pubkey = $2`,
@@ -341,6 +413,9 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
       newestCreatedAt: sqlDate(row?.newest_created_at ?? null),
       oldestPendingCreatedAt: sqlDate(row?.oldest_pending_created_at ?? null),
       pendingWithoutCreatedAt: row?.pending_without_created_at === true,
+      newestTokenCreatedAt: sqlDate(row?.newest_token_created_at ?? null),
+      oldestPendingTokenCreatedAt: sqlDate(row?.oldest_pending_token_created_at ?? null),
+      pendingTokenWithoutCreatedAt: row?.pending_token_without_created_at === true,
       lastFullSyncAt: sqlDate(row?.last_full_sync_at ?? null),
     };
   }
@@ -353,9 +428,9 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
     return transaction(async (tx) => {
       const beforeRows = await tx.query<TransferSqlRow>(
         `SELECT wallet_pubkey, direction, type, status, amount_sats, counterparty_pubkey,
+                counterparty_pubkeys,
                 counterparty_account_id, spark_invoice, transfer_created_at, transfer_updated_at,
                 (direction = 'out' AND status = 'completed' AND type = 'transfer'
-                 AND counterparty_account_id IS NOT NULL AND counterparty_account_id <> account_id
                  AND ${SHOP_EXISTS_SQL}) AS is_shop_payment
          FROM wallet_transfer
          WHERE account_id = $1 AND transfer_id = $3
@@ -366,19 +441,20 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
       await tx.execute(
         `INSERT INTO wallet_transfer
           (account_id, wallet_pubkey, transfer_id, direction, type, status, amount_sats,
-           counterparty_pubkey, counterparty_account_id, spark_invoice, transfer_created_at,
+           counterparty_pubkey, counterparty_pubkeys, counterparty_account_id, spark_invoice, transfer_created_at,
            transfer_updated_at, first_seen_at, last_seen_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],
            COALESCE(
              (SELECT id FROM account WHERE spark_pubkey = $8 ORDER BY (spark_pubkey_verified_at IS NOT NULL) DESC LIMIT 1),
              (SELECT account_id FROM previous_wallet WHERE spark_pubkey = $8 ORDER BY replaced_at DESC, account_id LIMIT 1)
-           ),$9,$10,$11,$12,$12)
+           ),$10,$11,$12,$13,$13)
          ON CONFLICT (account_id, wallet_pubkey, transfer_id) DO UPDATE SET
            direction = EXCLUDED.direction,
            type = EXCLUDED.type,
            status = EXCLUDED.status,
            amount_sats = EXCLUDED.amount_sats,
            counterparty_pubkey = EXCLUDED.counterparty_pubkey,
+           counterparty_pubkeys = EXCLUDED.counterparty_pubkeys,
            counterparty_account_id = EXCLUDED.counterparty_account_id,
            spark_invoice = EXCLUDED.spark_invoice,
            transfer_created_at = EXCLUDED.transfer_created_at,
@@ -393,6 +469,7 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
           row.status,
           row.amountSats,
           row.counterpartyPubkey,
+          postgresTextArrayLiteral(row.counterpartyPubkeys),
           row.sparkInvoice,
           row.transferCreatedAt,
           row.transferUpdatedAt,
@@ -403,7 +480,6 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
         await tx.query<{ is_shop_payment: boolean; counterparty_account_id: string | null }>(
           `SELECT counterparty_account_id,
                   (direction = 'out' AND status = 'completed' AND type = 'transfer'
-                   AND counterparty_account_id IS NOT NULL AND counterparty_account_id <> account_id
                    AND ${SHOP_EXISTS_SQL}) AS is_shop_payment
            FROM wallet_transfer WHERE account_id = $1 AND wallet_pubkey = $2 AND transfer_id = $3`,
           [row.accountId, row.walletPubkey, row.transferId],
@@ -428,21 +504,32 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
   async upsertTokenTransaction(row: WalletTokenTransactionRecord): Promise<void> {
     await this.sql.execute(
       `INSERT INTO wallet_token_transaction
-         (account_id, wallet_pubkey, transaction_hash, status, transaction_created_at,
-          payload, first_seen_at, last_seen_at)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$7)
+         (account_id, wallet_pubkey, transaction_hash, token_identifier, direction, amount,
+          counterparty_pubkeys, type, status, transaction_created_at, transaction_expiry_at,
+          first_seen_at, last_seen_at)
+       VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::text[],$8,$9,$10,$11,$12,$12)
        ON CONFLICT (account_id, wallet_pubkey, transaction_hash) DO UPDATE SET
+         token_identifier = EXCLUDED.token_identifier,
+         direction = EXCLUDED.direction,
+         amount = EXCLUDED.amount,
+         counterparty_pubkeys = EXCLUDED.counterparty_pubkeys,
+         type = EXCLUDED.type,
          status = EXCLUDED.status,
          transaction_created_at = EXCLUDED.transaction_created_at,
-         payload = EXCLUDED.payload,
+         transaction_expiry_at = EXCLUDED.transaction_expiry_at,
          last_seen_at = EXCLUDED.last_seen_at`,
       [
         row.accountId,
         row.walletPubkey,
         row.transactionHash,
+        row.tokenIdentifier,
+        row.direction,
+        row.amount,
+        postgresTextArrayLiteral(row.counterpartyPubkeys),
+        row.type,
         row.status,
         row.transactionCreatedAt,
-        JSON.stringify(row.payload),
+        row.transactionExpiryAt,
         row.seenAt,
       ],
     );
@@ -463,8 +550,17 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
       `SELECT EXISTS (
          SELECT 1
          FROM wallet_transfer AS payment
+         CROSS JOIN LATERAL unnest(payment.counterparty_pubkeys) AS counterparty(pubkey)
+         JOIN LATERAL (
+           SELECT COALESCE(
+             (SELECT id FROM account WHERE spark_pubkey = counterparty.pubkey
+              ORDER BY (spark_pubkey_verified_at IS NOT NULL) DESC LIMIT 1),
+             (SELECT account_id FROM previous_wallet WHERE spark_pubkey = counterparty.pubkey
+              ORDER BY replaced_at DESC, account_id LIMIT 1)
+           ) AS account_id
+         ) AS resolved ON resolved.account_id IS NOT NULL
          JOIN message AS shop
-           ON shop.shop_account_id = payment.counterparty_account_id
+           ON shop.shop_account_id = resolved.account_id
           AND shop.parent_id IS NULL
           AND shop.deleted_at IS NULL
           AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
@@ -472,8 +568,7 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
            AND payment.direction = 'out'
            AND payment.status = 'completed'
            AND payment.type = 'transfer'
-           AND payment.counterparty_account_id IS NOT NULL
-           AND payment.counterparty_account_id <> payment.account_id
+           AND resolved.account_id <> payment.account_id
            AND (COALESCE(payment.transfer_updated_at, payment.transfer_created_at)
                 AT TIME ZONE 'UTC')::date BETWEEN $2::date AND $3::date
        ) AS present`,

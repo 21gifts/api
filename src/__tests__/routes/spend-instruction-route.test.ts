@@ -182,7 +182,7 @@ function livePostStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
       accountId,
       name: 'Ada',
       text: 'first',
-      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      createdAt: new Date('2026-10-08T09:00:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     },
@@ -197,7 +197,7 @@ async function liveMediaPostStore(accountId: string = 'acc-alice'): Promise<InMe
       accountId,
       name: 'Ada',
       text: 'first',
-      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      createdAt: new Date('2026-10-08T09:00:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     },
@@ -335,16 +335,16 @@ describe('POST /spend/daily-instruction', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const messageStore = new InMemoryMessageStore();
-    const hasMedia = vi.spyOn(messageStore, 'accountHasLiveTopLevelMediaPost');
-    const listPosts = vi.spyOn(messageStore, 'listPostsByAccount');
+    const latestMedia = vi.spyOn(messageStore, 'latestLiveTopLevelMediaId');
+    const getById = vi.spyOn(messageStore, 'getById');
     const res = await createSpendApp({ authStore, messageStore }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ action: 'skip', reason: 'no_post' });
-    expect(hasMedia).not.toHaveBeenCalled();
-    expect(listPosts).not.toHaveBeenCalled();
+    expect(latestMedia).not.toHaveBeenCalled();
+    expect(getById).not.toHaveBeenCalled();
   });
 
   it('returns no_media when the live post has no media', async () => {
@@ -358,6 +358,33 @@ describe('POST /spend/daily-instruction', () => {
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
     );
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'no_media' });
+  });
+
+  it('returns no_media when the only live media post is from an earlier UTC day', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const messageStore = await liveMediaPostStore();
+    const media = await messageStore.getById(POST_ID);
+    expect(media?.createdAt.toISOString().slice(0, 10)).toBe('2026-10-08');
+    const oldStore = new InMemoryMessageStore();
+    await oldStore.create(
+      {
+        id: POST_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'old photo',
+        createdAt: new Date('2026-10-07T23:59:59.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      JPEG,
+    );
+
+    const res = await createSpendApp({ authStore, messageStore: oldStore }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
     expect(await res.json()).toEqual({ action: 'skip', reason: 'no_media' });
   });
 
@@ -548,7 +575,7 @@ describe('POST /spend/daily-instruction', () => {
       accountId: 'acc-alice',
       name: 'Ada',
       text: 'later',
-      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      createdAt: new Date('2026-10-08T10:00:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
@@ -575,7 +602,7 @@ describe('POST /spend/daily-instruction', () => {
         accountId: 'acc-alice',
         name: 'Ada',
         text: 'later photo',
-        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        createdAt: new Date('2026-10-08T10:00:00.000Z'),
         hasPhoto: false,
         ...unsignedNostrDefaults(),
       },
@@ -594,7 +621,7 @@ describe('POST /spend/daily-instruction', () => {
     });
   });
 
-  it('omits messageId when listed posts have no non-profile id', async () => {
+  it('requires a media message id from today', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
@@ -621,15 +648,8 @@ describe('POST /spend/daily-instruction', () => {
     const inner = new InMemoryMessageStore();
     const messageStore = new Proxy(inner, {
       get(target, prop, receiver) {
-        if (prop === 'accountHasLiveTopLevelPost') {
-          return async () => true;
-        }
-        if (prop === 'accountHasLiveTopLevelMediaPost') {
-          return async () => true;
-        }
-        if (prop === 'listPostsByAccount') {
-          return async () => [{ id: PROFILE_NOTE_ID }];
-        }
+        if (prop === 'accountHasLiveTopLevelPost') return async () => true;
+        if (prop === 'latestLiveTopLevelMediaId') return async () => null;
         const value = Reflect.get(target, prop, receiver) as unknown;
         return typeof value === 'function'
           ? (value as (...args: never[]) => unknown).bind(target)
@@ -641,11 +661,7 @@ describe('POST /spend/daily-instruction', () => {
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      action: 'pay',
-      amountUsd: 2,
-      comment: 'thanks',
-    });
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'no_media' });
   });
 
   it('returns 503 when the gift ledger cannot be listed and does not read the roster', async () => {

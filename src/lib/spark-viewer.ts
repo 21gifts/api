@@ -38,12 +38,17 @@ export interface SparkViewerTransfer {
   leaves: Array<{ value: number; senderId: string; receiverId: string }>;
 }
 
-/** One complete token transaction returned by the SDK adapter. */
+/** Allow-listed non-secret facts from one token transaction. */
 export interface SparkViewerTokenTransaction {
   hash: string;
+  tokenIdentifier: string | null;
+  direction: 'in' | 'out';
+  amount: string;
+  counterpartyPubkeys: string[];
+  type: 'create' | 'mint' | 'transfer' | 'unknown';
   status: number;
   createdTime: Date | undefined;
-  payload: Record<string, unknown>;
+  expiryTime: Date | undefined;
 }
 
 /** Read-only operator access used by the wallet transfer worker. */
@@ -54,7 +59,12 @@ export interface SparkViewer {
     offset: number;
     createdAfter?: Date;
   }): Promise<{ transfers: SparkViewerTransfer[]; offset: number; rawCount: number }>;
-  tokenTransactions(input: { sparkAddress: string; pageSize: number; cursor?: string }): Promise<{
+  tokenTransactions(input: {
+    sparkAddress: string;
+    walletPubkey: string;
+    pageSize: number;
+    cursor?: string;
+  }): Promise<{
     transactions: SparkViewerTokenTransaction[];
     hasNextPage: boolean;
     nextCursor: string | null;
@@ -149,7 +159,7 @@ type SdkViewer = {
     sparkAddresses: string[];
     pageSize: number;
     cursor?: string;
-    direction: 'NEXT';
+    direction: 'PREVIOUS';
   }): Promise<SdkTokenPage>;
   getOwnedBalance(sparkAddress: string): Promise<unknown>;
 };
@@ -245,33 +255,87 @@ function transferOf(value: unknown): SparkViewerTransfer | null {
   };
 }
 
-function jsonValue(value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
-  if (value instanceof Uint8Array) return bytesToHex(value);
-  if (Array.isArray(value)) return value.map(jsonValue);
-  if (typeof value === 'object' && value !== null) {
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, jsonValue(child)]));
-  }
-  return value;
+function uint128Decimal(value: unknown): bigint | null {
+  if (!(value instanceof Uint8Array) || value.length > 16) return null;
+  let amount = 0n;
+  for (const byte of value) amount = (amount << 8n) | BigInt(byte);
+  return amount;
 }
 
-function tokenTransactionOf(value: unknown): SparkViewerTokenTransaction | null {
+function tokenTransactionOf(
+  value: unknown,
+  walletPubkey: string,
+): SparkViewerTokenTransaction | null {
   if (typeof value !== 'object' || value === null) return null;
   const row = value as Record<string, unknown>;
   if (!(row['tokenTransactionHash'] instanceof Uint8Array) || typeof row['status'] !== 'number') {
     return null;
   }
   const transaction = row['tokenTransaction'];
-  const payload = jsonValue(row);
-  const createdTime =
-    typeof transaction === 'object' && transaction !== null
-      ? (transaction as Record<string, unknown>)['clientCreatedTimestamp']
-      : undefined;
+  if (typeof transaction !== 'object' || transaction === null) return null;
+  const tx = transaction as Record<string, unknown>;
+  const tokenInputs =
+    typeof tx['tokenInputs'] === 'object' && tx['tokenInputs'] !== null
+      ? (tx['tokenInputs'] as Record<string, unknown>)
+      : {};
+  const inputCase = tokenInputs['$case'];
+  const type =
+    inputCase === 'createInput'
+      ? 'create'
+      : inputCase === 'mintInput'
+        ? 'mint'
+        : inputCase === 'transferInput'
+          ? 'transfer'
+          : 'unknown';
+  const outputs = Array.isArray(tx['tokenOutputs'])
+    ? tx['tokenOutputs'].flatMap((output) => {
+        if (typeof output !== 'object' || output === null) return [];
+        const candidate = output as Record<string, unknown>;
+        if (!(candidate['ownerPublicKey'] instanceof Uint8Array)) return [];
+        const owner = bytesToHex(candidate['ownerPublicKey']);
+        if (!/^0[23][0-9a-f]{64}$/.test(owner)) return [];
+        const amount = uint128Decimal(candidate['tokenAmount']);
+        if (amount === null) return [];
+        return [
+          {
+            owner,
+            amount,
+            tokenIdentifier:
+              candidate['tokenIdentifier'] instanceof Uint8Array
+                ? bytesToHex(candidate['tokenIdentifier'])
+                : null,
+          },
+        ];
+      })
+    : [];
+  const externalOutputs = outputs.filter((output) => output.owner !== walletPubkey);
+  const ownOutputs = outputs.filter((output) => output.owner === walletPubkey);
+  const direction = type === 'transfer' && externalOutputs.length > 0 ? 'out' : 'in';
+  const attributedOutputs = direction === 'out' ? externalOutputs : ownOutputs;
+  const amount = attributedOutputs.reduce((sum, output) => sum + output.amount, 0n);
+  const mintInput =
+    inputCase === 'mintInput' && typeof tokenInputs['mintInput'] === 'object'
+      ? (tokenInputs['mintInput'] as Record<string, unknown>)
+      : {};
+  const tokenIdentifier =
+    outputs.find((output) => output.tokenIdentifier !== null)?.tokenIdentifier ??
+    (mintInput['tokenIdentifier'] instanceof Uint8Array
+      ? bytesToHex(mintInput['tokenIdentifier'])
+      : null);
+  const createdTime = tx['clientCreatedTimestamp'];
+  const expiryTime = tx['expiryTime'];
   return {
     hash: bytesToHex(row['tokenTransactionHash']),
+    tokenIdentifier,
+    direction,
+    amount: amount.toString(),
+    counterpartyPubkeys: [
+      ...new Set(externalOutputs.map((output) => output.owner).filter((key) => key !== '')),
+    ].sort(),
+    type,
     status: row['status'],
     createdTime: createdTime instanceof Date ? new Date(createdTime.getTime()) : undefined,
-    payload: payload as Record<string, unknown>,
+    expiryTime: expiryTime instanceof Date ? new Date(expiryTime.getTime()) : undefined,
   };
 }
 
@@ -306,12 +370,12 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
         sparkAddresses: [input.sparkAddress],
         pageSize: input.pageSize,
         ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-        direction: 'NEXT',
+        direction: 'PREVIOUS',
       });
       const rawCount = Array.isArray(page.transactions) ? page.transactions.length : 0;
       const transactions = Array.isArray(page.transactions)
         ? page.transactions
-            .map(tokenTransactionOf)
+            .map((transaction) => tokenTransactionOf(transaction, input.walletPubkey))
             .filter((row): row is SparkViewerTokenTransaction => row !== null)
         : [];
       const response =
@@ -320,10 +384,10 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
           : {};
       return {
         transactions,
-        hasNextPage: response['hasNextPage'] === true,
+        hasNextPage: response['hasPreviousPage'] === true,
         nextCursor:
-          typeof response['nextCursor'] === 'string' && response['nextCursor'] !== ''
-            ? response['nextCursor']
+          typeof response['previousCursor'] === 'string' && response['previousCursor'] !== ''
+            ? response['previousCursor']
             : null,
         rawCount,
       };

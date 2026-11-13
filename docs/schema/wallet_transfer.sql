@@ -4,9 +4,10 @@ CREATE TABLE wallet_transfer (
   transfer_id text NOT NULL CHECK (transfer_id <> ''),
   direction text NOT NULL CHECK (direction IN ('in', 'out')),
   type text NOT NULL CHECK (type IN ('preimage_swap', 'cooperative_exit', 'transfer', 'utxo_swap', 'primary_swap_v3', 'counter_swap_v3', 'swap', 'counter_swap', 'unrecognized')),
-  status text NOT NULL CHECK (status IN ('pending', 'completed', 'expired', 'returned')),
+  status text NOT NULL CHECK (status IN ('pending', 'completed', 'cancelled', 'expired', 'returned')),
   amount_sats bigint NOT NULL CHECK (amount_sats >= 0),
   counterparty_pubkey text NOT NULL CHECK (counterparty_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  counterparty_pubkeys text[] NOT NULL,
   counterparty_account_id uuid REFERENCES account (id),
   spark_invoice text,
   transfer_created_at timestamptz,
@@ -23,8 +24,7 @@ CREATE INDEX wallet_transfer_pending_idx
   WHERE status = 'pending';
 CREATE INDEX wallet_transfer_shop_payment_idx
   ON wallet_transfer (account_id, COALESCE(transfer_updated_at, transfer_created_at))
-  WHERE direction = 'out' AND status = 'completed' AND type = 'transfer'
-    AND counterparty_account_id IS NOT NULL;
+  WHERE direction = 'out' AND status = 'completed' AND type = 'transfer';
 CREATE INDEX wallet_transfer_counterparty_idx
   ON wallet_transfer (counterparty_account_id)
   WHERE counterparty_account_id IS NOT NULL;

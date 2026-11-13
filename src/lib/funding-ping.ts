@@ -63,7 +63,7 @@ export async function latestTodayMediaPostId(
  * required ({@link recoveryShareRequired}), an account without a 21.gifts recovery share for its
  * current verified wallet is not pinged (`spend.ping.skipped`,
  * `not_eligible`). Share read, lookup, and ping failures are logged as
- * `funding.daily_ping.failed` and swallowed, so this never throws.
+ * `funding.daily_ping.failed` and returned as `failed`, so this never throws.
  *
  * @param deps - Spend ping, LNURL server config, forum store, and auth store.
  * @param account - Account to ping, read after the write that made it payable.
@@ -71,6 +71,8 @@ export async function latestTodayMediaPostId(
  * @param grantStatus - Effective grant status after the write.
  * @param requireShare - `true` when the caller has not checked the recovery
  *   share (staff trial and admit); `false` when the share was just stored.
+ * @returns Whether the ping was sent, skipped, or failed. Failures are logged
+ *   and returned rather than thrown.
  */
 export async function pingTodayMedia(
   deps: TodayMediaPingDeps,
@@ -78,13 +80,13 @@ export async function pingTodayMedia(
   nowMs: number,
   grantStatus: SpendGrantStatus,
   requireShare: boolean,
-): Promise<void> {
+): Promise<'sent' | 'skipped' | 'failed'> {
   if (deps.spendPing === undefined) {
-    return;
+    return 'skipped';
   }
   const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
   if (address === null) {
-    return;
+    return 'skipped';
   }
   try {
     if (
@@ -96,7 +98,7 @@ export async function pingTodayMedia(
       ))
     ) {
       logEvent('spend.ping.skipped', { reason: 'no_shop_payment' });
-      return;
+      return 'skipped';
     }
     if (
       requireShare &&
@@ -104,14 +106,21 @@ export async function pingTodayMedia(
       !(await deps.authStore.hasRecoveryShareForVerifiedWallet(account.id))
     ) {
       logEvent('spend.ping.skipped', { reason: 'not_eligible' });
-      return;
+      return 'skipped';
     }
     const id = await latestTodayMediaPostId(deps.messageStore, account.id, nowMs);
     if (id === null) {
-      return;
+      return 'skipped';
     }
-    await deps.spendPing.ping(address, id, 'daily', grantStatus);
+    const outcome = await deps.spendPing.ping(address, id, 'daily', grantStatus);
+    if (outcome?.status === 'failed') {
+      logEvent('funding.daily_ping.failed', { accountId: account.id });
+      return 'failed';
+    }
+    if (outcome?.status === 'skipped') return 'skipped';
+    return 'sent';
   } catch {
     logEvent('funding.daily_ping.failed', { accountId: account.id });
+    return 'failed';
   }
 }

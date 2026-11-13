@@ -8,7 +8,8 @@
  * INSERT, DELETE, and the UPDATE that changes the bytes keep the full value, so
  * any row state is reconstructable by chaining to the latest earlier full image.
  * Secret columns keep their sha256 hash. The no-op comparison still happens on
- * the raw images before redaction.
+ * the raw images before redaction. Migration removes the retired raw token
+ * payload field from historical wallet-token before/after images.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
@@ -115,6 +116,10 @@ $dbch$;`,
   `DO $guard$
 BEGIN
   DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
+  UPDATE db_change
+  SET before = before - 'payload', after = after - 'payload'
+  WHERE table_name = 'wallet_token_transaction'
+    AND ((before IS NOT NULL AND before ? 'payload') OR (after IS NOT NULL AND after ? 'payload'));
   UPDATE db_change AS d
   SET after = jsonb_set(
     d.after,
