@@ -5395,9 +5395,10 @@ it also survives a subsequent ingest-write failure. A failed fresh normal
 credit leaves neither a claim nor credited sats. A later real receipt after a
 committed settle is persisted as `rejected` / `settled`. A payment hash already
 owned by another receipt or represented by any indexed ingest cannot be
-settled manually. If payer lookup throws after credit, the route still succeeds: it
-logs the gift-reply failure, omits payer fields from the notification, and
-skips the gift-reply. Note-author lookup runs **before** `claimZapPayment`;
+settled manually. Payer lookup runs before settlement. If it throws, the failure
+is logged and settlement continues without payer data: payer fields are omitted
+from the notification and the gift-reply is skipped. Note-author lookup runs
+**before** `claimZapPayment`;
 a throw there fails the settle with no claim, receipt, or ingest.
 
 Failures:

@@ -152,17 +152,24 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
   return db.begin(async (tx) => {
     const accountParams = [input.from, input.into] as const;
 
-    // Repayment writes take the message advisory lock before any row lock.
-    // Follow that order here too: take every affected message lock in stable
-    // id order before locking either account or any repayment/message row.
+    // Receipt settlement and repayment writes take the message advisory lock
+    // before any row lock. Follow that order here too: take every affected
+    // message lock in stable id order before locking either account or any
+    // invoice, receipt, repayment, or message row.
     await tx.query(
       `SELECT pg_advisory_xact_lock(hashtextextended('message:' || affected.message_id::text, 0))
        FROM (
          SELECT message_id FROM message_repayment
-         WHERE recipient_account_id = $1 OR recipient_account_id = $2
+         WHERE recipient_account_id = $1::uuid OR recipient_account_id = $2::uuid
          UNION
          SELECT message_id FROM message_repayment_part
-         WHERE recipient_account_id = $1 OR recipient_account_id = $2
+         WHERE recipient_account_id = $1::uuid OR recipient_account_id = $2::uuid
+         UNION
+         SELECT message_id FROM message_invoice
+         WHERE payer_account_id = $1::uuid
+            OR payer_account_id = $2::uuid
+            OR author_account_id = $1::uuid
+            OR author_account_id = $2::uuid
          UNION
          SELECT message_id FROM message_invoice
          WHERE result = 'ok'
@@ -176,11 +183,14 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
              OR description LIKE 'repayp:%:' || $2::text || ':%'
            )
          UNION
+         SELECT message_id FROM nostr_zap_receipt
+         WHERE payer_account_id = $1::uuid OR payer_account_id = $2::uuid
+         UNION
          SELECT receipt.message_id
          FROM nostr_zap_receipt AS receipt
          JOIN message ON message.id = receipt.message_id
          WHERE message.goal_repayable IS TRUE
-           AND (receipt.payer_account_id = $1 OR receipt.payer_account_id = $2)
+           AND (receipt.payer_account_id = $1::uuid OR receipt.payer_account_id = $2::uuid)
          UNION
          SELECT id AS message_id FROM message
          WHERE goal_repayable IS TRUE

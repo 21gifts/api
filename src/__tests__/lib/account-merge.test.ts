@@ -280,7 +280,7 @@ describe('mergeAccounts', () => {
     expect(queries[normalized]?.params).toEqual([INTO]);
   });
 
-  it('locks repayable messages authored by either identity before account rows', async () => {
+  it('locks invoice and receipt messages for either identity before account rows', async () => {
     const { db, queries } = fakeDatabase();
 
     await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
@@ -291,6 +291,15 @@ describe('mergeAccounts', () => {
     );
     expect(queries[messageLocks]?.text).toContain('SELECT id AS message_id FROM message');
     expect(queries[messageLocks]?.text).toContain('account_id = $1::uuid OR account_id = $2::uuid');
+    expect(queries[messageLocks]?.text).toContain('SELECT message_id FROM message_invoice');
+    expect(queries[messageLocks]?.text).toContain('payer_account_id = $1::uuid');
+    expect(queries[messageLocks]?.text).toContain('author_account_id = $2::uuid');
+    expect(queries[messageLocks]?.text).toContain('SELECT message_id FROM nostr_zap_receipt');
+    expect(queries[messageLocks]?.text).toContain(
+      'payer_account_id = $1::uuid OR payer_account_id = $2::uuid',
+    );
+    expect(queries[messageLocks]?.text).not.toContain('UNION ALL');
+    expect(queries[messageLocks]?.text.match(/ORDER BY affected\.message_id/g)).toHaveLength(1);
     expect(messageLocks).toBeLessThan(accountLocks);
   });
 

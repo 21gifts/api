@@ -1282,6 +1282,50 @@ describe('manual invoice settlement', () => {
     }
   });
 
+  it('rejects when the matched invoice disappears before the locked re-read', async () => {
+    class DisappearingInvoiceStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
+        this.lookups += 1;
+        return this.lookups === 1
+          ? super.findOkInvoiceByPaymentHash(...args)
+          : Promise.resolve(undefined);
+      }
+    }
+    const store = new DisappearingInvoiceStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    const paymentHash = '30'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      fiatPinned: true,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+    });
+
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1,
+        paymentHash,
+        note: 'invoice vanished',
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'invoice' });
+    expect(
+      await store.getZapReceiptGift(manualReceiptIdForPaymentHash(paymentHash)),
+    ).toBeUndefined();
+  });
+
   it('rejects conversation, missing, and deleted message targets', async () => {
     const auth = new InMemoryAuthStore();
     const conversationStore = new InMemoryMessageStore();
@@ -1367,6 +1411,77 @@ describe('manual invoice settlement', () => {
     expect(note?.amountChf).toBeNull();
     expect(note?.amountEur).toBeNull();
     expect(note?.amountPhp).toBeNull();
+  });
+
+  it('uses the survivor invoice after a merge completes before manual settlement locks', async () => {
+    class MergedInvoiceStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override async findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): Promise<MessageInvoiceAttempt | undefined> {
+        const found = await super.findOkInvoiceByPaymentHash(...args);
+        this.lookups += 1;
+        if (found === undefined) {
+          return undefined;
+        }
+        return {
+          ...found,
+          payerAccountId: this.lookups === 1 ? 'manual-payer' : 'manual-survivor',
+          heart: this.lookups > 1,
+          fiatPinned: true,
+          amountUsd: this.lookups === 1 ? '1.00' : '2.00',
+        };
+      }
+    }
+    const store = new MergedInvoiceStore();
+    const auth = new InMemoryAuthStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'manual-author',
+      messageId: 'manual-message',
+    });
+    for (const id of ['manual-payer', 'manual-survivor']) {
+      await auth.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: id,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: viewKeyFor(id),
+        createdAt: 2,
+        rulesAgreedAt: null,
+      });
+    }
+    const paymentHash = 'a3'.repeat(32);
+    await seedManualInvoice(store, paymentHash, {
+      fiatPinned: true,
+      amountUsd: '1.00',
+    });
+    const fetchImpl = vi.fn(async () => new Response('no', { status: 500 }));
+
+    await expect(
+      settleInvoiceManually({
+        store,
+        auth,
+        now: () => 1,
+        paymentHash,
+        note: 'merge completed',
+        fetchImpl,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(store.lookups).toBe(2);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(await store.getZapReceiptGift(manualReceiptIdForPaymentHash(paymentHash))).toMatchObject(
+      {
+        payerAccountId: 'manual-survivor',
+      },
+    );
+    expect((await store.getById('manual-message'))?.amountUsd).toBe('2.00');
+    expect(await store.listReplies('manual-message')).toEqual([]);
   });
 
   it('resumes a credited manual receipt by restoring attribution and its ingest row', async () => {
@@ -3192,6 +3307,138 @@ describe('indexZapReceipt', () => {
         }),
       ]),
     );
+  });
+
+  it('attributes an indexed receipt to the survivor read after the message lock', async () => {
+    class MergedInvoiceStore extends InMemoryMessageStore {
+      lookups = 0;
+
+      override async findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): Promise<MessageInvoiceAttempt | undefined> {
+        const found = await super.findOkInvoiceByPaymentHash(...args);
+        this.lookups += 1;
+        if (found === undefined) {
+          return undefined;
+        }
+        return {
+          ...found,
+          payerAccountId: this.lookups === 1 ? 'merged-source' : 'merge-survivor',
+          heart: this.lookups > 1,
+          fiatPinned: true,
+          amountUsd: this.lookups === 1 ? '1.00' : '2.00',
+        };
+      }
+    }
+    const store = new MergedInvoiceStore();
+    const messageId = 'm-merge-before-receipt-lock';
+    const paymentHash = '25'.repeat(32);
+    await store.create({
+      id: messageId,
+      accountId: 'author',
+      name: 'Ada',
+      text: 'loan',
+      createdAt: new Date('2026-11-13T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 100,
+      goalRepayable: true,
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-merge-before-receipt-lock',
+      createdAt: new Date('2026-11-13T00:00:00.000Z'),
+      messageId,
+      payerAccountId: 'merged-source',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'merged gift' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-merge-before-receipt-lock',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      fiatPinned: true,
+      amountUsd: '1.00',
+    });
+    expect((await store.findOkInvoiceByPaymentHash(paymentHash))?.payerAccountId).toBe(
+      'merged-source',
+    );
+
+    await expect(
+      indexZapReceipt({
+        store,
+        messageId,
+        receipt: { id: 'r-merge-before-receipt-lock', pubkey: PROVIDER_PUBKEY, tags: [] },
+        providerPubkey: PROVIDER_PUBKEY,
+        amountSats: 21,
+        paymentHash,
+        fiat: null,
+        rereadInvoice: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(store.lookups).toBe(2);
+    expect(await store.getZapReceiptGift('r-merge-before-receipt-lock')).toMatchObject({
+      payerAccountId: 'merge-survivor',
+    });
+    expect((await store.getById(messageId))?.amountUsd).toBe('2.00');
+    expect(await store.listZapReceiptsAwaitingGiftReply(10)).toEqual([]);
+  });
+
+  it('does not use a locked invoice that belongs to another message', async () => {
+    const store = new InMemoryMessageStore();
+    for (const id of ['m-locked-target', 'm-locked-other']) {
+      await store.create({
+        id,
+        accountId: 'author',
+        name: 'Ada',
+        text: id,
+        createdAt: new Date('2026-11-13T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      });
+    }
+    const paymentHash = '26'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-locked-other',
+      createdAt: new Date('2026-11-13T00:00:00.000Z'),
+      messageId: 'm-locked-other',
+      payerAccountId: 'wrong-payer',
+      authorAccountId: 'author',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-locked-other',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+
+    await expect(
+      indexZapReceipt({
+        store,
+        messageId: 'm-locked-target',
+        receipt: { id: 'r-locked-target', pubkey: PROVIDER_PUBKEY, tags: [] },
+        providerPubkey: PROVIDER_PUBKEY,
+        amountSats: 21,
+        paymentHash,
+        payerAccountId: 'fallback-payer',
+        fiat: null,
+        rereadInvoice: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(await store.getZapReceiptGift('r-locked-target')).toMatchObject({
+      payerAccountId: 'fallback-payer',
+    });
   });
 
   it('keeps close behind the locked payer and fiat receipt snapshot', async () => {
@@ -5814,7 +6061,7 @@ describe('indexOpenZapReceipts', () => {
         markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
           base.markRepaymentPaid(row),
         listRepaymentParts: (messageId: string) => base.listRepaymentParts(messageId),
-        withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+        withMessageLock: (messageId, run) => base.withMessageLock(messageId, () => run(store)),
         withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
           base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
         markRepaymentPartPaid: (
@@ -6748,7 +6995,7 @@ describe('indexOpenZapReceipts', () => {
         markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
           base.markRepaymentPaid(row),
         listRepaymentParts: (messageId: string) => base.listRepaymentParts(messageId),
-        withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+        withMessageLock: (messageId, run) => base.withMessageLock(messageId, () => run(store)),
         withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
           base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
         markRepaymentPartPaid: (
@@ -9601,7 +9848,7 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
 
-    expect(store.lookups).toBe(5);
+    expect(store.lookups).toBe(6);
     expect(store.frozenPayers).toEqual([
       { accountId: 'payer-known-payer-close', sats: 21, units: 21n },
     ]);
@@ -10350,7 +10597,7 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toHaveLength(0);
     const forAuthor = await notifications.listByRecipient('acc-heart-notice-fail', 10);
     expect(forAuthor.map((row) => row.type)).toEqual(['heart']);
-    expect(store.lookups).toBe(5);
+    expect(store.lookups).toBe(6);
   });
 
   it('keeps notifyZap and the gift-reply for a normal gift when both notice lookups reject', async () => {
@@ -10433,7 +10680,7 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toHaveLength(1);
     const forAuthor = await notifications.listByRecipient('acc-gift-notice-fail', 10);
     expect(forAuthor.map((row) => row.type)).toEqual(['zap']);
-    expect(store.lookups).toBe(6);
+    expect(store.lookups).toBe(7);
   });
 
   it('settles a heart invoice with notifyHeart and skips the gift-reply', async () => {
@@ -11273,7 +11520,7 @@ describe('indexOpenZapReceipts', () => {
         php: null,
       },
     ]);
-    expect(store.lookups).toBe(6);
+    expect(store.lookups).toBe(7);
     expect(spotUrls).toEqual([]);
   });
 

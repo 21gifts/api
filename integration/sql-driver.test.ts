@@ -30,7 +30,7 @@ import { migrateDbChangeSchema } from '@/lib/db-change';
 import { DEBUG_DB_PAGE_SIZE, PostgresDebugDbStore } from '@/lib/debug-db';
 import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { NOT_PAYABLE, serializeMessage, unsignedNostrDefaults } from '@/lib/message';
-import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
+import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
 import { migrateBannerSchema } from '@/lib/banner-store';
 import { migrateConversationSchema } from '@/lib/conversation-store';
 import { migrateNotificationSchema } from '@/lib/notification-store';
@@ -80,6 +80,7 @@ import {
 import { isListedShop } from '@/lib/shop-place';
 import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
 import { signEventForShop } from '@/lib/nostr/sign';
+import { manualReceiptIdForPaymentHash, settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { ForumPhoto, MessageRow } from '@/lib/message';
 import { messagesRoutes } from '@/routes/messages';
 
@@ -4393,6 +4394,136 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateWalletSchema(client);
   await migrateDailyRosterSchema(client);
 }
+
+describe('Postgres zap settlement during account merge', () => {
+  test('a merge completed after invoice lookup attributes the receipt to the survivor', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const authorId = crypto.randomUUID();
+    const fromId = crypto.randomUUID();
+    const intoId = crypto.randomUUID();
+    const loanId = crypto.randomUUID();
+    const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
+    const receiptId = manualReceiptIdForPaymentHash(paymentHash);
+    let ready = false;
+    let releaseSettlement = (): void => undefined;
+    const settlementGate = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
+    });
+    let reachedLock = (): void => undefined;
+    const beforeLock = new Promise<void>((resolve) => {
+      reachedLock = resolve;
+    });
+    try {
+      await migrateMergeTables(client);
+      ready = true;
+      const auth = new PostgresAuthStore(client);
+      for (const [id, suffix] of [
+        [authorId, 'a'],
+        [fromId, 'b'],
+        [intoId, 'c'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'verified',
+          name: suffix,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        });
+      }
+      class PausedBeforeLockStore extends PostgresMessageStore {
+        override async withMessageLock<T>(
+          messageId: string,
+          run: (store: MessageStore) => Promise<T>,
+        ): Promise<T> {
+          reachedLock();
+          await settlementGate;
+          return super.withMessageLock(messageId, run);
+        }
+      }
+      const store = new PausedBeforeLockStore(client);
+      await store.create({
+        id: loanId,
+        accountId: authorId,
+        name: 'Ada',
+        text: 'merge during zap settlement',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 100,
+        goalRepayable: true,
+        goalTermDays: 1,
+      });
+      await store.recordInvoiceAttempt({
+        id: crypto.randomUUID(),
+        createdAt: new Date(),
+        messageId: loanId,
+        payerAccountId: fromId,
+        authorAccountId: authorId,
+        amountSats: 21,
+        lightningAddress: null,
+        zapRequest: null,
+        result: 'ok',
+        httpStatus: 200,
+        pr: `lnbc-merge-settle-${loanId}`,
+        paymentHash,
+        description: null,
+        descriptionHash: null,
+        isNip57Invoice: true,
+        lnurlResponse: null,
+        fiatPinned: true,
+        amountUsd: '0.21',
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+        heart: true,
+      });
+
+      const settling = settleInvoiceManually({
+        store,
+        auth,
+        now: () => Date.parse('2026-11-13T12:00:00.000Z'),
+        paymentHash,
+        note: 'provider receipt missing',
+      });
+      await beforeLock;
+      expect(await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' })).toEqual(
+        expect.objectContaining({ ok: true }),
+      );
+      releaseSettlement();
+      await expect(settling).resolves.toMatchObject({ ok: true, receiptId });
+
+      expect(
+        await client.query<{ payer_account_id: string }>(
+          `SELECT payer_account_id
+           FROM nostr_zap_receipt
+           WHERE event_id = $1::text`,
+          [receiptId],
+        ),
+      ).toEqual([{ payer_account_id: intoId }]);
+    } finally {
+      releaseSettlement();
+      if (ready) {
+        await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1::text', [
+          paymentHash,
+        ]);
+        await client.execute('DELETE FROM nostr_zap_ingest WHERE receipt_id = $1::text', [
+          receiptId,
+        ]);
+        await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1::uuid', [loanId]);
+        await client.execute('DELETE FROM message WHERE id = $1::uuid', [loanId]);
+        await client.execute(
+          'DELETE FROM account WHERE id = $1::uuid OR id = $2::uuid OR id = $3::uuid',
+          [authorId, fromId, intoId],
+        );
+      }
+      await closeIfPossible(sql);
+    }
+  });
+});
 
 describe('Postgres repayment retry after account merge', () => {
   test('a claim-only retry settles once before its repayment survives a later merge', async () => {
