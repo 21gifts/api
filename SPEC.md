@@ -6608,9 +6608,9 @@ Success is always **200** (never 404 for an unknown address):
 { "eligible": true, "status": "admitted" }
 ```
 
-`status` is `effectiveStatus`: `none`, `pending`, `trial`, `admitted`, or
-`rejected`. A withdrawn grant is reported as `none` with `eligible: false`
-(`ownerFundingStatus`), so this answer keeps its five values. Unknown address and `basis` are always
+`status` is `ownerFundingStatus`: `none`, `pending`, `trial`, `admitted`, or
+`rejected`. It is `effectiveStatus`, except that a withdrawn grant is
+reported as `none` with `eligible: false`, so this answer keeps its five values. Unknown address and `basis` are always
 `{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
 2026-10-01 a missing/pending/rejected/withdrawn grant on a non-`basis` account is
 `eligible: true` with `status` still from `ownerFundingStatus`; from that day
