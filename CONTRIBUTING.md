@@ -362,7 +362,9 @@ The wallet rule in detail:
     in both directions through the public, read-only `GET /fond/payments`.
     Each payment shows only: a public id that does not reveal the stored payment
     id, the direction, the amount in sats, the payment time, the stored USD
-    figure of a paid grant payout exactly as stored (`null` when none is stored,
+    figure of the paid Fond payout this payment settled
+    (`fond_payout.amount_usd`, matched by the payout's payment hash or invoice),
+    exactly as stored (`null` when the payment settled no paid Fond payout,
     never computed), and the other side. The other side is named with its
     account id, username, and name, linked to the member's profile, only when
     the payment is a direct transfer between a member's 21.gifts wallet and the
