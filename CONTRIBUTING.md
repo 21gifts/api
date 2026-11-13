@@ -515,7 +515,7 @@ Currently:
 
 With `DATABASE_URL` set, boot also migrates `fond_payout` (`PostgresFondPayoutStore`); unset keeps `InMemoryFondPayoutStore`.
 
-`DEBUG_TOKEN` and `DEBUG_READ_TOKEN` also read, without a session, `GET /debug/accounts/:id/wallet`, and, through `isOperatorBearer`, `GET /funding/goal`, `GET /funding/payout-days`, `GET /funding/applications`, `GET /funding/applications/:accountId`, `GET /funding/daily-roster`, `GET /trust/proposals`, `GET /members/:accountId/activity`, `GET /messages/hidden`, and `GET /messages/:id/edits`. `GET /funding/daily-roster/links` is read with those tokens only. Member and staff sessions on those routes are unchanged.
+`DEBUG_TOKEN` and `DEBUG_READ_TOKEN` also read, without a session, `GET /debug/accounts/:id/wallet`, and, through `isOperatorBearer`, `GET /funding/goal`, `GET /funding/payout-days`, `GET /funding/applications`, `GET /funding/applications/:accountId`, `GET /funding/daily-roster`, `GET /trust/proposals`, `GET /members/:accountId/activity`, `GET /messages/hidden`, and `GET /messages/:id/edits`. `GET /funding/daily-roster/links` and `GET /funding/withdrawals` are read with those tokens only. Member and staff sessions on those routes are unchanged.
 
 More will be added as concrete subsystems that need runtime configuration
 (relay client, …) land. The LUD-16 metadata cache TTL is a code constant
