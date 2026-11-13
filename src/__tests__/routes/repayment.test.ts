@@ -1442,7 +1442,7 @@ describe('repayment from the in-app wallet', () => {
     const single = await post(today.app, `/messages/${CREDIT}/repayment`);
     expect(single.status).toBe(400);
     expect(await single.json()).toEqual({ error: 'Nothing is due' });
-    // A repaid fiat loan is left out, and a collecting one with no giver totals 0.
+    // A repaid fiat loan is left out without pricing even through the amount form.
     const repaid = await loanSetup({ goalCurrency: 'USD', rates });
     for (const dayIndex of [0, 1]) {
       for (const recipientAccountId of [WALLET_GIVER, NO_WALLET]) {
@@ -1455,6 +1455,15 @@ describe('repayment from the in-app wallet', () => {
         });
       }
     }
+    const amount = await repaid.app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '0.01' }),
+    });
+    expect(amount.status).toBe(400);
+    expect(await amount.json()).toEqual({ error: 'Nothing is due' });
+
+    // A collecting giver with a zero-cent snapshot has no slice to price.
     await repaid.messages.create({
       id: SECOND_CREDIT,
       accountId: AUTHOR,
@@ -1470,11 +1479,15 @@ describe('repayment from the in-app wallet', () => {
       goalCurrency: 'USD',
       goalAmount: '10.00',
     });
+    await repaid.messages.recordZapReceipt('r-zero-fiat', SECOND_CREDIT, 21, null);
+    await repaid.messages.updateZapReceiptGift('r-zero-fiat', {
+      payerAccountId: WALLET_GIVER,
+    });
     const listed = await loans(repaid.app);
     expect(listed.status).toBe(200);
     const body = (await listed.json()) as { loans: Record<string, unknown>[] };
-    expect(body.loans.map((loan) => [loan['messageId'], loan['totalSats']])).toEqual([
-      [SECOND_CREDIT, 0],
+    expect(body.loans).toEqual([
+      expect.objectContaining({ messageId: SECOND_CREDIT, totalSats: 0, maxSats: null }),
     ]);
   });
 

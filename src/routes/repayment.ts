@@ -1233,16 +1233,13 @@ async function prepayPlan(
     return 'unavailable';
   }
   const fiat = isFiatCredit(row);
-  const price = await sharePricer(deps, row).catch(() => null);
-  if (price === null) {
-    return 'unavailable';
-  }
-  const maxUnits = plan.shares
-    .filter((share) => share.canReceive && share.paidUnits < share.units)
+  const remainingShares = plan.shares.filter((share) => share.paidUnits < share.units);
+  const maxUnits = remainingShares
+    .filter((share) => share.canReceive)
     .reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
   const allocation = allocateRepayment(
     amountUnits,
-    plan.shares.map((share) => ({
+    remainingShares.map((share) => ({
       dayIndex: share.dayIndex,
       accountId: share.accountId,
       units: share.units,
@@ -1255,7 +1252,7 @@ async function prepayPlan(
   );
   const maximum = allocateRepayment(
     maxUnits,
-    plan.shares.map((share) => ({
+    remainingShares.map((share) => ({
       dayIndex: share.dayIndex,
       accountId: share.accountId,
       units: share.units,
@@ -1265,6 +1262,10 @@ async function prepayPlan(
       canReceive: share.canReceive,
     })),
   );
+  const price = maxUnits === 0n ? () => 0 : await sharePricer(deps, row).catch(() => null);
+  if (price === null) {
+    return 'unavailable';
+  }
   const maxSats = pricedSum(price, maximum.parts);
   return {
     allocation,
@@ -1860,6 +1861,7 @@ async function loanRow(
         (payer) => payer.accountId !== '',
       );
     }
+    named = named.filter((payer) => payer.units > 0n);
     const receivers = await receiverMap(
       deps,
       named.map((payer) => payer.accountId),
@@ -1891,7 +1893,7 @@ async function loanRow(
       daysPaid: 0,
       repaidSats: 0,
       totalSats: price === undefined ? 0 : pricedSum(price, totalShares),
-      maxSats: price === undefined ? 0 : pricedSum(price, maximum.parts),
+      maxSats: price === undefined ? (fiat ? null : 0) : pricedSum(price, maximum.parts),
       maxAmount: cents(maximum.usedUnits),
       due: {
         payableSats: 0,

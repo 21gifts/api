@@ -10054,22 +10054,11 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listReplies(parentId)).toHaveLength(1);
   });
 
-  it('freezes a known invoice payer before a failed payer lookup can be repaired', async () => {
+  it('freezes a PR-only invoice payer and pinned cents before gift-reply repair', async () => {
     class CloseBeforeGiftRepairStore extends InMemoryMessageStore {
-      lookups = 0;
       receiptReads = 0;
       frozenPayers:
         Awaited<ReturnType<InMemoryMessageStore['previewCreditPayerSnapshot']>> | undefined;
-
-      override findOkInvoiceByPaymentHash(
-        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
-      ): ReturnType<InMemoryMessageStore['findOkInvoiceByPaymentHash']> {
-        this.lookups += 1;
-        if (this.lookups === 4) {
-          return Promise.reject(new Error('payer lookup boom'));
-        }
-        return super.findOkInvoiceByPaymentHash(...args);
-      }
 
       override async getZapReceiptGift(
         ...args: Parameters<InMemoryMessageStore['getZapReceiptGift']>
@@ -10145,7 +10134,7 @@ describe('indexOpenZapReceipts', () => {
       result: 'ok',
       httpStatus: 200,
       pr: 'lnbc-known-payer-close',
-      paymentHash: 'cd'.repeat(32),
+      paymentHash: null,
       description: null,
       descriptionHash: null,
       isNip57Invoice: true,
@@ -10180,7 +10169,6 @@ describe('indexOpenZapReceipts', () => {
       fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
     });
 
-    expect(store.lookups).toBe(6);
     expect(store.frozenPayers).toEqual([
       { accountId: 'payer-known-payer-close', sats: 21, units: 21n },
     ]);
@@ -10193,6 +10181,87 @@ describe('indexOpenZapReceipts', () => {
         eur: null,
         php: null,
       },
+    ]);
+  });
+
+  it('aborts when the PR invoice found before locking no longer validates', async () => {
+    class RepricedPrStore extends InMemoryMessageStore {
+      prReads = 0;
+
+      override async findOkInvoiceByPr(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPr']>
+      ): Promise<MessageInvoiceAttempt | undefined> {
+        const found = await super.findOkInvoiceByPr(...args);
+        this.prReads += 1;
+        return found === undefined || this.prReads === 1
+          ? found
+          : { ...found, amountSats: found.amountSats + 1 };
+      }
+    }
+    const store = new RepricedPrStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-pr-repriced',
+      lightningAddress: 'zap-pr-repriced@example.com',
+      messageId: 'm-pr-repriced',
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-pr-repriced',
+      createdAt: new Date('2026-11-12T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'payer-pr-repriced',
+      authorAccountId: 'acc-pr-repriced',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-pr-repriced',
+      paymentHash: null,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      fiatPinned: true,
+      amountUsd: '0.21',
+    });
+    const paymentHash = 'cf'.repeat(32);
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-pr-repriced',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-pr-repriced'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-11-12T12:00:00.000Z'),
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(store.prReads).toBe(2);
+    expect(await store.getZapReceiptGift('r-pr-repriced')).toBeUndefined();
+    expect(await store.zapPaymentReceiptId(paymentHash)).toBeUndefined();
+    expect((await store.getById(parentId))?.sats).toBe(0);
+    expect(await store.listZapIngests(1)).toEqual([
+      expect.objectContaining({
+        receiptId: 'r-pr-repriced',
+        outcome: 'rejected',
+        reason: 'invoice',
+      }),
     ]);
   });
 

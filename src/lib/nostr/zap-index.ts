@@ -1004,7 +1004,11 @@ interface ZapReceiptIndexResult {
 
 /** Index a receipt and retain payer identity and heart state from the locked settlement. */
 async function indexZapReceiptSettlement(
-  args: Parameters<typeof indexZapReceipt>[0] & { heart?: boolean },
+  args: Parameters<typeof indexZapReceipt>[0] & {
+    heart?: boolean;
+    /** Require the locked re-read to confirm an invoice matched before the lock. */
+    matchedInvoiceBeforeLock?: boolean;
+  },
 ): Promise<ZapReceiptIndexResult> {
   const receipt =
     args.receiptEvent ??
@@ -1108,7 +1112,7 @@ async function indexZapReceiptSettlement(
     };
   };
   let settlement: {
-    kind: 'added' | 'duplicate' | 'settled';
+    kind: 'added' | 'duplicate' | 'invoice' | 'settled';
     heart: boolean;
     payerAccountId: string | undefined;
   };
@@ -1134,13 +1138,33 @@ async function indexZapReceiptSettlement(
         let lockedInvoice: MessageInvoiceAttempt | undefined;
         if (args.rereadInvoice === true) {
           try {
-            const found = await lockedStore.findOkInvoiceByPaymentHash(paymentHash);
-            if (found?.messageId === args.messageId) {
-              lockedInvoice = found;
+            const matchesReceipt = (
+              invoice: MessageInvoiceAttempt | undefined,
+            ): invoice is MessageInvoiceAttempt =>
+              invoice?.messageId === args.messageId && invoice.amountSats === args.amountSats;
+            const byHash = await lockedStore.findOkInvoiceByPaymentHash(paymentHash);
+            if (matchesReceipt(byHash)) {
+              lockedInvoice = byHash;
+            } else {
+              const bolt11 = args.receipt.tags.find(
+                (tag) => tag[0] === 'bolt11' && typeof tag[1] === 'string',
+              )?.[1];
+              const byPr =
+                bolt11 === undefined ? undefined : await lockedStore.findOkInvoiceByPr(bolt11);
+              if (matchesReceipt(byPr)) {
+                lockedInvoice = byPr;
+              }
             }
           } catch {
             lockedInvoice = undefined;
           }
+        }
+        if (args.matchedInvoiceBeforeLock === true && lockedInvoice === undefined) {
+          return {
+            kind: 'invoice',
+            heart: false,
+            payerAccountId: undefined,
+          } as const;
         }
         const delta = pinnedInvoiceFiat(lockedInvoice) ?? baseDelta;
         const settled = receiptSettlement(lockedStore, delta, lockedInvoice);
@@ -2028,6 +2052,7 @@ async function ingestOneReceipt(
     ...(payerComment === undefined ? {} : { payerComment }),
     heart: heartInvoice !== undefined,
     rereadInvoice: true,
+    matchedInvoiceBeforeLock: effectiveInvoice !== undefined,
   });
   if (
     !settlement.indexed &&
