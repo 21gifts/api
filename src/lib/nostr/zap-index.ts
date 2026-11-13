@@ -956,8 +956,9 @@ export async function settleInvoiceManually(args: {
  * @param providerPubkey - LNURL `nostrPubkey` hex.
  * @param amountSats - Whole sats from the paid invoice.
  * When `paymentHash` is supplied, its claim, payer attribution, indexed fiat,
- * and message credit are written under one per-message lock, with that
- * advisory lock acquired first.
+ * and message credit are written under one per-message lock. An invoice-less
+ * member settlement first holds its payer account lock and re-resolves the
+ * signed pubkey before taking that message lock.
  *
  * @returns Whether sats were added.
  */
@@ -1008,6 +1009,12 @@ async function indexZapReceiptSettlement(
     heart?: boolean;
     /** Require the locked re-read to confirm an invoice matched before the lock. */
     matchedInvoiceBeforeLock?: boolean;
+    /** Invoice-less member identity to re-resolve under its account lock. */
+    invoiceLessPayer?: {
+      accountId: string;
+      pubkey: string;
+      resolveAccountByPubkey: (pubkey: string) => Promise<Account | undefined>;
+    };
   },
 ): Promise<ZapReceiptIndexResult> {
   const receipt =
@@ -1074,6 +1081,7 @@ async function indexZapReceiptSettlement(
     store: MessageStore,
     delta: FiatAmounts | null,
     lockedInvoice?: MessageInvoiceAttempt,
+    lockedPayerAccountId: string | undefined = args.payerAccountId,
   ): {
     heart: boolean;
     payerAccountId: string | undefined;
@@ -1092,7 +1100,7 @@ async function indexZapReceiptSettlement(
       }),
       delta,
     );
-    const payerAccountId = lockedInvoice?.payerAccountId ?? args.payerAccountId;
+    const payerAccountId = lockedInvoice?.payerAccountId ?? lockedPayerAccountId;
     const payerComment =
       lockedInvoice === undefined
         ? args.payerComment
@@ -1116,11 +1124,14 @@ async function indexZapReceiptSettlement(
     heart: boolean;
     payerAccountId: string | undefined;
   };
-  try {
+  const settleReceipt = async (
+    store: MessageStore,
+    lockedPayerAccountId: string | undefined,
+  ): Promise<typeof settlement> => {
     if (paymentHash === undefined) {
-      const settled = receiptSettlement(args.store, baseDelta);
-      settlement = {
-        kind: (await args.store.recordZapReceipt(
+      const settled = receiptSettlement(store, baseDelta, undefined, lockedPayerAccountId);
+      return {
+        kind: (await store.recordZapReceipt(
           args.receipt.id,
           args.messageId,
           args.amountSats,
@@ -1133,63 +1144,78 @@ async function indexZapReceiptSettlement(
         heart: settled.heart,
         payerAccountId: settled.payerAccountId,
       };
-    } else {
-      settlement = await args.store.withMessageLock(args.messageId, async (lockedStore) => {
-        let lockedInvoice: MessageInvoiceAttempt | undefined;
-        if (args.rereadInvoice === true) {
-          try {
-            const matchesReceipt = (
-              invoice: MessageInvoiceAttempt | undefined,
-            ): invoice is MessageInvoiceAttempt =>
-              invoice?.messageId === args.messageId && invoice.amountSats === args.amountSats;
-            const byHash = await lockedStore.findOkInvoiceByPaymentHash(paymentHash);
-            if (matchesReceipt(byHash)) {
-              lockedInvoice = byHash;
-            } else {
-              const bolt11 = args.receipt.tags.find(
-                (tag) => tag[0] === 'bolt11' && typeof tag[1] === 'string',
-              )?.[1];
-              const byPr =
-                bolt11 === undefined ? undefined : await lockedStore.findOkInvoiceByPr(bolt11);
-              if (matchesReceipt(byPr)) {
-                lockedInvoice = byPr;
-              }
+    }
+    return store.withMessageLock(args.messageId, async (lockedStore) => {
+      let lockedInvoice: MessageInvoiceAttempt | undefined;
+      if (args.rereadInvoice === true) {
+        try {
+          const matchesReceipt = (
+            invoice: MessageInvoiceAttempt | undefined,
+          ): invoice is MessageInvoiceAttempt =>
+            invoice?.messageId === args.messageId && invoice.amountSats === args.amountSats;
+          const byHash = await lockedStore.findOkInvoiceByPaymentHash(paymentHash);
+          if (matchesReceipt(byHash)) {
+            lockedInvoice = byHash;
+          } else {
+            const bolt11 = args.receipt.tags.find(
+              (tag) => tag[0] === 'bolt11' && typeof tag[1] === 'string',
+            )?.[1];
+            const byPr =
+              bolt11 === undefined ? undefined : await lockedStore.findOkInvoiceByPr(bolt11);
+            if (matchesReceipt(byPr)) {
+              lockedInvoice = byPr;
             }
-          } catch {
-            lockedInvoice = undefined;
           }
+        } catch {
+          lockedInvoice = undefined;
         }
-        if (args.matchedInvoiceBeforeLock === true && lockedInvoice === undefined) {
-          return {
-            kind: 'invoice',
-            heart: false,
-            payerAccountId: undefined,
-          } as const;
-        }
-        const delta = pinnedInvoiceFiat(lockedInvoice) ?? baseDelta;
-        const settled = receiptSettlement(lockedStore, delta, lockedInvoice);
-        if (!(await lockedStore.claimZapPayment(paymentHash, args.receipt.id, new Date(now())))) {
-          return {
-            kind: 'settled',
-            heart: settled.heart,
-            payerAccountId: settled.payerAccountId,
-          } as const;
-        }
+      }
+      if (args.matchedInvoiceBeforeLock === true && lockedInvoice === undefined) {
         return {
-          kind: (await lockedStore.recordZapReceipt(
-            args.receipt.id,
-            args.messageId,
-            args.amountSats,
-            delta,
-            true,
-            settled.receipt,
-          ))
-            ? 'added'
-            : 'duplicate',
+          kind: 'invoice',
+          heart: false,
+          payerAccountId: undefined,
+        } as const;
+      }
+      const delta = pinnedInvoiceFiat(lockedInvoice) ?? baseDelta;
+      const settled = receiptSettlement(lockedStore, delta, lockedInvoice, lockedPayerAccountId);
+      if (!(await lockedStore.claimZapPayment(paymentHash, args.receipt.id, new Date(now())))) {
+        return {
+          kind: 'settled',
           heart: settled.heart,
           payerAccountId: settled.payerAccountId,
         } as const;
-      });
+      }
+      return {
+        kind: (await lockedStore.recordZapReceipt(
+          args.receipt.id,
+          args.messageId,
+          args.amountSats,
+          delta,
+          true,
+          settled.receipt,
+        ))
+          ? 'added'
+          : 'duplicate',
+        heart: settled.heart,
+        payerAccountId: settled.payerAccountId,
+      } as const;
+    });
+  };
+  try {
+    if (args.invoiceLessPayer === undefined) {
+      settlement = await settleReceipt(args.store, args.payerAccountId);
+    } else {
+      const invoiceLessPayer = args.invoiceLessPayer;
+      settlement = await args.store.withAccountLocks(
+        [invoiceLessPayer.accountId],
+        async (accountLockedStore) => {
+          const lockedPayer = await invoiceLessPayer.resolveAccountByPubkey(
+            invoiceLessPayer.pubkey,
+          );
+          return settleReceipt(accountLockedStore, lockedPayer?.id);
+        },
+      );
     }
   } catch (error: unknown) {
     if (!(error instanceof ZapIngestRecordError)) {
@@ -2031,6 +2057,16 @@ async function ingestOneReceipt(
     effectiveInvoice === undefined && resolvedPayer?.kind === 'account'
       ? resolvedPayer.payer.id
       : undefined;
+  const invoiceLessPayer =
+    resolvedPayer?.kind === 'account' &&
+    resolvedPayer.origin === 'request' &&
+    effectiveInvoice === undefined
+      ? {
+          accountId: resolvedPayer.payer.id,
+          pubkey: resolvedPayer.pubkey,
+          resolveAccountByPubkey: (pubkey: string) => args.auth.getAccountByPubkey(pubkey),
+        }
+      : undefined;
   const payerComment =
     resolvedPayer?.kind === 'account' && heartInvoice === undefined
       ? resolvedPayer.text
@@ -2049,6 +2085,7 @@ async function ingestOneReceipt(
     ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
     fiat: forumDelta,
     ...(payerAccountId === undefined ? {} : { payerAccountId }),
+    ...(invoiceLessPayer === undefined ? {} : { invoiceLessPayer }),
     ...(payerComment === undefined ? {} : { payerComment }),
     heart: heartInvoice !== undefined,
     rereadInvoice: true,
@@ -2491,7 +2528,8 @@ async function resolveZapPayer(args: {
   noteEventId: string;
 }): Promise<{
   payer:
-    | { kind: 'account'; payer: Account; text: string }
+    | { kind: 'account'; origin: 'invoice'; payer: Account; text: string }
+    | { kind: 'account'; origin: 'request'; payer: Account; pubkey: string; text: string }
     | { kind: 'external'; pubkey: string; requestId: string; text: string }
     | undefined;
   invoice: MessageInvoiceAttempt | undefined;
@@ -2504,14 +2542,20 @@ async function resolveZapPayer(args: {
     if (payer === undefined) {
       return { payer: undefined, invoice };
     }
-    return { payer: { kind: 'account', payer, text }, invoice };
+    return { payer: { kind: 'account', origin: 'invoice', payer, text }, invoice };
   }
   const parsed = parseVerifiedZapRequest(args.tags);
   if (parsed !== null) {
     const payer = await args.auth.getAccountByPubkey(parsed.pubkey);
     if (payer !== undefined) {
       return {
-        payer: { kind: 'account', payer, text: parsed.content },
+        payer: {
+          kind: 'account',
+          origin: 'request',
+          payer,
+          pubkey: parsed.pubkey,
+          text: parsed.content,
+        },
         invoice: undefined,
       };
     }

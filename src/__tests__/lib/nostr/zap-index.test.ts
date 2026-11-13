@@ -9552,6 +9552,192 @@ describe('indexOpenZapReceipts', () => {
     expect(replies[0]?.text).toBe('from damus');
   });
 
+  it('attributes an invoice-less member receipt to a survivor merged before insert', async () => {
+    const sourceId = 'payer-zap-merge-source';
+    const survivorId = 'payer-zap-merge-survivor';
+    const fixture = externalZapFixture({
+      receiptId: 'r-member-merge-before-insert',
+      bolt11: 'lnbc-member-merge-before-insert',
+      content: 'merged member gift',
+    });
+    class MergeDuringSettlementAuthStore extends InMemoryAuthStore {
+      readonly payerLookups: string[] = [];
+      merged = false;
+
+      override async getAccountByPubkey(pubkey: string): Promise<Account | undefined> {
+        const payer = await super.getAccountByPubkey(pubkey);
+        if (pubkey === fixture.pubkey) {
+          this.payerLookups.push(payer?.id ?? 'missing');
+        }
+        return payer;
+      }
+
+      async completeMerge(): Promise<void> {
+        if (this.merged) {
+          return;
+        }
+        this.merged = true;
+        await this.deleteAccount(sourceId);
+        await this.setNostrKeyIfAbsent(survivorId, {
+          pubkey: fixture.pubkey,
+          ciphertext: new Uint8Array(8),
+          kekId: 1,
+          custody: 'custodial',
+        });
+      }
+    }
+    const auth = new MergeDuringSettlementAuthStore();
+    class MergeBeforePayerLockStore extends InMemoryMessageStore {
+      readonly settlementOrder: string[] = [];
+
+      override async withAccountLocks<T>(
+        accountIds: readonly string[],
+        run: (store: MessageStore) => Promise<T>,
+      ): Promise<T> {
+        this.settlementOrder.push(`account:${accountIds.join(',')}`);
+        await auth.completeMerge();
+        return super.withAccountLocks(accountIds, run);
+      }
+
+      override withMessageLock<T>(
+        messageId: string,
+        run: (store: MessageStore) => Promise<T>,
+      ): Promise<T> {
+        if (messageId === 'm-member-merge-before-insert') {
+          this.settlementOrder.push('message');
+        }
+        return super.withMessageLock(messageId, run);
+      }
+
+      override recordZapReceipt(
+        ...args: Parameters<InMemoryMessageStore['recordZapReceipt']>
+      ): ReturnType<InMemoryMessageStore['recordZapReceipt']> {
+        if (args[0] === fixture.receipt.id) {
+          this.settlementOrder.push('receipt');
+        }
+        return super.recordZapReceipt(...args);
+      }
+    }
+    const store = new MergeBeforePayerLockStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'acc-member-merge-parent',
+      lightningAddress: 'member-merge-parent@example.com',
+      messageId: 'm-member-merge-before-insert',
+      repayable: true,
+    });
+    for (const [id, name, createdAt] of [
+      [sourceId, 'Source', 2],
+      [survivorId, 'Survivor', 3],
+    ] as const) {
+      await auth.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKeyFor(id),
+        createdAt,
+        rulesAgreedAt: null,
+      });
+    }
+    await auth.setNostrKeyIfAbsent(sourceId, {
+      pubkey: fixture.pubkey,
+      ciphertext: new Uint8Array(8),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    mockedDecode.mockReturnValue({ paymentHash: '67'.repeat(32), amountMsat: 21_000 });
+    const querier = new RecordingQuerier();
+    querier.events = [fixture.receipt];
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(auth.payerLookups).toEqual([sourceId, survivorId]);
+    expect(store.settlementOrder).toEqual([`account:${sourceId}`, 'message', 'receipt']);
+    expect(await store.getZapReceiptGift(fixture.receipt.id)).toMatchObject({
+      payerAccountId: survivorId,
+    });
+    expect(await store.listCreditPayers(parentId)).toEqual([
+      expect.objectContaining({ accountId: survivorId, sats: 21 }),
+    ]);
+    expect((await store.listReplies(parentId))[0]?.accountId).toBe(survivorId);
+  });
+
+  it('does not retain an invoice-less payer mapping that vanished under its account lock', async () => {
+    const payerId = 'payer-zap-vanished-under-lock';
+    const fixture = externalZapFixture({
+      receiptId: 'r-member-vanished-under-lock',
+      bolt11: 'lnbc-member-vanished-under-lock',
+    });
+    const auth = new InMemoryAuthStore();
+    class DeleteBeforePayerLockStore extends InMemoryMessageStore {
+      override async withAccountLocks<T>(
+        accountIds: readonly string[],
+        run: (store: MessageStore) => Promise<T>,
+      ): Promise<T> {
+        expect(accountIds).toEqual([payerId]);
+        await auth.deleteAccount(payerId);
+        return super.withAccountLocks(accountIds, run);
+      }
+    }
+    const store = new DeleteBeforePayerLockStore();
+    await seedStore({
+      store,
+      auth,
+      accountId: 'acc-member-vanished-parent',
+      lightningAddress: 'member-vanished-parent@example.com',
+      messageId: 'm-member-vanished-under-lock',
+      repayable: true,
+    });
+    await auth.createAccount({
+      id: payerId,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Vanishing payer',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor(payerId),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await auth.setNostrKeyIfAbsent(payerId, {
+      pubkey: fixture.pubkey,
+      ciphertext: new Uint8Array(8),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    mockedDecode.mockReturnValue({ paymentHash: '68'.repeat(32), amountMsat: 21_000 });
+    mockedInspect.mockReturnValue(null);
+    const querier = new RecordingQuerier();
+    querier.events = [fixture.receipt];
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1_700_000_200_000,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+    });
+
+    expect(await store.getZapReceiptGift(fixture.receipt.id)).toMatchObject({
+      payerAccountId: null,
+      payerPubkey: null,
+    });
+  });
+
   it('keeps parent sats when gift-reply create throws', async () => {
     class BoomStore extends InMemoryMessageStore {
       override create(
