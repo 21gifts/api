@@ -34,9 +34,9 @@ export interface FundingGrant {
   status: FundingStatus;
   /** Application time (epoch ms). Kept across trial expiry. */
   appliedAt: number;
-  /** Last staff decision time (epoch ms), or `null`. */
+  /** Time of the last staff decision or of the member's own withdrawal (epoch ms), or `null`. */
   decidedAt: number | null;
-  /** Staff account id that last decided, or `null`. */
+  /** Account id that last decided (staff, or the member on a withdrawal), or `null`. */
   decidedBy: string | null;
   /** UTC calendar day `YYYY-MM-DD` when status is `trial`, else `null`. */
   trialUtcDate: string | null;

@@ -3546,8 +3546,9 @@ status before the write. Store throw → **503**
 `{ "error": "Funding is unavailable" }` (`funding.write.failed`).
 
 From the moment of the write the member is out of the grant program:
-`inGrantProgramToday` and `eligibleToday` are false, so no daily ping, no
-spend invoice, and `GET /invoices/eligible` answers `eligible: false`. An
+`inGrantProgramToday` is false, so from the grant gate day (UTC 2026-10-01,
+already passed) `eligibleToday` is false too: no daily ping, no spend
+invoice, and `GET /invoices/eligible` answers `eligible: false`. An
 admitted place is free at once (`GET /funding/places`). A row on the daily
 payout roster is not changed; being listed lifts no payout condition, so a
 listed withdrawn member is not paid. The member may apply again
@@ -6610,7 +6611,7 @@ Success is always **200** (never 404 for an unknown address):
 
 `status` is `ownerFundingStatus`: `none`, `pending`, `trial`, `admitted`, or
 `rejected`. It is `effectiveStatus`, except that a withdrawn grant is
-reported as `none` with `eligible: false`, so this answer keeps its five values. Unknown address and `basis` are always
+reported as `none` (and, from the grant gate day, `eligible: false`), so this answer keeps its five values. Unknown address and `basis` are always
 `{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
 2026-10-01 a missing/pending/rejected/withdrawn grant on a non-`basis` account is
 `eligible: true` with `status` still from `ownerFundingStatus`; from that day
