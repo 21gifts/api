@@ -66,8 +66,8 @@ export interface FundingWithdrawal {
 
 /** Owner-facing funding JSON on `GET /me` / passkey finish (`role !== 'basis'`). */
 export interface OwnerFundingJson {
-  /** Effective status; never omit. `'none'` when there is no row or the grant is withdrawn. */
-  status: OwnerFundingStatus;
+  /** Owner status; `'none'` for no row or withdrawn, `'unknown'` only when the read failed. */
+  status: OwnerFundingStatus | 'unknown';
   /** Trial UTC day when effective status is `trial`, else `null`. */
   trialUtcDate: string | null;
   /** Admission time when effective status is `admitted`, else `null`. */
@@ -295,7 +295,8 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
  * {@link inGrantProgramToday} and, once
  * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
  * rejected, withdrawn, and missing grants are then false, and so is a grant
- * without a required share.
+ * without a required share or without a completed shop payment today or
+ * yesterday.
  *
  * @param role - Live account role.
  * @param grant - Stored grant, or `undefined` when no row.
@@ -304,6 +305,8 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
  *   the account's current verified wallet
  *   (`AuthStore.hasRecoveryShareForVerifiedWallet`).
  * @param recoveryShareRequiredFrom - Result of {@link resolveRecoveryShareRequiredFrom}.
+ * @param shopPaymentRecent - Whether a server-verified shop payment exists on
+ *   the current UTC day or the day before.
  * @returns `true` when money paths may proceed today.
  */
 export function eligibleToday(
@@ -312,6 +315,7 @@ export function eligibleToday(
   nowMs: number,
   recoveryShareStored: boolean,
   recoveryShareRequiredFrom: string | null,
+  shopPaymentRecent: boolean = true,
 ): boolean {
   if (role === 'basis') {
     return false;
@@ -321,7 +325,8 @@ export function eligibleToday(
   }
   return (
     inGrantProgramToday(grant, nowMs) &&
-    (recoveryShareStored || !recoveryShareRequired(nowMs, recoveryShareRequiredFrom))
+    (recoveryShareStored || !recoveryShareRequired(nowMs, recoveryShareRequiredFrom)) &&
+    shopPaymentRecent
   );
 }
 

@@ -4,9 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 65
-- Columns: 620
-- Foreign keys: 61
+- Tables: 70
+- Columns: 664
+- Foreign keys: 66
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
@@ -71,7 +71,12 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`shop_proof_lookup`](tables/shop_proof_lookup.md)                               | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 10      | 1            |
 | [`shop_quote`](tables/shop_quote.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 5       | 1            |
 | [`spark_invoice`](tables/spark_invoice.md)                                       | [src/lib/spark-invoice-store.ts](../../src/lib/spark-invoice-store.ts) | 10      | 0            |
+| [`spark_viewer_key`](tables/spark_viewer_key.md)                                 | [src/lib/spark-viewer.ts](../../src/lib/spark-viewer.ts)               | 5       | 0            |
 | [`trust_edge`](tables/trust_edge.md)                                             | [src/lib/trust-store.ts](../../src/lib/trust-store.ts)                 | 5       | 2            |
 | [`usd_fiat_daily`](tables/usd_fiat_daily.md)                                     | [src/lib/usd-fiat-store.ts](../../src/lib/usd-fiat-store.ts)           | 6       | 0            |
-| [`wallet_balance_snapshot`](tables/wallet_balance_snapshot.md)                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 5       | 1            |
+| [`wallet_balance_snapshot`](tables/wallet_balance_snapshot.md)                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 6       | 1            |
 | [`wallet_payment`](tables/wallet_payment.md)                                     | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 18      | 2            |
+| [`wallet_token_transaction`](tables/wallet_token_transaction.md)                 | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 16      | 1            |
+| [`wallet_transfer`](tables/wallet_transfer.md)                                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 15      | 2            |
+| [`wallet_transfer_sync`](tables/wallet_transfer_sync.md)                         | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 3       | 1            |
+| [`welcome_invoice_reservation`](tables/welcome_invoice_reservation.md)           | [src/lib/welcome-reservation.ts](../../src/lib/welcome-reservation.ts) | 4       | 1            |

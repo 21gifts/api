@@ -27,9 +27,11 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@buildonspark/spark-sdk": "0.15.0",
     "@noble/curves": "2.0.1",
     "@rapideditor/country-coder": "5.6.1",
     "@scure/base": "2.0.0",
+    "@scure/bip39": "2.0.1",
     "@simplewebauthn/server": "^13.2.1",
     "blurhash": "2.0.5",
     "hono": "^4.6.14",

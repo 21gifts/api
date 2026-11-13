@@ -6,13 +6,14 @@ Source: [src/lib/wallet-store.ts](../../../src/lib/wallet-store.ts)
 
 ## Columns
 
-| Column         | Kind               | Database type              | Nullable | Default | References                   |
-| -------------- | ------------------ | -------------------------- | -------- | ------- | ---------------------------- |
-| `id`           | UUID (primary key) | `uuid`                     | No       | –       | –                            |
-| `account_id`   | UUID (foreign key) | `uuid`                     | No       | –       | [`account`.`id`](account.md) |
-| `balance_sats` | Integer            | `bigint`                   | No       | –       | –                            |
-| `synced_at`    | Date/time          | `timestamp with time zone` | No       | –       | –                            |
-| `received_at`  | Date/time          | `timestamp with time zone` | No       | –       | –                            |
+| Column          | Kind               | Database type              | Nullable | Default | References                   |
+| --------------- | ------------------ | -------------------------- | -------- | ------- | ---------------------------- |
+| `id`            | UUID (primary key) | `uuid`                     | No       | –       | –                            |
+| `account_id`    | UUID (foreign key) | `uuid`                     | No       | –       | [`account`.`id`](account.md) |
+| `balance_sats`  | Integer            | `bigint`                   | No       | –       | –                            |
+| `synced_at`     | Date/time          | `timestamp with time zone` | No       | –       | –                            |
+| `received_at`   | Date/time          | `timestamp with time zone` | No       | –       | –                            |
+| `wallet_pubkey` | Free text          | `text`                     | Yes      | –       | –                            |
 
 ## Indexes
 

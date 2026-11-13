@@ -55,6 +55,7 @@ import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { TranslateTarget } from '@/lib/translate-config';
 import {
@@ -73,6 +74,8 @@ import { bearerToken } from '@/routes/me';
 
 /** Collaborators the `/conversations` routes need. */
 export interface ConversationRouteDeps {
+  /** Server-verified wallet transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Conversation persistence. */
   store: ConversationStore;
   /** Shared auth persistence port. */
@@ -1016,15 +1019,16 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                   deps.now(),
                 );
                 if (publicToday) {
-                  const { eligible } = await loadPayoutEligibility(
+                  const { eligible, reason } = await loadPayoutEligibility(
                     deps.fundingStore ?? new InMemoryFundingStore(),
                     deps.authStore,
                     account,
                     deps.now(),
                     deps.recoveryShareRequiredFrom ?? null,
+                    deps.walletTransfers,
                   );
                   if (!eligible) {
-                    logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+                    logEvent('spend.ping.skipped', { reason: reason ?? 'not_eligible' });
                   } else {
                     try {
                       await deps.spendPing.ping(address, created.id, 'moderator');

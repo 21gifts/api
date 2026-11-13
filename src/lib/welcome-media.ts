@@ -41,6 +41,11 @@ interface WelcomeLedger {
   legacyAccountIds: ReadonlySet<string>;
 }
 
+/** The welcome path's recipient rule. Invoice eligibility and replay apply the same predicate. */
+function isWelcomeEligible(account: Pick<Account, 'role' | 'isPlatform'>): boolean {
+  return account.role === 'verified' && account.isPlatform !== true;
+}
+
 /** Gift store reads behind the welcome check. */
 type WelcomeGifts = Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
 
@@ -149,7 +154,7 @@ async function welcomeOwed(
   lnurlServer: LnurlServerConfig | undefined,
 ): Promise<WelcomeSweepCandidate | 'welcomed' | null> {
   const address = receivingAddress(account, lnurlServer)?.address ?? null;
-  if (account.role !== 'verified' || address === null) {
+  if (!isWelcomeEligible(account) || address === null) {
     return null;
   }
   const messageId = await messages.latestLiveTopLevelMediaId(account.id);

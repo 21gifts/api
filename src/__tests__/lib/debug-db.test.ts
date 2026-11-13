@@ -150,6 +150,32 @@ describe('PostgresDebugDbStore', () => {
     expect(calls.some((call) => call.text.includes('FROM "message"'))).toBe(true);
   });
 
+  it('constrains catalog discovery and counts to an explicit table allowlist', async () => {
+    const { sql, calls } = scripted();
+    const store = new PostgresDebugDbStore(sql);
+    await expect(store.listTables(['message', 'loose', 'bad name'])).resolves.toEqual([
+      { name: 'message', rowCount: 2 },
+      { name: 'loose', rowCount: 0 },
+    ]);
+    const catalog = calls[0];
+    expect(catalog?.text).toContain('c.relname = ANY($1::text[])');
+    expect(catalog?.params).toEqual(['{"message","loose"}']);
+    expect(calls.some((call) => call.text.includes('FROM "bare"'))).toBe(false);
+    expect(calls.some((call) => call.text.includes('FROM "sessions"'))).toBe(false);
+    await expect(store.listTables([])).resolves.toEqual([]);
+    expect(calls.filter((call) => call.text.includes('relkind'))).toHaveLength(1);
+  });
+
+  it('constrains page catalog discovery to an explicit table allowlist', async () => {
+    const { sql, calls } = scripted();
+    const store = new PostgresDebugDbStore(sql);
+    await expect(store.readPage('message', null, ['message'])).resolves.toBeDefined();
+    expect(calls[0]?.text).toContain('c.relname = ANY($1::text[])');
+    expect(calls[0]?.params).toEqual(['{"message"}']);
+    await expect(store.readPage('loose', null, ['message'])).resolves.toBeUndefined();
+    expect(calls.some((call) => call.text.includes('FROM "loose"'))).toBe(false);
+  });
+
   it('returns undefined for an unsafe or unknown table without a data query', async () => {
     const { sql, calls } = scripted();
     const store = new PostgresDebugDbStore(sql);

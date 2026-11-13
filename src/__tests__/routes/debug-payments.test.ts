@@ -18,6 +18,7 @@ import type { WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -53,6 +54,7 @@ function mount(
     now?: () => number;
     giftStore?: InMemoryGiftStore;
     welcomeSweep?: WelcomeSweepSwitch;
+    walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -72,6 +74,7 @@ function mount(
       giftStore: extra.giftStore ?? new InMemoryGiftStore(),
       lnurlServer: LNURL_SERVER,
       welcomeSweep: extra.welcomeSweep ?? { enabled: false },
+      ...(extra.walletTransfers === undefined ? {} : { walletTransfers: extra.walletTransfers }),
     }),
   );
 }
@@ -1467,6 +1470,7 @@ describe('debugPaymentsRoutes', () => {
         fundingStore: deps.fundingStore,
         recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
+        walletTransfers: { hasShopPayment: async () => true },
       });
       return app.request('/debug/spend-ping', {
         method: 'POST',
@@ -1514,9 +1518,10 @@ describe('debugPaymentsRoutes', () => {
     });
 
     it.each([
-      ['the start day', '2026-10-29', false],
-      ['the day before the start day', '2026-10-30', true],
-    ])('settling a platform-note zap on %s', async (_label, requiredFrom, pinged) => {
+      ['the start day', '2026-10-29', true, false],
+      ['the day before the start day', '2026-10-30', true, true],
+      ['the day before the start day without media', '2026-10-30', false, false],
+    ])('settling a platform-note zap on %s', async (_label, requiredFrom, hasMedia, pinged) => {
       const store = new InMemoryMessageStore();
       const auth = new InMemoryAuthStore();
       await auth.createAccount(
@@ -1533,6 +1538,20 @@ describe('debugPaymentsRoutes', () => {
         name: 'Ada',
         forumLawsDismissed: false,
       });
+      if (hasMedia) {
+        await store.create(
+          {
+            id: '19191919-1919-4191-8191-191919191919',
+            accountId: 'settle-payer',
+            name: 'Ada',
+            text: 'today photo',
+            createdAt: new Date('2026-10-29T08:00:00.000Z'),
+            hasPhoto: false,
+            ...unsignedNostrDefaults(),
+          },
+          SPEND_PHOTO,
+        );
+      }
       const preimage = '16'.repeat(32);
       const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
       await seedSettleInvoice(store, paymentHash);
@@ -1555,6 +1574,7 @@ describe('debugPaymentsRoutes', () => {
         fundingStore,
         recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
+        walletTransfers: { hasShopPayment: async () => true },
       }).request('/debug/invoices/settle', {
         method: 'POST',
         headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
@@ -1632,7 +1652,14 @@ describe('debugPaymentsRoutes', () => {
     it('replays every event of the window onto its own day', async () => {
       const { store, auth, fundingStore } = await seeded();
       const spendPing = spendPingMock();
-      const app = mount(store, 'secret', { spendPing, auth, fundingStore, now: WINDOW_NOW });
+      const hasShopPayment = vi.fn(async () => true);
+      const app = mount(store, 'secret', {
+        spendPing,
+        auth,
+        fundingStore,
+        now: WINDOW_NOW,
+        walletTransfers: { hasShopPayment },
+      });
       const res = await post(app, WINDOW);
       expect(res.status).toBe(200);
       const json = (await res.json()) as Record<string, unknown>;
@@ -1649,6 +1676,7 @@ describe('debugPaymentsRoutes', () => {
       expect(spendPing.pingOnDay.mock.calls).toEqual([
         ['ada@example.test', MESSAGE_ID, '2026-09-29', 'admitted', 'daily'],
       ]);
+      expect(hasShopPayment).toHaveBeenCalledWith(ACCOUNT_ID, '2026-09-28', '2026-09-29');
       const replayed = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.replayed');
       expect(replayed).toMatchObject({ dryRun: false, events: 2, paid: 1 });
     });

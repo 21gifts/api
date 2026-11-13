@@ -1,4 +1,5 @@
 import { HEART_SATS_MAX } from '@/lib/config';
+import { WELCOME_INVOICE_RESERVATION_SCHEMA_SQL } from '@/lib/welcome-reservation';
 
 /**
  * Idempotent DDL for the auth tables. Applied once at process boot when
@@ -24,8 +25,8 @@ import { HEART_SATS_MAX } from '@/lib/config';
  * `pending_recovery` (at most one per account), and `previous_wallet` (wallet
  * keys an account had before a recovery commit), `held_share_box` (opaque
  * encrypted boxes a holder keeps other members' shares in, deleted with the
- * account), plus an index on the open passkey challenges of an account and
- * type.
+ * account), plus the welcome-invoice reservation that account merges reconcile
+ * and an index on the open passkey challenges of an account and type.
  * `locale` and `fiat` are backfilled as nullable (no value backfill of
  * existing rows).
  * Drops leftover `auth_challenge` from LNURL-auth.
@@ -283,4 +284,5 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS held_share_box_account_idx ON held_share_box (account_id)`,
   `CREATE INDEX IF NOT EXISTS passkey_challenge_open_account_type_idx
     ON passkey_challenge (account_id, type) WHERE consumed = false`,
+  WELCOME_INVOICE_RESERVATION_SCHEMA_SQL,
 ];

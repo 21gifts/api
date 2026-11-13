@@ -1,11 +1,57 @@
 /**
- * Satoshi / BTC / USD / fiat money helpers for gift statistics.
+ * Satoshi / BTC / USD / fiat money helpers.
  *
  * All USD and fiat math uses BigInt scaled integers — no IEEE division for money.
  */
 
 /** Satoshis in one bitcoin. */
 export const SATS_PER_BTC = 100_000_000;
+
+/** Positive decimal text accepted for a USD amount and a BTC-USD spot. */
+const POSITIVE_DECIMAL_RE = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+/** Split decimal text into an integer numerator and a power-of-ten scale. */
+function decimalParts(text: string): { numerator: bigint; scale: number } | null {
+  const value = text.trim();
+  if (!POSITIVE_DECIMAL_RE.test(value)) {
+    return null;
+  }
+  const dot = value.indexOf('.');
+  const whole = dot < 0 ? value : value.slice(0, dot);
+  const fraction = dot < 0 ? '' : value.slice(dot + 1);
+  return { numerator: BigInt(`${whole}${fraction}`), scale: fraction.length };
+}
+
+/** Round a non-negative fraction half up, using integer division only. */
+function roundHalfUp(numerator: bigint, denominator: bigint): bigint {
+  const quotient = numerator / denominator;
+  return (numerator % denominator) * 2n >= denominator ? quotient + 1n : quotient;
+}
+
+/**
+ * Convert a USD decimal amount at a BTC-USD spot to millisatoshis.
+ *
+ * @param amountUsd - Positive USD decimal text.
+ * @param spot - Positive USD-per-BTC decimal text.
+ * @returns Whole-satoshi, half-up conversion in millisatoshis, or `null` for
+ * unusable input or overflow.
+ */
+export function usdToMsat(amountUsd: string, spot: string): number | null {
+  const usd = decimalParts(amountUsd);
+  const btc = decimalParts(spot);
+  if (usd === null || btc === null || usd.numerator <= 0n || btc.numerator <= 0n) {
+    return null;
+  }
+  const scale = Math.max(usd.scale, btc.scale);
+  const usdScaled = usd.numerator * 10n ** BigInt(scale - usd.scale);
+  const spotScaled = btc.numerator * 10n ** BigInt(scale - btc.scale);
+  const sats = roundHalfUp(usdScaled * BigInt(SATS_PER_BTC), spotScaled);
+  const amountMsat = sats * 1000n;
+  if (amountMsat > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  return Number(amountMsat);
+}
 
 /** `sats * usd_scaled_8 / 10^14` yields USD cents before rounding. */
 const CENTS_DIVISOR = 100_000_000_000_000n; // 10^14

@@ -18,6 +18,7 @@ import {
 import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { isOperatorBearer } from '@/lib/debug-token';
 import type { GiftStore } from '@/lib/gift-store';
 import { attachHeartStats } from '@/lib/heart-stats';
@@ -281,6 +282,8 @@ function invoiceAttemptBase(args: {
 
 /** Collaborators the `/messages` routes need. */
 export interface MessagesRouteDeps {
+  /** Server-verified wallet transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Forum persistence. */
   store: MessageStore;
   /** Shared auth persistence port. */
@@ -1484,15 +1487,16 @@ async function persistForumPost(
         lnurlServer,
       });
       try {
-        const { grant, eligible } = await loadPayoutEligibility(
+        const { grant, eligible, reason } = await loadPayoutEligibility(
           deps.fundingStore ?? new InMemoryFundingStore(),
           deps.authStore,
           account,
           deps.now(),
           deps.recoveryShareRequiredFrom ?? null,
+          deps.walletTransfers,
         );
         if (!eligible) {
-          logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+          logEvent('spend.ping.skipped', { reason: reason ?? 'not_eligible' });
         } else if (
           created.hasPhoto === true ||
           created.hasVideo === true ||

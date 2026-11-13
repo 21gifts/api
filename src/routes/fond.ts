@@ -28,6 +28,7 @@ import {
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
 import { addUtcDays } from '@/lib/member-habit';
+import { usdToMsat } from '@/lib/money';
 import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import { normalizeUuid } from '@/lib/uuid';
@@ -131,45 +132,6 @@ function listRow(row: FondPayoutRow): FondPayoutListRow {
 /** UTC day key `YYYY-MM-DD`. */
 function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
-}
-
-/** Positive decimal text accepted for the spot and committed USD strings. */
-const DECIMAL_RE = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
-
-/** Split decimal text into an integer numerator and a power-of-ten scale. */
-function decimalParts(text: string): { numerator: bigint; scale: number } | null {
-  const value = text.trim();
-  if (!DECIMAL_RE.test(value)) {
-    return null;
-  }
-  const dot = value.indexOf('.');
-  const whole = dot < 0 ? value : value.slice(0, dot);
-  const fraction = dot < 0 ? '' : value.slice(dot + 1);
-  return { numerator: BigInt(`${whole}${fraction}`), scale: fraction.length };
-}
-
-/** Round a non-negative fraction half up, using integer division only. */
-function roundHalfUp(numerator: bigint, denominator: bigint): bigint {
-  const quotient = numerator / denominator;
-  return (numerator % denominator) * 2n >= denominator ? quotient + 1n : quotient;
-}
-
-/** Convert a USD amount string at the spot to millisatoshis, or `null` when unusable. */
-function usdToMsat(amountUsd: string, spot: string): number | null {
-  const usd = decimalParts(amountUsd);
-  const btc = decimalParts(spot);
-  if (usd === null || btc === null || usd.numerator <= 0n || btc.numerator <= 0n) {
-    return null;
-  }
-  const scale = Math.max(usd.scale, btc.scale);
-  const usdScaled = usd.numerator * 10n ** BigInt(scale - usd.scale);
-  const spotScaled = btc.numerator * 10n ** BigInt(scale - btc.scale);
-  const sats = roundHalfUp(usdScaled * 100_000_000n, spotScaled);
-  const amountMsat = sats * 1000n;
-  if (amountMsat > BigInt(Number.MAX_SAFE_INTEGER)) {
-    return null;
-  }
-  return Number(amountMsat);
 }
 
 /**
@@ -353,7 +315,10 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         }
         const [payments, balance, payouts] = await Promise.all([
           deps.walletStore.paymentTotals(account.id),
-          deps.walletStore.latestBalance(account.id),
+          deps.walletStore.latestBalance(
+            account.id,
+            typeof account.sparkPubkeyVerifiedAt === 'number' ? account.sparkPubkey! : null,
+          ),
           deps.fondPayoutStore.paidTotals(),
         ]);
         return c.json(
@@ -520,9 +485,11 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           address: row.address,
           amountMsat,
           comment: row.comment,
-          ...(row.messageId === null ? {} : { messageId: row.messageId }),
+          ...(row.messageId === null || row.kind === 'welcome' ? {} : { messageId: row.messageId }),
           ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
           amountUsd: row.amountUsd,
+          ...(row.kind === 'welcome' ? { serverPayoutKind: 'welcome' as const } : {}),
+          shopPaymentUtcDay: row.utcDay,
         });
       } catch {
         await releaseClaim(deps, row.id);

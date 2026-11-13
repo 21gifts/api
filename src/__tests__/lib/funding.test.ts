@@ -186,6 +186,13 @@ describe('eligibleToday', () => {
     expect(eligibleToday('basis', admitted, GATE_MS, true, SHARE_FROM)).toBe(false);
   });
 
+  it('requires a recent verified shop payment from the funding gate day', () => {
+    const admitted = grant({ status: 'admitted', admittedAt: GATE_MS });
+    expect(eligibleToday(NON_BASIS, admitted, GATE_MS, true, SHARE_FROM, false)).toBe(false);
+    expect(eligibleToday(NON_BASIS, admitted, GATE_MS, true, SHARE_FROM, true)).toBe(true);
+    expect(eligibleToday(NON_BASIS, admitted, BEFORE_GATE_MS, true, SHARE_FROM, false)).toBe(true);
+  });
+
   it('is false for rejected, from the gate day', () => {
     expect(eligibleToday(NON_BASIS, grant({ status: 'rejected' }), GATE_MS, true, SHARE_FROM)).toBe(
       false,

@@ -67,10 +67,16 @@ test('e2e: a member without a verified wallet reads the forum but cannot post', 
     lightningAddress: string | null;
     lightningAddressVerified: boolean;
     missing: string[];
+    walletViewerPublicKey: string | null;
+    funding: { payoutToday: { state: string; reason: string | null } | null };
+    grantPayoutToday: null;
   };
   expect(owner.lightningAddress).toBeNull();
   expect(owner.lightningAddressVerified).toBe(false);
   expect(owner.missing).toEqual(['lightning-address']);
+  expect(owner.walletViewerPublicKey).toMatch(/^0[23][0-9a-f]{64}$/);
+  expect(owner.funding.payoutToday).toEqual({ state: 'blocked', reason: 'admission' });
+  expect(owner.grantPayoutToday).toBeNull();
 
   const posted = await request.post('/messages', {
     headers: { ...member.auth, 'content-type': 'application/json' },
@@ -95,6 +101,10 @@ test('Function: issueSession — POST /debug/accounts/:id/session with the e2e t
   const member = await memberSession(request, 'E2eSess');
   const me = await request.get('/me', { headers: member.auth });
   expect(me.status()).toBe(200);
+  expect(await me.json()).toMatchObject({
+    funding: null,
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
 });
 
 /**
