@@ -7440,7 +7440,9 @@ store; when full it takes no new ones, so the remembered ones stay hits. An
 event whose `created_at` is later than now plus `EXTERNAL_REPLY_FUTURE_SKEW_MS`
 (10 minutes, the clock skew allowed for external replies) is left for a later
 pass: it is not decrypted, stored, or remembered, so future-dated wraps cannot
-occupy that memory.
+occupy that memory. The `since` bound is checked on each received event as
+well: an event older than now minus `INBOUND_DM_SINCE_S` is skipped the same
+way, even when a relay returns it.
 
 Known limitation: if the payer's wallet publishes no kind:9735 receipt, the
 external zapper gains no website visibility. Operator manual settlement

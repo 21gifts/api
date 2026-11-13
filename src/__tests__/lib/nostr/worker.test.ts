@@ -9655,7 +9655,7 @@ describe('inbound direct-message admission', () => {
     expect(acquire).not.toHaveBeenCalled();
   });
 
-  it('forgets skipped gift wraps that fall out of the query window', async () => {
+  it('skips a remembered gift wrap once it falls out of the query window', async () => {
     const ctx = await setup();
     const wrap = wrapNip17(generateSecretKey(), ctx.recipient, 'old');
     ctx.querier.events = [frame(wrap)];
@@ -9663,7 +9663,23 @@ describe('inbound direct-message admission', () => {
     expect(ctx.decrypts()).toBe(1);
     const later = (wrap.created_at + INBOUND_DM_SINCE_S + 60) * 1000;
     await tick(ctx, {}, later);
-    expect(ctx.decrypts()).toBe(2);
+    await tick(ctx, {}, later);
+    await expectNothingStored(ctx);
+    expect(ctx.decrypts()).toBe(1);
+  });
+
+  it('reads an event dated at the since bound and skips one a second older', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    await ctx.messages.recordZapper(getPublicKey(sender), 'receipt-since', new Date(0));
+    const sinceS = Math.floor(NOW / 1000) - INBOUND_DM_SINCE_S;
+    ctx.querier.events = [
+      { ...kind4(sender, ctx.recipient, 'too old'), created_at: sinceS - 1 },
+      { ...kind4(sender, ctx.recipient, 'just in time'), created_at: sinceS },
+    ];
+    await tick(ctx);
+    expect(await storedTexts(ctx)).toEqual(['just in time']);
+    expect(ctx.decrypts()).toBe(1);
   });
 
   it('decrypts a member kind:4 without content once and stores nothing', async () => {
