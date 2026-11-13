@@ -3155,7 +3155,7 @@ describe('indexZapReceipt', () => {
       'r-locked-settlement',
       row.id,
       21,
-      null,
+      { usd: '0.01', chf: null, eur: null, php: null },
       true,
       expect.objectContaining({
         ingest: expect.objectContaining({
@@ -3321,9 +3321,7 @@ describe('indexZapReceipt', () => {
       });
   }
 
-  it('the omitted snapshot stays null on the zapped note and the ingest row', async () => {
-    let spotCalls = 0;
-    let rateCalls = 0;
+  it('freezes spot crosses onto the zapped note and the ingest row', async () => {
     const store = new InMemoryMessageStore();
     const row = await store.create({
       id: 'm-spot',
@@ -3340,32 +3338,20 @@ describe('indexZapReceipt', () => {
       receipt: { id: 'r-spot', pubkey: PROVIDER_PUBKEY, tags: [] },
       providerPubkey: PROVIDER_PUBKEY,
       amountSats: 1000,
-      fetchImpl: async () => {
-        spotCalls += 1;
-        return spotFetch('100000')('https://example.invalid');
-      },
+      fetchImpl: spotFetch('100000'),
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: {
-        ensureDays: async () => {
-          rateCalls += 1;
-          return new Map([['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
-        },
-      },
+      fiatRates: new InMemoryFiatStore({
+        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+      }),
     });
     expect(ok).toBe(true);
-    expect((await store.getById(row.id))?.amountUsd).toBeNull();
-    expect((await store.getById(row.id))?.amountChf).toBeNull();
-    expect((await store.getById(row.id))?.amountEur).toBeNull();
-    expect((await store.getById(row.id))?.amountPhp).toBeNull();
-    expect((await store.listZapIngests(5))[0]?.amountUsd).toBeNull();
-    expect((await store.listZapIngests(5))[0]?.amountChf).toBeNull();
-    expect(spotCalls).toBe(0);
-    expect(rateCalls).toBe(0);
+    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
+    expect((await store.getById(row.id))?.amountChf).toBe('0.80');
+    expect((await store.listZapIngests(5))[0]?.amountUsd).toBe('1.00');
+    expect((await store.listZapIngests(5))[0]?.amountChf).toBe('0.80');
   });
 
-  it('the omitted snapshot stays null when the rate book has no day', async () => {
-    let spotCalls = 0;
-    let rateCalls = 0;
+  it('freezes USD with empty crosses when the rate book has no day', async () => {
     const store = new InMemoryMessageStore();
     const row = await store.create({
       id: 'm-empty-cross',
@@ -3382,28 +3368,16 @@ describe('indexZapReceipt', () => {
       receipt: { id: 'r-empty-cross', pubkey: PROVIDER_PUBKEY, tags: [] },
       providerPubkey: PROVIDER_PUBKEY,
       amountSats: 1000,
-      fetchImpl: async () => {
-        spotCalls += 1;
-        return spotFetch('100000')('https://example.invalid');
-      },
+      fetchImpl: spotFetch('100000'),
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: {
-        ensureDays: async () => {
-          rateCalls += 1;
-          return new Map();
-        },
-      },
+      fiatRates: new InMemoryFiatStore(),
     });
     expect(ok).toBe(true);
-    expect((await store.getById(row.id))?.amountUsd).toBeNull();
+    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
     expect((await store.getById(row.id))?.amountChf).toBeNull();
-    expect(spotCalls).toBe(0);
-    expect(rateCalls).toBe(0);
   });
 
-  it('the omitted snapshot stays null when ensureDays throws', async () => {
-    let spotCalls = 0;
-    let rateCalls = 0;
+  it('still freezes USD when ensureDays throws', async () => {
     const store = new InMemoryMessageStore();
     const row = await store.create({
       id: 'm-fx-down',
@@ -3420,22 +3394,16 @@ describe('indexZapReceipt', () => {
       receipt: { id: 'r-fx-down', pubkey: PROVIDER_PUBKEY, tags: [] },
       providerPubkey: PROVIDER_PUBKEY,
       amountSats: 1000,
-      fetchImpl: async () => {
-        spotCalls += 1;
-        return spotFetch('100000')('https://example.invalid');
-      },
+      fetchImpl: spotFetch('100000'),
       fiatRates: {
         ensureDays: async () => {
-          rateCalls += 1;
           throw new Error('frankfurter down');
         },
       },
     });
     expect(ok).toBe(true);
-    expect((await store.getById(row.id))?.amountUsd).toBeNull();
+    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
     expect((await store.getById(row.id))?.amountChf).toBeNull();
-    expect(spotCalls).toBe(0);
-    expect(rateCalls).toBe(0);
   });
 
   it('indexes the zap with null fiat when the spot text cannot be priced', async () => {
@@ -9640,6 +9608,122 @@ describe('indexOpenZapReceipts', () => {
     expect(await store.listCreditPayers('m-known-payer-close')).toEqual([
       {
         accountId: 'payer-known-payer-close',
+        sats: 21,
+        usd: '0.21',
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
+  });
+
+  it('freezes an unpinned invoice gift at its settlement-time fiat value on early close', async () => {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc-unpinned-close',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'unpinned-close',
+      walletRequired: true,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('acc-unpinned-close'),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(auth, 'acc-unpinned-close', 'unpinned-close');
+    await auth.createAccount({
+      id: 'payer-unpinned-close',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Pat',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('payer-unpinned-close'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await store.create({
+      id: 'm-unpinned-close',
+      accountId: 'acc-unpinned-close',
+      name: 'Ada',
+      text: 'loan',
+      createdAt: new Date('2026-11-12T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: NOTE_EVENT_ID,
+      goalSats: 100,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: null,
+      goalCurrency: 'USD',
+      goalAmount: '1.00',
+    });
+    await store.recordInvoiceAttempt({
+      id: 'inv-unpinned-close',
+      createdAt: new Date('2026-11-12T00:00:00.000Z'),
+      messageId: 'm-unpinned-close',
+      payerAccountId: 'payer-unpinned-close',
+      authorAccountId: 'acc-unpinned-close',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'normal gift' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-unpinned-close',
+      paymentHash: 'ce'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      fiatPinned: false,
+    });
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'r-unpinned-close',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-unpinned-close'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash: 'ce'.repeat(32), amountMsat: 21_000 });
+    const fetchImpl: FetchFn = async (input, init) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('coinbase.com')) {
+        return new Response(JSON.stringify({ data: { amount: '1000000.00' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return lnurlFetch(PROVIDER_PUBKEY)(input, init);
+    };
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => Date.parse('2026-11-12T12:00:00.000Z'),
+      fetchImpl,
+    });
+    await expect(
+      store.closeCredit('m-unpinned-close', new Date('2100-01-01T00:00:00.000Z')),
+    ).resolves.toMatchObject({ fundedAt: expect.any(Date), closedAt: expect.any(Date) });
+
+    expect(await store.previewCreditPayerSnapshot('m-unpinned-close', 'USD', 'closed')).toEqual([
+      { accountId: 'payer-unpinned-close', sats: 21, units: 21n },
+    ]);
+    expect(await store.listCreditPayers('m-unpinned-close')).toEqual([
+      {
+        accountId: 'payer-unpinned-close',
         sats: 21,
         usd: '0.21',
         chf: null,

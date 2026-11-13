@@ -3,6 +3,7 @@ import { paymentHashFromReceipt } from '@/lib/account-activity';
 import { requireAction } from '@/lib/auth/requirements';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11, inspectBolt11 } from '@/lib/bolt11';
+import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import { LN_ADDRESS_CACHE_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import { resolveMentionMarks } from '@/lib/mention';
@@ -22,7 +23,7 @@ import {
   type MessageStore,
   type ZapIngestRow,
 } from '@/lib/message-store';
-import type { FiatAmounts } from '@/lib/money';
+import { fiatFromSats, type FiatAmounts, type FiatCrossRates } from '@/lib/money';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import { resolveLnurlp } from '@/lib/lnurlp';
@@ -458,23 +459,40 @@ function pinnedInvoiceFiat(invoice: MessageInvoiceAttempt | undefined): FiatAmou
 }
 
 /**
- * No snapshot for a zap the caller did not already price.
+ * One Coinbase spot for a new zap. Null spot or a cross-book failure is null,
+ * never a throw.
  *
- * Returns `null`, the existing no-snapshot outcome. Callers that already
- * have a pinned invoice snapshot keep using that snapshot. This does not
- * read a spot or the daily rate book.
- *
- * @param _args - Sats, instant, fetch, optional rate book, and clock. Unused.
- * @returns `null`.
+ * @param args - Sats, instant, fetch, optional rate book, and clock.
+ * @returns Payment-time snapshot, or `null`.
  */
-async function snapshotSatsFiat(_args: {
+async function snapshotSatsFiat(args: {
   sats: number;
   at: Date;
   fetchImpl: FetchFn;
   now: () => number;
   fiatRates?: FiatRateBook;
 }): Promise<FiatAmounts | null> {
-  return null;
+  const spot = await fetchBtcUsdSpot(args.fetchImpl);
+  if (spot === null) {
+    return null;
+  }
+  let crosses: FiatCrossRates = {};
+  if (args.fiatRates !== undefined) {
+    try {
+      const day = args.at.toISOString().slice(0, 10);
+      const found = (await args.fiatRates.ensureDays([day], args.now())).get(day);
+      if (found !== undefined) {
+        crosses = found;
+      }
+    } catch {
+      crosses = {};
+    }
+  }
+  try {
+    return fiatFromSats(args.sats, spot, crosses);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -565,9 +583,9 @@ export async function settleInvoiceManually(args: {
   recoveryShareRequiredFrom?: string | null;
   conversations?: ConversationStore;
   lnurlServer?: LnurlServerConfig;
-  /** Accepted by callers. An unpinned settle does not read a spot. */
+  /** Spot fetch. Default `fetch`. A failure does not fail the settle. */
   fetchImpl?: FetchFn;
-  /** Accepted by callers. An unpinned settle does not read the rate book. */
+  /** Optional crosses for the payment-time snapshot. */
   fiatRates?: FiatRateBook;
 }): Promise<SettleInvoiceResult> {
   const paymentHash = normalizeHex32(args.paymentHash);
@@ -879,11 +897,11 @@ export async function indexZapReceipt(args: {
   /** Full kind:9735 frame for debug ingest rows. */
   receiptEvent?: Record<string, unknown>;
   noteEventId?: string | null;
-  /** Accepted by callers. An unpinned receipt does not read a spot. */
+  /** Spot fetch. Default `fetch`. A failure does not reject the receipt. */
   fetchImpl?: FetchFn;
-  /** Accepted by callers. An unpinned receipt does not read the rate book. */
+  /** Optional crosses for the one spot taken for this zap. */
   fiatRates?: FiatRateBook;
-  /** Clock passed into the snapshot helper. Default `Date.now`. */
+  /** Clock for the cross day. Default `Date.now`. */
   now?: () => number;
   /** Payment hash claimed under the same message lock as the receipt credit. */
   paymentHash?: string;
@@ -1127,7 +1145,7 @@ export async function indexOpenZapReceipts(args: {
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
   recoveryShareRequiredFrom?: string | null;
-  /** Accepted by callers. An unpinned zap does not read the rate book. */
+  /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
   /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
   lnurlServer?: LnurlServerConfig;
@@ -1371,7 +1389,7 @@ async function ingestOneReceipt(
     replyLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
     recoveryShareRequiredFrom?: string | null;
-    /** Accepted by callers. An unpinned zap does not read the rate book. */
+    /** Optional crosses. Absent means the spot snapshot uses empty crosses. */
     fiatRates?: FiatRateBook;
     /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
     lnurlServer?: LnurlServerConfig;
@@ -1820,8 +1838,8 @@ async function ingestOneReceipt(
   const effectiveInvoice = invoice ?? payerResolution.invoice;
   const pinnedForum = pinnedInvoiceFiat(effectiveInvoice);
   const forumDelta =
-    effectiveInvoice !== undefined
-      ? (pinnedForum ?? null)
+    pinnedForum !== undefined
+      ? pinnedForum
       : await snapshotSatsFiat({
           sats: amountSats,
           at: new Date(args.now()),
