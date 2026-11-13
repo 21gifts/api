@@ -4,9 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 68
-- Columns: 649
-- Foreign keys: 64
+- Tables: 70
+- Columns: 662
+- Foreign keys: 66
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
