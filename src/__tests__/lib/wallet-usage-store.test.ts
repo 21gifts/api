@@ -154,6 +154,7 @@ describe('PostgresWalletUsageStore', () => {
     expect(payments.text).toContain('id_totals.completed_count = 2');
     expect(payments.text).toContain('id_totals.completed_account_count = 2');
     expect(payments.text).toContain('id_totals.completed_direction_count = 2');
+    expect(payments.text).toContain("THEN 'pair:' || wallet_payment.payment_id");
     expect(payments.text).toContain(
       "'row:' || wallet_payment.account_id::text || ':' || wallet_payment.payment_id",
     );
