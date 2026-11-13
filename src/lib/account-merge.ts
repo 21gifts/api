@@ -128,10 +128,11 @@ function quoteIdentifier(identifier: string): string {
  * account's id and words, so the surviving account could never open it.
  * Frozen credit snapshots are combined by message. Before either identity is
  * moved, the merge refuses without writes when both identities gave to one
- * credit with a settled repayment, when a still-payable repayment invoice
- * embeds either identity on an affected source-funded credit, or when such an
- * invoice has a payment claim but no exact settlement row (including part
- * index, units, and sats for a part). It also refuses when any historical
+ * credit with a settled repayment or any successfully issued historical
+ * repayment invoice for either identity, when a still-payable repayment
+ * invoice embeds either identity on an affected source-funded credit, or when
+ * such an invoice has a payment claim but no exact settlement row (including
+ * part index, units, and sats for a part). It also refuses when any historical
  * part invoice or settled part of one identity has the same message, day, and
  * immutable part index as an invoice or settled part of the other identity.
  * Otherwise, legacy full-share repayments are reconstructed from the original
@@ -452,6 +453,57 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     if (partKeyCollisions.length > 0) {
+      return { ok: false, error: 'repayment_unavailable' };
+    }
+    // Combining two giver shares can change their rounded day slices. Once a
+    // successful repayment invoice has exposed the old plan, keep that plan
+    // immutable even if the invoice expired, was claimed, or already settled:
+    // a late receipt or manual settlement can still identify it historically.
+    const historicalDualGiverInvoices = await tx.query<{ message_id: string }>(
+      `SELECT credit.id AS message_id
+       FROM message AS credit
+       WHERE credit.goal_repayable IS TRUE
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS source_gift
+           WHERE source_gift.message_id = credit.id
+             AND source_gift.payer_account_id = $1::uuid
+             AND (
+               credit.goal_funded_at IS NULL
+               OR source_gift.recorded_at IS NULL
+               OR source_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
+         AND EXISTS (
+           SELECT 1 FROM nostr_zap_receipt AS survivor_gift
+           WHERE survivor_gift.message_id = credit.id
+             AND survivor_gift.payer_account_id = $2::uuid
+             AND (
+               credit.goal_funded_at IS NULL
+               OR survivor_gift.recorded_at IS NULL
+               OR survivor_gift.recorded_at <= credit.goal_funded_at
+             )
+         )
+         AND EXISTS (
+           SELECT 1 FROM message_invoice AS historical
+           WHERE historical.message_id = credit.id
+             AND historical.result = 'ok'
+             AND (
+               historical.description LIKE 'repay:%'
+               OR historical.description LIKE 'repayp:%'
+             )
+             AND (
+               historical.author_account_id = $1::uuid
+               OR historical.author_account_id = $2::uuid
+               OR historical.description LIKE 'repay:%:' || $1::text
+               OR historical.description LIKE 'repayp:%:' || $1::text || ':%'
+               OR historical.description LIKE 'repay:%:' || $2::text
+               OR historical.description LIKE 'repayp:%:' || $2::text || ':%'
+             )
+         )
+       LIMIT 1`,
+      accountParams,
+    );
+    if (historicalDualGiverInvoices.length > 0) {
       return { ok: false, error: 'repayment_unavailable' };
     }
     const legacyRepayments = await tx.query<LegacyRepaymentRow>(

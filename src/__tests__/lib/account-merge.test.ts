@@ -108,6 +108,8 @@ interface FakeDatabaseOptions {
   }[];
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
+  /** Repayable credits where both identities gave and either has a historical invoice. */
+  historicalRepaymentInvoiceConflicts?: readonly { message_id: string }[];
   /** Existing source/survivor invoices or settled rows with the same immutable part key. */
   partKeyCollisions?: readonly { message_id: string }[];
   /** Successful repayment invoice candidates on affected source-funded credits. */
@@ -164,7 +166,16 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           if (text.includes('FROM message_invoice') && text.includes('WHERE message_id = $1')) {
             return (options.repaymentInvoiceAttempts ?? []) as T[];
           }
-          if (text.includes('FROM message AS credit') && text.includes('source_gift')) {
+          if (
+            text.includes('FROM message AS credit') &&
+            text.includes('FROM message_invoice AS historical')
+          ) {
+            return (options.historicalRepaymentInvoiceConflicts ?? []) as T[];
+          }
+          if (
+            text.includes('FROM message AS credit') &&
+            text.includes('FROM message_repayment AS settled')
+          ) {
             return (options.repaymentConflicts ?? []) as T[];
           }
           if (
@@ -671,6 +682,64 @@ describe('mergeAccounts', () => {
       queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
     ).toBe(false);
   });
+
+  it.each([
+    ['part', `repayp:0:${FROM}:1:100:200`],
+    ['legacy', `repay:0:${FROM}`],
+  ])(
+    'refuses an expired unpaid %s invoice after both accounts gave to the credit',
+    async (_kind, description) => {
+      const { db, queries } = fakeDatabase({
+        openRepaymentInvoices: [
+          {
+            message_id: PROFILE,
+            author_account_id: FROM,
+            amount_sats: 100,
+            payment_hash: null,
+            description,
+            created_at: new Date(0),
+            pr: 'expired-unpaid-repayment',
+            payment_claimed: false,
+          },
+        ],
+        historicalRepaymentInvoiceConflicts: [{ message_id: PROFILE }],
+      });
+
+      await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+        ok: false,
+        error: 'repayment_unavailable',
+      });
+      const openRefusal = queries.findIndex((query) => query.text.includes('AS payment_claimed'));
+      const historicalRefusal = queries.findIndex((query) =>
+        query.text.includes('FROM message_invoice AS historical'),
+      );
+      const partCollisionRefusal = queries.findIndex((query) =>
+        query.text.includes('WITH part_invoices AS'),
+      );
+      const historical = queries[historicalRefusal];
+      expect(partCollisionRefusal).toBeGreaterThan(openRefusal);
+      expect(historicalRefusal).toBeGreaterThan(partCollisionRefusal);
+      expect(historical?.params).toEqual([FROM, INTO]);
+      expect(historical?.text).toContain('source_gift.payer_account_id = $1::uuid');
+      expect(historical?.text).toContain('survivor_gift.payer_account_id = $2::uuid');
+      expect(historical?.text).toContain("historical.result = 'ok'");
+      expect(historical?.text).toContain("historical.description LIKE 'repay:%'");
+      expect(historical?.text).toContain("historical.description LIKE 'repayp:%'");
+      expect(historical?.text).toContain('historical.author_account_id = $1::uuid');
+      expect(historical?.text).toContain('historical.author_account_id = $2::uuid');
+      expect(historical?.text).toContain("historical.description LIKE 'repay:%:' || $1::text");
+      expect(historical?.text).toContain(
+        "historical.description LIKE 'repayp:%:' || $2::text || ':%'",
+      );
+      expect(historical?.text).not.toContain('historical.created_at');
+      expect(historical?.text).not.toContain('historical.payment_hash');
+      expect(historical?.text).not.toContain('historical.pr');
+      expect(historical?.text).not.toContain('message_repayment');
+      expect(
+        queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+      ).toBe(false);
+    },
+  );
 
   it('refuses an expired claim-only sibling part by its exact part index', async () => {
     const paymentHash = 'ab'.repeat(32);

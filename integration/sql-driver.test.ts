@@ -4526,6 +4526,107 @@ describe('Postgres zap settlement during account merge', () => {
 });
 
 describe('Postgres repayment retry after account merge', () => {
+  test('expired unpaid legacy and part invoices refuse merging two givers', async () => {
+    for (const kind of ['legacy', 'part'] as const) {
+      const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+      const authorId = crypto.randomUUID();
+      const fromId = crypto.randomUUID();
+      const intoId = crypto.randomUUID();
+      const loanId = crypto.randomUUID();
+      const sourceReceiptId = `receipt-${crypto.randomUUID()}`;
+      const survivorReceiptId = `receipt-${crypto.randomUUID()}`;
+      const paymentHash = crypto.randomUUID().replaceAll('-', '').padEnd(64, '0');
+      let ready = false;
+      try {
+        await migrateMergeTables(client);
+        ready = true;
+        const auth = new PostgresAuthStore(client);
+        for (const [id, suffix] of [
+          [authorId, 'a'],
+          [fromId, 'b'],
+          [intoId, 'c'],
+        ] as const) {
+          await auth.createAccount({
+            id,
+            linkingKey: null,
+            role: 'verified',
+            name: suffix,
+            forumLawsDismissed: false,
+            location: null,
+            viewKey: id.replaceAll('-', '').padEnd(64, suffix),
+            createdAt: 1,
+            rulesAgreedAt: null,
+          });
+        }
+        const store = new PostgresMessageStore(client);
+        await store.create({
+          id: loanId,
+          accountId: authorId,
+          name: 'Ada',
+          text: `expired unpaid ${kind} invoice on a dual-giver credit`,
+          createdAt: new Date(),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+          goalSats: 200,
+          goalRepayable: true,
+          goalTermDays: 1,
+          goalFundedAt: new Date('2099-01-01T00:00:00.000Z'),
+        });
+        expect(await store.recordZapReceipt(sourceReceiptId, loanId, 100, null)).toBe(true);
+        await store.updateZapReceiptGift(sourceReceiptId, { payerAccountId: fromId });
+        expect(await store.recordZapReceipt(survivorReceiptId, loanId, 100, null)).toBe(true);
+        await store.updateZapReceiptGift(survivorReceiptId, { payerAccountId: intoId });
+        await store.recordInvoiceAttempt({
+          id: crypto.randomUUID(),
+          createdAt: new Date('2020-01-01T00:00:00.000Z'),
+          messageId: loanId,
+          payerAccountId: authorId,
+          authorAccountId: fromId,
+          amountSats: 100,
+          lightningAddress: 'merged-away@example.test',
+          zapRequest: null,
+          result: 'ok',
+          httpStatus: 200,
+          pr: `lnbc-expired-${kind}-${loanId}`,
+          paymentHash,
+          description:
+            kind === 'legacy'
+              ? repaymentDescription(0, fromId)
+              : repaymentPartDescription(0, fromId, 0, 100n, 100n),
+          descriptionHash: null,
+          isNip57Invoice: true,
+          lnurlResponse: null,
+        });
+
+        expect(
+          await mergeAccounts(mergeDb, { from: fromId, into: intoId, verify: 'into' }),
+        ).toEqual({ ok: false, error: 'repayment_unavailable' });
+        expect(await auth.getAccount(fromId)).toBeDefined();
+        expect(await auth.getAccount(intoId)).toBeDefined();
+      } finally {
+        if (ready) {
+          await client.execute('DELETE FROM nostr_zap_payment WHERE payment_hash = $1::text', [
+            paymentHash,
+          ]);
+          await client.execute(
+            'DELETE FROM nostr_zap_ingest WHERE receipt_id = $1::text OR receipt_id = $2::text',
+            [sourceReceiptId, survivorReceiptId],
+          );
+          await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1::uuid', [
+            loanId,
+          ]);
+          await client.execute('DELETE FROM message_invoice WHERE message_id = $1::uuid', [loanId]);
+          await client.execute('DELETE FROM message WHERE id = $1::uuid', [loanId]);
+          await client.execute(
+            'DELETE FROM account WHERE id = $1::uuid OR id = $2::uuid OR id = $3::uuid',
+            [authorId, fromId, intoId],
+          );
+        }
+        await closeIfPossible(sql);
+      }
+    }
+  });
+
   test('an expired part invoice cannot collide with a converted legacy payment', async () => {
     const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
     const authorId = crypto.randomUUID();
