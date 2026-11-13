@@ -1158,7 +1158,6 @@ describe('GET /fond/payments', () => {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
           direction: 'in',
           amountSats: 1_000,
-          feeSats: 0,
           paidAt: PAID_A.toISOString(),
           counterparty: { accountId: ALICE, username: 'alice', name: 'Alice' },
           storedFiat: null,
@@ -1167,7 +1166,6 @@ describe('GET /fond/payments', () => {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
           direction: 'out',
           amountSats: 21,
-          feeSats: 2,
           paidAt: PAID_B.toISOString(),
           counterparty: null,
           storedFiat: null,
@@ -1176,7 +1174,6 @@ describe('GET /fond/payments', () => {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
           direction: 'in',
           amountSats: 3,
-          feeSats: 0,
           paidAt: PAID_C.toISOString(),
           counterparty: null,
           storedFiat: null,
@@ -1185,7 +1182,6 @@ describe('GET /fond/payments', () => {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
           direction: 'in',
           amountSats: 4,
-          feeSats: 0,
           paidAt: PAID_D.toISOString(),
           counterparty: null,
           storedFiat: null,
@@ -1217,7 +1213,6 @@ describe('GET /fond/payments', () => {
           id: expect.stringMatching(/^[0-9a-f]{16}$/),
           direction: 'in',
           amountSats: 5,
-          feeSats: 0,
           paidAt: PAID_A.toISOString(),
           counterparty: { accountId: NO_USERNAME, username: null, name: 'No Username' },
           storedFiat: null,
@@ -1273,11 +1268,18 @@ describe('GET /fond/payments', () => {
       id: expect.stringMatching(/^[0-9a-f]{16}$/),
       direction: 'out',
       amountSats: 21,
-      feeSats: 2,
       paidAt: PAID_A.toISOString(),
       counterparty: null,
       storedFiat: { currency: 'USD', amount: '1.25' },
     });
+    expect(Object.keys(body.payments[0] ?? {})).toEqual([
+      'id',
+      'direction',
+      'amountSats',
+      'paidAt',
+      'counterparty',
+      'storedFiat',
+    ]);
     expect(body.payments[0]).not.toHaveProperty('paymentHash');
   });
 

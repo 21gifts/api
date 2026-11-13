@@ -134,7 +134,6 @@ interface FondPaymentListRow {
   id: string;
   direction: 'in' | 'out';
   amountSats: number;
-  feeSats: number;
   paidAt: string;
   counterparty: FondPaymentCounterparty | null;
   storedFiat: FondPaymentStoredFiat | null;
@@ -239,7 +238,7 @@ function cursorPayment(
  * @param counterparties - Known non-platform accounts by id.
  * @param paidUsd - Stored USD amount of each outgoing row's paid payout, by hash or invoice.
  * @param publicIdKey - Server secret used to derive the public id.
- * @returns Only the public id, direction, amounts, time, counterparty, and stored fiat.
+ * @returns Only the public id, direction, amount, time, counterparty, and stored fiat.
  */
 function publicPaymentRow(
   row: WalletPaymentRecord,
@@ -261,7 +260,6 @@ function publicPaymentRow(
     id: publicPaymentId(row.paymentId, publicIdKey),
     direction: row.direction,
     amountSats: row.amountSats,
-    feeSats: row.feeSats,
     paidAt: row.paidAt.toISOString(),
     counterparty,
     storedFiat: amountUsd === undefined ? null : { currency: 'USD', amount: amountUsd },
@@ -542,6 +540,19 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       }
     })
     .get('/payments', async (c) => {
+      /**
+       * Public by Core Principle 9, “Public applications, private wallet” (CONCEPT.md:129), and
+       * CONTRIBUTING.md:334-336: “The 21.gifts applications are public. The forum and its notes,
+       * gifts, hearts, credit requests and their repayments, shops, and the Fond are public. Anyone
+       * can see every such activity and every transaction that belongs to it.” CONTRIBUTING.md:355
+       * says, “A payment that belongs to a
+       * 21.gifts activity (for example a gift to a note or a credit repayment) is public as part of
+       * that activity,” and CONTRIBUTING.md:360 says, “The Fond account is a 21.gifts application,
+       * not a member, so its wallet totals are public (`GET /fond/summary`).” A member's transfer to
+       * or from the Fond belongs to the Fond. No fee is returned: it is not part of the Fond's public
+       * transaction record, and CONTRIBUTING.md:348 protects “wallet data of an individual member,”
+       * expressly including “a fee.”
+       */
       if (deps.payoutSigner !== 'fond') {
         return c.json({ error: 'Not found' }, 404, FOND_NO_STORE);
       }
