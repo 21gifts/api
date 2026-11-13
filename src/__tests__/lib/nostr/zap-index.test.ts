@@ -1428,7 +1428,6 @@ describe('manual invoice settlement', () => {
         return {
           ...found,
           payerAccountId: this.lookups === 1 ? 'manual-payer' : 'manual-survivor',
-          heart: this.lookups > 1,
           fiatPinned: true,
           amountUsd: this.lookups === 1 ? '1.00' : '2.00',
         };
@@ -1442,19 +1441,17 @@ describe('manual invoice settlement', () => {
       accountId: 'manual-author',
       messageId: 'manual-message',
     });
-    for (const id of ['manual-payer', 'manual-survivor']) {
-      await auth.createAccount({
-        id,
-        linkingKey: null,
-        role: 'basis',
-        name: id,
-        forumLawsDismissed: false,
-        location: null,
-        viewKey: viewKeyFor(id),
-        createdAt: 2,
-        rulesAgreedAt: null,
-      });
-    }
+    await auth.createAccount({
+      id: 'manual-survivor',
+      linkingKey: null,
+      role: 'basis',
+      name: 'manual-survivor',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: viewKeyFor('manual-survivor'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
     const paymentHash = 'a3'.repeat(32);
     await seedManualInvoice(store, paymentHash, {
       fiatPinned: true,
@@ -1481,7 +1478,9 @@ describe('manual invoice settlement', () => {
       },
     );
     expect((await store.getById('manual-message'))?.amountUsd).toBe('2.00');
-    expect(await store.listReplies('manual-message')).toEqual([]);
+    expect(await store.listReplies('manual-message')).toEqual([
+      expect.objectContaining({ accountId: 'manual-survivor', text: 'manual gift' }),
+    ]);
   });
 
   it('resumes a credited manual receipt by restoring attribution and its ingest row', async () => {
@@ -10350,6 +10349,107 @@ describe('indexOpenZapReceipts', () => {
     expect(forAuthor[0]?.actorAccountId).toBe('payer-heart');
     expect(await notifications.listByRecipient('bystander-heart', 10)).toEqual([]);
     expect(await notifications.listByRecipient('payer-heart', 10)).toEqual([]);
+  });
+
+  it('notifies a heart with the survivor read after the message lock', async () => {
+    class MergedPayerStore extends InMemoryMessageStore {
+      merged = false;
+
+      override async withMessageLock<T>(
+        messageId: string,
+        run: (store: MessageStore) => Promise<T>,
+      ): Promise<T> {
+        return super.withMessageLock(messageId, async (lockedStore) => {
+          this.merged = true;
+          return run(lockedStore);
+        });
+      }
+
+      override async findOkInvoiceByPaymentHash(
+        ...args: Parameters<InMemoryMessageStore['findOkInvoiceByPaymentHash']>
+      ): Promise<MessageInvoiceAttempt | undefined> {
+        const found = await super.findOkInvoiceByPaymentHash(...args);
+        return found === undefined
+          ? undefined
+          : { ...found, payerAccountId: this.merged ? 'heart-survivor' : 'heart-source' };
+      }
+    }
+    const store = new MergedPayerStore();
+    const auth = new InMemoryAuthStore();
+    const parentId = await seedStore({
+      store,
+      auth,
+      accountId: 'heart-merge-author',
+      lightningAddress: 'heart-merge@example.com',
+      messageId: 'heart-merge-message',
+    });
+    await auth.createAccount({
+      id: 'heart-survivor',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Survivor',
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: viewKeyFor('heart-survivor'),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    const paymentHash = 'd1'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'heart-merge-invoice',
+      createdAt: new Date('2026-11-13T00:00:00.000Z'),
+      messageId: parentId,
+      payerAccountId: 'heart-source',
+      authorAccountId: 'heart-merge-author',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'heart' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-heart-merge',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    const notifications = new InMemoryNotificationStore();
+    const querier = new RecordingQuerier();
+    querier.events = [
+      {
+        id: 'heart-merge-receipt',
+        pubkey: PROVIDER_PUBKEY,
+        kind: 9735,
+        tags: [
+          ['e', NOTE_EVENT_ID],
+          ['bolt11', 'lnbc-heart-merge'],
+        ],
+      },
+    ];
+    mockedDecode.mockReturnValue({ paymentHash, amountMsat: 21_000 });
+
+    await ingest({
+      store,
+      auth,
+      querier,
+      urls: URLS,
+      timeoutMs: 50,
+      now: () => 1,
+      fetchImpl: lnurlFetch(PROVIDER_PUBKEY),
+      notificationStore: notifications,
+    });
+
+    expect(await store.getZapReceiptGift('heart-merge-receipt')).toMatchObject({
+      payerAccountId: 'heart-survivor',
+    });
+    expect(await notifications.listByRecipient('heart-merge-author', 10)).toEqual([
+      expect.objectContaining({
+        type: 'heart',
+        actorAccountId: 'heart-survivor',
+        name: 'Survivor',
+      }),
+    ]);
   });
 
   it('credits a heart when notifyHearts is false and does not notify', async () => {

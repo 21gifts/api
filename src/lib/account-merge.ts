@@ -7,11 +7,7 @@ import {
   payerDebtUnits,
   repaymentSchedule,
 } from '@/lib/credit-repayment';
-import {
-  ACCOUNT_ADVISORY_LOCK_NAMESPACE,
-  MESSAGE_ADVISORY_LOCK_NAMESPACE,
-  PostgresMessageStore,
-} from '@/lib/message-store';
+import { PostgresMessageStore } from '@/lib/message-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** One reserved database transaction connection used by an account merge. */
@@ -156,19 +152,19 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
 
   return db.begin(async (tx) => {
     const accountParams = [input.from, input.into] as const;
+    const transactionStore = new PostgresMessageStore(tx as SqlClient, {}, true);
 
     // Global order: account advisory locks, message advisory locks, row locks.
     // Both identities are stable before the affected-message query runs, so a
     // concurrent invoice mint cannot add a payer reference after this set was
-    // collected and before the source account is deleted.
-    await tx.query(
-      `SELECT pg_advisory_xact_lock($3::integer, hashtext(locked.account_id::text))
-       FROM unnest(ARRAY[$1::uuid, $2::uuid]) AS locked(account_id)
-       ORDER BY locked.account_id`,
-      [...accountParams, ACCOUNT_ADVISORY_LOCK_NAMESPACE],
-    );
-    await tx.query(
-      `SELECT pg_advisory_xact_lock($3::integer, hashtext(affected.message_id::text))
+    // collected and before the source account is deleted. This store is scoped
+    // to db.begin, so every primitive's transaction lock remains held through
+    // the row locks and writes below after its callback returns.
+    const repaymentStore = await transactionStore.withAccountLocks(
+      accountParams,
+      async (accountLockedStore) => {
+        const affectedMessages = await tx.query<{ message_id: string }>(
+          `SELECT affected.message_id
        FROM (
          SELECT message_id FROM message_repayment
          WHERE recipient_account_id = $1::uuid OR recipient_account_id = $2::uuid
@@ -208,7 +204,17 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
            AND (account_id = $1::uuid OR account_id = $2::uuid)
        ) AS affected
        ORDER BY affected.message_id`,
-      [...accountParams, MESSAGE_ADVISORY_LOCK_NAMESPACE],
+          accountParams,
+        );
+        let lockedStore = accountLockedStore;
+        for (const affected of affectedMessages) {
+          lockedStore = await lockedStore.withMessageLock(
+            affected.message_id,
+            async (messageLockedStore) => messageLockedStore,
+          );
+        }
+        return lockedStore;
+      },
     );
     const locked = await tx.query<LockedAccountRow>(
       `SELECT id, is_platform, role, profile_message_id
@@ -379,7 +385,6 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        ORDER BY invoice.created_at, invoice.id`,
       accountParams,
     );
-    const repaymentStore = new PostgresMessageStore(tx as SqlClient);
     for (const invoice of openRepaymentInvoices) {
       const whole = parseRepaymentDescription(invoice.description);
       const part = parseRepaymentPartDescription(invoice.description);

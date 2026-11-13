@@ -103,9 +103,11 @@ const MAX_PUBLISH_ATTEMPTS = 5;
 /** Canonical UUID text, the only shape allowed into a `uuid[]` array literal. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Two-key advisory-lock namespaces; account and message locks never overlap. */
-export const ACCOUNT_ADVISORY_LOCK_NAMESPACE = 21002101;
-export const MESSAGE_ADVISORY_LOCK_NAMESPACE = 21002102;
+/** Advisory-lock namespace reserved for account identities. */
+const ACCOUNT_ADVISORY_LOCK_NAMESPACE = 21002101;
+
+/** Advisory-lock namespace reserved for forum messages. */
+const MESSAGE_ADVISORY_LOCK_NAMESPACE = 21002102;
 
 /** Stable key segment shared by every per-account and per-message lock implementation. */
 function advisoryLockKey(id: string): string {

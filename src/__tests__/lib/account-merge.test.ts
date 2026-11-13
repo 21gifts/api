@@ -110,6 +110,11 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
       return run({
         async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
           queries.push({ text, params });
+          if (text.includes('SELECT affected.message_id')) {
+            return [PROFILE, OTHER].map((message_id) => ({
+              message_id,
+            })) as T[];
+          }
           if (
             text.includes('SELECT legacy.message_id') &&
             text.includes('FROM message_repayment AS legacy')
@@ -258,8 +263,15 @@ describe('mergeAccounts', () => {
     const accountDelete = queries.findIndex((query) =>
       query.text.includes('DELETE FROM account WHERE id = $1'),
     );
-    const accountAdvisoryLocks = queries.findIndex((query) => query.params[2] === 21002101);
-    const messageLocks = queries.findIndex((query) => query.params[2] === 21002102);
+    const accountAdvisoryLocks = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => query.params[0] === 21002101);
+    const affectedMessageQuery = queries.findIndex((query) =>
+      query.text.includes('SELECT affected.message_id'),
+    );
+    const messageLocks = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => query.params[0] === 21002102);
     const accountRowLocks = queries.findIndex(
       (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
     );
@@ -269,11 +281,19 @@ describe('mergeAccounts', () => {
         query.text.includes('FOR UPDATE OF legacy, message'),
     );
 
-    expect(accountAdvisoryLocks).toBe(0);
-    expect(queries[accountAdvisoryLocks]?.text).toContain('ORDER BY locked.account_id');
-    expect(messageLocks).toBeGreaterThan(accountAdvisoryLocks);
-    expect(queries[messageLocks]?.text).toContain('ORDER BY affected.message_id');
-    expect(accountRowLocks).toBeGreaterThan(messageLocks);
+    expect(accountAdvisoryLocks.map(({ index }) => index)).toEqual([0, 1]);
+    expect(accountAdvisoryLocks.map(({ query }) => query.params)).toEqual([
+      [21002101, FROM],
+      [21002101, INTO],
+    ]);
+    expect(affectedMessageQuery).toBeGreaterThan(accountAdvisoryLocks[1]!.index);
+    expect(queries[affectedMessageQuery]?.text).toContain('ORDER BY affected.message_id');
+    expect(messageLocks.map(({ query }) => query.params)).toEqual([
+      [21002102, PROFILE],
+      [21002102, OTHER],
+    ]);
+    expect(messageLocks[0]!.index).toBeGreaterThan(affectedMessageQuery);
+    expect(accountRowLocks).toBeGreaterThan(messageLocks[1]!.index);
     expect(repaymentRowLocks).toBeGreaterThan(accountRowLocks);
     expect(snapshot).toBeGreaterThanOrEqual(0);
     expect(queries[snapshot]?.text).toContain('SUM(units)::bigint');
@@ -290,24 +310,38 @@ describe('mergeAccounts', () => {
 
     await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
 
-    const accountAdvisoryLocks = queries.findIndex((query) => query.params[2] === 21002101);
-    const messageLocks = queries.findIndex((query) => query.params[2] === 21002102);
+    const accountAdvisoryLocks = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => query.params[0] === 21002101);
+    const affectedMessageQuery = queries.findIndex((query) =>
+      query.text.includes('SELECT affected.message_id'),
+    );
+    const messageLocks = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => query.params[0] === 21002102);
     const accountLocks = queries.findIndex(
       (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
     );
-    expect(accountAdvisoryLocks).toBeLessThan(messageLocks);
-    expect(queries[messageLocks]?.text).toContain('SELECT id AS message_id FROM message');
-    expect(queries[messageLocks]?.text).toContain('account_id = $1::uuid OR account_id = $2::uuid');
-    expect(queries[messageLocks]?.text).toContain('SELECT message_id FROM message_invoice');
-    expect(queries[messageLocks]?.text).toContain('payer_account_id = $1::uuid');
-    expect(queries[messageLocks]?.text).toContain('author_account_id = $2::uuid');
-    expect(queries[messageLocks]?.text).toContain('SELECT message_id FROM nostr_zap_receipt');
-    expect(queries[messageLocks]?.text).toContain(
+    expect(accountAdvisoryLocks[1]!.index).toBeLessThan(affectedMessageQuery);
+    expect(queries[affectedMessageQuery]?.text).toContain('SELECT id AS message_id FROM message');
+    expect(queries[affectedMessageQuery]?.text).toContain(
+      'account_id = $1::uuid OR account_id = $2::uuid',
+    );
+    expect(queries[affectedMessageQuery]?.text).toContain('SELECT message_id FROM message_invoice');
+    expect(queries[affectedMessageQuery]?.text).toContain('payer_account_id = $1::uuid');
+    expect(queries[affectedMessageQuery]?.text).toContain('author_account_id = $2::uuid');
+    expect(queries[affectedMessageQuery]?.text).toContain(
+      'SELECT message_id FROM nostr_zap_receipt',
+    );
+    expect(queries[affectedMessageQuery]?.text).toContain(
       'payer_account_id = $1::uuid OR payer_account_id = $2::uuid',
     );
-    expect(queries[messageLocks]?.text).not.toContain('UNION ALL');
-    expect(queries[messageLocks]?.text.match(/ORDER BY affected\.message_id/g)).toHaveLength(1);
-    expect(messageLocks).toBeLessThan(accountLocks);
+    expect(queries[affectedMessageQuery]?.text).not.toContain('UNION ALL');
+    expect(
+      queries[affectedMessageQuery]?.text.match(/ORDER BY affected\.message_id/g),
+    ).toHaveLength(1);
+    expect(messageLocks[0]!.index).toBeGreaterThan(affectedMessageQuery);
+    expect(messageLocks[1]!.index).toBeLessThan(accountLocks);
   });
 
   it('refuses an immutable repayment part-key collision before any write', async () => {

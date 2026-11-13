@@ -764,13 +764,6 @@ export async function settleInvoiceManually(args: {
           now: args.now,
           ...(args.fiatRates === undefined ? {} : { fiatRates: args.fiatRates }),
         });
-  let payer: Account | undefined;
-  try {
-    payer = await args.auth.getAccount(invoice.payerAccountId);
-  } catch {
-    payer = undefined;
-    logEvent('nostr.zap.gift_reply.failed', { receiptId });
-  }
   const settlement = await args.store.withMessageLock(message.id, async (lockedStore) => {
     const lockedInvoice = await lockedStore.findOkInvoiceByPaymentHash(paymentHash);
     if (lockedInvoice?.messageId !== message.id) {
@@ -820,7 +813,12 @@ export async function settleInvoiceManually(args: {
         comment: commentFromZapRequest(lockedInvoice.zapRequest),
       });
       await lockedStore.recordZapIngest(ingest);
-      return { kind: 'stored', invoice: lockedInvoice, ingest } as const;
+      return {
+        kind: 'stored',
+        invoice: lockedInvoice,
+        ingest,
+        payerAccountId: lockedInvoice.payerAccountId,
+      } as const;
     }
     const stored = await lockedStore.recordZapReceipt(
       receiptId,
@@ -837,7 +835,12 @@ export async function settleInvoiceManually(args: {
       },
     );
     return stored
-      ? ({ kind: 'stored', invoice: lockedInvoice, ingest } as const)
+      ? ({
+          kind: 'stored',
+          invoice: lockedInvoice,
+          ingest,
+          payerAccountId: lockedInvoice.payerAccountId,
+        } as const)
       : ({ kind: 'duplicate' } as const);
   });
   if (settlement.kind === 'invoice') {
@@ -848,6 +851,14 @@ export async function settleInvoiceManually(args: {
   }
   const settledInvoice = settlement.invoice;
   const ingest = settlement.ingest;
+  const settledPayerAccountId = settlement.payerAccountId;
+  let payer: Account | undefined;
+  try {
+    payer = await args.auth.getAccount(settledPayerAccountId);
+  } catch {
+    payer = undefined;
+    logEvent('nostr.zap.gift_reply.failed', { receiptId });
+  }
   decisionsFor(args.store).set(receiptId, decisionKey(ingest.outcome, ingest.reason));
   logEvent('nostr.zap.settled_manually', {
     messageId: message.id,
@@ -860,7 +871,7 @@ export async function settleInvoiceManually(args: {
         receiptId,
         nowMs: args.now(),
         auth: args.auth,
-        payerAccountId: settledInvoice.payerAccountId,
+        payerAccountId: settledPayerAccountId,
         amountSats: settledInvoice.amountSats,
         ...(args.notificationStore === undefined ? {} : { notifications: args.notificationStore }),
         ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
@@ -982,6 +993,18 @@ export async function indexZapReceipt(args: {
    */
   fiat?: FiatAmounts | null;
 }): Promise<boolean> {
+  return (await indexZapReceiptSettlement(args)).indexed;
+}
+
+interface ZapReceiptIndexResult {
+  indexed: boolean;
+  payerAccountId?: string;
+}
+
+/** Index a receipt and retain payer identity read by the locked settlement. */
+async function indexZapReceiptSettlement(
+  args: Parameters<typeof indexZapReceipt>[0],
+): Promise<ZapReceiptIndexResult> {
   const receipt =
     args.receiptEvent ??
     ({
@@ -1010,7 +1033,7 @@ export async function indexZapReceipt(args: {
         receipt,
       }),
     );
-    return false;
+    return { indexed: false };
   }
   if (!Number.isInteger(args.amountSats) || args.amountSats <= 0) {
     logEvent('nostr.zap.rejected', { reason: 'amount' });
@@ -1027,7 +1050,7 @@ export async function indexZapReceipt(args: {
         receipt,
       }),
     );
-    return false;
+    return { indexed: false };
   }
   const now = args.now ?? Date.now;
   const baseDelta =
@@ -1046,7 +1069,7 @@ export async function indexZapReceipt(args: {
     store: MessageStore,
     delta: FiatAmounts | null,
     lockedInvoice?: MessageInvoiceAttempt,
-  ): ZapReceiptSettlement => {
+  ): { payerAccountId: string | undefined; receipt: ZapReceiptSettlement } => {
     indexedIngest = applyIngestFiat(
       zapIngestRow({
         receiptId: args.receipt.id,
@@ -1068,26 +1091,36 @@ export async function indexZapReceipt(args: {
     const suppressGiftReply =
       lockedInvoice === undefined ? args.suppressGiftReply === true : lockedInvoice.heart === true;
     return {
-      ...(payerAccountId === undefined ? {} : { payerAccountId }),
-      ...(payerComment === undefined ? {} : { comment: payerComment }),
-      ...(suppressGiftReply ? { suppressGiftReply: true } : {}),
-      ingest: indexedIngest,
-      recordIngest: (row: ZapIngestRow) => store.recordZapIngest(row),
+      payerAccountId,
+      receipt: {
+        ...(payerAccountId === undefined ? {} : { payerAccountId }),
+        ...(payerComment === undefined ? {} : { comment: payerComment }),
+        ...(suppressGiftReply ? { suppressGiftReply: true } : {}),
+        ingest: indexedIngest,
+        recordIngest: (row: ZapIngestRow) => store.recordZapIngest(row),
+      },
     };
   };
-  let settlement: 'added' | 'duplicate' | 'settled';
+  let settlement: {
+    kind: 'added' | 'duplicate' | 'settled';
+    payerAccountId: string | undefined;
+  };
   try {
     if (paymentHash === undefined) {
-      settlement = (await args.store.recordZapReceipt(
-        args.receipt.id,
-        args.messageId,
-        args.amountSats,
-        baseDelta,
-        false,
-        receiptSettlement(args.store, baseDelta),
-      ))
-        ? 'added'
-        : 'duplicate';
+      const settled = receiptSettlement(args.store, baseDelta);
+      settlement = {
+        kind: (await args.store.recordZapReceipt(
+          args.receipt.id,
+          args.messageId,
+          args.amountSats,
+          baseDelta,
+          false,
+          settled.receipt,
+        ))
+          ? 'added'
+          : 'duplicate',
+        payerAccountId: settled.payerAccountId,
+      };
     } else {
       settlement = await args.store.withMessageLock(args.messageId, async (lockedStore) => {
         let lockedInvoice: MessageInvoiceAttempt | undefined;
@@ -1102,19 +1135,23 @@ export async function indexZapReceipt(args: {
           }
         }
         const delta = pinnedInvoiceFiat(lockedInvoice) ?? baseDelta;
+        const settled = receiptSettlement(lockedStore, delta, lockedInvoice);
         if (!(await lockedStore.claimZapPayment(paymentHash, args.receipt.id, new Date(now())))) {
-          return 'settled';
+          return { kind: 'settled', payerAccountId: settled.payerAccountId } as const;
         }
-        return (await lockedStore.recordZapReceipt(
-          args.receipt.id,
-          args.messageId,
-          args.amountSats,
-          delta,
-          true,
-          receiptSettlement(lockedStore, delta, lockedInvoice),
-        ))
-          ? 'added'
-          : 'duplicate';
+        return {
+          kind: (await lockedStore.recordZapReceipt(
+            args.receipt.id,
+            args.messageId,
+            args.amountSats,
+            delta,
+            true,
+            settled.receipt,
+          ))
+            ? 'added'
+            : 'duplicate',
+          payerAccountId: settled.payerAccountId,
+        } as const;
       });
     }
   } catch (error: unknown) {
@@ -1122,10 +1159,10 @@ export async function indexZapReceipt(args: {
       throw error;
     }
     logEvent('nostr.zap.ingest.record_failed');
-    return false;
+    return { indexed: false };
   }
-  if (settlement !== 'added') {
-    if (settlement === 'settled') {
+  if (settlement.kind !== 'added') {
+    if (settlement.kind === 'settled') {
       logEvent('nostr.zap.rejected', { reason: 'settled' });
     }
     await persistZapIngest(
@@ -1135,20 +1172,25 @@ export async function indexZapReceipt(args: {
         noteEventId,
         messageId: args.messageId,
         outcome: 'rejected',
-        reason: settlement,
+        reason: settlement.kind,
         amountSats: args.amountSats,
         receiptPubkey: args.receipt.pubkey,
         receipt,
       }),
     );
-    return false;
+    return { indexed: false };
   }
   logEvent('nostr.zap.indexed', { messageId: args.messageId, sats: args.amountSats });
   decisionsFor(args.store).set(
     args.receipt.id,
     decisionKey(indexedIngest!.outcome, indexedIngest!.reason),
   );
-  return true;
+  return {
+    indexed: true,
+    ...(settlement.payerAccountId === undefined
+      ? {}
+      : { payerAccountId: settlement.payerAccountId }),
+  };
 }
 
 /**
@@ -1949,7 +1991,7 @@ async function ingestOneReceipt(
     resolvedPayer?.kind === 'account' && heartInvoice === undefined
       ? resolvedPayer.text
       : undefined;
-  const indexed = await indexZapReceipt({
+  const settlement = await indexZapReceiptSettlement({
     store: args.store,
     messageId: row.id,
     receipt: { id: event.id, pubkey: event.pubkey, tags: event.tags },
@@ -1966,32 +2008,44 @@ async function ingestOneReceipt(
     ...(payerComment === undefined ? {} : { payerComment }),
     rereadInvoice: true,
   });
-  if (!indexed && (await args.store.zapPaymentReceiptId(decoded.paymentHash)) !== event.id) {
+  if (
+    !settlement.indexed &&
+    (await args.store.zapPaymentReceiptId(decoded.paymentHash)) !== event.id
+  ) {
     return;
   }
-  if (indexed && row.accountId !== null) {
-    const payer = resolvedPayer?.kind === 'account' ? resolvedPayer.payer : undefined;
-    if (heartInvoice !== undefined) {
+  if (settlement.indexed && row.accountId !== null) {
+    let payer: Account | undefined;
+    if (settlement.payerAccountId !== undefined) {
       try {
-        await notifyHeart({
-          note: row,
-          receiptId: event.id,
-          nowMs: args.now(),
-          auth: args.auth,
-          payerAccountId: heartInvoice.payerAccountId,
-          amountSats,
-          ...(args.notificationStore === undefined
-            ? {}
-            : { notifications: args.notificationStore }),
-          ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
-          /* v8 ignore next 3 -- production worker always has conversationStore */
-          ...(args.conversations === undefined
-            ? {}
-            : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
-          ...(payer === undefined ? {} : { payerName: payer.name ?? 'Someone' }),
-        });
+        payer = await args.auth.getAccount(settlement.payerAccountId);
       } catch {
-        logEvent('push.enqueue.failed');
+        payer = undefined;
+      }
+    }
+    if (heartInvoice !== undefined) {
+      if (settlement.payerAccountId !== undefined) {
+        try {
+          await notifyHeart({
+            note: row,
+            receiptId: event.id,
+            nowMs: args.now(),
+            auth: args.auth,
+            payerAccountId: settlement.payerAccountId,
+            amountSats,
+            ...(args.notificationStore === undefined
+              ? {}
+              : { notifications: args.notificationStore }),
+            ...(args.pushStore === undefined ? {} : { pushStore: args.pushStore }),
+            /* v8 ignore next 3 -- production worker always has conversationStore */
+            ...(args.conversations === undefined
+              ? {}
+              : { inboxUnreadCount: inboxUnreadCountFor(args.conversations, args.auth) }),
+            ...(payer === undefined ? {} : { payerName: payer.name ?? 'Someone' }),
+          });
+        } catch {
+          logEvent('push.enqueue.failed');
+        }
       }
     } else if (!isPlatformFeeNote(author, row)) {
       try {
