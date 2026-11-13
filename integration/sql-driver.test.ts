@@ -5049,9 +5049,145 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
 describe('Postgres wallet-transfer account merge reconciliation', () => {
   const hex64 = (): string =>
     `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+  type TransferState = {
+    direction: 'in' | 'out';
+    type: 'transfer' | 'swap';
+    status: 'pending' | 'completed' | 'expired';
+    amountSats: number;
+    updatedAt: string | null;
+    seenAt: string;
+  };
+  const completedSource: TransferState = {
+    direction: 'out',
+    type: 'transfer',
+    status: 'completed',
+    amountSats: 21,
+    updatedAt: null,
+    seenAt: '2026-11-12T12:00:00.000Z',
+  };
+  const completedSurvivor: TransferState = {
+    ...completedSource,
+    amountSats: 22,
+  };
+  const cases: ReadonlyArray<{
+    name: string;
+    source: TransferState;
+    survivor: TransferState;
+    expected: 'source' | 'survivor';
+    hasShopPayment: boolean;
+  }> = [
+    {
+      name: 'keeps the source when only it has an operator update time',
+      source: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 31,
+        updatedAt: '2026-11-12T11:00:00.000Z',
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      survivor: {
+        ...completedSurvivor,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      expected: 'source',
+      hasShopPayment: false,
+    },
+    {
+      name: 'keeps the survivor when only it has an operator update time',
+      source: {
+        ...completedSource,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      survivor: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 32,
+        updatedAt: '2026-11-12T11:00:00.000Z',
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      expected: 'survivor',
+      hasShopPayment: false,
+    },
+    {
+      name: 'keeps the survivor when operator update times are equal',
+      source: {
+        ...completedSource,
+        updatedAt: '2026-11-12T11:00:00.000Z',
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      survivor: {
+        direction: 'in',
+        type: 'swap',
+        status: 'pending',
+        amountSats: 33,
+        updatedAt: '2026-11-12T11:00:00.000Z',
+        seenAt: '2026-11-12T12:00:00.000Z',
+      },
+      expected: 'survivor',
+      hasShopPayment: false,
+    },
+    {
+      name: 'keeps a completed outgoing source over a later-seen expired survivor',
+      source: completedSource,
+      survivor: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 34,
+        updatedAt: null,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      expected: 'source',
+      hasShopPayment: true,
+    },
+    {
+      name: 'keeps a completed outgoing survivor over a later-seen expired source',
+      source: {
+        direction: 'in',
+        type: 'swap',
+        status: 'expired',
+        amountSats: 35,
+        updatedAt: null,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      survivor: completedSurvivor,
+      expected: 'survivor',
+      hasShopPayment: true,
+    },
+    {
+      name: 'keeps a completed outgoing source over a later-seen pending survivor',
+      source: completedSource,
+      survivor: {
+        direction: 'in',
+        type: 'transfer',
+        status: 'pending',
+        amountSats: 36,
+        updatedAt: null,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      expected: 'source',
+      hasShopPayment: true,
+    },
+    {
+      name: 'keeps a completed outgoing survivor over a later-seen pending source',
+      source: {
+        direction: 'in',
+        type: 'transfer',
+        status: 'pending',
+        amountSats: 37,
+        updatedAt: null,
+        seenAt: '2026-11-12T13:00:00.000Z',
+      },
+      survivor: completedSurvivor,
+      expected: 'survivor',
+      hasShopPayment: true,
+    },
+  ];
 
-  for (const completedSide of ['source', 'survivor'] as const) {
-    test(`keeps a completed ${completedSide} when both operator update times are null`, async () => {
+  for (const mergeCase of cases) {
+    test(mergeCase.name, async () => {
       const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
       const from = crypto.randomUUID();
       const into = crypto.randomUUID();
@@ -5059,6 +5195,7 @@ describe('Postgres wallet-transfer account merge reconciliation', () => {
       const shopMessageId = crypto.randomUUID();
       const walletPubkey = `02${hex64()}`;
       const shopPubkey = `03${hex64()}`;
+      const externalPubkey = `02${hex64()}`;
       const transferId = crypto.randomUUID();
       try {
         await migrateMergeTables(client);
@@ -5096,45 +5233,88 @@ describe('Postgres wallet-transfer account merge reconciliation', () => {
           ...unsignedNostrDefaults(),
           shopAccount: { id: shop, username: null, name: 'Merge shop' },
         });
-        const completedAccount = completedSide === 'source' ? from : into;
-        const pendingAccount = completedSide === 'source' ? into : from;
-        await client.execute(
-          `INSERT INTO wallet_transfer (
-             account_id, wallet_pubkey, transfer_id, direction, type, status,
-             amount_sats, counterparty_pubkey, counterparty_pubkeys,
-             counterparty_account_id, spark_invoice, transfer_created_at,
-             transfer_updated_at, first_seen_at, last_seen_at
-           ) VALUES
-             ($1, $3, $4, 'out', 'transfer', 'completed', 21, $5, ARRAY[$5],
-              NULL, NULL, $6, NULL, $6, $6),
-             ($2, $3, $4, 'in', 'transfer', 'pending', 1, $5, ARRAY[$5],
-              NULL, NULL, $6, NULL, $6, $7)`,
-          [
-            completedAccount,
-            pendingAccount,
-            walletPubkey,
-            transferId,
-            shopPubkey,
-            new Date('2026-11-12T12:00:00.000Z'),
-            new Date('2026-11-12T13:00:00.000Z'),
-          ],
-        );
+        const insertTransfer = async (accountId: string, state: TransferState): Promise<void> => {
+          const shopPayment =
+            state.status === 'completed' && state.direction === 'out' && state.type === 'transfer';
+          const counterpartyPubkey = shopPayment ? shopPubkey : externalPubkey;
+          const createdAt = new Date(`2026-11-12T10:${String(state.amountSats)}:00.000Z`);
+          await client.execute(
+            `INSERT INTO wallet_transfer (
+               account_id, wallet_pubkey, transfer_id, direction, type, status,
+               amount_sats, counterparty_pubkey, counterparty_pubkeys,
+               counterparty_account_id, spark_invoice, transfer_created_at,
+               transfer_updated_at, first_seen_at, last_seen_at
+             ) VALUES (
+               $1, $2, $3, $4, $5, $6, $7, $8, ARRAY[$8], $9, $10, $11, $12, $11, $13
+             )`,
+            [
+              accountId,
+              walletPubkey,
+              transferId,
+              state.direction,
+              state.type,
+              state.status,
+              state.amountSats,
+              counterpartyPubkey,
+              shopPayment ? shop : null,
+              `invoice-${state.amountSats}`,
+              createdAt,
+              state.updatedAt === null ? null : new Date(state.updatedAt),
+              new Date(state.seenAt),
+            ],
+          );
+        };
+        await insertTransfer(from, mergeCase.source);
+        await insertTransfer(into, mergeCase.survivor);
 
         expect(await mergeAccounts(mergeDb, { from, into, verify: 'into' })).toEqual({
           ok: true,
           messages: 0,
         });
+        const expected = mergeCase.expected === 'source' ? mergeCase.source : mergeCase.survivor;
+        const expectedShopPayment =
+          expected.status === 'completed' &&
+          expected.direction === 'out' &&
+          expected.type === 'transfer';
+        const expectedCounterpartyPubkey = expectedShopPayment ? shopPubkey : externalPubkey;
         await expect(
-          client.query<{ status: string; direction: string; amount_sats: string }>(
-            `SELECT status, direction, amount_sats::text AS amount_sats
+          client.query<{
+            status: string;
+            direction: string;
+            type: string;
+            amount_sats: string;
+            counterparty_pubkey: string;
+            counterparty_pubkeys: string[];
+            counterparty_account_id: string | null;
+            spark_invoice: string | null;
+            transfer_created_at: Date;
+            transfer_updated_at: Date | null;
+          }>(
+            `SELECT status, direction, type, amount_sats::text AS amount_sats,
+                    counterparty_pubkey, counterparty_pubkeys,
+                    counterparty_account_id, spark_invoice, transfer_created_at,
+                    transfer_updated_at
              FROM wallet_transfer
              WHERE account_id = $1 AND wallet_pubkey = $2 AND transfer_id = $3`,
             [into, walletPubkey, transferId],
           ),
-        ).resolves.toEqual([{ status: 'completed', direction: 'out', amount_sats: '21' }]);
+        ).resolves.toEqual([
+          {
+            status: expected.status,
+            direction: expected.direction,
+            type: expected.type,
+            amount_sats: String(expected.amountSats),
+            counterparty_pubkey: expectedCounterpartyPubkey,
+            counterparty_pubkeys: [expectedCounterpartyPubkey],
+            counterparty_account_id: expectedShopPayment ? shop : null,
+            spark_invoice: `invoice-${expected.amountSats}`,
+            transfer_created_at: new Date(`2026-11-12T10:${String(expected.amountSats)}:00.000Z`),
+            transfer_updated_at: expected.updatedAt === null ? null : new Date(expected.updatedAt),
+          },
+        ]);
         await expect(
           new PostgresWalletTransferStore(client).hasShopPayment(into, '2026-11-11', '2026-11-13'),
-        ).resolves.toBe(true);
+        ).resolves.toBe(mergeCase.hasShopPayment);
       } finally {
         await client.execute('DELETE FROM wallet_transfer WHERE account_id IN ($1, $2)', [
           from,

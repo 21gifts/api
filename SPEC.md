@@ -2842,9 +2842,11 @@ stays `null`)).
 `payoutToday` is computed for the current UTC day from the same durable facts
 as the payout paths. A recorded `daily` gift to this member today is
 `{ state: "paid", reason: null }`; if there is no daily gift but a `welcome`
-gift was recorded today, it is `{ state: "paid", reason: "welcome" }` because
-the welcome gift replaces that day's daily payout. Otherwise the api stops at
-the first missing condition in this order: the role must no longer be `basis`
+gift was recorded today, it is `{ state: "paid", reason: "welcome" }` only for
+an exactly `verified` non-platform welcome recipient. For every other role and
+the platform account it is `{ state: "paid", reason: null }`: the row still
+replaces that day's daily payout. Otherwise the api stops at the first missing
+condition in this order: the role must no longer be `basis`
 (`verify`), the member must be in the grant program today (`admission`), the
 in-app wallet must be verified (`wallet`), a recovery share must exist when
 `recoveryShareRequired` applies (`recovery_share`), a verified shop payment
@@ -4581,9 +4583,14 @@ record of the value-movement facts those two sources observe or report.
   Rows are retained; account merge moves them to the survivor like
   `wallet_payment`. If both accounts have this composite key, the survivor row
   keeps the earliest `first_seen_at` and greatest `last_seen_at`; mutable state
-  comes from the later operator update time only when both rows have one.
-  Otherwise a final state wins over `pending`, and equivalent states use the
-  later `last_seen_at`. The source duplicate is then deleted.
+  comes from the newer operator update time when both rows have one, with equal
+  times keeping the survivor; when only one row has an operator update time,
+  that row supplies the mutable state. Only when both times are null, a
+  completed outgoing `transfer` (the shop-payment shape) wins first; otherwise
+  a final state (`completed`, `cancelled`, `expired`, or `returned`) wins over
+  `pending`, then the later `last_seen_at` wins, with a tie keeping the
+  survivor. Thus a stored operator update time is never replaced with null.
+  The source duplicate is then deleted.
 - `wallet_token_transaction`: one row per
   `(account_id, wallet_pubkey, transaction_hash)`. It stores only the token
   identifier, owner-relative direction and decimal amount, counterparty keys,
@@ -7677,9 +7684,9 @@ recipient handle), or a recorded `welcome` gift with description
 `21gifts welcome` under its username at or after its wallet verification, is
 not pinged again (`spend.ping.skipped` / `welcomed` for a single-account
 ping), whichever address the gift went to, so a member whose receiving address
-changed is not paid twice. Replies, basis accounts, and the platform account do
-not welcome-ping. An eligible text-only post with no photo or video anywhere does
-not welcome-ping.
+changed is not paid twice. Replies, every role other than exactly `verified`,
+and the platform account do not welcome-ping. An eligible text-only post with
+no photo or video anywhere does not welcome-ping.
 Errors are logged; the POST still
 returns **200**. Replies do not ping. Idempotent media replay does not ping
 again. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the

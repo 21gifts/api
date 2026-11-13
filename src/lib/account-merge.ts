@@ -1087,8 +1087,25 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
                 CASE
                   WHEN src.transfer_updated_at IS NOT NULL
                    AND dst.transfer_updated_at IS NOT NULL
-                   AND src.transfer_updated_at <> dst.transfer_updated_at
                     THEN src.transfer_updated_at > dst.transfer_updated_at
+                  WHEN src.transfer_updated_at IS NOT NULL THEN true
+                  WHEN dst.transfer_updated_at IS NOT NULL THEN false
+                  WHEN src.status = 'completed'
+                   AND src.direction = 'out'
+                   AND src.type = 'transfer'
+                   AND NOT (
+                     dst.status = 'completed'
+                     AND dst.direction = 'out'
+                     AND dst.type = 'transfer'
+                   ) THEN true
+                  WHEN dst.status = 'completed'
+                   AND dst.direction = 'out'
+                   AND dst.type = 'transfer'
+                   AND NOT (
+                     src.status = 'completed'
+                     AND src.direction = 'out'
+                     AND src.type = 'transfer'
+                   ) THEN false
                   WHEN src.status <> 'pending' AND dst.status = 'pending' THEN true
                   WHEN src.status = 'pending' AND dst.status <> 'pending' THEN false
                   ELSE src.last_seen_at > dst.last_seen_at
