@@ -108,7 +108,7 @@ interface FakeDatabaseOptions {
   }[];
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
-  /** Repayable credits where both identities gave and either has a historical invoice. */
+  /** Repayable credits with an unsettled historical invoice involving either identity. */
   historicalRepaymentInvoiceConflicts?: readonly { message_id: string }[];
   /** Existing source/survivor invoices or settled rows with the same immutable part key. */
   partKeyCollisions?: readonly { message_id: string }[];
@@ -167,7 +167,7 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
             return (options.repaymentInvoiceAttempts ?? []) as T[];
           }
           if (
-            text.includes('FROM message AS credit') &&
+            text.includes('WITH historical_invoices AS') &&
             text.includes('FROM message_invoice AS historical')
           ) {
             return (options.historicalRepaymentInvoiceConflicts ?? []) as T[];
@@ -687,7 +687,7 @@ describe('mergeAccounts', () => {
     ['part', `repayp:0:${FROM}:1:100:200`],
     ['legacy', `repay:0:${FROM}`],
   ])(
-    'refuses an expired unpaid %s invoice after both accounts gave to the credit',
+    'refuses an expired unpaid %s invoice for either identity without exact settlement',
     async (_kind, description) => {
       const { db, queries } = fakeDatabase({
         openRepaymentInvoices: [
@@ -720,8 +720,8 @@ describe('mergeAccounts', () => {
       expect(partCollisionRefusal).toBeGreaterThan(openRefusal);
       expect(historicalRefusal).toBeGreaterThan(partCollisionRefusal);
       expect(historical?.params).toEqual([FROM, INTO]);
-      expect(historical?.text).toContain('source_gift.payer_account_id = $1::uuid');
-      expect(historical?.text).toContain('survivor_gift.payer_account_id = $2::uuid');
+      expect(historical?.text).toContain('WITH historical_invoices AS');
+      expect(historical?.text).toContain('credit.goal_repayable IS TRUE');
       expect(historical?.text).toContain("historical.result = 'ok'");
       expect(historical?.text).toContain("historical.description LIKE 'repay:%'");
       expect(historical?.text).toContain("historical.description LIKE 'repayp:%'");
@@ -734,7 +734,12 @@ describe('mergeAccounts', () => {
       expect(historical?.text).not.toContain('historical.created_at');
       expect(historical?.text).not.toContain('historical.payment_hash');
       expect(historical?.text).not.toContain('historical.pr');
-      expect(historical?.text).not.toContain('message_repayment');
+      expect(historical?.text).toContain('FROM message_repayment AS settled');
+      expect(historical?.text).toContain('settled.day_index::numeric');
+      expect(historical?.text).toContain('FROM message_repayment_part AS settled_part');
+      expect(historical?.text).toContain('settled_part.part_index::numeric');
+      expect(historical?.text).toContain('settled_part.units = ((historical.part)[3])::numeric');
+      expect(historical?.text).toContain('settled_part.sats = historical.amount_sats');
       expect(
         queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
       ).toBe(false);

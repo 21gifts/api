@@ -128,10 +128,11 @@ function quoteIdentifier(identifier: string): string {
  * account's id and words, so the surviving account could never open it.
  * Frozen credit snapshots are combined by message. Before either identity is
  * moved, the merge refuses without writes when both identities gave to one
- * credit with a settled repayment or any successfully issued historical
- * repayment invoice for either identity, when a still-payable repayment
- * invoice embeds either identity on an affected source-funded credit, or when
- * such an invoice has a payment claim but no exact settlement row (including
+ * credit with a settled repayment, when either identity has any successfully
+ * issued historical repayment invoice without its exact settlement row, when
+ * a still-payable repayment invoice embeds either identity on an affected
+ * source-funded credit, or when such an invoice has a payment claim but no
+ * exact settlement row (including
  * part index, units, and sats for a part). It also refuses when any historical
  * part invoice or settled part of one identity has the same message, day, and
  * immutable part index as an invoice or settled part of the other identity.
@@ -455,55 +456,71 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     if (partKeyCollisions.length > 0) {
       return { ok: false, error: 'repayment_unavailable' };
     }
-    // Combining two giver shares can change their rounded day slices. Once a
-    // successful repayment invoice has exposed the old plan, keep that plan
-    // immutable even if the invoice expired, was claimed, or already settled:
-    // a late receipt or manual settlement can still identify it historically.
-    const historicalDualGiverInvoices = await tx.query<{ message_id: string }>(
-      `SELECT credit.id AS message_id
-       FROM message AS credit
-       WHERE credit.goal_repayable IS TRUE
-         AND EXISTS (
-           SELECT 1 FROM nostr_zap_receipt AS source_gift
-           WHERE source_gift.message_id = credit.id
-             AND source_gift.payer_account_id = $1::uuid
-             AND (
-               credit.goal_funded_at IS NULL
-               OR source_gift.recorded_at IS NULL
-               OR source_gift.recorded_at <= credit.goal_funded_at
-             )
+    // A late receipt is checked against the invoice author's current wallet.
+    // Because message_invoice does not persist the provider pubkey used at
+    // issuance, moving either identity would make an unsettled historical
+    // invoice unverifiable. Refuse it regardless of expiry or claim state.
+    // Exact legacy and part settlements are safe and do not block the merge.
+    const unsettledHistoricalInvoices = await tx.query<{ message_id: string }>(
+      `WITH historical_invoices AS (
+         SELECT historical.message_id, historical.author_account_id,
+                historical.amount_sats,
+                regexp_match(
+                  historical.description,
+                  '^repay:([0-9]+):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+                  'i'
+                ) AS legacy,
+                regexp_match(
+                  historical.description,
+                  '^repayp:([0-9]+):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:([0-9]+):([0-9]+):([0-9]+)$',
+                  'i'
+                ) AS part
+         FROM message_invoice AS historical
+         JOIN message AS credit ON credit.id = historical.message_id
+         WHERE credit.goal_repayable IS TRUE
+           AND historical.result = 'ok'
+           AND (
+             historical.description LIKE 'repay:%'
+             OR historical.description LIKE 'repayp:%'
+           )
+           AND (
+             historical.author_account_id = $1::uuid
+             OR historical.author_account_id = $2::uuid
+             OR historical.description LIKE 'repay:%:' || $1::text
+             OR historical.description LIKE 'repayp:%:' || $1::text || ':%'
+             OR historical.description LIKE 'repay:%:' || $2::text
+             OR historical.description LIKE 'repayp:%:' || $2::text || ':%'
+           )
+       )
+       SELECT historical.message_id
+       FROM historical_invoices AS historical
+       WHERE (
+         historical.legacy IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM message_repayment AS settled
+           WHERE settled.message_id = historical.message_id
+             AND settled.recipient_account_id = historical.author_account_id
+             AND settled.day_index::numeric = ((historical.legacy)[1])::numeric
          )
-         AND EXISTS (
-           SELECT 1 FROM nostr_zap_receipt AS survivor_gift
-           WHERE survivor_gift.message_id = credit.id
-             AND survivor_gift.payer_account_id = $2::uuid
-             AND (
-               credit.goal_funded_at IS NULL
-               OR survivor_gift.recorded_at IS NULL
-               OR survivor_gift.recorded_at <= credit.goal_funded_at
-             )
+       ) OR (
+         historical.part IS NOT NULL
+         AND ((historical.part)[2])::numeric <= 9007199254740991::numeric
+         AND ((historical.part)[3])::numeric > 0::numeric
+         AND ((historical.part)[4])::numeric > 0::numeric
+         AND NOT EXISTS (
+           SELECT 1 FROM message_repayment_part AS settled_part
+           WHERE settled_part.message_id = historical.message_id
+             AND settled_part.recipient_account_id = historical.author_account_id
+             AND settled_part.day_index::numeric = ((historical.part)[1])::numeric
+             AND settled_part.part_index::numeric = ((historical.part)[2])::numeric
+             AND settled_part.units = ((historical.part)[3])::numeric
+             AND settled_part.sats = historical.amount_sats
          )
-         AND EXISTS (
-           SELECT 1 FROM message_invoice AS historical
-           WHERE historical.message_id = credit.id
-             AND historical.result = 'ok'
-             AND (
-               historical.description LIKE 'repay:%'
-               OR historical.description LIKE 'repayp:%'
-             )
-             AND (
-               historical.author_account_id = $1::uuid
-               OR historical.author_account_id = $2::uuid
-               OR historical.description LIKE 'repay:%:' || $1::text
-               OR historical.description LIKE 'repayp:%:' || $1::text || ':%'
-               OR historical.description LIKE 'repay:%:' || $2::text
-               OR historical.description LIKE 'repayp:%:' || $2::text || ':%'
-             )
-         )
+       )
        LIMIT 1`,
       accountParams,
     );
-    if (historicalDualGiverInvoices.length > 0) {
+    if (unsettledHistoricalInvoices.length > 0) {
       return { ok: false, error: 'repayment_unavailable' };
     }
     const legacyRepayments = await tx.query<LegacyRepaymentRow>(

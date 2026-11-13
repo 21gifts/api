@@ -1195,8 +1195,12 @@ function fiatPrepayAmount(amount: unknown): { units: bigint; typed: string } | n
  */
 interface PrepayPlan {
   allocation: ReturnType<typeof allocateRepayment>;
+  /** Largest prefix that cannot hit an existing-payment conflict. */
+  maxUnits: bigint;
   maxSats: number | null;
   maxAmount: string | null;
+  /** The accepted prefix ended because the next receivable share conflicts. */
+  stoppedAtBlockingShare: boolean;
   price: (units: bigint) => number | null;
   fiat: boolean;
   shares: ShareState[];
@@ -1225,9 +1229,6 @@ async function prepayPlan(
   }
   const fiat = isFiatCredit(row);
   const remainingShares = plan.shares.filter((share) => share.paidUnits < share.units);
-  const maxUnits = remainingShares
-    .filter((share) => share.canReceive)
-    .reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
   const allocation = allocateRepayment(
     amountUnits,
     remainingShares.map((share) => ({
@@ -1241,30 +1242,62 @@ async function prepayPlan(
     })),
     maxParts,
   );
-  const maximum = allocateRepayment(
-    maxUnits,
-    remainingShares.map((share) => ({
-      dayIndex: share.dayIndex,
-      accountId: share.accountId,
-      units: share.units,
-      paidUnits: share.paidUnits,
-      nextPartIndex: share.nextPartIndex,
-      openParts: share.openParts,
-      canReceive: share.canReceive,
-    })),
-  );
-  const price = maxUnits === 0n ? () => 0 : await sharePricer(deps, row).catch(() => null);
+  const maximum = maximumAcceptedRepayment(remainingShares);
+  const price = maximum.usedUnits === 0n ? () => 0 : await sharePricer(deps, row).catch(() => null);
   if (price === null) {
     return 'unavailable';
   }
   const maxSats = pricedSum(price, maximum.parts);
   return {
     allocation,
+    maxUnits: maximum.usedUnits,
     maxSats,
-    maxAmount: fiat ? formatCents(maxUnits) : null,
+    maxAmount: fiat ? formatCents(maximum.usedUnits) : null,
+    stoppedAtBlockingShare: maximum.stoppedAtBlockingShare,
     price,
     fiat,
     shares: plan.shares,
+  };
+}
+
+/**
+ * Largest plan-order prefix an amount request can accept without 409.
+ *
+ * Unreceivable shares are skipped just as allocation skips them. A receivable
+ * legacy/oversized/claim-only reservation is the first blocking share, so no
+ * later remainder is advertised even when it could otherwise receive.
+ */
+function maximumAcceptedRepayment(
+  shares: readonly ShareState[],
+  maxBills: number = Number.MAX_SAFE_INTEGER,
+): ReturnType<typeof allocateRepayment> & { stoppedAtBlockingShare: boolean } {
+  const prefix: ShareState[] = [];
+  let stoppedAtBlockingShare = false;
+  for (const share of shares) {
+    if (share.canReceive && share.paidUnits < share.units && share.legacyOpen) {
+      stoppedAtBlockingShare = true;
+      break;
+    }
+    prefix.push(share);
+  }
+  const maxUnits = prefix
+    .filter((share) => share.canReceive && share.paidUnits < share.units)
+    .reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
+  return {
+    ...allocateRepayment(
+      maxUnits,
+      prefix.map((share) => ({
+        dayIndex: share.dayIndex,
+        accountId: share.accountId,
+        units: share.units,
+        paidUnits: share.paidUnits,
+        nextPartIndex: share.nextPartIndex,
+        openParts: share.openParts,
+        canReceive: share.canReceive,
+      })),
+      maxBills,
+    ),
+    stoppedAtBlockingShare,
   };
 }
 
@@ -1404,7 +1437,10 @@ async function repaymentAmountLocked(
   if (plan.allocation.maxUnits === 0n) {
     return c.json({ error: NOTHING_DUE_BODY }, 400);
   }
-  if (parsed.units > plan.allocation.maxUnits) {
+  if (parsed.units > plan.maxUnits) {
+    if (plan.stoppedAtBlockingShare) {
+      return c.json({ error: OPEN_PAYMENT_BODY }, 409);
+    }
     return c.json(
       {
         error: AMOUNT_TOO_HIGH_BODY,
@@ -1416,16 +1452,6 @@ async function repaymentAmountLocked(
     );
   }
   if (plan.allocation.openBillExceedsAmount) {
-    return c.json({ error: OPEN_PAYMENT_BODY }, 409);
-  }
-  const initialShares = new Map(
-    plan.shares.map((share) => [`${share.dayIndex}:${share.accountId}`, share]),
-  );
-  if (
-    plan.allocation.parts.some(
-      (part) => initialShares.get(`${part.dayIndex}:${part.accountId}`)?.legacyOpen === true,
-    )
-  ) {
     return c.json({ error: OPEN_PAYMENT_BODY }, 409);
   }
   if (plan.allocation.parts.length > REPAYMENT_BILLS_MAX) {
@@ -1940,10 +1966,7 @@ async function loanRow(
   );
   const nextDay = open.find((share) => share.dayIndex >= plan.daysDue)?.dayIndex;
   const nextShares = open.filter((share) => share.dayIndex === nextDay);
-  const maxUnits = open
-    .filter((share) => share.canReceive)
-    .reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
-  const maximum = cappedAllocation(plan.shares, maxUnits);
+  const maximum = maximumAcceptedRepayment(plan.shares, REPAYMENT_BILLS_MAX);
   return {
     ...base,
     daysDue: plan.daysDue,

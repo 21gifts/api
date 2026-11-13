@@ -12,7 +12,11 @@ import type { GoalRateDay } from '@/lib/goal-rate';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { MessageInvoiceAttempt } from '@/lib/message-store';
 import { resolveZapRelays } from '@/lib/nostr/relays';
-import { formatCents, repaymentPartDescription } from '@/lib/credit-repayment';
+import {
+  formatCents,
+  repaymentDescription,
+  repaymentPartDescription,
+} from '@/lib/credit-repayment';
 import { bolt11ExpiresAtMs } from '@/lib/bolt11';
 import {
   BOLT11,
@@ -2082,7 +2086,7 @@ describe('repayment from the in-app wallet', () => {
     expect(attempts[0]).toMatchObject({ result: 'credit_closed', pr: null });
   });
 
-  it('prepays in plan order and refuses more than the remaining max', async () => {
+  it('uses amount_too_high only above an unblocked receivable total', async () => {
     await withNip57(async () => {
       const { app, messages } = await readyCredit({ termDays: 3 });
       const tooHigh = await app.request(`/messages/${CREDIT}/repayment`, {
@@ -2159,6 +2163,75 @@ describe('repayment from the in-app wallet', () => {
       loans: [{ totalSats: 9, maxSats: 9, maxAmount: '0.03' }],
     });
   });
+
+  it.each(['claim-only legacy', 'legacy after a part'] as const)(
+    'stops every advertised maximum before a %s blocker and conflicts above that prefix',
+    async (kind) => {
+      await withNip57(async () => {
+        const { app, messages, clock } = await loanSetup({
+          termDays: 3,
+          givers: [{ id: WALLET_GIVER, sats: 21, wallet: true }],
+        });
+        if (kind === 'claim-only legacy') {
+          const paymentHash = 'ac'.repeat(32);
+          await messages.recordInvoiceAttempt({
+            ...openPartAttempt(7, 7n, 7n, new Date(clock.now - 30 * 86_400_000)),
+            paymentHash,
+            description: repaymentDescription(1, WALLET_GIVER),
+          });
+          expect(
+            await messages.claimZapPayment(paymentHash, 'claim-only-legacy', new Date(clock.now)),
+          ).toBe(true);
+        } else {
+          await messages.markRepaymentPartPaid({
+            messageId: CREDIT,
+            dayIndex: 1,
+            recipientAccountId: WALLET_GIVER,
+            partIndex: 0,
+            units: 2n,
+            sats: 2,
+            shareUnits: 7n,
+            paidAt: new Date(clock.now),
+          });
+          await messages.recordInvoiceAttempt({
+            ...openPartAttempt(7, 7n, 7n, new Date(clock.now)),
+            description: repaymentDescription(1, WALLET_GIVER),
+          });
+        }
+
+        expect(await (await loans(app)).json()).toMatchObject({
+          loans: [{ maxSats: 7, maxAmount: null }],
+        });
+        const blocked = await app.request(`/messages/${CREDIT}/repayment`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${AUTHOR}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ amount: kind === 'claim-only legacy' ? '21' : '19' }),
+        });
+        expect(blocked.status).toBe(409);
+        expect(await blocked.json()).toEqual({
+          error: 'A payment for this share is still open',
+        });
+
+        const maximum = await app.request(`/messages/${CREDIT}/repayment`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${AUTHOR}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ amount: '7' }),
+        });
+        expect(maximum.status).toBe(200);
+        expect(await maximum.json()).toMatchObject({
+          amountSats: 7,
+          amount: null,
+          bills: [{ dayIndex: 0, amountSats: 7 }],
+        });
+      });
+    },
+  );
 
   it('does not auto-close a naturally funded loan on its first prepayment', async () => {
     await withNip57(async () => {

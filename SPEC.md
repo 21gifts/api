@@ -2926,7 +2926,7 @@ Success → **Response** `200`:
 ```
 
 - `text` is the first 160 characters of the note. `goalCurrency` is the ask currency (`BTC` when none is stored) and `goalAmount` the typed amount (the goal sats when none is stored). The `goalAmount*` and `amount*` keys are the stored ask snapshots and collected totals, as on the public note.
-- `fundedAt` is null while the loan is still collecting; such a loan has `daysDue` 0, `daysPaid` 0, `repaidSats` 0, zero `due` counts, and `next: null`. `closedAt` is the explicit close instant or null. `maxSats` and `maxAmount` are the largest optional amount `POST /messages/:id/repayment` accepts: the sum of unpaid remainders whose giver can receive (for a still-collecting loan, the collected amount restricted to those givers); `maxSats` sums the separately rounded sat price of each bill that maximum would create, while `maxAmount` is the two-decimal fiat string, else null.
+- `fundedAt` is null while the loan is still collecting; such a loan has `daysDue` 0, `daysPaid` 0, `repaidSats` 0, zero `due` counts, and `next: null`. `closedAt` is the explicit close instant or null. `maxSats` and `maxAmount` are the largest optional amount `POST /messages/:id/repayment` accepts. Funded loans walk unpaid remainders in plan order, skip givers who cannot receive, and stop before the first receivable share whose legacy, oversized, or claim-only reservation would return 409; later payable shares are not advertised. For a still-collecting loan, the maximum is the collected amount restricted to receiving givers. `maxSats` sums the separately rounded sat price of each bill that maximum would create, while `maxAmount` is the two-decimal fiat string, else null.
 - `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. One read of legacy repayments and parts supplies the plan, `repaidSats`, every open remainder, and all derived totals. `repaidSats` adds exact `message_repayment_part.sats` and only legacy full-share rows with no parts, so every payment is counted once. `totalSats` is `repaidSats` plus every unpaid remainder in sats and never combines different settlement snapshots; sats with no account are not repaid and not counted.
 - `due` covers every due, unpaid share. `payable*` are the shares whose lender can receive (the ones `POST /messages/:id/repayment/due` bills), `waiting*` the shares whose lender cannot. `*People` counts distinct lenders and `waitingShares` the waiting shares. `behindDays` is the number of due days before today that still have an unpaid share that is not waiting and did not fall due before its lender's wallet was verified (the rule of `daysPaid` in `GET /messages/:id/repayment`). `lastPayment` is true when paying `payable` would finish the loan.
 - `next` is the next repayment day after the due days: `dueOn` (`YYYY-MM-DD` UTC), its sats, and its amount; null when no later day remains.
@@ -4784,11 +4784,13 @@ day, and `part_index`, the merge is refused before any write.
 
 Under those locks and before any write, the merge is refused when both
 identities gave to the same repayable credit and that credit has any settled
-legacy repayment or repayment part, or any successfully issued historical
-`repay:` or `repayp:` invoice for either identity. The historical-invoice
-refusal applies regardless of expiry, payment-hash claim, or settlement.
-Combining the giver shares could otherwise change their rounded day slices
-while a late receipt or manual settlement still uses the invoice's old plan.
+legacy repayment or repayment part. It is also refused whenever a successfully
+issued historical `repay:` or `repayp:` invoice has either identity as its
+current author or embedded recipient and lacks its exact settlement row. This
+historical-invoice refusal applies to single- and dual-giver credits regardless
+of expiry or payment-hash claim. `message_invoice` does not persist the LNURL
+provider pubkey used at issuance, so moving its author could make a valid late
+receipt fail provider validation against the survivor's current wallet.
 It is also refused while a successful, unpaid, unexpired `repay:` or `repayp:`
 invoice embeds either identity on any affected source-funded credit. A
 payment-hash claim counts as paid here only when the invoice's exact settlement
@@ -4823,12 +4825,12 @@ unexpired pending till charge, the source's unexpired pending charge is deleted
 If an affected legacy repayment's exact original schedule units cannot be
 reconstructed, the merge is **409**
 `{ "error": "Repayment history is unavailable" }` and changes nothing.
-The same **409** and no changes apply to the settled dual-giver collision, the
-historical-invoice dual-giver collision, an immutable part-key collision, and
+The same **409** and no changes apply to the settled dual-giver collision, an
+unsettled historical invoice involving either identity, an immutable part-key
+collision, and
 the still-payable repayment invoice described above. For a credit funded by
-only one identity, the merge can be retried after an unclaimed invoice is paid
-or expires; a claim-only invoice must first repair its settlement row. Accounts
-with a settled or historically invoiced dual-giver credit remain separate.
+only one identity, expiry alone is not enough: the invoice must first gain its
+exact settlement row. Accounts with a settled dual-giver credit remain separate.
 The source's paid and closed shop payments move like every other row. Every
 charge row of both accounts is locked first in id order (`SELECT id …
 WHERE account_id = $1 OR account_id = $2 ORDER BY id FOR UPDATE`), the
@@ -7806,7 +7808,7 @@ BTC loans take a whole positive sat string. Fiat loans take a decimal string in 
 
 The amount is applied to unpaid remainder shares in plan order: day ascending, then the order of the repayment list within a day. Shares whose giver cannot receive are skipped and listed in `waiting`; they never consume amount. When a wallet refuses, its unused allocation is immediately reallocated to later receivers in the same request. Every bill already created or reused earlier in that request remains a fixed reservation, consumes the requested amount, and is returned even when a later share of the same giver refuses. The replacement allocation has only the unused slots of the 60-bill limit; if the requested remainder does not fit, no replacement is minted and the bills completed before the refusal are returned. The last share reached may be paid partially. An open part bill is returned through the common bill path, including its Spark invoice and current-address conflict check. Fiat open parts are validated by their reserved cents even when their fixed sats differ from today's rate; exact sat matching applies only to BTC. An oversized open part, a conflicting legacy full-share bill, an expired claim-only bill, or a plan made stale by another reservation before it acquired the message lock is **409** `{ "error": "A payment for this share is still open" }` and mints nothing.
 
-`max` is the sum of every unpaid remainder whose giver can receive. An amount above it is **400** `{ "error": "Amount is above what is left", "code": "amount_too_high", "maxSats": <int|null>, "maxAmount": <string|null> }` with nothing minted; `maxSats` is the sum of each bill's separately rounded sat price. `max` 0 is **400** `{ "error": "Nothing is due" }`. More than 60 parts are needed → **400** `{ "error": "Too many shares for one payment", "code": "too_many_shares", "maxSats": <int|null>, "maxAmount": <string|null> }`, where the max is the largest amount that fits in 60 bills and `maxSats` sums exactly those bills.
+`max` walks the plan in allocation order, skipping givers who cannot receive, and stops before the first receivable share whose legacy, oversized, or claim-only reservation would return 409. It is the accepted prefix before that conflict (0 when the first share blocks); later payable shares do not increase it. An amount above that blocked prefix is **409** `{ "error": "A payment for this share is still open" }` with nothing minted. When no blocking share stopped the prefix, an amount above everything receivable is **400** `{ "error": "Amount is above what is left", "code": "amount_too_high", "maxSats": <int|null>, "maxAmount": <string|null> }`; `maxSats` is the sum of each bill's separately rounded sat price. With no receivable remainder at all the response is **400** `{ "error": "Nothing is due" }`. More than 60 parts are needed → **400** `{ "error": "Too many shares for one payment", "code": "too_many_shares", "maxSats": <int|null>, "maxAmount": <string|null> }`, where the max is the largest amount that fits in 60 bills and `maxSats` sums exactly those bills.
 
 Success → **Response** `200`:
 
