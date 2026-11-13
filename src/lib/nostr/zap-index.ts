@@ -957,8 +957,8 @@ export async function settleInvoiceManually(args: {
  * @param amountSats - Whole sats from the paid invoice.
  * When `paymentHash` is supplied, its claim, payer attribution, indexed fiat,
  * and message credit are written under one per-message lock. An invoice-less
- * member settlement first holds its payer account lock and re-resolves the
- * signed pubkey before taking that message lock.
+ * member settlement re-resolves the signed pubkey under its payer account lock,
+ * restarting with a changed account id before taking that message lock.
  *
  * @returns Whether sats were added.
  */
@@ -1002,6 +1002,14 @@ interface ZapReceiptIndexResult {
   heart: boolean;
   payerAccountId?: string;
 }
+
+interface LockedZapReceiptSettlement {
+  kind: 'added' | 'duplicate' | 'invoice' | 'settled';
+  heart: boolean;
+  payerAccountId: string | undefined;
+}
+
+const INVOICE_LESS_PAYER_LOCK_ATTEMPTS = 3;
 
 /** Index a receipt and retain payer identity and heart state from the locked settlement. */
 async function indexZapReceiptSettlement(
@@ -1119,15 +1127,11 @@ async function indexZapReceiptSettlement(
       },
     };
   };
-  let settlement: {
-    kind: 'added' | 'duplicate' | 'invoice' | 'settled';
-    heart: boolean;
-    payerAccountId: string | undefined;
-  };
+  let settlement: LockedZapReceiptSettlement;
   const settleReceipt = async (
     store: MessageStore,
     lockedPayerAccountId: string | undefined,
-  ): Promise<typeof settlement> => {
+  ): Promise<LockedZapReceiptSettlement> => {
     if (paymentHash === undefined) {
       const settled = receiptSettlement(store, baseDelta, undefined, lockedPayerAccountId);
       return {
@@ -1207,15 +1211,31 @@ async function indexZapReceiptSettlement(
       settlement = await settleReceipt(args.store, args.payerAccountId);
     } else {
       const invoiceLessPayer = args.invoiceLessPayer;
-      settlement = await args.store.withAccountLocks(
-        [invoiceLessPayer.accountId],
-        async (accountLockedStore) => {
-          const lockedPayer = await invoiceLessPayer.resolveAccountByPubkey(
-            invoiceLessPayer.pubkey,
+      settlement = await (async (): Promise<LockedZapReceiptSettlement> => {
+        let payerAccountId = invoiceLessPayer.accountId;
+        for (let attempt = 0; attempt < INVOICE_LESS_PAYER_LOCK_ATTEMPTS; attempt += 1) {
+          const result = await args.store.withAccountLocks(
+            [payerAccountId],
+            async (accountLockedStore) => {
+              const lockedPayer = await invoiceLessPayer.resolveAccountByPubkey(
+                invoiceLessPayer.pubkey,
+              );
+              if (lockedPayer !== undefined && lockedPayer.id !== payerAccountId) {
+                return { kind: 'restart', payerAccountId: lockedPayer.id } as const;
+              }
+              return {
+                kind: 'settlement',
+                settlement: await settleReceipt(accountLockedStore, lockedPayer?.id),
+              } as const;
+            },
           );
-          return settleReceipt(accountLockedStore, lockedPayer?.id);
-        },
-      );
+          if (result.kind === 'settlement') {
+            return result.settlement;
+          }
+          payerAccountId = result.payerAccountId;
+        }
+        throw new Error('invoice-less payer changed during settlement');
+      })();
     }
   } catch (error: unknown) {
     if (!(error instanceof ZapIngestRecordError)) {
