@@ -210,6 +210,31 @@ function createdAfterOf(state: {
   return candidates.length === 0 ? undefined : new Date(Math.min(...candidates));
 }
 
+async function storeTokenTransactions(
+  deps: Pick<WalletTransferWorkerDeps, 'transfers'>,
+  wallet: WalletTransferWallet,
+  transactions: Awaited<ReturnType<SparkViewer['tokenTransactions']>>['transactions'],
+  seenAt: Date,
+): Promise<void> {
+  for (const transaction of transactions) {
+    await deps.transfers.upsertTokenTransaction({
+      accountId: wallet.accountId,
+      walletPubkey: wallet.sparkPubkey,
+      transactionHash: transaction.hash,
+      tokenIdentifier: transaction.tokenIdentifier,
+      direction: transaction.direction,
+      amount: transaction.amount,
+      counterpartyPubkeys: transaction.counterpartyPubkeys,
+      sparkInvoices: transaction.sparkInvoices,
+      type: transaction.type,
+      status: tokenStatus(transaction.status),
+      transactionCreatedAt: transaction.createdTime ?? null,
+      transactionExpiryAt: transaction.expiryTime ?? null,
+      seenAt,
+    });
+  }
+}
+
 async function syncWallet(
   deps: WalletTransferWorkerDeps,
   wallet: WalletTransferWallet,
@@ -268,22 +293,19 @@ async function syncWallet(
       }),
     );
     const seenAt = new Date(deps.now());
-    for (const transaction of page.transactions) {
-      await deps.transfers.upsertTokenTransaction({
-        accountId: wallet.accountId,
-        walletPubkey: wallet.sparkPubkey,
-        transactionHash: transaction.hash,
-        tokenIdentifier: transaction.tokenIdentifier,
-        direction: transaction.direction,
-        amount: transaction.amount,
-        counterpartyPubkeys: transaction.counterpartyPubkeys,
-        sparkInvoices: transaction.sparkInvoices,
-        type: transaction.type,
-        status: tokenStatus(transaction.status),
-        transactionCreatedAt: transaction.createdTime ?? null,
-        transactionExpiryAt: transaction.expiryTime ?? null,
-        seenAt,
-      });
+    await storeTokenTransactions(deps, wallet, page.transactions, seenAt);
+    const ownerResolution = page.ownerResolution;
+    if (ownerResolution !== undefined) {
+      for (;;) {
+        let ownerPage: Awaited<ReturnType<typeof ownerResolution.next>>;
+        try {
+          ownerPage = await timed(ownerResolution.next());
+        } catch {
+          break;
+        }
+        await storeTokenTransactions(deps, wallet, ownerPage.transactions, new Date(deps.now()));
+        if (ownerPage.done) break;
+      }
     }
     if (
       (!fullScan && tokenPagePrecedes(page.transactions, tokenCreatedAfter)) ||

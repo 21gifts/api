@@ -367,6 +367,7 @@ async function ownerJson(
 ): Promise<MeOwnerResponse> {
   const nowMs = deps.now();
   let payoutReadFailed = false;
+  let ownerFundingReadFailed = false;
   let owner: OwnerAccountResponse;
   try {
     owner = await serializeOwnerAccountWithPosts(
@@ -389,6 +390,19 @@ async function ownerJson(
       deps.lnurlServer,
     );
     payoutReadFailed = true;
+    ownerFundingReadFailed = true;
+    if (account.role !== 'basis') {
+      owner = {
+        ...owner,
+        funding: {
+          status: 'unknown',
+          trialUtcDate: null,
+          admittedAt: null,
+          reviewedByName: null,
+          dailyPayoutStoppedNotice: false,
+        },
+      };
+    }
   }
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
   const walletTransfers = deps.walletTransfers ?? new InMemoryWalletTransferStore();
@@ -433,8 +447,8 @@ async function ownerJson(
   const inProgram =
     owner.funding?.status === 'admitted' ||
     (owner.funding?.status === 'trial' && owner.funding.trialUtcDate === utcDayKey(nowMs));
-  let shopPaymentDue: boolean | null = inProgram;
-  if (inProgram) {
+  let shopPaymentDue: boolean | null = ownerFundingReadFailed ? null : inProgram;
+  if (!ownerFundingReadFailed && inProgram) {
     try {
       shopPaymentDue = !(await readShopPayment());
     } catch {

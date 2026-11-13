@@ -66,8 +66,8 @@ export interface FundingWithdrawal {
 
 /** Owner-facing funding JSON on `GET /me` / passkey finish (`role !== 'basis'`). */
 export interface OwnerFundingJson {
-  /** Effective status; never omit. `'none'` when there is no row or the grant is withdrawn. */
-  status: OwnerFundingStatus;
+  /** Effective status; `'unknown'` only when the owner grant read failed. */
+  status: EffectiveFundingStatus | 'unknown';
   /** Trial UTC day when effective status is `trial`, else `null`. */
   trialUtcDate: string | null;
   /** Admission time when effective status is `admitted`, else `null`. */

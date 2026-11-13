@@ -56,6 +56,17 @@ export interface SparkViewerTokenTransaction {
   expiryTime: Date | undefined;
 }
 
+/** One best-effort page of token-input owner enrichment. */
+export interface SparkViewerTokenOwnerPage {
+  transactions: SparkViewerTokenTransaction[];
+  done: boolean;
+}
+
+/** Stateful, process-local token-input owner lookup for one history page. */
+export interface SparkViewerTokenOwnerResolution {
+  next(): Promise<SparkViewerTokenOwnerPage>;
+}
+
 /** Read-only operator access used by the wallet transfer worker. */
 export interface SparkViewer {
   transfers(input: {
@@ -74,6 +85,7 @@ export interface SparkViewer {
     hasNextPage: boolean;
     nextCursor: string | null;
     rawCount: number;
+    ownerResolution?: SparkViewerTokenOwnerResolution;
   }>;
   balance(sparkAddress: string): Promise<number>;
 }
@@ -471,6 +483,132 @@ function tokenTransactionOf(
   };
 }
 
+function tokenTransactionsOf(
+  transactions: readonly unknown[],
+  walletPubkey: string,
+  owners: { byOutpoint: ReadonlyMap<string, string>; byOutputId: ReadonlyMap<string, string> },
+): SparkViewerTokenTransaction[] {
+  return transactions
+    .map((transaction) => {
+      const inputOwners = inputReferences(transaction).flatMap((reference) => {
+        const owner =
+          owners.byOutpoint.get(reference.outpoint) ??
+          (reference.outputId === null ? undefined : owners.byOutputId.get(reference.outputId));
+        return owner === undefined ? [] : [owner];
+      });
+      return tokenTransactionOf(transaction, walletPubkey, inputOwners);
+    })
+    .filter((row): row is SparkViewerTokenTransaction => row !== null);
+}
+
+interface CachedTokenOwnerResolution extends SparkViewerTokenOwnerResolution {
+  current(): SparkViewerTokenTransaction[];
+  update(transactions: readonly unknown[]): void;
+}
+
+function tokenOwnerResolution(
+  sdk: SdkViewer,
+  input: { sparkAddress: string; walletPubkey: string; pageSize: number },
+  transactions: readonly unknown[],
+  owners: ReturnType<typeof inputOwnerIndexes>,
+  historyCursor: string | null,
+): CachedTokenOwnerResolution {
+  let currentTransactions = transactions;
+  const unresolvedOutputIds = [
+    ...new Set(
+      unresolvedInputReferences(currentTransactions, owners).flatMap((reference) =>
+        reference.outputId === null ? [] : [reference.outputId],
+      ),
+    ),
+  ];
+  let lookupCursor: string | undefined;
+  let outputLookupDone = unresolvedOutputIds.length === 0;
+  const seenLookupCursors = new Set<string>();
+  const seenHistoryCursors = new Set<string>();
+  let inFlight: Promise<SparkViewerTokenOwnerPage> | undefined;
+
+  const current = (): SparkViewerTokenTransaction[] =>
+    tokenTransactionsOf(currentTransactions, input.walletPubkey, owners);
+  const done = (): boolean =>
+    unresolvedInputReferences(currentTransactions, owners).length === 0 ||
+    (outputLookupDone && historyCursor === null);
+
+  const advance = async (): Promise<SparkViewerTokenOwnerPage> => {
+    if (done()) return { transactions: current(), done: true };
+    if (!outputLookupDone) {
+      const lookup = await sdk.getTokenTransactions({
+        outputIds: unresolvedOutputIds,
+        pageSize: input.pageSize,
+        ...(lookupCursor === undefined ? {} : { cursor: lookupCursor }),
+        direction: 'NEXT',
+      });
+      mergeInputOwnerIndexes(
+        owners,
+        inputOwnerIndexes(Array.isArray(lookup.transactions) ? lookup.transactions : []),
+      );
+      const lookupResponse =
+        typeof lookup.pageResponse === 'object' && lookup.pageResponse !== null
+          ? (lookup.pageResponse as Record<string, unknown>)
+          : {};
+      if (lookupResponse['hasNextPage'] === true) {
+        const nextCursor = lookupResponse['nextCursor'];
+        if (
+          typeof nextCursor !== 'string' ||
+          nextCursor === '' ||
+          seenLookupCursors.has(nextCursor)
+        ) {
+          throw new Error('Spark viewer token input cursor did not advance');
+        }
+        seenLookupCursors.add(nextCursor);
+        lookupCursor = nextCursor;
+      } else {
+        outputLookupDone = true;
+      }
+      return { transactions: current(), done: done() };
+    }
+    const cursor = historyCursor as string;
+    if (seenHistoryCursors.has(cursor)) {
+      throw new Error('Spark viewer token input history cursor did not advance');
+    }
+    seenHistoryCursors.add(cursor);
+    const history = await sdk.getTokenTransactions({
+      sparkAddresses: [input.sparkAddress],
+      pageSize: input.pageSize,
+      cursor,
+      direction: 'PREVIOUS',
+    });
+    mergeInputOwnerIndexes(
+      owners,
+      inputOwnerIndexes(Array.isArray(history.transactions) ? history.transactions : []),
+    );
+    const historyResponse =
+      typeof history.pageResponse === 'object' && history.pageResponse !== null
+        ? (history.pageResponse as Record<string, unknown>)
+        : {};
+    historyCursor =
+      historyResponse['hasPreviousPage'] === true &&
+      typeof historyResponse['previousCursor'] === 'string' &&
+      historyResponse['previousCursor'] !== ''
+        ? historyResponse['previousCursor']
+        : null;
+    return { transactions: current(), done: done() };
+  };
+
+  return {
+    current,
+    update(nextTransactions) {
+      currentTransactions = nextTransactions;
+      mergeInputOwnerIndexes(owners, inputOwnerIndexes(nextTransactions));
+    },
+    next() {
+      inFlight ??= advance().finally(() => {
+        inFlight = undefined;
+      });
+      return inFlight;
+    },
+  };
+}
+
 function balanceSats(value: unknown): number {
   const raw =
     typeof value === 'object' && value !== null && 'balance' in value
@@ -488,6 +626,7 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
     SPARK_MAINNET,
     mnemonic,
   )) as unknown as SdkViewer;
+  const ownerResolutions = new Map<string, CachedTokenOwnerResolution>();
   return {
     async transfers(input) {
       const page = await sdk.getTransfers({ ...input, types: ALL_TRANSFER_TYPES });
@@ -507,95 +646,45 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
       const rawCount = Array.isArray(page.transactions) ? page.transactions.length : 0;
       const rawTransactions = Array.isArray(page.transactions) ? page.transactions : [];
       const localOwners = inputOwnerIndexes(rawTransactions);
-      const unresolvedOutputIds = [
-        ...new Set(
-          unresolvedInputReferences(rawTransactions, localOwners).flatMap((reference) =>
-            reference.outputId === null ? [] : [reference.outputId],
-          ),
-        ),
-      ];
-      if (unresolvedOutputIds.length > 0) {
-        let lookupCursor: string | undefined;
-        const seenLookupCursors = new Set<string>();
-        for (;;) {
-          const lookup = await sdk.getTokenTransactions({
-            outputIds: unresolvedOutputIds,
-            pageSize: input.pageSize,
-            ...(lookupCursor === undefined ? {} : { cursor: lookupCursor }),
-            direction: 'NEXT',
-          });
-          const lookupTransactions = Array.isArray(lookup.transactions) ? lookup.transactions : [];
-          mergeInputOwnerIndexes(localOwners, inputOwnerIndexes(lookupTransactions));
-          const lookupResponse =
-            typeof lookup.pageResponse === 'object' && lookup.pageResponse !== null
-              ? (lookup.pageResponse as Record<string, unknown>)
-              : {};
-          if (lookupResponse['hasNextPage'] !== true) break;
-          const nextCursor = lookupResponse['nextCursor'];
-          if (
-            typeof nextCursor !== 'string' ||
-            nextCursor === '' ||
-            seenLookupCursors.has(nextCursor)
-          ) {
-            throw new Error('Spark viewer token input cursor did not advance');
-          }
-          seenLookupCursors.add(nextCursor);
-          lookupCursor = nextCursor;
-        }
-      }
       const pageResponse =
         typeof page.pageResponse === 'object' && page.pageResponse !== null
           ? (page.pageResponse as Record<string, unknown>)
           : {};
-      let historyCursor =
+      const historyCursor =
         pageResponse['hasPreviousPage'] === true &&
         typeof pageResponse['previousCursor'] === 'string' &&
         pageResponse['previousCursor'] !== ''
           ? pageResponse['previousCursor']
           : null;
-      const seenHistoryCursors = new Set<string>();
-      while (
-        unresolvedInputReferences(rawTransactions, localOwners).length > 0 &&
-        historyCursor !== null
-      ) {
-        if (seenHistoryCursors.has(historyCursor)) {
-          throw new Error('Spark viewer token input history cursor did not advance');
+      const pageKey = `${input.sparkAddress}\u0000${input.walletPubkey}\u0000${input.cursor ?? ''}\u0000${rawTransactions
+        .map((transaction) =>
+          typeof transaction === 'object' && transaction !== null
+            ? (transactionHashOf(transaction as Record<string, unknown>) ?? '')
+            : '',
+        )
+        .join(',')}`;
+      const needsOwnerResolution =
+        unresolvedInputReferences(rawTransactions, localOwners).length > 0;
+      let ownerResolution: CachedTokenOwnerResolution | undefined;
+      let transactions: SparkViewerTokenTransaction[];
+      if (needsOwnerResolution) {
+        ownerResolution = ownerResolutions.get(pageKey);
+        if (ownerResolution === undefined) {
+          ownerResolution = tokenOwnerResolution(
+            sdk,
+            input,
+            rawTransactions,
+            localOwners,
+            historyCursor,
+          );
+          ownerResolutions.set(pageKey, ownerResolution);
+        } else {
+          ownerResolution.update(rawTransactions);
         }
-        seenHistoryCursors.add(historyCursor);
-        const history = await sdk.getTokenTransactions({
-          sparkAddresses: [input.sparkAddress],
-          pageSize: input.pageSize,
-          cursor: historyCursor,
-          direction: 'PREVIOUS',
-        });
-        mergeInputOwnerIndexes(
-          localOwners,
-          inputOwnerIndexes(Array.isArray(history.transactions) ? history.transactions : []),
-        );
-        const historyResponse =
-          typeof history.pageResponse === 'object' && history.pageResponse !== null
-            ? (history.pageResponse as Record<string, unknown>)
-            : {};
-        historyCursor =
-          historyResponse['hasPreviousPage'] === true &&
-          typeof historyResponse['previousCursor'] === 'string' &&
-          historyResponse['previousCursor'] !== ''
-            ? historyResponse['previousCursor']
-            : null;
+        transactions = ownerResolution.current();
+      } else {
+        transactions = tokenTransactionsOf(rawTransactions, input.walletPubkey, localOwners);
       }
-      const transactions = rawTransactions
-        .map((transaction) => {
-          const owners = inputReferences(transaction).flatMap((reference) => {
-            const owner =
-              localOwners.byOutpoint.get(reference.outpoint) ??
-              (reference.outputId === null
-                ? undefined
-                : localOwners.byOutputId.get(reference.outputId));
-            return owner === undefined ? [] : [owner];
-          });
-          return tokenTransactionOf(transaction, input.walletPubkey, owners);
-        })
-        .filter((row): row is SparkViewerTokenTransaction => row !== null);
       return {
         transactions,
         hasNextPage: pageResponse['hasPreviousPage'] === true,
@@ -605,6 +694,7 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
             ? pageResponse['previousCursor']
             : null,
         rawCount,
+        ...(ownerResolution === undefined ? {} : { ownerResolution }),
       };
     },
     async balance(sparkAddress) {

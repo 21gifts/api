@@ -102,6 +102,9 @@ describe('runWalletTransferTick', () => {
       hasNextPage: false,
       nextCursor: null,
       rawCount: 100,
+      ownerResolution: {
+        next: async () => ({ transactions: [], done: true }),
+      },
     }));
     const recordBalance = vi.fn(async () => undefined);
     const ping = vi.fn(async () => undefined);
@@ -209,6 +212,143 @@ describe('runWalletTransferTick', () => {
     });
     expect(ping).toHaveBeenCalledOnce();
     expect(tokenTransactions).toHaveBeenCalledTimes(2);
+  });
+
+  it('stores the token page and completes wallet sync when owner enrichment times out', async () => {
+    vi.useFakeTimers();
+    const upsertTokenTransaction = vi.fn(async () => undefined);
+    const markFullSync = vi.fn(async () => undefined);
+    const hasShopPayment = vi.fn(async () => true);
+    const recordBalance = vi.fn(async () => undefined);
+    const balance = vi.fn(async () => 34);
+    const ping = vi.fn(async () => undefined);
+    const next = vi
+      .fn()
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            hash: '11'.repeat(32),
+            tokenIdentifier: null,
+            direction: 'out',
+            amount: '5',
+            counterpartyPubkeys: [SHOP],
+            sparkInvoices: [],
+            type: 'transfer',
+            status: 2,
+            createdTime: undefined,
+            expiryTime: undefined,
+          },
+        ],
+        done: false,
+      })
+      .mockImplementation(
+        () =>
+          new Promise<{ transactions: []; done: boolean }>(() => {
+            // A stuck owner lookup must not hold the rest of the wallet sync.
+          }),
+      );
+    const pending = runWalletTransferTick({
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions: async () => ({
+          transactions: [
+            {
+              hash: '11'.repeat(32),
+              tokenIdentifier: null,
+              direction: 'in',
+              amount: '21',
+              counterpartyPubkeys: [],
+              sparkInvoices: [],
+              type: 'transfer',
+              status: 2,
+              createdTime: undefined,
+              expiryTime: undefined,
+            },
+          ],
+          hasNextPage: false,
+          nextCursor: null,
+          rawCount: 1,
+          ownerResolution: { next },
+        }),
+        balance,
+      },
+      transfers: {
+        listWallets: async () => [
+          { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
+        ],
+        syncState: async () => ({
+          newestCreatedAt: null,
+          oldestPendingCreatedAt: null,
+          pendingWithoutCreatedAt: false,
+          lastFullSyncAt: null,
+        }),
+        upsertTransfer: async () => ({
+          inserted: false,
+          updated: false,
+          shopPaymentBecameCompleted: false,
+        }),
+        upsertTokenTransaction,
+        markFullSync,
+        hasShopPayment,
+      },
+      balances: { recordBalance },
+      auth: {
+        getAccount: async () =>
+          ({
+            id: 'account',
+            role: 'verified',
+            username: 'alice',
+            sparkPubkey: OWNER,
+            sparkPubkeyVerifiedAt: NOW,
+            isPlatform: false,
+          }) as Account,
+        hasRecoveryShareForVerifiedWallet: async () => true,
+      },
+      funding: {
+        getByAccountId: async () => ({
+          accountId: 'account',
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: null,
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        }),
+      },
+      ping: {
+        spendPing: { ping },
+        lnurlServer: {
+          baseUrl: 'https://lnurl.test',
+          publicBaseUrl: 'https://21.gifts',
+          host: '21.gifts',
+        },
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => 'message',
+          getById: async () => ({ id: 'message', createdAt: new Date(NOW) }) as never,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
+        walletTransfers: { hasShopPayment },
+      },
+      now: () => NOW,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(upsertTokenTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: 'in', amount: '21' }),
+    );
+    expect(upsertTokenTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ direction: 'out', amount: '5' }),
+    );
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect((await pending).size).toBe(0);
+    expect(next).toHaveBeenCalledTimes(2);
+    expect(hasShopPayment).toHaveBeenCalled();
+    expect(ping).toHaveBeenCalledOnce();
+    expect(balance).toHaveBeenCalledOnce();
+    expect(recordBalance).toHaveBeenCalledOnce();
+    expect(markFullSync).toHaveBeenCalledOnce();
   });
 
   it('skips a wallet under backoff and records a safe failure reason', async () => {

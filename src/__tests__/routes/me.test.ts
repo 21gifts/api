@@ -416,11 +416,28 @@ describe('GET /me', () => {
     vi.spyOn(fundingStore, 'getByAccountId').mockRejectedValue(new Error('grant unavailable'));
     const res = await mount(store, { fundingStore }).request('/me', { headers: AUTH });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { funding: { payoutToday: unknown } };
+    const body = (await res.json()) as {
+      funding: { status: string; payoutToday: unknown; shopPaymentDue: boolean | null };
+    };
+    expect(body.funding.status).not.toBe('none');
+    expect(body.funding.status).toBe('unknown');
     expect(body.funding.payoutToday).toBeNull();
+    expect(body.funding.shopPaymentDue).toBeNull();
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'funding.payout_today.failed', accountId: 'acc' }),
     );
+  });
+
+  it('keeps basis funding private when its shared funding read fails', async () => {
+    const store = await seededStore();
+    const fundingStore = new InMemoryFundingStore();
+    vi.spyOn(fundingStore, 'getByAccountId').mockRejectedValue(new Error('grant unavailable'));
+    const res = await mount(store, { fundingStore }).request('/me', { headers: AUTH });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { funding: unknown; grantPayoutToday: unknown };
+    expect(body.funding).toBeNull();
+    expect(body.grantPayoutToday).toBeNull();
   });
 
   it("returns today's trial funding for its eligible day", async () => {
