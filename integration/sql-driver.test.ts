@@ -2248,10 +2248,13 @@ describe('PostgresSparkInvoiceStore member invoices', () => {
         (row) => row.invoice === invoiceAt(1),
       );
       expect(first).toMatchObject({ kind: 'pay', amountSats: 21, status: 'open', expiresAt });
+      expect(await store.memberInvoiceAccountId(invoiceAt(1))).toBe(accountId);
+      expect(await store.memberInvoiceAccountId(`${stamp}-unknown`)).toBeUndefined();
 
       expect(await store.claimMemberNotified(invoiceAt(2), expiresAt)).toBe(false);
       expect(await store.claimMemberNotified(invoiceAt(0), issuedAt)).toBe(false);
       expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(true);
+      expect(await store.memberInvoiceAccountId(invoiceAt(1))).toBe(accountId);
       expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(false);
       expect(await store.releaseMemberNotified(invoiceAt(1))).toBe(true);
       expect(await store.releaseMemberNotified(invoiceAt(1))).toBe(false);
@@ -2261,6 +2264,7 @@ describe('PostgresSparkInvoiceStore member invoices', () => {
       expect(await mine(expiresAt)).toEqual([]);
 
       expect(await store.pruneMember(expiresAt)).toBeGreaterThanOrEqual(MEMBER_SPARK_INVOICE_CAP);
+      expect(await store.memberInvoiceAccountId(invoiceAt(1))).toBeUndefined();
       const left = await client.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM member_spark_invoice WHERE account_id = $1`,
         [accountId],
@@ -3524,6 +3528,63 @@ describe('PostgresWalletStore', () => {
         { ...row, paymentId: `${prefix}-no-own` },
         { ...row, paymentId: `${prefix}-out`, accountId: receiver, counterpartyAccountId: senderA },
         { ...row, paymentId: `${prefix}-out`, accountId: senderB },
+        { ...row, paymentId: `${prefix}-out`, accountId: senderA, direction: 'in' },
+        ...[
+          'fake',
+          'pending-confirm',
+          'failed-confirm',
+          'third-confirm',
+          'wrong-confirm-direction',
+          'other-lightning',
+          'own-lightning',
+          'invoice',
+          'wrong-invoice',
+          'unknown-invoice',
+          'confirmed-invoice',
+        ].map((id): WalletPaymentRecord => ({
+          ...row,
+          paymentId: `${prefix}-${id}`,
+          accountId: receiver,
+          counterpartyAccountId: senderA,
+          method: id === 'own-lightning' ? 'lightning' : 'spark',
+          invoice:
+            id === 'invoice'
+              ? 'valid'
+              : id === 'wrong-invoice'
+                ? 'wrong'
+                : id === 'unknown-invoice'
+                  ? 'unknown'
+                  : id === 'confirmed-invoice'
+                    ? 'skip'
+                    : null,
+        })),
+        ...[
+          'pending-confirm',
+          'failed-confirm',
+          'third-confirm',
+          'wrong-confirm-direction',
+          'other-lightning',
+          'own-lightning',
+          'confirmed-invoice',
+        ].map((id): WalletPaymentRecord => ({
+          ...row,
+          paymentId: `${prefix}-${id}`,
+          accountId: id === 'third-confirm' ? senderB : senderA,
+          direction: id === 'wrong-confirm-direction' ? 'out' : 'in',
+          status:
+            id === 'pending-confirm' ? 'pending' : id === 'failed-confirm' ? 'failed' : 'completed',
+          method: id === 'other-lightning' ? 'lightning' : 'spark',
+        })),
+        {
+          ...row,
+          paymentId: `${prefix}-in-own-lightning`,
+          accountId: receiver,
+          direction: 'in',
+          method: 'lightning',
+        },
+        { ...row, paymentId: `${prefix}-in-own-lightning` },
+        { ...row, paymentId: `${prefix}-in-other-lightning`, accountId: receiver, direction: 'in' },
+        { ...row, paymentId: `${prefix}-in-other-lightning`, method: 'lightning' },
         { ...row, paymentId: `${prefix}-null`, accountId: receiver },
         {
           ...row,
@@ -3610,6 +3671,43 @@ describe('PostgresWalletStore', () => {
       expect(found.get(`${prefix}-failed-own`)).toBeUndefined();
       expect(found.get(`${prefix}-out-failed`)).toBeUndefined();
       expect(found.get(`${prefix}-in-counterparty`)).toEqual([senderA]);
+      const cases = [
+        'fake',
+        'pending-confirm',
+        'failed-confirm',
+        'third-confirm',
+        'wrong-confirm-direction',
+        'other-lightning',
+        'own-lightning',
+        'invoice',
+        'wrong-invoice',
+        'unknown-invoice',
+        'confirmed-invoice',
+      ].map((id) => ({ id: `${prefix}-${id}`, direction: 'out' as const }));
+      const withoutInvoice = await store.findPaymentCounterparties(receiver, cases);
+      expect([...withoutInvoice.keys()]).toEqual([`${prefix}-confirmed-invoice`]);
+      const seen: string[] = [];
+      const withInvoice = await store.findPaymentCounterparties(
+        receiver,
+        cases,
+        async (invoice) => {
+          seen.push(invoice);
+          return invoice === 'valid' ? senderA : invoice === 'wrong' ? senderB : undefined;
+        },
+      );
+      expect([...withInvoice.keys()].sort()).toEqual([
+        `${prefix}-confirmed-invoice`,
+        `${prefix}-invoice`,
+      ]);
+      expect(seen.sort()).toEqual(['unknown', 'valid', 'wrong']);
+      expect(
+        (
+          await store.findPaymentCounterparties(receiver, [
+            { id: `${prefix}-in-own-lightning`, direction: 'in' },
+            { id: `${prefix}-in-other-lightning`, direction: 'in' },
+          ])
+        ).size,
+      ).toBe(0);
     } finally {
       await closeIfPossible(sql);
     }

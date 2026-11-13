@@ -1723,7 +1723,9 @@ Operator inspection of external Nostr identities that have earned visibility or 
 
 ## Endpoint: POST /me/wallet/counterparties
 
-- **Purpose:** Find the member who sent an incoming payment or received an outgoing payment. The caller must have reported the payment id and direction as completed. For `in`, other accounts must have reported the same id as a completed outgoing payment; for `out`, the caller's non-null, non-self counterparty is returned.
+The caller's completed `in` report and the matching completed `out` report must both use Spark. For `out`, the non-self counterparty must have a completed Spark `in` report for the same id and the caller's report must also use Spark, or the caller's invoice must exactly match a member Spark invoice issued for that counterparty by `POST /pay/:username/invoice`. Invoice status does not matter; its row expires after one hour and is pruned by the worker, and the per-account cap can delete open rows earlier. After deletion, the confirmation route remains.
+
+- **Purpose:** Find the member who sent an incoming payment or received an outgoing payment, subject to the confirmation or issued-invoice rules above.
 - **Request:** `payments`, an array of 1–32 objects with required `direction` (`in` or `out`) and an `id`. The id is trimmed, as in the wallet report, and must then be 1–256 characters. Extra fields are ignored. Duplicate ids are compared after that trim and the first entry is kept.
 - **Response:** 200 `{ counterparties: [{ id, accountId, username }] }`. `id` is the trimmed payment id. Multiple matching accounts, missing or blank usernames, missing accounts and platform accounts are omitted. Only these three fields are returned.
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 429 `{ error: 'Too many requests' }` after 60 requests per account per minute; 413 `{ error: 'Request body is too large' }` above 16384 bytes; 400 `{ error: 'Invalid counterparty lookup' }`; 503 `{ error: 'Counterparty lookup is unavailable' }` on lookup failure, logging `wallet_counterparties.lookup.failed` with only `accountId`.

@@ -162,41 +162,145 @@ describe('wallet schema', () => {
 });
 
 describe('InMemoryWalletStore', () => {
-  it('finds completed senders by id only after the caller reports the incoming payment', async () => {
+  it('requires a Spark confirmation or an issued invoice for outgoing counterparties', async () => {
+    const store = new InMemoryWalletStore();
+    const own = (id: string, extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord =>
+      payment({
+        accountId: 'me',
+        paymentId: id,
+        status: 'completed',
+        method: 'spark',
+        counterpartyAccountId: 'other',
+        invoice: null,
+        ...extra,
+      });
+    const other = (id: string, extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord =>
+      own(id, { accountId: 'other', direction: 'in', ...extra });
+    await store.upsertPayments([
+      own('fake'),
+      own('confirmed'),
+      other('confirmed'),
+      own('pending'),
+      other('pending', { status: 'pending' }),
+      own('failed'),
+      other('failed', { status: 'failed' }),
+      own('third'),
+      other('third', { accountId: 'third' }),
+      own('wrong-direction'),
+      other('wrong-direction', { direction: 'out' }),
+      own('other-lightning'),
+      other('other-lightning', { method: 'lightning' }),
+      own('own-lightning', { method: 'lightning' }),
+      other('own-lightning'),
+      own('invoice', { invoice: 'valid' }),
+      own('wrong', { invoice: 'wrong' }),
+      own('unknown', { invoice: 'unknown' }),
+      own('confirmed-invoice', { invoice: 'skip' }),
+      other('confirmed-invoice'),
+    ]);
+    const keys = [
+      'fake',
+      'confirmed',
+      'pending',
+      'failed',
+      'third',
+      'wrong-direction',
+      'other-lightning',
+      'own-lightning',
+      'invoice',
+      'wrong',
+      'unknown',
+      'confirmed-invoice',
+    ].map((id) => ({ id, direction: 'out' as const }));
+    expect([...(await store.findPaymentCounterparties('me', keys))]).toEqual([
+      ['confirmed', ['other']],
+      ['confirmed-invoice', ['other']],
+    ]);
+    const seen: string[] = [];
+    const lookup = async (invoice: string): Promise<string | undefined> => {
+      seen.push(invoice);
+      return invoice === 'valid' ? 'other' : invoice === 'wrong' ? 'third' : undefined;
+    };
+    expect([...(await store.findPaymentCounterparties('me', keys, lookup))]).toEqual([
+      ['confirmed', ['other']],
+      ['invoice', ['other']],
+      ['confirmed-invoice', ['other']],
+    ]);
+    expect(seen).toEqual(['valid', 'wrong', 'unknown']);
+  });
+
+  it('does not match incoming payments when either report is not Spark', async () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([
-      payment({ accountId: 'me', paymentId: 'shared', direction: 'in', status: 'completed' }),
-      payment({
-        accountId: 'z',
-        paymentId: 'shared',
-        status: 'completed',
-        counterpartyAccountId: null,
-      }),
-      payment({ accountId: 'a', paymentId: 'shared', status: 'completed' }),
-      // M1: a failed outgoing report is not a sender; completed `a` and `z` beside it are.
-      // More than two rows share `shared`, all category `member`, so pairing does not run.
-      payment({ accountId: 'failed', paymentId: 'shared', status: 'failed' }),
-      payment({ accountId: 'pending', paymentId: 'shared', status: 'pending' }),
-      payment({ accountId: 'incoming', paymentId: 'shared', direction: 'in', status: 'completed' }),
-      payment({ accountId: 'z', paymentId: 'own-pending', status: 'completed' }),
-      payment({ accountId: 'me', paymentId: 'own-pending', direction: 'in', status: 'pending' }),
-      payment({ accountId: 'z', paymentId: 'wrong-direction', status: 'completed' }),
       payment({
         accountId: 'me',
-        paymentId: 'wrong-direction',
-        direction: 'out',
-        status: 'completed',
-      }),
-      payment({
-        accountId: 'me',
-        paymentId: 'sender-pending',
+        paymentId: 'own',
         direction: 'in',
         status: 'completed',
+        method: 'lightning',
       }),
-      payment({ accountId: 'z', paymentId: 'sender-pending', status: 'pending' }),
-      payment({ accountId: 'me', paymentId: 'self-only', direction: 'in', status: 'completed' }),
-      payment({ accountId: 'z', paymentId: 'no-own', status: 'completed' }),
+      payment({ accountId: 'other', paymentId: 'own', status: 'completed', method: 'spark' }),
+      payment({
+        accountId: 'me',
+        paymentId: 'other',
+        direction: 'in',
+        status: 'completed',
+        method: 'spark',
+      }),
+      payment({ accountId: 'other', paymentId: 'other', status: 'completed', method: 'lightning' }),
     ]);
+    expect(
+      (
+        await store.findPaymentCounterparties('me', [
+          { id: 'own', direction: 'in' },
+          { id: 'other', direction: 'in' },
+        ])
+      ).size,
+    ).toBe(0);
+  });
+
+  it('finds completed senders by id only after the caller reports the incoming payment', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments(
+      [
+        payment({ accountId: 'me', paymentId: 'shared', direction: 'in', status: 'completed' }),
+        payment({
+          accountId: 'z',
+          paymentId: 'shared',
+          status: 'completed',
+          counterpartyAccountId: null,
+        }),
+        payment({ accountId: 'a', paymentId: 'shared', status: 'completed' }),
+        // M1: a failed outgoing report is not a sender; completed `a` and `z` beside it are.
+        // More than two rows share `shared`, all category `member`, so pairing does not run.
+        payment({ accountId: 'failed', paymentId: 'shared', status: 'failed' }),
+        payment({ accountId: 'pending', paymentId: 'shared', status: 'pending' }),
+        payment({
+          accountId: 'incoming',
+          paymentId: 'shared',
+          direction: 'in',
+          status: 'completed',
+        }),
+        payment({ accountId: 'z', paymentId: 'own-pending', status: 'completed' }),
+        payment({ accountId: 'me', paymentId: 'own-pending', direction: 'in', status: 'pending' }),
+        payment({ accountId: 'z', paymentId: 'wrong-direction', status: 'completed' }),
+        payment({
+          accountId: 'me',
+          paymentId: 'wrong-direction',
+          direction: 'out',
+          status: 'completed',
+        }),
+        payment({
+          accountId: 'me',
+          paymentId: 'sender-pending',
+          direction: 'in',
+          status: 'completed',
+        }),
+        payment({ accountId: 'z', paymentId: 'sender-pending', status: 'pending' }),
+        payment({ accountId: 'me', paymentId: 'self-only', direction: 'in', status: 'completed' }),
+        payment({ accountId: 'z', paymentId: 'no-own', status: 'completed' }),
+      ].map((row) => ({ ...row, method: 'spark' })),
+    );
     const found = await store.findPaymentCounterparties('me', [
       ...['shared', 'own-pending', 'wrong-direction', 'sender-pending', 'self-only', 'no-own'].map(
         (id) => ({ id, direction: 'in' as const }),
@@ -208,9 +312,9 @@ describe('InMemoryWalletStore', () => {
   it('binds payment ids and directions in one Postgres query', async () => {
     const sql = new MockSql();
     sql.rows = [
-      { id: 'i', account_id: 'a' },
-      { id: 'i', account_id: 'b' },
-      { id: 'h', account_id: 'c' },
+      { id: 'i', account_id: 'a', confirmed: true, invoice: null },
+      { id: 'i', account_id: 'b', confirmed: true, invoice: null },
+      { id: 'h', account_id: 'c', confirmed: true, invoice: null },
     ];
     const result = await new PostgresWalletStore(sql).findPaymentCounterparties('receiver', [
       { id: 'i', direction: 'in' },
@@ -227,32 +331,67 @@ describe('InMemoryWalletStore', () => {
     expect(sql.queries[0]?.text).toContain('p.payment_id = k.id');
   });
 
+  it('checks unconfirmed Postgres rows against the optional invoice lookup', async () => {
+    const sql = new MockSql();
+    sql.rows = [
+      { id: 'confirmed', account_id: 'a', confirmed: true, invoice: 'skip' },
+      { id: 'null', account_id: 'a', confirmed: false, invoice: null },
+      { id: 'yes', account_id: 'a', confirmed: false, invoice: 'yes' },
+      { id: 'no', account_id: 'a', confirmed: false, invoice: 'no' },
+    ];
+    const store = new PostgresWalletStore(sql);
+    const keys = sql.rows.map((row) => ({
+      id: (row as { id: string }).id,
+      direction: 'out' as const,
+    }));
+    expect([...(await store.findPaymentCounterparties('me', keys))]).toEqual([
+      ['confirmed', ['a']],
+    ]);
+    const seen: string[] = [];
+    expect([
+      ...(await store.findPaymentCounterparties('me', keys, async (invoice) => {
+        seen.push(invoice);
+        return invoice === 'yes' ? 'a' : undefined;
+      })),
+    ]).toEqual([
+      ['confirmed', ['a']],
+      ['yes', ['a']],
+    ]);
+    expect(seen).toEqual(['yes', 'no']);
+    await expect(
+      store.findPaymentCounterparties('me', keys, () => Promise.reject(new Error('down'))),
+    ).rejects.toThrow('down');
+  });
+
   it('returns only the caller’s completed outgoing non-self counterparty', async () => {
     const store = new InMemoryWalletStore();
-    await store.upsertPayments([
-      payment({
-        accountId: 'me',
-        paymentId: 'ok',
-        status: 'completed',
-        counterpartyAccountId: 'z',
-      }),
-      payment({
-        accountId: 'me',
-        paymentId: 'null',
-        status: 'completed',
-        counterpartyAccountId: null,
-      }),
-      payment({
-        accountId: 'me',
-        paymentId: 'self',
-        status: 'completed',
-        counterpartyAccountId: 'me',
-      }),
-      payment({ accountId: 'me', paymentId: 'pending', status: 'pending' }),
-      payment({ accountId: 'me', paymentId: 'failed', status: 'failed' }),
-      payment({ accountId: 'me', paymentId: 'incoming', direction: 'in', status: 'completed' }),
-      payment({ accountId: 'foreign', paymentId: 'foreign', status: 'completed' }),
-    ]);
+    await store.upsertPayments(
+      [
+        payment({
+          accountId: 'me',
+          paymentId: 'ok',
+          status: 'completed',
+          counterpartyAccountId: 'z',
+        }),
+        payment({
+          accountId: 'me',
+          paymentId: 'null',
+          status: 'completed',
+          counterpartyAccountId: null,
+        }),
+        payment({
+          accountId: 'me',
+          paymentId: 'self',
+          status: 'completed',
+          counterpartyAccountId: 'me',
+        }),
+        payment({ accountId: 'me', paymentId: 'pending', status: 'pending' }),
+        payment({ accountId: 'me', paymentId: 'failed', status: 'failed' }),
+        payment({ accountId: 'me', paymentId: 'incoming', direction: 'in', status: 'completed' }),
+        payment({ accountId: 'z', paymentId: 'ok', direction: 'in', status: 'completed' }),
+        payment({ accountId: 'foreign', paymentId: 'foreign', status: 'completed' }),
+      ].map((row) => ({ ...row, method: 'spark' })),
+    );
     const found = await store.findPaymentCounterparties(
       'me',
       ['ok', 'null', 'self', 'pending', 'failed', 'incoming', 'foreign'].map((id) => ({

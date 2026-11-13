@@ -106,6 +106,17 @@ describe('InMemorySparkInvoiceStore', () => {
 });
 
 describe('InMemorySparkInvoiceStore member invoices', () => {
+  it('looks up member invoice accounts through notification and pruning', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(member());
+    expect(await store.memberInvoiceAccountId('spark1m')).toBe(ACCOUNT);
+    expect(await store.memberInvoiceAccountId('unknown')).toBeUndefined();
+    await store.claimMemberNotified('spark1m', new Date(T0));
+    expect(await store.memberInvoiceAccountId('spark1m')).toBe(ACCOUNT);
+    await store.pruneMember(new Date(T0 + HOUR));
+    expect(await store.memberInvoiceAccountId('spark1m')).toBeUndefined();
+  });
+
   it('stores a member invoice once and lists it while open and unexpired', async () => {
     const store = new InMemorySparkInvoiceStore();
     await store.issueMember(member());
@@ -314,6 +325,16 @@ describe('PostgresSparkInvoiceStore', () => {
       new Date(T0 + HOUR).toISOString(),
       MEMBER_SPARK_INVOICE_CAP - 1,
     ]);
+  });
+
+  it('looks up a member invoice by a bound exact string', async () => {
+    const sql = new MockSql();
+    const store = new PostgresSparkInvoiceStore(sql);
+    sql.rows = [{ account_id: ACCOUNT }];
+    expect(await store.memberInvoiceAccountId('spark1m')).toBe(ACCOUNT);
+    expect(sql.queries[0]?.params).toEqual(['spark1m']);
+    sql.rows = [];
+    expect(await store.memberInvoiceAccountId('unknown')).toBeUndefined();
   });
 
   it('lists open member invoices and maps driver values', async () => {

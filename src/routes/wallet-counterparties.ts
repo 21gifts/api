@@ -5,6 +5,7 @@ import type { AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import { logEvent } from '@/lib/log';
+import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { WalletStore } from '@/lib/wallet-store';
 import { bearerToken } from '@/routes/me';
 
@@ -14,6 +15,8 @@ export interface WalletCounterpartyRouteDeps {
   authStore: AuthStore;
   /** Payment lookup. */
   walletStore: Pick<WalletStore, 'findPaymentCounterparties'>;
+  /** Issued member invoices, when free payments are enabled. */
+  memberInvoices?: Pick<SparkInvoiceStore, 'memberInvoiceAccountId'>;
   /** Epoch millisecond clock. */
   now: () => number;
   /** Optional per-account limiter. */
@@ -50,7 +53,7 @@ function parsePayments(body: unknown): Key[] | null {
 
 /**
  * Build the authenticated counterparty lookup route for completed reported payments.
- * @param deps - Auth, wallet store, clock, and optional limiter.
+ * @param deps - Auth, wallet store, clock, optional member invoices and limiter.
  * @returns A Hono app serving `POST /me/wallet/counterparties`.
  */
 export function walletCounterpartyRoutes(deps: WalletCounterpartyRouteDeps): Hono {
@@ -72,16 +75,31 @@ export function walletCounterpartyRoutes(deps: WalletCounterpartyRouteDeps): Hon
     const keys = parsePayments(body);
     if (keys === null) return c.json({ error: 'Invalid counterparty lookup' }, 400);
     try {
-      const matches = await deps.walletStore.findPaymentCounterparties(account.id, keys);
+      const memberInvoices = deps.memberInvoices;
+      const matches = await deps.walletStore.findPaymentCounterparties(
+        account.id,
+        keys,
+        memberInvoices === undefined
+          ? undefined
+          : (invoice) => memberInvoices.memberInvoiceAccountId(invoice),
+      );
       const counterparties: Array<{ id: string; accountId: string; username: string }> = [];
       for (const key of keys) {
         const ids = matches.get(key.id);
-        const senderId = ids?.length === 1 ? ids[0] : undefined;
-        if (senderId === undefined) continue;
-        const sender = await deps.authStore.getAccount(senderId);
-        if (sender === undefined || sender.isPlatform === true || !sender.username?.trim())
+        const counterpartyId = ids?.length === 1 ? ids[0] : undefined;
+        if (counterpartyId === undefined) continue;
+        const counterparty = await deps.authStore.getAccount(counterpartyId);
+        if (
+          counterparty === undefined ||
+          counterparty.isPlatform === true ||
+          !counterparty.username?.trim()
+        )
           continue;
-        counterparties.push({ id: key.id, accountId: sender.id, username: sender.username });
+        counterparties.push({
+          id: key.id,
+          accountId: counterparty.id,
+          username: counterparty.username,
+        });
       }
       return c.json({ counterparties }, 200);
     } catch {
