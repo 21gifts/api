@@ -10,7 +10,7 @@ import { unsignedNostrDefaults, type ForumPhoto } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
-import { invoiceRoutes } from '@/routes/invoices';
+import { invoiceRoutes, issueGiftInvoice } from '@/routes/invoices';
 import { createApp as createAppRaw } from '@/server';
 import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
@@ -61,12 +61,15 @@ function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
       newestCreatedAt: null,
       oldestPendingCreatedAt: null,
       pendingWithoutCreatedAt: false,
+      lastFullSyncAt: null,
     }),
     upsertTransfer: async () => ({
       inserted: false,
       updated: false,
       shopPaymentBecameCompleted: false,
     }),
+    upsertTokenTransaction: async () => undefined,
+    markFullSync: async () => undefined,
     hasShopPayment: async () => shopPayment,
   };
 }
@@ -4569,6 +4572,88 @@ describe('GET /invoices/eligible', () => {
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not let a public comment 'Welcome' bypass the verified shop payment", async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not let a daily roster comment 'Welcome' bypass the shop payment", async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const result = await issueGiftInvoice(
+      {
+        walletTransfers: fakeWalletTransferStore(false),
+        store: new InMemoryInvoiceStore(),
+        authStore,
+        messageStore: livePostStore(),
+        now: () => GATE_MS,
+        fetchImpl,
+        lnurlServer: LNURL_SERVER,
+        fundingStore: admittedStore(),
+        giftStore: new InMemoryGiftStore(),
+        recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
+      },
+      {
+        address: ADDRESS,
+        amountMsat: 1000,
+        amountUsd: '1.00',
+        comment: 'Welcome',
+        messageId: POST_ID,
+      },
+    );
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('lets only the server-decided one-dollar welcome path skip the shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const result = await issueGiftInvoice(
+      {
+        walletTransfers: fakeWalletTransferStore(false),
+        store: new InMemoryInvoiceStore(),
+        authStore,
+        messageStore: livePostStore(),
+        now: () => GATE_MS,
+        fetchImpl,
+        lnurlServer: LNURL_SERVER,
+        fundingStore: admittedStore(),
+        giftStore: new InMemoryGiftStore(),
+        recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
+      },
+      {
+        address: ADDRESS,
+        amountMsat: 1000,
+        amountUsd: '1.00',
+        comment: 'Welcome',
+        serverPayoutKind: 'welcome',
+      },
+    );
+    expect(result.ok).toBe(true);
+    // LNURL-pay first discovers the callback, then requests the invoice from it.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('returns eligible false when there is no grant', async () => {

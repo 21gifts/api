@@ -379,6 +379,7 @@ export interface BootFxOptions {
  * and `db_change` and `trg_db_change` attaches to `api_log`,
  * `account_image`, `diagnostic_event`, `spark_invoice` / `member_spark_invoice`,
  * `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`,
+ * `wallet_token_transaction`, `wallet_transfer_sync`,
  * `spark_viewer_key`, `member_event`,
  * `app_setting`, and `login_allowlist`.
  *

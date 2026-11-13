@@ -75,7 +75,7 @@ function payment(extra: Partial<WalletPaymentRecord> = {}): WalletPaymentRecord 
 
 describe('wallet schema', () => {
   it('contains the exact idempotent tables, migration order, and mirrored documentation', async () => {
-    expect(WALLET_SCHEMA_SQL).toHaveLength(15);
+    expect(WALLET_SCHEMA_SQL).toHaveLength(19);
     expect(WALLET_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/);
     expect(WALLET_SCHEMA_SQL[1]).toBe(
       'ALTER TABLE wallet_balance_snapshot ADD COLUMN IF NOT EXISTS wallet_pubkey text',
@@ -100,11 +100,16 @@ describe('wallet schema', () => {
       'CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)',
     );
     expect(WALLET_SCHEMA_SQL[10]).toMatch(/CREATE TABLE IF NOT EXISTS wallet_transfer/);
-    expect(WALLET_SCHEMA_SQL[10]).toMatch(/PRIMARY KEY \(account_id, transfer_id\)/);
-    expect(WALLET_SCHEMA_SQL[11]).toMatch(/wallet_transfer_wallet_created_idx/);
-    expect(WALLET_SCHEMA_SQL[12]).toMatch(/wallet_transfer_pending_idx/);
-    expect(WALLET_SCHEMA_SQL[13]).toMatch(/wallet_transfer_shop_payment_idx/);
-    expect(WALLET_SCHEMA_SQL[14]).toMatch(/wallet_transfer_counterparty_idx/);
+    expect(WALLET_SCHEMA_SQL[10]).toMatch(/PRIMARY KEY \(account_id, wallet_pubkey, transfer_id\)/);
+    expect(WALLET_SCHEMA_SQL[11]).toMatch(/DROP CONSTRAINT wallet_transfer_pkey/);
+    expect(WALLET_SCHEMA_SQL[11]).toMatch(/PRIMARY KEY \(account_id, wallet_pubkey, transfer_id\)/);
+    expect(WALLET_SCHEMA_SQL[12]).toMatch(/wallet_transfer_wallet_created_idx/);
+    expect(WALLET_SCHEMA_SQL[13]).toMatch(/wallet_transfer_pending_idx/);
+    expect(WALLET_SCHEMA_SQL[14]).toMatch(/wallet_transfer_shop_payment_idx/);
+    expect(WALLET_SCHEMA_SQL[15]).toMatch(/wallet_transfer_counterparty_idx/);
+    expect(WALLET_SCHEMA_SQL[16]).toMatch(/wallet_transfer_sync/);
+    expect(WALLET_SCHEMA_SQL[17]).toMatch(/wallet_token_transaction/);
+    expect(WALLET_SCHEMA_SQL[18]).toMatch(/wallet_token_transaction_wallet_created_idx/);
     const documented = readFileSync(join(process.cwd(), 'docs/schema/wallet.sql'), 'utf8');
     for (const statement of WALLET_SCHEMA_SQL) {
       expect(documented).toContain(statement);

@@ -141,7 +141,7 @@ describe('debugDbRoutes', () => {
     await expect(res.json()).resolves.toEqual({ tables });
   });
 
-  it('limits a software-developer session to the three wallet tables', async () => {
+  it('limits a software-developer session to the four wallet history tables', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: '00000000-0000-4000-8000-000000000001',
@@ -166,6 +166,7 @@ describe('debugDbRoutes', () => {
           { name: 'wallet_balance_snapshot', rowCount: 2 },
           { name: 'wallet_payment', rowCount: 3 },
           { name: 'wallet_transfer', rowCount: 4 },
+          { name: 'wallet_token_transaction', rowCount: 5 },
         ]),
     });
     const client = new Hono().route(
@@ -185,6 +186,7 @@ describe('debugDbRoutes', () => {
         { name: 'wallet_balance_snapshot', rowCount: 2 },
         { name: 'wallet_payment', rowCount: 3 },
         { name: 'wallet_transfer', rowCount: 4 },
+        { name: 'wallet_token_transaction', rowCount: 5 },
       ],
     });
     const refused = await client.request('/debug/db?table=account', {

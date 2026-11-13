@@ -20,6 +20,10 @@ export type WalletTransferType =
 /** Stable transfer status stored independently of SDK enum numbers. */
 export type WalletTransferStatus = 'pending' | 'completed' | 'expired' | 'returned';
 
+/** Stable token-transaction status stored independently of SDK enum numbers. */
+export type WalletTokenTransactionStatus =
+  'started' | 'signed' | 'revealed' | 'finalized' | 'cancelled' | 'unknown';
+
 /** One current or previous wallet to read through the deployment viewer. */
 export interface WalletTransferWallet {
   accountId: string;
@@ -43,11 +47,23 @@ export interface WalletTransferRecord {
   seenAt: Date;
 }
 
+/** One complete viewer-sourced Spark token transaction. */
+export interface WalletTokenTransactionRecord {
+  accountId: string;
+  walletPubkey: string;
+  transactionHash: string;
+  status: WalletTokenTransactionStatus;
+  transactionCreatedAt: Date | null;
+  payload: Record<string, unknown>;
+  seenAt: Date;
+}
+
 /** Cursor facts used for overlap and pending re-reads. */
 export interface WalletTransferSyncState {
   newestCreatedAt: Date | null;
   oldestPendingCreatedAt: Date | null;
   pendingWithoutCreatedAt: boolean;
+  lastFullSyncAt: Date | null;
 }
 
 /** Result of one durable transfer upsert. */
@@ -62,6 +78,8 @@ export interface WalletTransferStore {
   listWallets(): Promise<WalletTransferWallet[]>;
   syncState(accountId: string, walletPubkey: string): Promise<WalletTransferSyncState>;
   upsertTransfer(row: WalletTransferRecord): Promise<WalletTransferUpsertResult>;
+  upsertTokenTransaction(row: WalletTokenTransactionRecord): Promise<void>;
+  markFullSync(accountId: string, walletPubkey: string, syncedAt: Date): Promise<void>;
   hasShopPayment(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<boolean>;
 }
 
@@ -100,6 +118,8 @@ function dayOf(row: WalletTransferRecord): string | null {
 /** Process-local adapter used by database-free boots and tests. */
 export class InMemoryWalletTransferStore implements WalletTransferStore {
   readonly #rows = new Map<string, WalletTransferRecord>();
+  readonly #tokens = new Map<string, WalletTokenTransactionRecord>();
+  readonly #fullSyncAt = new Map<string, Date>();
   readonly #wallets: WalletTransferWallet[];
   readonly #accountForPubkey: (pubkey: string) => Promise<string | null>;
   readonly #isShop: (accountId: string) => Promise<boolean>;
@@ -144,21 +164,32 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
       pendingWithoutCreatedAt: rows.some(
         (row) => row.status === 'pending' && row.transferCreatedAt === null,
       ),
+      lastFullSyncAt: dateCopy(this.#fullSyncAt.get(`${accountId}\u0000${walletPubkey}`) ?? null),
     });
   }
 
   async upsertTransfer(row: WalletTransferRecord): Promise<WalletTransferUpsertResult> {
-    const key = `${row.accountId}\u0000${row.transferId}`;
+    const key = `${row.accountId}\u0000${row.walletPubkey}\u0000${row.transferId}`;
     const existing = this.#rows.get(key);
+    // A wallet change inserts a distinct composite-key row, but it also changes
+    // a stored field of the account's observed transfer.
+    const comparable =
+      existing ??
+      [...this.#rows.values()].find(
+        (candidate) =>
+          candidate.accountId === row.accountId && candidate.transferId === row.transferId,
+      );
     const counterparty = await this.#accountForPubkey(row.counterpartyPubkey);
+    const existingCounterparty =
+      existing === undefined ? null : await this.#accountForPubkey(existing.counterpartyPubkey);
     const wasShop =
       existing !== undefined &&
       existing.status === 'completed' &&
       existing.direction === 'out' &&
       existing.type === 'transfer' &&
-      counterparty !== null &&
-      counterparty !== existing.accountId &&
-      (await this.#isShop(counterparty));
+      existingCounterparty !== null &&
+      existingCounterparty !== existing.accountId &&
+      (await this.#isShop(existingCounterparty));
     const next = copyRecord(row);
     this.#rows.set(key, next);
     const isShop =
@@ -170,9 +201,25 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
       (await this.#isShop(counterparty));
     return {
       inserted: existing === undefined,
-      updated: existing !== undefined && !substantiveEqual(existing, next),
+      updated: comparable !== undefined && !substantiveEqual(comparable, next),
       shopPaymentBecameCompleted: isShop && !wasShop,
     };
+  }
+
+  upsertTokenTransaction(row: WalletTokenTransactionRecord): Promise<void> {
+    const key = `${row.accountId}\u0000${row.walletPubkey}\u0000${row.transactionHash}`;
+    this.#tokens.set(key, {
+      ...row,
+      transactionCreatedAt: dateCopy(row.transactionCreatedAt),
+      payload: structuredClone(row.payload),
+      seenAt: new Date(row.seenAt.getTime()),
+    });
+    return Promise.resolve();
+  }
+
+  markFullSync(accountId: string, walletPubkey: string, syncedAt: Date): Promise<void> {
+    this.#fullSyncAt.set(`${accountId}\u0000${walletPubkey}`, new Date(syncedAt.getTime()));
+    return Promise.resolve();
   }
 
   async hasShopPayment(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<boolean> {
@@ -279,10 +326,13 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
       newest_created_at: Date | string | null;
       oldest_pending_created_at: Date | string | null;
       pending_without_created_at: boolean;
+      last_full_sync_at: Date | string | null;
     }>(
       `SELECT max(transfer_created_at) AS newest_created_at,
               min(transfer_created_at) FILTER (WHERE status = 'pending') AS oldest_pending_created_at
-              , bool_or(status = 'pending' AND transfer_created_at IS NULL) AS pending_without_created_at
+              , bool_or(status = 'pending' AND transfer_created_at IS NULL) AS pending_without_created_at,
+              (SELECT last_full_sync_at FROM wallet_transfer_sync
+               WHERE account_id = $1 AND wallet_pubkey = $2) AS last_full_sync_at
        FROM wallet_transfer WHERE account_id = $1 AND wallet_pubkey = $2`,
       [accountId, walletPubkey],
     );
@@ -291,6 +341,7 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
       newestCreatedAt: sqlDate(row?.newest_created_at ?? null),
       oldestPendingCreatedAt: sqlDate(row?.oldest_pending_created_at ?? null),
       pendingWithoutCreatedAt: row?.pending_without_created_at === true,
+      lastFullSyncAt: sqlDate(row?.last_full_sync_at ?? null),
     };
   }
 
@@ -307,9 +358,10 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
                  AND counterparty_account_id IS NOT NULL AND counterparty_account_id <> account_id
                  AND ${SHOP_EXISTS_SQL}) AS is_shop_payment
          FROM wallet_transfer
-         WHERE account_id = $1 AND transfer_id = $2
+         WHERE account_id = $1 AND transfer_id = $3
+         ORDER BY (wallet_pubkey = $2) DESC, wallet_pubkey
          FOR UPDATE`,
-        [row.accountId, row.transferId],
+        [row.accountId, row.walletPubkey, row.transferId],
       );
       await tx.execute(
         `INSERT INTO wallet_transfer
@@ -321,8 +373,7 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
              (SELECT id FROM account WHERE spark_pubkey = $8 ORDER BY (spark_pubkey_verified_at IS NOT NULL) DESC LIMIT 1),
              (SELECT account_id FROM previous_wallet WHERE spark_pubkey = $8 ORDER BY replaced_at DESC, account_id LIMIT 1)
            ),$9,$10,$11,$12,$12)
-         ON CONFLICT (account_id, transfer_id) DO UPDATE SET
-           wallet_pubkey = EXCLUDED.wallet_pubkey,
+         ON CONFLICT (account_id, wallet_pubkey, transfer_id) DO UPDATE SET
            direction = EXCLUDED.direction,
            type = EXCLUDED.type,
            status = EXCLUDED.status,
@@ -354,21 +405,57 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
                   (direction = 'out' AND status = 'completed' AND type = 'transfer'
                    AND counterparty_account_id IS NOT NULL AND counterparty_account_id <> account_id
                    AND ${SHOP_EXISTS_SQL}) AS is_shop_payment
-           FROM wallet_transfer WHERE account_id = $1 AND transfer_id = $2`,
-          [row.accountId, row.transferId],
+           FROM wallet_transfer WHERE account_id = $1 AND wallet_pubkey = $2 AND transfer_id = $3`,
+          [row.accountId, row.walletPubkey, row.transferId],
         )
       )[0];
-      const before = beforeRows[0];
+      // Prefer the exact composite-key row; otherwise compare the same observed
+      // transfer from another wallet while still reporting this row as inserted.
+      const before = beforeRows.find((candidate) => candidate.wallet_pubkey === row.walletPubkey);
+      const comparable = before ?? beforeRows[0];
       return {
         inserted: before === undefined,
         updated:
-          before !== undefined &&
-          (!substantiveEqual(recordFromSql(row.accountId, row.transferId, before), row) ||
-            before.counterparty_account_id !== after?.counterparty_account_id),
+          comparable !== undefined &&
+          (!substantiveEqual(recordFromSql(row.accountId, row.transferId, comparable), row) ||
+            comparable.counterparty_account_id !== after?.counterparty_account_id),
         shopPaymentBecameCompleted:
           after?.is_shop_payment === true && before?.is_shop_payment !== true,
       };
     });
+  }
+
+  async upsertTokenTransaction(row: WalletTokenTransactionRecord): Promise<void> {
+    await this.sql.execute(
+      `INSERT INTO wallet_token_transaction
+         (account_id, wallet_pubkey, transaction_hash, status, transaction_created_at,
+          payload, first_seen_at, last_seen_at)
+       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$7)
+       ON CONFLICT (account_id, wallet_pubkey, transaction_hash) DO UPDATE SET
+         status = EXCLUDED.status,
+         transaction_created_at = EXCLUDED.transaction_created_at,
+         payload = EXCLUDED.payload,
+         last_seen_at = EXCLUDED.last_seen_at`,
+      [
+        row.accountId,
+        row.walletPubkey,
+        row.transactionHash,
+        row.status,
+        row.transactionCreatedAt,
+        JSON.stringify(row.payload),
+        row.seenAt,
+      ],
+    );
+  }
+
+  async markFullSync(accountId: string, walletPubkey: string, syncedAt: Date): Promise<void> {
+    await this.sql.execute(
+      `INSERT INTO wallet_transfer_sync (account_id, wallet_pubkey, last_full_sync_at)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (account_id, wallet_pubkey) DO UPDATE SET
+         last_full_sync_at = EXCLUDED.last_full_sync_at`,
+      [accountId, walletPubkey, syncedAt],
+    );
   }
 
   async hasShopPayment(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<boolean> {
@@ -387,8 +474,8 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
            AND payment.type = 'transfer'
            AND payment.counterparty_account_id IS NOT NULL
            AND payment.counterparty_account_id <> payment.account_id
-           AND COALESCE(payment.transfer_updated_at, payment.transfer_created_at) >= $2::date
-           AND COALESCE(payment.transfer_updated_at, payment.transfer_created_at) < ($3::date + interval '1 day')
+           AND (COALESCE(payment.transfer_updated_at, payment.transfer_created_at)
+                AT TIME ZONE 'UTC')::date BETWEEN $2::date AND $3::date
        ) AS present`,
       [accountId, fromUtcDay, toUtcDay],
     );

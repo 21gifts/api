@@ -1,12 +1,14 @@
 /** One owner-facing explanation of today's daily grant payout. */
 
 import type { Account, AuthStore } from '@/lib/auth/store';
+import { roleAtLeast } from '@/lib/auth/roles';
 import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import { inGrantProgramToday, recoveryShareRequired, utcDayKey } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { GiftRow } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { latestTodayMediaPostId } from '@/lib/funding-ping';
+import { addUtcDays } from '@/lib/member-habit';
 import type { MessageStore } from '@/lib/message-store';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
@@ -88,7 +90,7 @@ export async function loadFundingPayoutToday(
   if (paidKindToday(gifts, account.username, today, 'welcome')) {
     return { state: 'paid', reason: 'welcome' };
   }
-  if (account.role === 'basis') {
+  if (!roleAtLeast(account.role, 'verified')) {
     return { state: 'blocked', reason: 'verify' };
   }
   const grant = await deps.funding.getByAccountId(account.id);
@@ -104,7 +106,7 @@ export async function loadFundingPayoutToday(
   ) {
     return { state: 'blocked', reason: 'recovery_share' };
   }
-  if (!(await deps.transfers.hasShopPayment(account.id, utcDayKey(nowMs - 86_400_000), today))) {
+  if (!(await deps.transfers.hasShopPayment(account.id, addUtcDays(today, -1), today))) {
     return { state: 'blocked', reason: 'shop_payment' };
   }
   if ((await latestTodayMediaPostId(deps.messages, account.id, nowMs)) === null) {

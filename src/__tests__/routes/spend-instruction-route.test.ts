@@ -73,12 +73,15 @@ function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
       newestCreatedAt: null,
       oldestPendingCreatedAt: null,
       pendingWithoutCreatedAt: false,
+      lastFullSyncAt: null,
     }),
     upsertTransfer: async () => ({
       inserted: false,
       updated: false,
       shopPaymentBecameCompleted: false,
     }),
+    upsertTokenTransaction: async () => undefined,
+    markFullSync: async () => undefined,
     hasShopPayment: async () => shopPayment,
   };
 }

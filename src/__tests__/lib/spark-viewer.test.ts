@@ -4,18 +4,25 @@ import type { SqlClient } from '@/lib/auth/sql';
 const sdk = vi.hoisted(() => {
   const publicBytes = new Uint8Array([2, ...Array<number>(32).fill(7)]);
   const getTransfers = vi.fn();
+  const getTokenTransactions = vi.fn();
   const getOwnedBalance = vi.fn();
   return {
     publicBytes,
     getTransfers,
+    getTokenTransactions,
     getOwnedBalance,
-    createWithViewerKey: vi.fn(async () => ({ getTransfers, getOwnedBalance })),
+    createWithViewerKey: vi.fn(async () => ({
+      getTransfers,
+      getTokenTransactions,
+      getOwnedBalance,
+    })),
     deriveViewerIdentityPublicKey: vi.fn<() => Promise<unknown>>(async () => publicBytes),
   };
 });
 const {
   publicBytes: PUBLIC_BYTES,
   getTransfers,
+  getTokenTransactions,
   getOwnedBalance,
   createWithViewerKey,
   deriveViewerIdentityPublicKey,
@@ -37,6 +44,7 @@ const PUBLIC_KEY = `02${'07'.repeat(32)}`;
 
 beforeEach(() => {
   getTransfers.mockReset();
+  getTokenTransactions.mockReset();
   getOwnedBalance.mockReset();
   createWithViewerKey.mockClear();
   deriveViewerIdentityPublicKey.mockClear();
@@ -68,6 +76,22 @@ describe('ensureSparkViewer', () => {
           updatedTime: undefined,
           type: 2,
           sparkInvoice: 'spark1invoice',
+          senders: [{ id: 'sender', identityPublicKey: PUBLIC_BYTES }],
+          receivers: [
+            {
+              id: 'receiver',
+              identityPublicKey: new Uint8Array([3, ...Array<number>(32).fill(8)]),
+              amountSats: 21,
+              status: 5,
+            },
+          ],
+          leaves: [
+            {
+              leaf: { value: 21 },
+              transferSenderId: 'sender',
+              transferReceiverId: 'receiver',
+            },
+          ],
         },
         { id: 1 },
       ],
@@ -78,7 +102,22 @@ describe('ensureSparkViewer', () => {
     expect(opened.publicKey).toBe(PUBLIC_KEY);
     await expect(
       opened.viewer.transfers({ sparkAddress: 'spark1address', limit: 100, offset: 0 }),
-    ).resolves.toMatchObject({ offset: -1, transfers: [{ id: 'transfer', totalValue: 21 }] });
+    ).resolves.toMatchObject({
+      offset: -1,
+      rawCount: 2,
+      transfers: [
+        {
+          id: 'transfer',
+          totalValue: 21,
+          senders: [{ id: 'sender', identityPublicKey: PUBLIC_BYTES }],
+          receivers: [expect.objectContaining({ id: 'receiver', amountSats: 21 })],
+          leaves: [{ value: 21, senderId: 'sender', receiverId: 'receiver' }],
+        },
+      ],
+    });
+    expect(getTransfers).toHaveBeenCalledWith(
+      expect.objectContaining({ types: [0, 1, 2, 3, 4, 5, 30, 40] }),
+    );
     await expect(opened.viewer.balance('spark1address')).resolves.toBe(34);
   });
 
@@ -119,6 +158,9 @@ describe('ensureSparkViewer', () => {
             type: 0,
             createdTime: 'not-a-date',
             updatedTime: new Date('2026-11-12T01:00:00.000Z'),
+            senders: [null, { id: 1 }],
+            receivers: [null, { id: 'receiver', identityPublicKey: PUBLIC_BYTES }],
+            leaves: [null, { leaf: null }, { leaf: { value: 1 } }],
           },
         ],
         offset: 'done',
@@ -139,11 +181,74 @@ describe('ensureSparkViewer', () => {
         }),
       ],
       offset: -1,
+      rawCount: 9,
     });
     await expect(
       opened.viewer.transfers({ sparkAddress: 'spark1address', limit: 100, offset: 0 }),
-    ).resolves.toEqual({ transfers: [], offset: 0 });
+    ).resolves.toEqual({ transfers: [], offset: 0, rawCount: 0 });
     await expect(opened.viewer.balance('spark1address')).resolves.toBe(0);
+  });
+
+  it('normalizes complete token transactions and cursor pagination', async () => {
+    const hash = new Uint8Array(32).fill(5);
+    getTokenTransactions
+      .mockResolvedValueOnce({
+        transactions: [
+          {
+            tokenTransactionHash: hash,
+            status: 2,
+            tokenTransaction: {
+              clientCreatedTimestamp: new Date('2026-11-12T02:00:00.000Z'),
+              tokenOutputs: [{ ownerPublicKey: PUBLIC_BYTES, tokenAmount: Uint8Array.of(21) }],
+            },
+          },
+          { tokenTransactionHash: new Uint8Array(32).fill(6), status: 10 },
+          { status: 2 },
+        ],
+        pageResponse: { hasNextPage: true, nextCursor: 'next' },
+      })
+      .mockResolvedValueOnce({ transactions: null, pageResponse: null });
+    const opened = await ensureSparkViewer(undefined, undefined);
+    await expect(
+      opened.viewer.tokenTransactions({ sparkAddress: 'spark1address', pageSize: 100 }),
+    ).resolves.toEqual({
+      transactions: [
+        {
+          hash: '05'.repeat(32),
+          status: 2,
+          createdTime: new Date('2026-11-12T02:00:00.000Z'),
+          payload: {
+            tokenTransactionHash: '05'.repeat(32),
+            status: 2,
+            tokenTransaction: {
+              clientCreatedTimestamp: '2026-11-12T02:00:00.000Z',
+              tokenOutputs: [{ ownerPublicKey: PUBLIC_KEY, tokenAmount: '15' }],
+            },
+          },
+        },
+        {
+          hash: '06'.repeat(32),
+          status: 10,
+          createdTime: undefined,
+          payload: { tokenTransactionHash: '06'.repeat(32), status: 10 },
+        },
+      ],
+      hasNextPage: true,
+      nextCursor: 'next',
+      rawCount: 3,
+    });
+    await expect(
+      opened.viewer.tokenTransactions({
+        sparkAddress: 'spark1address',
+        pageSize: 100,
+        cursor: 'next',
+      }),
+    ).resolves.toEqual({
+      transactions: [],
+      hasNextPage: false,
+      nextCursor: null,
+      rawCount: 0,
+    });
   });
 
   it('creates the encrypted durable row under an advisory transaction and reloads it', async () => {
@@ -270,5 +375,156 @@ describe('ensureSparkViewer', () => {
     await expect(ensureSparkViewer(sqlFor(shortKekEnvelope), new Uint8Array(31))).rejects.toThrow(
       'envelope key is invalid',
     );
+  });
+});
+
+describe('Spark viewer SDK value mapping', () => {
+  const baseTransfer = {
+    id: 'transfer-coverage',
+    status: 1,
+    totalValue: 21,
+    type: 2,
+  };
+
+  it('copies identity keys and maps valid nested transfer fields', async () => {
+    const senderKey = new Uint8Array([1, 2]);
+    const receiverKey = new Uint8Array([3, 4]);
+    const createdTime = new Date('2025-01-02T03:04:05.000Z');
+    const updatedTime = new Date('2025-01-02T04:05:06.000Z');
+
+    getTransfers.mockResolvedValueOnce({
+      transfers: [
+        {
+          ...baseTransfer,
+          senderIdentityPublicKey: senderKey,
+          receiverIdentityPublicKey: receiverKey,
+          createdTime,
+          updatedTime,
+          sparkInvoice: 'spark:invoice',
+          senders: [{ id: 'sender', identityPublicKey: senderKey }],
+          receivers: [
+            {
+              id: 'receiver',
+              identityPublicKey: receiverKey,
+              amountSats: 21,
+              status: 1,
+            },
+          ],
+          leaves: [
+            {
+              leaf: { id: 'leaf', value: 21 },
+              transferSenderId: 'sender',
+              transferReceiverId: 'receiver',
+            },
+          ],
+        },
+      ],
+      offset: -1,
+    });
+    const opened = await ensureSparkViewer(undefined, undefined);
+    const page = await opened.viewer.transfers({
+      sparkAddress: 'spark1address',
+      limit: 100,
+      offset: 0,
+    });
+    const mapped = page.transfers[0];
+
+    expect(mapped).toMatchObject({
+      id: 'transfer-coverage',
+      senderIdentityPublicKey: senderKey,
+      receiverIdentityPublicKey: receiverKey,
+      createdTime,
+      updatedTime,
+      sparkInvoice: 'spark:invoice',
+      senders: [{ id: 'sender', identityPublicKey: senderKey }],
+      receivers: [{ id: 'receiver', identityPublicKey: receiverKey, status: 1 }],
+      leaves: [{ value: 21, senderId: 'sender', receiverId: 'receiver' }],
+    });
+    expect(mapped?.senderIdentityPublicKey).not.toBe(senderKey);
+    expect(mapped?.receiverIdentityPublicKey).not.toBe(receiverKey);
+    expect(mapped?.createdTime).not.toBe(createdTime);
+    expect(mapped?.updatedTime).not.toBe(updatedTime);
+  });
+
+  it('uses empty identities and nested collections for absent SDK fields', async () => {
+    getTransfers.mockResolvedValueOnce({
+      transfers: [
+        {
+          ...baseTransfer,
+          senderIdentityPublicKey: null,
+          receiverIdentityPublicKey: null,
+        },
+      ],
+      offset: -1,
+    });
+    const opened = await ensureSparkViewer(undefined, undefined);
+
+    await expect(
+      opened.viewer.transfers({ sparkAddress: 'spark1address', limit: 100, offset: 0 }),
+    ).resolves.toMatchObject({
+      transfers: [
+        {
+          senderIdentityPublicKey: new Uint8Array(),
+          receiverIdentityPublicKey: new Uint8Array(),
+          sparkInvoice: '',
+          senders: [],
+          receivers: [],
+          leaves: [],
+        },
+      ],
+    });
+  });
+
+  it('filters a primitive token transaction', async () => {
+    getTokenTransactions.mockResolvedValueOnce({
+      transactions: ['not a transaction'],
+      pageResponse: null,
+    });
+    const opened = await ensureSparkViewer(undefined, undefined);
+
+    await expect(
+      opened.viewer.tokenTransactions({ sparkAddress: 'spark1address', pageSize: 100 }),
+    ).resolves.toEqual({
+      transactions: [],
+      hasNextPage: false,
+      nextCursor: null,
+      rawCount: 1,
+    });
+  });
+
+  it('maps token fields and serializes the complete SDK payload', async () => {
+    const createdTime = new Date('2025-02-03T04:05:06.000Z');
+    getTokenTransactions.mockResolvedValueOnce({
+      transactions: [
+        {
+          tokenTransactionHash: new Uint8Array([0xab, 0xcd]),
+          status: 3,
+          tokenTransaction: { clientCreatedTimestamp: createdTime },
+          bytes: new Uint8Array([1, 2]),
+          nested: { date: createdTime },
+        },
+      ],
+      pageResponse: null,
+    });
+    const opened = await ensureSparkViewer(undefined, undefined);
+    const page = await opened.viewer.tokenTransactions({
+      sparkAddress: 'spark1address',
+      pageSize: 100,
+    });
+    const mapped = page.transactions[0];
+
+    expect(mapped).toEqual({
+      hash: 'abcd',
+      status: 3,
+      createdTime,
+      payload: {
+        tokenTransactionHash: 'abcd',
+        status: 3,
+        tokenTransaction: { clientCreatedTimestamp: createdTime.toISOString() },
+        bytes: '0102',
+        nested: { date: createdTime.toISOString() },
+      },
+    });
+    expect(mapped?.createdTime).not.toBe(createdTime);
   });
 });

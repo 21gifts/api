@@ -8,6 +8,7 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { recoveryShareRequired, utcDayKey } from '@/lib/funding';
 import { logEvent } from '@/lib/log';
+import { addUtcDays } from '@/lib/member-habit';
 import type { MessageStore } from '@/lib/message-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import type { SpendGrantStatus } from '@/lib/spend-instruction';
@@ -90,7 +91,7 @@ export async function pingTodayMedia(
       deps.walletTransfers !== undefined &&
       !(await deps.walletTransfers.hasShopPayment(
         account.id,
-        utcDayKey(nowMs - 86_400_000),
+        addUtcDays(utcDayKey(nowMs), -1),
         utcDayKey(nowMs),
       ))
     ) {

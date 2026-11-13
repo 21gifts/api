@@ -28,6 +28,22 @@ export interface SparkViewerTransfer {
   updatedTime: Date | undefined;
   type: number;
   sparkInvoice: string;
+  senders: Array<{ id: string; identityPublicKey: Uint8Array }>;
+  receivers: Array<{
+    id: string;
+    identityPublicKey: Uint8Array;
+    amountSats: number;
+    status: number;
+  }>;
+  leaves: Array<{ value: number; senderId: string; receiverId: string }>;
+}
+
+/** One complete token transaction returned by the SDK adapter. */
+export interface SparkViewerTokenTransaction {
+  hash: string;
+  status: number;
+  createdTime: Date | undefined;
+  payload: Record<string, unknown>;
 }
 
 /** Read-only operator access used by the wallet transfer worker. */
@@ -37,7 +53,13 @@ export interface SparkViewer {
     limit: number;
     offset: number;
     createdAfter?: Date;
-  }): Promise<{ transfers: SparkViewerTransfer[]; offset: number }>;
+  }): Promise<{ transfers: SparkViewerTransfer[]; offset: number; rawCount: number }>;
+  tokenTransactions(input: { sparkAddress: string; pageSize: number; cursor?: string }): Promise<{
+    transactions: SparkViewerTokenTransaction[];
+    hasNextPage: boolean;
+    nextCursor: string | null;
+    rawCount: number;
+  }>;
   balance(sparkAddress: string): Promise<number>;
 }
 
@@ -108,15 +130,67 @@ type SdkTransferPage = {
   offset?: unknown;
 };
 
+type SdkTokenPage = {
+  transactions?: unknown;
+  pageResponse?: unknown;
+};
+
+const ALL_TRANSFER_TYPES = [0, 1, 2, 3, 4, 5, 30, 40] as const;
+
 type SdkViewer = {
   getTransfers(input: {
     sparkAddress: string;
     limit: number;
     offset: number;
+    types: readonly number[];
     createdAfter?: Date;
   }): Promise<SdkTransferPage>;
+  getTokenTransactions(input: {
+    sparkAddresses: string[];
+    pageSize: number;
+    cursor?: string;
+    direction: 'NEXT';
+  }): Promise<SdkTokenPage>;
   getOwnedBalance(sparkAddress: string): Promise<unknown>;
 };
+
+function participantOf(value: unknown): { id: string; identityPublicKey: Uint8Array } | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const row = value as Record<string, unknown>;
+  return typeof row['id'] === 'string' && row['identityPublicKey'] instanceof Uint8Array
+    ? { id: row['id'], identityPublicKey: new Uint8Array(row['identityPublicKey']) }
+    : null;
+}
+
+function receiverOf(value: unknown): SparkViewerTransfer['receivers'][number] | null {
+  const participant = participantOf(value);
+  const row = value as Record<string, unknown>;
+  return participant !== null &&
+    typeof row['amountSats'] === 'number' &&
+    typeof row['status'] === 'number'
+    ? { ...participant, amountSats: row['amountSats'], status: row['status'] }
+    : null;
+}
+
+function leafOf(value: unknown): SparkViewerTransfer['leaves'][number] | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const row = value as Record<string, unknown>;
+  const leaf = row['leaf'];
+  if (
+    typeof leaf !== 'object' ||
+    leaf === null ||
+    typeof (leaf as Record<string, unknown>)['value'] !== 'number' ||
+    typeof row['transferSenderId'] !== 'string' ||
+    typeof row['transferReceiverId'] !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    value: (leaf as Record<string, unknown>)['value'] as number,
+    senderId: row['transferSenderId'],
+    receiverId: row['transferReceiverId'],
+  };
+}
 
 function transferOf(value: unknown): SparkViewerTransfer | null {
   if (typeof value !== 'object' || value === null) {
@@ -125,8 +199,6 @@ function transferOf(value: unknown): SparkViewerTransfer | null {
   const row = value as Record<string, unknown>;
   if (
     typeof row['id'] !== 'string' ||
-    !(row['senderIdentityPublicKey'] instanceof Uint8Array) ||
-    !(row['receiverIdentityPublicKey'] instanceof Uint8Array) ||
     typeof row['status'] !== 'number' ||
     typeof row['totalValue'] !== 'number' ||
     typeof row['type'] !== 'number'
@@ -137,14 +209,69 @@ function transferOf(value: unknown): SparkViewerTransfer | null {
   const updatedTime = row['updatedTime'];
   return {
     id: row['id'],
-    senderIdentityPublicKey: new Uint8Array(row['senderIdentityPublicKey']),
-    receiverIdentityPublicKey: new Uint8Array(row['receiverIdentityPublicKey']),
+    senderIdentityPublicKey:
+      row['senderIdentityPublicKey'] instanceof Uint8Array
+        ? new Uint8Array(row['senderIdentityPublicKey'])
+        : new Uint8Array(),
+    receiverIdentityPublicKey:
+      row['receiverIdentityPublicKey'] instanceof Uint8Array
+        ? new Uint8Array(row['receiverIdentityPublicKey'])
+        : new Uint8Array(),
     status: row['status'],
     totalValue: row['totalValue'],
     createdTime: createdTime instanceof Date ? new Date(createdTime.getTime()) : undefined,
     updatedTime: updatedTime instanceof Date ? new Date(updatedTime.getTime()) : undefined,
     type: row['type'],
     sparkInvoice: typeof row['sparkInvoice'] === 'string' ? row['sparkInvoice'] : '',
+    senders: Array.isArray(row['senders'])
+      ? row['senders']
+          .map(participantOf)
+          .filter(
+            (sender): sender is { id: string; identityPublicKey: Uint8Array } => sender !== null,
+          )
+      : [],
+    receivers: Array.isArray(row['receivers'])
+      ? row['receivers']
+          .map(receiverOf)
+          .filter(
+            (receiver): receiver is SparkViewerTransfer['receivers'][number] => receiver !== null,
+          )
+      : [],
+    leaves: Array.isArray(row['leaves'])
+      ? row['leaves']
+          .map(leafOf)
+          .filter((leaf): leaf is SparkViewerTransfer['leaves'][number] => leaf !== null)
+      : [],
+  };
+}
+
+function jsonValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Uint8Array) return bytesToHex(value);
+  if (Array.isArray(value)) return value.map(jsonValue);
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, jsonValue(child)]));
+  }
+  return value;
+}
+
+function tokenTransactionOf(value: unknown): SparkViewerTokenTransaction | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const row = value as Record<string, unknown>;
+  if (!(row['tokenTransactionHash'] instanceof Uint8Array) || typeof row['status'] !== 'number') {
+    return null;
+  }
+  const transaction = row['tokenTransaction'];
+  const payload = jsonValue(row);
+  const createdTime =
+    typeof transaction === 'object' && transaction !== null
+      ? (transaction as Record<string, unknown>)['clientCreatedTimestamp']
+      : undefined;
+  return {
+    hash: bytesToHex(row['tokenTransactionHash']),
+    status: row['status'],
+    createdTime: createdTime instanceof Date ? new Date(createdTime.getTime()) : undefined,
+    payload: payload as Record<string, unknown>,
   };
 }
 
@@ -167,11 +294,39 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
   )) as unknown as SdkViewer;
   return {
     async transfers(input) {
-      const page = await sdk.getTransfers(input);
+      const page = await sdk.getTransfers({ ...input, types: ALL_TRANSFER_TYPES });
+      const rawCount = Array.isArray(page.transfers) ? page.transfers.length : 0;
       const transfers = Array.isArray(page.transfers)
         ? page.transfers.map(transferOf).filter((row): row is SparkViewerTransfer => row !== null)
         : [];
-      return { transfers, offset: typeof page.offset === 'number' ? page.offset : -1 };
+      return { transfers, offset: typeof page.offset === 'number' ? page.offset : -1, rawCount };
+    },
+    async tokenTransactions(input) {
+      const page = await sdk.getTokenTransactions({
+        sparkAddresses: [input.sparkAddress],
+        pageSize: input.pageSize,
+        ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        direction: 'NEXT',
+      });
+      const rawCount = Array.isArray(page.transactions) ? page.transactions.length : 0;
+      const transactions = Array.isArray(page.transactions)
+        ? page.transactions
+            .map(tokenTransactionOf)
+            .filter((row): row is SparkViewerTokenTransaction => row !== null)
+        : [];
+      const response =
+        typeof page.pageResponse === 'object' && page.pageResponse !== null
+          ? (page.pageResponse as Record<string, unknown>)
+          : {};
+      return {
+        transactions,
+        hasNextPage: response['hasNextPage'] === true,
+        nextCursor:
+          typeof response['nextCursor'] === 'string' && response['nextCursor'] !== ''
+            ? response['nextCursor']
+            : null,
+        rawCount,
+      };
     },
     async balance(sparkAddress) {
       return balanceSats(await sdk.getOwnedBalance(sparkAddress));

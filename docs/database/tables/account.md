@@ -60,46 +60,48 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ## Referenced by
 
-| Table                     | Column                    | Points to |
-| ------------------------- | ------------------------- | --------- |
-| `account_image`           | `account_id`              | `id`      |
-| `address_verification`    | `account_id`              | `id`      |
-| `api_log`                 | `account_id`              | `id`      |
-| `auth_session`            | `account_id`              | `id`      |
-| `contact`                 | `account_id`              | `id`      |
-| `conversation`            | `account_a`               | `id`      |
-| `conversation`            | `account_b`               | `id`      |
-| `conversation_message`    | `actor_account_id`        | `id`      |
-| `conversation_message`    | `sender_account_id`       | `id`      |
-| `conversation_read`       | `account_id`              | `id`      |
-| `daily_roster_entry`      | `account_id`              | `id`      |
-| `funding_grant`           | `account_id`              | `id`      |
-| `funding_grant`           | `decided_by`              | `id`      |
-| `held_share_box`          | `account_id`              | `id`      |
-| `login_allowlist`         | `account_id`              | `id`      |
-| `member_event`            | `account_id`              | `id`      |
-| `member_habit`            | `account_id`              | `id`      |
-| `member_habit_comment`    | `account_id`              | `id`      |
-| `message`                 | `account_id`              | `id`      |
-| `message`                 | `shop_account_id`         | `id`      |
-| `notification`            | `actor_account_id`        | `id`      |
-| `notification`            | `recipient_account_id`    | `id`      |
-| `passkey_credential`      | `account_id`              | `id`      |
-| `passkey_renew_attempt`   | `account_id`              | `id`      |
-| `pending_recovery`        | `account_id`              | `id`      |
-| `pos_charge`              | `account_id`              | `id`      |
-| `previous_wallet`         | `account_id`              | `id`      |
-| `push_outbox`             | `account_id`              | `id`      |
-| `push_subscription`       | `account_id`              | `id`      |
-| `recovery_share`          | `account_id`              | `id`      |
-| `shop_payment`            | `account_id`              | `id`      |
-| `trust_edge`              | `actor_id`                | `id`      |
-| `trust_edge`              | `subject_id`              | `id`      |
-| `wallet_balance_snapshot` | `account_id`              | `id`      |
-| `wallet_payment`          | `account_id`              | `id`      |
-| `wallet_payment`          | `counterparty_account_id` | `id`      |
-| `wallet_transfer`         | `account_id`              | `id`      |
-| `wallet_transfer`         | `counterparty_account_id` | `id`      |
+| Table                      | Column                    | Points to |
+| -------------------------- | ------------------------- | --------- |
+| `account_image`            | `account_id`              | `id`      |
+| `address_verification`     | `account_id`              | `id`      |
+| `api_log`                  | `account_id`              | `id`      |
+| `auth_session`             | `account_id`              | `id`      |
+| `contact`                  | `account_id`              | `id`      |
+| `conversation`             | `account_a`               | `id`      |
+| `conversation`             | `account_b`               | `id`      |
+| `conversation_message`     | `actor_account_id`        | `id`      |
+| `conversation_message`     | `sender_account_id`       | `id`      |
+| `conversation_read`        | `account_id`              | `id`      |
+| `daily_roster_entry`       | `account_id`              | `id`      |
+| `funding_grant`            | `account_id`              | `id`      |
+| `funding_grant`            | `decided_by`              | `id`      |
+| `held_share_box`           | `account_id`              | `id`      |
+| `login_allowlist`          | `account_id`              | `id`      |
+| `member_event`             | `account_id`              | `id`      |
+| `member_habit`             | `account_id`              | `id`      |
+| `member_habit_comment`     | `account_id`              | `id`      |
+| `message`                  | `account_id`              | `id`      |
+| `message`                  | `shop_account_id`         | `id`      |
+| `notification`             | `actor_account_id`        | `id`      |
+| `notification`             | `recipient_account_id`    | `id`      |
+| `passkey_credential`       | `account_id`              | `id`      |
+| `passkey_renew_attempt`    | `account_id`              | `id`      |
+| `pending_recovery`         | `account_id`              | `id`      |
+| `pos_charge`               | `account_id`              | `id`      |
+| `previous_wallet`          | `account_id`              | `id`      |
+| `push_outbox`              | `account_id`              | `id`      |
+| `push_subscription`        | `account_id`              | `id`      |
+| `recovery_share`           | `account_id`              | `id`      |
+| `shop_payment`             | `account_id`              | `id`      |
+| `trust_edge`               | `actor_id`                | `id`      |
+| `trust_edge`               | `subject_id`              | `id`      |
+| `wallet_balance_snapshot`  | `account_id`              | `id`      |
+| `wallet_payment`           | `account_id`              | `id`      |
+| `wallet_payment`           | `counterparty_account_id` | `id`      |
+| `wallet_token_transaction` | `account_id`              | `id`      |
+| `wallet_transfer`          | `account_id`              | `id`      |
+| `wallet_transfer`          | `counterparty_account_id` | `id`      |
+| `wallet_transfer_sync`     | `account_id`              | `id`      |
 
 ## Relations
 
@@ -142,6 +144,8 @@ erDiagram
     "wallet_balance_snapshot" }o..|| "account" : "account_id"
     "wallet_payment" }o--|| "account" : "account_id"
     "wallet_payment" }o..o| "account" : "counterparty_account_id"
+    "wallet_token_transaction" }o--|| "account" : "account_id"
     "wallet_transfer" }o--|| "account" : "account_id"
     "wallet_transfer" }o..o| "account" : "counterparty_account_id"
+    "wallet_transfer_sync" }o--|| "account" : "account_id"
 ```

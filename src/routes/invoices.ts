@@ -401,6 +401,8 @@ export interface IssueGiftInvoiceInput {
   groupMessageId?: string;
   /** Raw USD amount string. */
   amountUsd?: string;
+  /** Server-decided payout provenance; never copied from the public request body. */
+  serverPayoutKind?: 'welcome';
 }
 
 /** Issue action result: an invoice, or the HTTP error the spend route returned. */
@@ -787,21 +789,12 @@ async function issueGiftInvoiceLocked(
   }
   const account = receiver.account;
 
-  const { eligible } = await loadPayoutEligibility(
-    fundingStore,
-    deps.authStore,
-    account,
-    deps.now(),
-    deps.recoveryShareRequiredFrom ?? null,
-    input.comment === 'Welcome' && input.groupMessageId === undefined
-      ? undefined
-      : deps.walletTransfers,
-  );
-  if (!eligible) {
-    logEvent('invoice.funding_required', { address });
-    return { ok: false, status: 403, error: 'Funding grant required' };
-  }
-
+  const serverWelcomeCandidate =
+    input.serverPayoutKind === 'welcome' &&
+    input.comment === 'Welcome' &&
+    input.messageId === undefined &&
+    input.groupMessageId === undefined &&
+    amountUsd === '1.00';
   const welcomeRefused = async (): Promise<boolean> =>
     input.comment === 'Welcome' &&
     (await accountWelcomed({
@@ -810,6 +803,21 @@ async function issueGiftInvoiceLocked(
       gifts: deps.giftStore,
       account,
     }));
+  const genuineWelcome = serverWelcomeCandidate && !(await welcomeRefused());
+
+  const { eligible } = await loadPayoutEligibility(
+    fundingStore,
+    deps.authStore,
+    account,
+    deps.now(),
+    deps.recoveryShareRequiredFrom ?? null,
+    genuineWelcome ? undefined : deps.walletTransfers,
+  );
+  if (!eligible) {
+    logEvent('invoice.funding_required', { address });
+    return { ok: false, status: 403, error: 'Funding grant required' };
+  }
+
   // With a groupMessageId the check waits until it is resolved: a resolved
   // moderator payout is recorded as `moderator`, not as a welcome.
   if (input.groupMessageId === undefined && (await welcomeRefused())) {

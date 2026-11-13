@@ -13,7 +13,7 @@ CREATE TABLE wallet_transfer (
   transfer_updated_at timestamptz,
   first_seen_at timestamptz NOT NULL,
   last_seen_at timestamptz NOT NULL,
-  PRIMARY KEY (account_id, transfer_id)
+  PRIMARY KEY (account_id, wallet_pubkey, transfer_id)
 );
 
 CREATE INDEX wallet_transfer_wallet_created_idx

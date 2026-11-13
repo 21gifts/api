@@ -520,9 +520,10 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           address: row.address,
           amountMsat,
           comment: row.comment,
-          ...(row.messageId === null ? {} : { messageId: row.messageId }),
+          ...(row.messageId === null || row.kind === 'welcome' ? {} : { messageId: row.messageId }),
           ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
           amountUsd: row.amountUsd,
+          ...(row.kind === 'welcome' ? { serverPayoutKind: 'welcome' as const } : {}),
         });
       } catch {
         await releaseClaim(deps, row.id);

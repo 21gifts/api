@@ -18,6 +18,7 @@ import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { effectiveStatus, eligibleToday, recoveryShareRequired, utcDayKey } from '@/lib/funding';
+import { addUtcDays } from '@/lib/member-habit';
 import { pingTodayMedia } from '@/lib/funding-ping';
 import { normalizeLocation } from '@/lib/location';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -351,7 +352,7 @@ const PASSKEY_RENEW_REPORT_ERROR =
 type MeOwnerResponse = Omit<OwnerAccountResponse, 'funding'> & {
   funding:
     | (NonNullable<OwnerAccountResponse['funding']> & {
-        shopPaymentDue: boolean;
+        shopPaymentDue: boolean | null;
         payoutToday: FundingPayoutToday | null;
       })
     | null;
@@ -391,7 +392,7 @@ async function ownerJson(
   }
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
   const walletTransfers = deps.walletTransfers ?? new InMemoryWalletTransferStore();
-  const shopPaymentFrom = utcDayKey(nowMs - 86_400_000);
+  const shopPaymentFrom = addUtcDays(utcDayKey(nowMs), -1);
   const shopPaymentTo = utcDayKey(nowMs);
   let shopPaymentPromise =
     knownShopPayment === undefined ? undefined : Promise.resolve(knownShopPayment);
@@ -432,12 +433,12 @@ async function ownerJson(
   const inProgram =
     owner.funding?.status === 'admitted' ||
     (owner.funding?.status === 'trial' && owner.funding.trialUtcDate === utcDayKey(nowMs));
-  let shopPaymentDue = inProgram;
+  let shopPaymentDue: boolean | null = inProgram;
   if (inProgram) {
     try {
       shopPaymentDue = !(await readShopPayment());
     } catch {
-      // Keep the conservative due flag. payoutToday already reports unknown.
+      shopPaymentDue = null;
     }
   }
   return {
@@ -481,7 +482,7 @@ async function pingAfterShareStored(
         ? undefined
         : await deps.walletTransfers.hasShopPayment(
             account.id,
-            utcDayKey(nowMs - 86_400_000),
+            addUtcDays(utcDayKey(nowMs), -1),
             utcDayKey(nowMs),
           );
     if (!eligibleToday(account.role, grant, nowMs, true, requiredFrom, shopPaymentRecent ?? true)) {

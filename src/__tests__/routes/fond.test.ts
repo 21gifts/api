@@ -1054,6 +1054,35 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(get).toHaveBeenCalledWith(LETTERED_ROW_ID);
   });
 
+  it("does not mark a daily roster comment 'Welcome' as the welcome exception", async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ comment: 'Welcome' }));
+    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice({ comment: 'Welcome' }) });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIssue.mock.calls[0]?.[1]).not.toHaveProperty('serverPayoutKind');
+  });
+
+  it('marks the genuine one-dollar welcome row with server provenance', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ kind: 'welcome', comment: 'Welcome', amountUsd: '1.00' }));
+    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice({ comment: 'Welcome' }) });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIssue.mock.calls[0]?.[1]).toMatchObject({
+      comment: 'Welcome',
+      amountUsd: '1.00',
+      serverPayoutKind: 'welcome',
+    });
+    expect(mockedIssue.mock.calls[0]?.[1]).not.toHaveProperty('messageId');
+  });
+
   it('returns 409 Not payable for another-day owed, paid, or failed rows', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput({ id: OLD_ROW_ID, utcDay: '2026-11-08' }));

@@ -317,7 +317,7 @@ describe('GET /me', () => {
     expect(hasShopPayment).toHaveBeenCalledOnce();
   });
 
-  it('clears shop-payment due after a verified payment and stays conservative on read failure', async () => {
+  it('clears shop-payment due after a verified payment and reports read failure as unknown', async () => {
     const store = await seededStore();
     const existing = await store.getAccount('acc');
     await store.updateAccount({ ...existing!, role: 'verified' });
@@ -350,9 +350,9 @@ describe('GET /me', () => {
       },
     }).request('/me', { headers: AUTH });
     const unavailableBody = (await unavailable.json()) as {
-      funding: { shopPaymentDue: boolean };
+      funding: { shopPaymentDue: boolean | null };
     };
-    expect(unavailableBody.funding.shopPaymentDue).toBe(true);
+    expect(unavailableBody.funding.shopPaymentDue).toBeNull();
   });
 
   it('returns the due payout state after every current condition holds', async () => {

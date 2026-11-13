@@ -13,6 +13,16 @@ function bytes(hex: string): Uint8Array {
   return new Uint8Array(hex.match(/../g)?.map((pair) => Number.parseInt(pair, 16)) ?? []);
 }
 
+const noTokenTransactions = async () => ({
+  transactions: [],
+  hasNextPage: false,
+  nextCursor: null,
+  rawCount: 0,
+});
+
+const noTokenWrite = async (): Promise<void> => undefined;
+const noFullSyncWrite = async (): Promise<void> => undefined;
+
 function transfer(partial: Partial<SparkViewerTransfer> = {}): SparkViewerTransfer {
   return {
     id: 'transfer-1',
@@ -24,6 +34,9 @@ function transfer(partial: Partial<SparkViewerTransfer> = {}): SparkViewerTransf
     updatedTime: new Date('2026-11-12T10:01:00.000Z'),
     type: 2,
     sparkInvoice: 'spark1invoice',
+    senders: [],
+    receivers: [],
+    leaves: [],
     ...partial,
   };
 }
@@ -34,7 +47,7 @@ afterEach(() => {
 });
 
 describe('runWalletTransferTick', () => {
-  it('pages, normalizes, stores balance, and sends the same-day catch-up ping', async () => {
+  it('pages, normalizes, stores balance and catches up a D-1 shop payment', async () => {
     const stored: WalletTransferRecord[] = [];
     const transferStore: WalletTransferStore = {
       listWallets: async () => [
@@ -44,6 +57,7 @@ describe('runWalletTransferTick', () => {
         newestCreatedAt: null,
         oldestPendingCreatedAt: null,
         pendingWithoutCreatedAt: false,
+        lastFullSyncAt: null,
       }),
       upsertTransfer: async (row) => {
         stored.push(row);
@@ -53,12 +67,36 @@ describe('runWalletTransferTick', () => {
           shopPaymentBecameCompleted: true,
         };
       },
+      upsertTokenTransaction: vi.fn(async () => undefined),
+      markFullSync: vi.fn(async () => undefined),
       hasShopPayment: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
     };
     const transfers = vi
       .fn()
-      .mockResolvedValueOnce({ transfers: [transfer()], offset: 7 })
-      .mockResolvedValueOnce({ transfers: [], offset: -1 });
+      .mockResolvedValueOnce({
+        transfers: [
+          transfer({
+            createdTime: new Date('2026-11-11T10:00:00.000Z'),
+            updatedTime: new Date('2026-11-11T10:01:00.000Z'),
+          }),
+        ],
+        offset: 7,
+        rawCount: 100,
+      })
+      .mockResolvedValueOnce({ transfers: [], offset: -1, rawCount: 100 });
+    const tokenTransactions = vi.fn(async () => ({
+      transactions: [0, 1, 5, 2, 3, 4, 10].map((status, index) => ({
+        hash: String(index + 1)
+          .padStart(2, '0')
+          .repeat(32),
+        status,
+        createdTime: index === 0 ? new Date('2026-11-12T10:02:00.000Z') : undefined,
+        payload: { tokenOutputs: [] },
+      })),
+      hasNextPage: false,
+      nextCursor: null,
+      rawCount: 100,
+    }));
     const recordBalance = vi.fn(async () => undefined);
     const ping = vi.fn(async () => undefined);
     const account = {
@@ -70,7 +108,7 @@ describe('runWalletTransferTick', () => {
       isPlatform: false,
     } as Account;
     const failed = await runWalletTransferTick({
-      viewer: { transfers, balance: async () => 34 },
+      viewer: { transfers, tokenTransactions, balance: async () => 34 },
       transfers: transferStore,
       balances: { recordBalance },
       auth: {
@@ -118,13 +156,17 @@ describe('runWalletTransferTick', () => {
     expect(recordBalance).toHaveBeenCalledWith(
       expect.objectContaining({ accountId: 'account', walletPubkey: OWNER, balanceSats: 34 }),
     );
+    expect(
+      vi.mocked(transferStore.upsertTokenTransaction).mock.calls.map((call) => call[0].status),
+    ).toEqual(['started', 'signed', 'revealed', 'finalized', 'cancelled', 'cancelled', 'unknown']);
     expect(ping).toHaveBeenCalledOnce();
     transfers.mockResolvedValueOnce({
       transfers: [transfer({ id: 'transfer-2' })],
       offset: -1,
+      rawCount: 1,
     });
     await runWalletTransferTick({
-      viewer: { transfers, balance: async () => 34 },
+      viewer: { transfers, tokenTransactions, balance: async () => 34 },
       transfers: transferStore,
       balances: { recordBalance },
       auth: {
@@ -176,10 +218,16 @@ describe('runWalletTransferTick', () => {
         updated: false,
         shopPaymentBecameCompleted: false,
       }),
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
       hasShopPayment: async () => false,
     };
     const base = {
-      viewer: { transfers: async () => ({ transfers: [], offset: -1 }), balance: async () => 0 },
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions: noTokenTransactions,
+        balance: async () => 0,
+      },
       transfers: store,
       balances: { recordBalance: async () => undefined },
       auth: {
@@ -235,9 +283,108 @@ describe('runWalletTransferTick', () => {
           updatedTime: undefined,
         }),
         transfer({
+          id: 'multi-party',
+          senderIdentityPublicKey: bytes(MEMBER),
+          receiverIdentityPublicKey: bytes(MEMBER),
+          totalValue: 999,
+          senders: [
+            { id: 'sender-owner', identityPublicKey: bytes(OWNER) },
+            { id: 'sender-member', identityPublicKey: bytes(MEMBER) },
+          ],
+          receivers: [
+            { id: 'receiver-shop', identityPublicKey: bytes(SHOP), amountSats: 34, status: 5 },
+          ],
+          leaves: [
+            { senderId: 'sender-owner', receiverId: 'receiver-shop', value: 13 },
+            { senderId: 'sender-owner', receiverId: 'receiver-shop', value: 21 },
+            { senderId: 'sender-member', receiverId: 'receiver-shop', value: 55 },
+          ],
+        }),
+        transfer({
+          id: 'multi-out-no-leaves',
+          senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
+          receivers: [
+            { id: 'receiver-shop', identityPublicKey: bytes(SHOP), amountSats: 8, status: 5 },
+          ],
+          leaves: [],
+        }),
+        transfer({
+          id: 'multi-incoming',
+          senderIdentityPublicKey: bytes(MEMBER),
+          receiverIdentityPublicKey: bytes(MEMBER),
+          totalValue: 999,
+          senders: [{ id: 'sender-shop', identityPublicKey: bytes(SHOP) }],
+          receivers: [
+            { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 13, status: 6 },
+            { id: 'receiver-member', identityPublicKey: bytes(MEMBER), amountSats: 21, status: 5 },
+          ],
+          leaves: [
+            { senderId: 'sender-shop', receiverId: 'receiver-owner', value: 13 },
+            { senderId: 'sender-shop', receiverId: 'receiver-member', value: 21 },
+          ],
+        }),
+        transfer({
+          id: 'multi-returned',
+          senders: [{ id: 'sender-shop', identityPublicKey: bytes(SHOP) }],
+          receivers: [
+            { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 1, status: 7 },
+          ],
+          leaves: [],
+        }),
+        transfer({
+          id: 'multi-pending',
+          senders: [{ id: 'sender-shop', identityPublicKey: bytes(SHOP) }],
+          receivers: [
+            { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 2, status: 1 },
+          ],
+          leaves: [],
+        }),
+        transfer({
           id: 'unrelated',
           senderIdentityPublicKey: bytes(SHOP),
           receiverIdentityPublicKey: bytes(MEMBER),
+        }),
+        transfer({
+          id: 'overflow-leaves',
+          senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
+          receivers: [
+            { id: 'receiver-shop', identityPublicKey: bytes(SHOP), amountSats: 1, status: 5 },
+          ],
+          leaves: [
+            {
+              senderId: 'sender-owner',
+              receiverId: 'receiver-shop',
+              value: Number.MAX_SAFE_INTEGER,
+            },
+            { senderId: 'sender-owner', receiverId: 'receiver-shop', value: 1 },
+          ],
+        }),
+        transfer({
+          id: 'negative-leaf',
+          senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
+          receivers: [
+            { id: 'receiver-shop', identityPublicKey: bytes(SHOP), amountSats: 1, status: 5 },
+          ],
+          leaves: [{ senderId: 'sender-owner', receiverId: 'receiver-shop', value: -1 }],
+        }),
+        transfer({
+          id: 'ambiguous-no-leaves',
+          senders: [
+            { id: 'sender-owner', identityPublicKey: bytes(OWNER) },
+            { id: 'sender-member', identityPublicKey: bytes(MEMBER) },
+          ],
+          receivers: [
+            { id: 'receiver-shop', identityPublicKey: bytes(SHOP), amountSats: 1, status: 5 },
+          ],
+          leaves: [],
+        }),
+        transfer({
+          id: 'self-counterparty',
+          senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
+          receivers: [
+            { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 1, status: 5 },
+          ],
+          leaves: [{ senderId: 'sender-owner', receiverId: 'receiver-owner', value: 1 }],
         }),
         transfer({ id: 'bad-counterparty', receiverIdentityPublicKey: Uint8Array.of(1) }),
         transfer({ id: '' }),
@@ -245,6 +392,7 @@ describe('runWalletTransferTick', () => {
         transfer({ id: 'negative', totalValue: -1 }),
       ],
       offset: -1,
+      rawCount: 16,
     }));
     const transferStore: WalletTransferStore = {
       listWallets: async () => [
@@ -254,6 +402,7 @@ describe('runWalletTransferTick', () => {
         newestCreatedAt: new Date('2026-11-12T12:00:00.000Z'),
         oldestPendingCreatedAt: new Date('2026-11-12T10:00:00.000Z'),
         pendingWithoutCreatedAt: false,
+        lastFullSyncAt: new Date(NOW),
       }),
       upsertTransfer: async (record) => {
         stored.push(record);
@@ -264,11 +413,17 @@ describe('runWalletTransferTick', () => {
             record.transferId === 'incoming' || record.transferId === 'old-shop',
         };
       },
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
       hasShopPayment: async () => false,
     };
     const recordBalance = vi.fn(async () => undefined);
     const failed = await runWalletTransferTick({
-      viewer: { transfers: viewerTransfers, balance: async () => 0 },
+      viewer: {
+        transfers: viewerTransfers,
+        tokenTransactions: noTokenTransactions,
+        balance: async () => 0,
+      },
       transfers: transferStore,
       balances: { recordBalance },
       auth: {
@@ -287,7 +442,7 @@ describe('runWalletTransferTick', () => {
     });
     expect(failed.size).toBe(0);
     expect(viewerTransfers).toHaveBeenCalledWith(
-      expect.objectContaining({ createdAfter: new Date('2026-11-12T10:00:00.000Z') }),
+      expect.objectContaining({ createdAfter: new Date('2026-11-12T09:59:59.999Z') }),
     );
     expect(new Set(stored.map((record) => record.type))).toEqual(
       new Set([
@@ -314,7 +469,34 @@ describe('runWalletTransferTick', () => {
       transferCreatedAt: null,
       transferUpdatedAt: null,
     });
-    expect(stored).toHaveLength(11);
+    expect(stored.find((record) => record.transferId === 'multi-party')).toMatchObject({
+      direction: 'out',
+      amountSats: 34,
+      counterpartyPubkey: SHOP,
+    });
+    expect(stored.find((record) => record.transferId === 'multi-out-no-leaves')).toMatchObject({
+      direction: 'out',
+      amountSats: 8,
+      counterpartyPubkey: SHOP,
+    });
+    expect(stored.find((record) => record.transferId === 'multi-incoming')).toMatchObject({
+      direction: 'in',
+      status: 'completed',
+      amountSats: 13,
+      counterpartyPubkey: SHOP,
+    });
+    expect(stored.find((record) => record.transferId === 'multi-returned')).toMatchObject({
+      direction: 'in',
+      status: 'returned',
+      amountSats: 1,
+      counterpartyPubkey: SHOP,
+    });
+    expect(stored.find((record) => record.transferId === 'multi-pending')).toMatchObject({
+      direction: 'in',
+      status: 'pending',
+      amountSats: 2,
+    });
+    expect(stored).toHaveLength(16);
     expect(recordBalance).toHaveBeenCalledOnce();
   });
 
@@ -324,21 +506,32 @@ describe('runWalletTransferTick', () => {
         { accountId: 'missing', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
         { accountId: 'ineligible', sparkPubkey: OWNER, sparkAddress: 'spark1second' },
       ],
-      syncState: async () => ({
-        newestCreatedAt: new Date(NOW),
-        oldestPendingCreatedAt: null,
-        pendingWithoutCreatedAt: true,
-      }),
+      syncState: async (accountId) =>
+        accountId === 'missing'
+          ? {
+              newestCreatedAt: new Date(NOW),
+              oldestPendingCreatedAt: null,
+              pendingWithoutCreatedAt: true,
+              lastFullSyncAt: new Date(NOW),
+            }
+          : {
+              newestCreatedAt: new Date(NOW),
+              oldestPendingCreatedAt: null,
+              pendingWithoutCreatedAt: false,
+              lastFullSyncAt: new Date('2026-11-11T12:00:00.000Z'),
+            },
       upsertTransfer: async () => ({
         inserted: false,
         updated: false,
         shopPaymentBecameCompleted: true,
       }),
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
       hasShopPayment: async () => false,
     };
-    const transfers = vi.fn(async () => ({ transfers: [transfer()], offset: -1 }));
+    const transfers = vi.fn(async () => ({ transfers: [transfer()], offset: -1, rawCount: 1 }));
     await runWalletTransferTick({
-      viewer: { transfers, balance: async () => 0 },
+      viewer: { transfers, tokenTransactions: noTokenTransactions, balance: async () => 0 },
       transfers: store,
       balances: { recordBalance: async () => undefined },
       auth: {
@@ -363,6 +556,119 @@ describe('runWalletTransferTick', () => {
     );
   });
 
+  it('fails a wallet when the transfer offset repeats', async () => {
+    const store: WalletTransferStore = {
+      listWallets: async () => [
+        { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
+      ],
+      syncState: async () => ({
+        newestCreatedAt: new Date(NOW),
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: new Date(NOW),
+      }),
+      upsertTransfer: async () => ({
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      }),
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
+      hasShopPayment: async () => false,
+    };
+    const failed = await runWalletTransferTick({
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: 0, rawCount: 100 }),
+        tokenTransactions: noTokenTransactions,
+        balance: async () => 0,
+      },
+      transfers: store,
+      balances: { recordBalance: async () => undefined },
+      auth: {
+        getAccount: async () => undefined,
+        hasRecoveryShareForVerifiedWallet: async () => false,
+      },
+      funding: { getByAccountId: async () => undefined },
+      ping: {
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => null,
+          getById: async () => undefined,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+      },
+      now: () => NOW,
+    });
+    expect(failed.get(`account\u0000${OWNER}`)).toBe(true);
+  });
+
+  it('fails token paging on a missing or repeated next cursor', async () => {
+    const store: WalletTransferStore = {
+      listWallets: async () => [
+        { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
+      ],
+      syncState: async () => ({
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: null,
+      }),
+      upsertTransfer: async () => ({
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      }),
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
+      hasShopPayment: async () => false,
+    };
+    const base = {
+      transfers: store,
+      balances: { recordBalance: async () => undefined },
+      auth: {
+        getAccount: async () => undefined,
+        hasRecoveryShareForVerifiedWallet: async () => false,
+      },
+      funding: { getByAccountId: async () => undefined },
+      ping: {
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => null,
+          getById: async () => undefined,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+      },
+      now: () => NOW,
+    };
+    const missing = await runWalletTransferTick({
+      ...base,
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions: async () => ({
+          transactions: [],
+          hasNextPage: true,
+          nextCursor: null,
+          rawCount: 100,
+        }),
+        balance: async () => 0,
+      },
+    });
+    expect(missing.get(`account\u0000${OWNER}`)).toBe(true);
+
+    const repeated = await runWalletTransferTick({
+      ...base,
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions: async () => ({
+          transactions: [],
+          hasNextPage: true,
+          nextCursor: 'same',
+          rawCount: 100,
+        }),
+        balance: async () => 0,
+      },
+    });
+    expect(repeated.get(`account\u0000${OWNER}`)).toBe(true);
+  });
+
   it('turns SDK timeouts and non-Error failures into per-wallet failures', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -374,18 +680,24 @@ describe('runWalletTransferTick', () => {
         newestCreatedAt: null,
         oldestPendingCreatedAt: null,
         pendingWithoutCreatedAt: false,
+        lastFullSyncAt: null,
       }),
       upsertTransfer: async () => ({
         inserted: false,
         updated: false,
         shopPaymentBecameCompleted: false,
       }),
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
       hasShopPayment: async () => false,
     };
     const pending = runWalletTransferTick({
       viewer: {
         transfers: () =>
-          new Promise<{ transfers: SparkViewerTransfer[]; offset: number }>(() => undefined),
+          new Promise<{ transfers: SparkViewerTransfer[]; offset: number; rawCount: number }>(
+            () => undefined,
+          ),
+        tokenTransactions: noTokenTransactions,
         balance: async () => 0,
       },
       transfers: store,
@@ -409,7 +721,11 @@ describe('runWalletTransferTick', () => {
 
     store.syncState = async () => Promise.reject('no details');
     await runWalletTransferTick({
-      viewer: { transfers: async () => ({ transfers: [], offset: -1 }), balance: async () => 0 },
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions: noTokenTransactions,
+        balance: async () => 0,
+      },
       transfers: store,
       balances: { recordBalance: async () => undefined },
       auth: {
@@ -446,16 +762,23 @@ describe('startWalletTransferWorker', () => {
         newestCreatedAt: null,
         oldestPendingCreatedAt: null,
         pendingWithoutCreatedAt: false,
+        lastFullSyncAt: null,
       })),
       upsertTransfer: vi.fn(async () => ({
         inserted: false,
         updated: false,
         shopPaymentBecameCompleted: false,
       })),
+      upsertTokenTransaction: vi.fn(noTokenWrite),
+      markFullSync: vi.fn(noFullSyncWrite),
       hasShopPayment: vi.fn(async () => false),
     };
     const handle = startWalletTransferWorker({
-      viewer: { transfers: async () => ({ transfers: [], offset: -1 }), balance: async () => 0 },
+      viewer: {
+        transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+        tokenTransactions: noTokenTransactions,
+        balance: async () => 0,
+      },
       transfers: store,
       balances: { recordBalance: async () => undefined },
       auth: {
@@ -492,19 +815,26 @@ describe('startWalletTransferWorker', () => {
     const listWallets = vi.fn(async () => []);
     const handle = startWalletTransferWorker(
       {
-        viewer: { transfers: async () => ({ transfers: [], offset: -1 }), balance: async () => 0 },
+        viewer: {
+          transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+          tokenTransactions: noTokenTransactions,
+          balance: async () => 0,
+        },
         transfers: {
           listWallets,
           syncState: async () => ({
             newestCreatedAt: null,
             oldestPendingCreatedAt: null,
             pendingWithoutCreatedAt: false,
+            lastFullSyncAt: null,
           }),
           upsertTransfer: async () => ({
             inserted: false,
             updated: false,
             shopPaymentBecameCompleted: false,
           }),
+          upsertTokenTransaction: noTokenWrite,
+          markFullSync: noFullSyncWrite,
           hasShopPayment: async () => false,
         },
         balances: { recordBalance: async () => undefined },
@@ -543,19 +873,26 @@ describe('startWalletTransferWorker', () => {
     });
     const handle = startWalletTransferWorker(
       {
-        viewer: { transfers: async () => ({ transfers: [], offset: -1 }), balance: async () => 0 },
+        viewer: {
+          transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+          tokenTransactions: noTokenTransactions,
+          balance: async () => 0,
+        },
         transfers: {
           listWallets,
           syncState: async () => ({
             newestCreatedAt: null,
             oldestPendingCreatedAt: null,
             pendingWithoutCreatedAt: false,
+            lastFullSyncAt: null,
           }),
           upsertTransfer: async () => ({
             inserted: false,
             updated: false,
             shopPaymentBecameCompleted: false,
           }),
+          upsertTokenTransaction: noTokenWrite,
+          markFullSync: noFullSyncWrite,
           hasShopPayment: async () => false,
         },
         balances: { recordBalance: async () => undefined },
@@ -589,7 +926,11 @@ describe('startWalletTransferWorker', () => {
     let syncCalls = 0;
     const handle = startWalletTransferWorker(
       {
-        viewer: { transfers: async () => ({ transfers: [], offset: -1 }), balance: async () => 0 },
+        viewer: {
+          transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+          tokenTransactions: noTokenTransactions,
+          balance: async () => 0,
+        },
         transfers: {
           listWallets: async () => [
             { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
@@ -601,6 +942,7 @@ describe('startWalletTransferWorker', () => {
               newestCreatedAt: null,
               oldestPendingCreatedAt: null,
               pendingWithoutCreatedAt: false,
+              lastFullSyncAt: null,
             };
           },
           upsertTransfer: async () => ({
@@ -608,6 +950,8 @@ describe('startWalletTransferWorker', () => {
             updated: false,
             shopPaymentBecameCompleted: false,
           }),
+          upsertTokenTransaction: noTokenWrite,
+          markFullSync: noFullSyncWrite,
           hasShopPayment: async () => false,
         },
         balances: { recordBalance: async () => undefined },
@@ -644,7 +988,11 @@ describe('startWalletTransferWorker', () => {
     let syncCalls = 0;
     const handle = startWalletTransferWorker(
       {
-        viewer: { transfers: async () => ({ transfers: [], offset: -1 }), balance: async () => 0 },
+        viewer: {
+          transfers: async () => ({ transfers: [], offset: -1, rawCount: 0 }),
+          tokenTransactions: noTokenTransactions,
+          balance: async () => 0,
+        },
         transfers: {
           listWallets: async () => [
             { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
@@ -658,6 +1006,8 @@ describe('startWalletTransferWorker', () => {
             updated: false,
             shopPaymentBecameCompleted: false,
           }),
+          upsertTokenTransaction: noTokenWrite,
+          markFullSync: noFullSyncWrite,
           hasShopPayment: async () => false,
         },
         balances: { recordBalance: async () => undefined },
@@ -685,5 +1035,244 @@ describe('startWalletTransferWorker', () => {
     }
     expect(syncCalls).toBe(7);
     handle.stop();
+  });
+});
+
+describe('wallet transfer worker edge decisions', () => {
+  async function runWithTransfers(
+    transfers: Parameters<typeof runWalletTransferTick>[0]['viewer']['transfers'],
+    syncState: Awaited<ReturnType<WalletTransferStore['syncState']>> = {
+      newestCreatedAt: new Date(NOW),
+      oldestPendingCreatedAt: null,
+      pendingWithoutCreatedAt: false,
+      lastFullSyncAt: new Date(NOW),
+    },
+  ): Promise<{ failed: Map<string, boolean>; stored: WalletTransferRecord[] }> {
+    const stored: WalletTransferRecord[] = [];
+    const store: WalletTransferStore = {
+      listWallets: async () => [
+        { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
+      ],
+      syncState: async () => syncState,
+      upsertTransfer: async (row) => {
+        stored.push(row);
+        return {
+          inserted: false,
+          updated: false,
+          shopPaymentBecameCompleted: false,
+        };
+      },
+      upsertTokenTransaction: noTokenWrite,
+      markFullSync: noFullSyncWrite,
+      hasShopPayment: async () => false,
+    };
+    const failed = await runWalletTransferTick({
+      viewer: { transfers, tokenTransactions: noTokenTransactions, balance: async () => 0 },
+      transfers: store,
+      balances: { recordBalance: async () => undefined },
+      auth: {
+        getAccount: async () => undefined,
+        hasRecoveryShareForVerifiedWallet: async () => false,
+      },
+      funding: { getByAccountId: async () => undefined },
+      ping: {
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => null,
+          getById: async () => undefined,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+      },
+      now: () => NOW,
+    });
+    return { failed, stored };
+  }
+
+  it('derives every incremental cursor through the public worker', async () => {
+    const createdAfter: Array<Date | undefined> = [];
+    const transfers: Parameters<typeof runWalletTransferTick>[0]['viewer']['transfers'] = async (
+      input,
+    ) => {
+      createdAfter.push(input.createdAfter);
+      return { transfers: [], offset: -1, rawCount: 0 };
+    };
+    const states: Array<Awaited<ReturnType<WalletTransferStore['syncState']>>> = [
+      {
+        newestCreatedAt: new Date('2025-03-04T05:06:07.000Z'),
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: true,
+        lastFullSyncAt: new Date(NOW),
+      },
+      {
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: new Date(NOW),
+      },
+      {
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: new Date('2025-03-04T05:06:07.000Z'),
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: new Date(NOW),
+      },
+      {
+        newestCreatedAt: new Date('2025-03-05T05:06:07.000Z'),
+        oldestPendingCreatedAt: new Date('2025-03-04T05:06:07.000Z'),
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: new Date(NOW),
+      },
+      {
+        newestCreatedAt: new Date('2025-03-05T05:06:07.000Z'),
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: new Date(NOW),
+      },
+    ];
+
+    for (const state of states) {
+      const { failed } = await runWithTransfers(transfers, state);
+      expect(failed.size).toBe(0);
+    }
+
+    expect(createdAfter).toEqual([
+      undefined,
+      undefined,
+      new Date('2025-03-04T05:06:06.999Z'),
+      new Date('2025-03-04T05:06:06.999Z'),
+      new Date('2025-03-05T04:06:07.000Z'),
+    ]);
+  });
+
+  it('maps counterparties through public wallet synchronization', async () => {
+    const rows = [
+      transfer({
+        id: 'outbound-leaves',
+        senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
+        receivers: [
+          { id: 'wallet', identityPublicKey: bytes(OWNER), amountSats: 1, status: 5 },
+          { id: 'z', identityPublicKey: bytes(SHOP), amountSats: 1, status: 5 },
+        ],
+        leaves: [
+          { senderId: 'sender-owner', receiverId: 'missing', value: 1 },
+          { senderId: 'sender-owner', receiverId: 'z', value: 1 },
+          { senderId: 'sender-owner', receiverId: 'wallet', value: 1 },
+        ],
+      }),
+      transfer({
+        id: 'outbound-fallback',
+        senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
+        receivers: [
+          { id: 'wallet', identityPublicKey: bytes(OWNER), amountSats: 1, status: 5 },
+          { id: 'z', identityPublicKey: bytes(SHOP), amountSats: 1, status: 5 },
+          { id: 'a', identityPublicKey: bytes(MEMBER), amountSats: 1, status: 5 },
+        ],
+      }),
+      transfer({
+        id: 'outbound-without-counterparty',
+        senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
+        receivers: [{ id: 'wallet', identityPublicKey: bytes(OWNER), amountSats: 1, status: 5 }],
+        leaves: [{ senderId: 'sender-owner', receiverId: 'missing', value: 1 }],
+      }),
+      transfer({
+        id: 'inbound-leaves',
+        senders: [{ id: 'z', identityPublicKey: bytes(SHOP) }],
+        receivers: [
+          { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 2, status: 6 },
+        ],
+        leaves: [
+          { senderId: 'missing', receiverId: 'receiver-owner', value: 1 },
+          { senderId: 'z', receiverId: 'receiver-owner', value: 1 },
+        ],
+      }),
+      transfer({
+        id: 'inbound-fallback',
+        senders: [
+          { id: 'z', identityPublicKey: bytes(SHOP) },
+          { id: 'a', identityPublicKey: bytes(MEMBER) },
+        ],
+        receivers: [
+          { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 2, status: 6 },
+        ],
+      }),
+      transfer({
+        id: 'inbound-without-counterparty',
+        senders: [{ id: 'z', identityPublicKey: Uint8Array.of(1) }],
+        receivers: [
+          { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 1, status: 6 },
+        ],
+        leaves: [{ senderId: 'missing', receiverId: 'receiver-owner', value: 1 }],
+      }),
+      transfer({
+        id: 'inbound-invalid-amount',
+        senders: [{ id: 'z', identityPublicKey: bytes(SHOP) }],
+        receivers: [
+          { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: -1, status: 6 },
+        ],
+        leaves: [{ senderId: 'z', receiverId: 'receiver-owner', value: 1 }],
+      }),
+    ];
+    const { failed, stored } = await runWithTransfers(async () => ({
+      transfers: rows,
+      offset: -1,
+      rawCount: rows.length,
+    }));
+
+    expect(failed.size).toBe(0);
+    expect(
+      stored.map(({ transferId, counterpartyPubkey }) => ({ transferId, counterpartyPubkey })),
+    ).toEqual([
+      { transferId: 'outbound-leaves', counterpartyPubkey: SHOP },
+      { transferId: 'outbound-fallback', counterpartyPubkey: MEMBER },
+      { transferId: 'inbound-leaves', counterpartyPubkey: SHOP },
+      { transferId: 'inbound-fallback', counterpartyPubkey: MEMBER },
+    ]);
+  });
+
+  it('sums incoming receiver amounts through public wallet synchronization', async () => {
+    const { failed, stored } = await runWithTransfers(async () => ({
+      transfers: [
+        transfer({
+          id: 'incoming-sum',
+          senders: [{ id: 'sender-shop', identityPublicKey: bytes(SHOP) }],
+          receivers: [
+            {
+              id: 'receiver-owner-1',
+              identityPublicKey: bytes(OWNER),
+              amountSats: 8,
+              status: 6,
+            },
+            {
+              id: 'receiver-owner-2',
+              identityPublicKey: bytes(OWNER),
+              amountSats: 13,
+              status: 6,
+            },
+          ],
+          leaves: [
+            { senderId: 'sender-shop', receiverId: 'receiver-owner-1', value: 99 },
+            { senderId: 'sender-shop', receiverId: 'receiver-owner-2', value: 99 },
+          ],
+        }),
+      ],
+      offset: -1,
+      rawCount: 1,
+    }));
+
+    expect(failed.size).toBe(0);
+    expect(stored).toEqual([
+      expect.objectContaining({ transferId: 'incoming-sum', amountSats: 21 }),
+    ]);
+  });
+
+  it('uses the returned rows when a fake viewer omits its raw count', async () => {
+    let calls = 0;
+    const { failed } = await runWithTransfers(async () => {
+      calls += 1;
+      return calls === 1
+        ? { transfers: [], offset: 100, rawCount: 100 }
+        : ({ transfers: [], offset: 2 } as never);
+    });
+
+    expect(failed.size).toBe(0);
+    expect(calls).toBe(2);
   });
 });

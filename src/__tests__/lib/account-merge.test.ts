@@ -1128,6 +1128,13 @@ describe('mergeAccounts', () => {
     expect(transferCollision).toBeLessThan(catalog);
     expect(queries[transferCollision]?.params).toEqual([FROM, INTO]);
     expect(queries[transferCollision]?.text).toContain('dst.transfer_id = src.transfer_id');
+    expect(queries[transferCollision]?.text).toContain('dst.wallet_pubkey = src.wallet_pubkey');
+    expect(
+      queries.some((query) => query.text.includes('DELETE FROM wallet_token_transaction AS src')),
+    ).toBe(true);
+    expect(
+      queries.some((query) => query.text.includes('DELETE FROM wallet_transfer_sync AS src')),
+    ).toBe(true);
     const walletSelfCounterparty = queries.findIndex((query) =>
       query.text.includes('SET counterparty_account_id = NULL'),
     );

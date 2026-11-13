@@ -381,6 +381,15 @@ The wallet rule in detail:
   wallet does may be missing, filtered, sampled, aggregated away, or kept only
   in the browser. A wallet event that reaches no table is a defect. A change
   that drops a field, a status, or a method from storage is a defect.
+  The server-verified ledger is split deliberately: `wallet_transfer` stores
+  every operator-observed Bitcoin value movement and
+  `wallet_token_transaction` stores every complete operator-observed token
+  transaction. Spark transfers do not contain a fee or a Lightning/on-chain
+  destination. `wallet_payment` is the app report that adds those app-side
+  details (fee, destination, invoice, memo and method). The viewer ledger and
+  `wallet_payment` together are the complete wallet record; a reviewer must
+  not demand invented always-null viewer columns or accept either half being
+  omitted.
   21.gifts reads every current and previous wallet directly through the Spark
   viewer identity key that the wallet grants. The viewer is 21.gifts' own
   read-only key and can never move funds. Its mnemonic is stored only as an
@@ -390,7 +399,7 @@ The wallet rule in detail:
 - **Who reads it.** The admin team (role at least `software_developer`:
   software developer, initiator, founder) and operator debug access
   (`DEBUG_TOKEN`, `DEBUG_READ_TOKEN`) **must** be able to read every stored
-  wallet record of every member. A member reads only their own wallet data. No
+  wallet record of every member, including `wallet_token_transaction`. A member reads only their own wallet data. No
   other role and no other member reads it.
 - **Never member key material.** Completeness never includes member secrets:
   the recovery phrase, seed, PRF output, preimages, and any private or spending

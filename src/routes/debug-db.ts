@@ -36,6 +36,7 @@ const MEMBER_WALLET_TABLES = new Set([
   'wallet_balance_snapshot',
   'wallet_payment',
   'wallet_transfer',
+  'wallet_token_transaction',
 ]);
 
 function bearer(header: string | undefined): string | null {

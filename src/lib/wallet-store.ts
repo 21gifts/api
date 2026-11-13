@@ -116,7 +116,7 @@ export interface WalletStore {
   ): Promise<WalletPaymentRecord[]>;
 }
 
-/** Idempotent DDL for wallet balance snapshots, reported payments, and observed transfers. */
+/** Idempotent DDL for balances, app reports, viewer transfers/tokens, and sync state. */
 export const WALLET_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS wallet_balance_snapshot (
   id uuid PRIMARY KEY,
@@ -168,12 +168,44 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   transfer_updated_at timestamptz,
   first_seen_at timestamptz NOT NULL,
   last_seen_at timestamptz NOT NULL,
-  PRIMARY KEY (account_id, transfer_id)
+  PRIMARY KEY (account_id, wallet_pubkey, transfer_id)
 )`,
+  `DO $wallet_transfer_primary_key$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'wallet_transfer'::regclass
+      AND contype = 'p'
+      AND pg_get_constraintdef(oid) = 'PRIMARY KEY (account_id, transfer_id)'
+  ) THEN
+    ALTER TABLE wallet_transfer DROP CONSTRAINT wallet_transfer_pkey;
+    ALTER TABLE wallet_transfer ADD CONSTRAINT wallet_transfer_pkey
+      PRIMARY KEY (account_id, wallet_pubkey, transfer_id);
+  END IF;
+END;
+$wallet_transfer_primary_key$`,
   `CREATE INDEX IF NOT EXISTS wallet_transfer_wallet_created_idx ON wallet_transfer (account_id, wallet_pubkey, transfer_created_at DESC, transfer_id)`,
   `CREATE INDEX IF NOT EXISTS wallet_transfer_pending_idx ON wallet_transfer (account_id, wallet_pubkey, transfer_created_at) WHERE status = 'pending'`,
   `CREATE INDEX IF NOT EXISTS wallet_transfer_shop_payment_idx ON wallet_transfer (account_id, COALESCE(transfer_updated_at, transfer_created_at)) WHERE direction = 'out' AND status = 'completed' AND type = 'transfer' AND counterparty_account_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS wallet_transfer_counterparty_idx ON wallet_transfer (counterparty_account_id) WHERE counterparty_account_id IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS wallet_transfer_sync (
+  account_id uuid NOT NULL REFERENCES account (id),
+  wallet_pubkey text NOT NULL CHECK (wallet_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  last_full_sync_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, wallet_pubkey)
+)`,
+  `CREATE TABLE IF NOT EXISTS wallet_token_transaction (
+  account_id uuid NOT NULL REFERENCES account (id),
+  wallet_pubkey text NOT NULL CHECK (wallet_pubkey ~ '^0[23][0-9a-f]{64}$'),
+  transaction_hash text NOT NULL CHECK (transaction_hash ~ '^[0-9a-f]{64}$'),
+  status text NOT NULL CHECK (status IN ('started', 'signed', 'revealed', 'finalized', 'cancelled', 'unknown')),
+  transaction_created_at timestamptz,
+  payload jsonb NOT NULL,
+  first_seen_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL,
+  PRIMARY KEY (account_id, wallet_pubkey, transaction_hash)
+)`,
+  `CREATE INDEX IF NOT EXISTS wallet_token_transaction_wallet_created_idx ON wallet_token_transaction (account_id, wallet_pubkey, transaction_created_at DESC, transaction_hash)`,
 ];
 
 /**

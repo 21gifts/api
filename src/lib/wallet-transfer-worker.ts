@@ -6,6 +6,7 @@ import type { FundingStore } from '@/lib/funding-store';
 import { pingTodayMedia, type TodayMediaPingDeps } from '@/lib/funding-ping';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { logEvent } from '@/lib/log';
+import { addUtcDays } from '@/lib/member-habit';
 import { bytesToHex } from '@/lib/nostr/kek';
 import type { SparkViewer, SparkViewerTransfer } from '@/lib/spark-viewer';
 import type { WalletStore } from '@/lib/wallet-store';
@@ -15,6 +16,7 @@ import type {
   WalletTransferStore,
   WalletTransferType,
   WalletTransferWallet,
+  WalletTokenTransactionStatus,
 } from '@/lib/wallet-transfer-store';
 
 /** Default delay between complete wallet sync passes. */
@@ -68,22 +70,92 @@ function transferStatus(value: number): WalletTransferStatus {
   return 'pending';
 }
 
+function receiverStatus(value: number): WalletTransferStatus {
+  if (value === 6) return 'completed';
+  if (value === 7) return 'returned';
+  return 'pending';
+}
+
+function tokenStatus(value: number): WalletTokenTransactionStatus {
+  if (value === 0) return 'started';
+  if (value === 1) return 'signed';
+  if (value === 5) return 'revealed';
+  if (value === 2) return 'finalized';
+  if (value === 3 || value === 4) return 'cancelled';
+  return 'unknown';
+}
+
+function publicKey(value: Uint8Array): string | null {
+  const key = bytesToHex(value);
+  return /^0[23][0-9a-f]{64}$/.test(key) ? key : null;
+}
+
+function safeSum(values: readonly number[]): number | null {
+  let sum = 0;
+  for (const value of values) {
+    if (!Number.isSafeInteger(value) || value < 0) return null;
+    sum += value;
+    if (!Number.isSafeInteger(sum)) return null;
+  }
+  return sum;
+}
+
 function normalizedTransfer(
   wallet: WalletTransferWallet,
   transfer: SparkViewerTransfer,
   seenAt: Date,
 ): WalletTransferRecord | null {
-  const sender = bytesToHex(transfer.senderIdentityPublicKey);
-  const receiver = bytesToHex(transfer.receiverIdentityPublicKey);
-  const direction =
-    sender === wallet.sparkPubkey ? 'out' : receiver === wallet.sparkPubkey ? 'in' : null;
-  const counterpartyPubkey = direction === 'out' ? receiver : sender;
+  let direction: 'in' | 'out' | null = null;
+  let counterpartyPubkey: string | null = null;
+  let amountSats: number | null = null;
+  let status: WalletTransferStatus | null = null;
+  if (transfer.senders.length > 0 || transfer.receivers.length > 0) {
+    const senders = transfer.senders.map((sender) => ({
+      ...sender,
+      key: publicKey(sender.identityPublicKey),
+    }));
+    const receivers = transfer.receivers.map((receiver) => ({
+      ...receiver,
+      key: publicKey(receiver.identityPublicKey),
+    }));
+    const senderIds = new Set(
+      senders.filter((sender) => sender.key === wallet.sparkPubkey).map((sender) => sender.id),
+    );
+    const receiverRows = receivers.filter((receiver) => receiver.key === wallet.sparkPubkey);
+    const receiverIds = new Set(receiverRows.map((receiver) => receiver.id));
+    if (senderIds.size > 0) {
+      direction = 'out';
+      const leaves = transfer.leaves.filter((leaf) => senderIds.has(leaf.senderId));
+      const values =
+        leaves.length > 0
+          ? leaves.map((leaf) => leaf.value)
+          : senders.length === senderIds.size
+            ? receivers.map((receiver) => receiver.amountSats)
+            : [];
+      amountSats = values.length === 0 ? null : safeSum(values);
+      counterpartyPubkey = outboundCounterpartyOf(receivers, leaves, wallet.sparkPubkey);
+    } else if (receiverIds.size > 0) {
+      direction = 'in';
+      const leaves = transfer.leaves.filter((leaf) => receiverIds.has(leaf.receiverId));
+      amountSats = inboundAmountOf(receiverRows);
+      status = receiverStatus(receiverRows[0]!.status);
+      counterpartyPubkey = inboundCounterpartyOf(senders, leaves);
+    }
+  } else {
+    const sender = publicKey(transfer.senderIdentityPublicKey);
+    const receiver = publicKey(transfer.receiverIdentityPublicKey);
+    direction =
+      sender === wallet.sparkPubkey ? 'out' : receiver === wallet.sparkPubkey ? 'in' : null;
+    counterpartyPubkey = direction === 'out' ? receiver : sender;
+    amountSats = transfer.totalValue;
+  }
   if (
     direction === null ||
-    !/^0[23][0-9a-f]{64}$/.test(counterpartyPubkey) ||
+    counterpartyPubkey === null ||
     transfer.id === '' ||
-    !Number.isSafeInteger(transfer.totalValue) ||
-    transfer.totalValue < 0
+    amountSats === null ||
+    !Number.isSafeInteger(amountSats) ||
+    amountSats < 0
   ) {
     return null;
   }
@@ -93,8 +165,8 @@ function normalizedTransfer(
     transferId: transfer.id,
     direction,
     type: transferType(transfer.type),
-    status: transferStatus(transfer.status),
-    amountSats: transfer.totalValue,
+    status: status ?? transferStatus(transfer.status),
+    amountSats,
     counterpartyPubkey,
     sparkInvoice: transfer.sparkInvoice === '' ? null : transfer.sparkInvoice,
     transferCreatedAt: transfer.createdTime ?? null,
@@ -128,7 +200,7 @@ function createdAfterOf(state: {
     state.newestCreatedAt === null
       ? null
       : state.newestCreatedAt.getTime() - WALLET_TRANSFER_OVERLAP_MS,
-    state.oldestPendingCreatedAt?.getTime() ?? null,
+    state.oldestPendingCreatedAt === null ? null : state.oldestPendingCreatedAt.getTime() - 1,
   ].filter((value): value is number => value !== null);
   return candidates.length === 0 ? undefined : new Date(Math.min(...candidates));
 }
@@ -138,14 +210,22 @@ async function syncWallet(
   wallet: WalletTransferWallet,
 ): Promise<{ inserted: number; updated: number }> {
   const state = await deps.transfers.syncState(wallet.accountId, wallet.sparkPubkey);
-  const createdAfter = createdAfterOf(state);
+  const today = utcDayKey(deps.now());
+  const fullScan =
+    state.lastFullSyncAt === null || utcDayKey(state.lastFullSyncAt.getTime()) !== today;
+  const createdAfter = fullScan ? undefined : createdAfterOf(state);
   let offset = 0;
   let inserted = 0;
   let updated = 0;
   let catchUp = false;
-  const today = utcDayKey(deps.now());
-  let hadShopPaymentToday = await deps.transfers.hasShopPayment(wallet.accountId, today, today);
-  do {
+  const yesterday = addUtcDays(today, -1);
+  let hadShopPaymentInWindow = await deps.transfers.hasShopPayment(
+    wallet.accountId,
+    yesterday,
+    today,
+  );
+  const seenOffsets = new Set<number>([0]);
+  for (;;) {
     const page = await timed(
       deps.viewer.transfers({
         sparkAddress: wallet.sparkAddress,
@@ -164,16 +244,54 @@ async function syncWallet(
       const paidAt = row.transferUpdatedAt ?? row.transferCreatedAt;
       if (
         outcome.shopPaymentBecameCompleted &&
-        !hadShopPaymentToday &&
+        !hadShopPaymentInWindow &&
         paidAt !== null &&
-        utcDayKey(paidAt.getTime()) === today
+        utcDayKey(paidAt.getTime()) >= yesterday &&
+        utcDayKey(paidAt.getTime()) <= today
       ) {
         catchUp = true;
-        hadShopPaymentToday = true;
+        hadShopPaymentInWindow = true;
       }
     }
+    if (shouldStopTransferPaging(page)) break;
+    if (seenOffsets.has(page.offset)) {
+      throw new Error('Spark viewer transfer offset did not advance');
+    }
+    seenOffsets.add(page.offset);
     offset = page.offset;
-  } while (offset !== -1);
+  }
+
+  if (fullScan) {
+    let cursor: string | undefined;
+    const seenTokenCursors = new Set<string>();
+    for (;;) {
+      const page = await timed(
+        deps.viewer.tokenTransactions({
+          sparkAddress: wallet.sparkAddress,
+          pageSize: WALLET_TRANSFER_PAGE_SIZE,
+          ...(cursor === undefined ? {} : { cursor }),
+        }),
+      );
+      const seenAt = new Date(deps.now());
+      for (const transaction of page.transactions) {
+        await deps.transfers.upsertTokenTransaction({
+          accountId: wallet.accountId,
+          walletPubkey: wallet.sparkPubkey,
+          transactionHash: transaction.hash,
+          status: tokenStatus(transaction.status),
+          transactionCreatedAt: transaction.createdTime ?? null,
+          payload: transaction.payload,
+          seenAt,
+        });
+      }
+      if (page.rawCount < WALLET_TRANSFER_PAGE_SIZE || !page.hasNextPage) break;
+      if (page.nextCursor === null || seenTokenCursors.has(page.nextCursor)) {
+        throw new Error('Spark viewer token cursor did not advance');
+      }
+      seenTokenCursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    }
+  }
 
   if (catchUp) {
     const account = await deps.auth.getAccount(wallet.accountId);
@@ -203,6 +321,9 @@ async function syncWallet(
     syncedAt: observedAt,
     receivedAt: observedAt,
   });
+  if (fullScan) {
+    await deps.transfers.markFullSync(wallet.accountId, wallet.sparkPubkey, observedAt);
+  }
   return { inserted, updated };
 }
 
@@ -296,4 +417,47 @@ export function startWalletTransferWorker(
       if (timer !== undefined) clearTimeout(timer);
     },
   };
+}
+function outboundCounterpartyOf(
+  receivers: ReadonlyArray<{ id: string; key: string | null }>,
+  leaves: ReadonlyArray<{ receiverId: string }>,
+  walletPubkey: string,
+): string | null {
+  const receiverById = new Map(receivers.map((receiver) => [receiver.id, receiver.key]));
+  const candidates = new Set(
+    leaves.length > 0
+      ? leaves.map((leaf) => receiverById.get(leaf.receiverId) ?? null)
+      : receivers.map((receiver) => receiver.key),
+  );
+  return (
+    [...candidates]
+      .filter((key): key is string => key !== null && key !== walletPubkey)
+      .sort()[0] ?? null
+  );
+}
+
+function inboundAmountOf(receiverRows: ReadonlyArray<{ amountSats: number }>): number | null {
+  return safeSum(receiverRows.map((receiver) => receiver.amountSats));
+}
+
+function inboundCounterpartyOf(
+  senders: ReadonlyArray<{ id: string; key: string | null }>,
+  leaves: ReadonlyArray<{ senderId: string }>,
+): string | null {
+  const senderById = new Map(senders.map((sender) => [sender.id, sender.key]));
+  const candidates = new Set(
+    leaves.length > 0
+      ? leaves.map((leaf) => senderById.get(leaf.senderId) ?? null)
+      : senders.map((sender) => sender.key),
+  );
+  return [...candidates].filter((key): key is string => key !== null).sort()[0] ?? null;
+}
+
+function shouldStopTransferPaging(page: {
+  rawCount?: number | null;
+  transfers: ReadonlyArray<unknown>;
+  offset: number;
+}): boolean {
+  const rawCount = page.rawCount ?? page.transfers.length;
+  return rawCount < WALLET_TRANSFER_PAGE_SIZE || page.offset < 0;
 }

@@ -13,6 +13,7 @@
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { eligibleToday, recoveryShareRequired, utcDayKey, type FundingGrant } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
+import { addUtcDays } from '@/lib/member-habit';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 /**
@@ -66,7 +67,7 @@ export async function loadPayoutEligibility(
   if (otherwiseEligible && walletTransfers !== undefined) {
     shopPaymentRecent = await walletTransfers.hasShopPayment(
       account.id,
-      utcDayKey(nowMs - 86_400_000),
+      addUtcDays(utcDayKey(nowMs), -1),
       utcDayKey(nowMs),
     );
   }

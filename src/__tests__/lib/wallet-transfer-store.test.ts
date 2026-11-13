@@ -48,6 +48,7 @@ describe('InMemoryWalletTransferStore', () => {
       newestCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
       oldestPendingCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
       pendingWithoutCreatedAt: false,
+      lastFullSyncAt: null,
     });
     await expect(
       store.upsertTransfer(
@@ -71,6 +72,28 @@ describe('InMemoryWalletTransferStore', () => {
     await expect(store.hasShopPayment('account', '2026-11-10', '2026-11-11')).resolves.toBe(false);
   });
 
+  it('keeps the same transfer id for different wallets and persists token/full-sync state', async () => {
+    const store = new InMemoryWalletTransferStore();
+    await expect(store.upsertTransfer(row())).resolves.toMatchObject({ inserted: true });
+    await expect(store.upsertTransfer(row({ walletPubkey: MEMBER }))).resolves.toMatchObject({
+      inserted: true,
+      updated: true,
+    });
+    await store.upsertTokenTransaction({
+      accountId: 'account',
+      walletPubkey: OWNER,
+      transactionHash: '11'.repeat(32),
+      status: 'finalized',
+      transactionCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
+      payload: { tokenOutputs: [] },
+      seenAt: new Date('2026-11-12T08:00:00.000Z'),
+    });
+    await store.markFullSync('account', OWNER, new Date('2026-11-12T09:00:00.000Z'));
+    await expect(store.syncState('account', OWNER)).resolves.toMatchObject({
+      lastFullSyncAt: new Date('2026-11-12T09:00:00.000Z'),
+    });
+  });
+
   it('forces a full reread for a pending row without a creation time', async () => {
     const store = new InMemoryWalletTransferStore();
     await store.upsertTransfer(row({ transferCreatedAt: null }));
@@ -78,6 +101,7 @@ describe('InMemoryWalletTransferStore', () => {
       newestCreatedAt: null,
       oldestPendingCreatedAt: null,
       pendingWithoutCreatedAt: true,
+      lastFullSyncAt: null,
     });
   });
 
@@ -104,6 +128,7 @@ describe('InMemoryWalletTransferStore', () => {
       newestCreatedAt: null,
       oldestPendingCreatedAt: null,
       pendingWithoutCreatedAt: false,
+      lastFullSyncAt: null,
     });
     await expect(defaults.upsertTransfer(row({ status: 'completed' }))).resolves.toEqual({
       inserted: true,
@@ -180,6 +205,7 @@ describe('PostgresWalletTransferStore', () => {
             newest_created_at: '2026-11-12T08:00:00.000Z',
             oldest_pending_created_at: new Date('2026-11-12T07:00:00.000Z'),
             pending_without_created_at: true,
+            last_full_sync_at: '2026-11-12T06:00:00.000Z',
           },
         ];
       }
@@ -192,9 +218,11 @@ describe('PostgresWalletTransferStore', () => {
       newestCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
       oldestPendingCreatedAt: new Date('2026-11-12T07:00:00.000Z'),
       pendingWithoutCreatedAt: true,
+      lastFullSyncAt: new Date('2026-11-12T06:00:00.000Z'),
     });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(true);
     expect(query.mock.calls.at(-1)?.[0]).toContain('JOIN message AS shop');
+    expect(query.mock.calls.at(-1)?.[0]).toContain("AT TIME ZONE 'UTC'");
   });
 
   it('maps empty sync state and a false shop query', async () => {
@@ -210,6 +238,7 @@ describe('PostgresWalletTransferStore', () => {
       newestCreatedAt: null,
       oldestPendingCreatedAt: null,
       pendingWithoutCreatedAt: false,
+      lastFullSyncAt: null,
     });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(false);
   });
@@ -220,6 +249,24 @@ describe('PostgresWalletTransferStore', () => {
       execute: async () => {},
     });
     await expect(store.upsertTransfer(row())).rejects.toThrow('require a transaction');
+  });
+
+  it('writes token transactions and durable full-sync watermarks', async () => {
+    const execute = vi.fn(async (_text: string, _params?: readonly unknown[]) => undefined);
+    const store = new PostgresWalletTransferStore({ query: async () => [], execute });
+    await store.upsertTokenTransaction({
+      accountId: 'account',
+      walletPubkey: OWNER,
+      transactionHash: '22'.repeat(32),
+      status: 'revealed',
+      transactionCreatedAt: null,
+      payload: { version: 2 },
+      seenAt: new Date('2026-11-12T08:00:00.000Z'),
+    });
+    await store.markFullSync('account', OWNER, new Date('2026-11-12T09:00:00.000Z'));
+    expect(execute.mock.calls[0]?.[0]).toContain('INSERT INTO wallet_token_transaction');
+    expect(execute.mock.calls[0]?.[1]).toContain(JSON.stringify({ version: 2 }));
+    expect(execute.mock.calls[1]?.[0]).toContain('INSERT INTO wallet_transfer_sync');
   });
 
   it('reports a pending-to-completed shop transition in one transaction', async () => {
@@ -263,7 +310,7 @@ describe('PostgresWalletTransferStore', () => {
     ).resolves.toEqual({ inserted: false, updated: true, shopPaymentBecameCompleted: true });
   });
 
-  it('reports inserts and counterparty-only updates from transaction snapshots', async () => {
+  it('reports inserts, other-wallet fields, and counterparty-only updates from snapshots', async () => {
     const incoming = row({
       status: 'completed',
       transferCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
@@ -281,7 +328,7 @@ describe('PostgresWalletTransferStore', () => {
       transfer_updated_at: null,
       is_shop_payment: false,
     };
-    let mode: 'insert' | 'update' | 'same' = 'insert';
+    let mode: 'insert' | 'update' | 'same' | 'other-wallet' = 'insert';
     let reads = 0;
     const tx: SqlClient = {
       execute: async () => undefined,
@@ -289,7 +336,7 @@ describe('PostgresWalletTransferStore', () => {
         reads += 1;
         if (mode === 'insert') return [];
         return (reads % 2 === 1
-          ? [before]
+          ? [mode === 'other-wallet' ? { ...before, wallet_pubkey: MEMBER } : before]
           : [
               {
                 counterparty_account_id: mode === 'same' ? 'old-shop' : 'new-shop',
@@ -320,6 +367,13 @@ describe('PostgresWalletTransferStore', () => {
     await expect(store.upsertTransfer(incoming)).resolves.toEqual({
       inserted: false,
       updated: false,
+      shopPaymentBecameCompleted: false,
+    });
+    mode = 'other-wallet';
+    reads = 0;
+    await expect(store.upsertTransfer(incoming)).resolves.toEqual({
+      inserted: true,
+      updated: true,
       shopPaymentBecameCompleted: false,
     });
   });
