@@ -194,8 +194,6 @@ tests answer 401 without a bearer);
 `canonicalDecimal`, which `decimalAmount` and `btcAmount` also use on the shop payment surface (that surface answers the default 404 on the default boot);
 `fiatToSats`, which prices a fiat repayment share and is not called by a forum ask (its catalog
 test still answers 409 `missing: ['lightning-address']`);
-`satsToFiatAmount`, which has no production caller (the unit tests cover it; its catalog
-test still answers 409 `missing: ['lightning-address']`);
 `receivingAddress` and `lnurlServerFetch` past the account lookup, which need a member with a
 verified wallet and therefore `LNURL_SERVER_URL` (their tests assert `GET /pay/:username` 404);
 `issueSparkInvoice`, which runs only after a reachable LNURL server mints a NIP-57 invoice;

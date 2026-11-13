@@ -1090,22 +1090,6 @@ test('Function: fiatToSats — an ask is 409 without a verified wallet', async (
   });
 });
 
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: satsToFiatAmount — a bitcoin ask is 409 without a verified wallet', async ({
-  request,
-}) => {
-  const auth = await verifiedAskSession(request);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'freeze', goalCurrency: 'BTC', goalAmount: '21' },
-  });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
-  });
-});
-
 test('Function: QueryGiftStore — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);

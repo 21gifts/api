@@ -925,7 +925,8 @@ function billError(c: Context, bill: Extract<RepaymentBill, { ok: false }>): Res
  * @param c - Request.
  * @returns The next bill, the requested amount's bills and waiting shares, or an error.
  */
-export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise<Response> {
+export async function repaymentInvoice(routeDeps: RepaymentDeps, c: Context): Promise<Response> {
+  const deps = withOneRate(routeDeps);
   const requestBody = await c.req.text();
   const hasBody = requestBody.trim() !== '';
   let body: unknown = undefined;
@@ -1210,11 +1211,10 @@ interface PrepayPlan {
   allocation: ReturnType<typeof allocateRepayment>;
   /** Largest prefix that cannot hit an existing-payment conflict. */
   maxUnits: bigint;
-  maxSats: number;
+  maximumParts: RepaymentAllocationPart[];
   maxAmount: string | null;
   /** The accepted prefix ended because the next receivable share conflicts. */
   stoppedAtBlockingShare: boolean;
-  price: (units: bigint) => number | null;
   fiat: boolean;
   shares: ShareState[];
 }
@@ -1256,21 +1256,12 @@ async function prepayPlan(
     maxParts,
   );
   const maximum = maximumAcceptedRepayment(remainingShares);
-  // Refusal reallocation can reach a blocking share and every share after it,
-  // so every still-open share must use this request's one validated pricer.
-  const pricedParts = unpaidSharesParts(remainingShares);
-  const price = await invoicePartsPricer(deps, row, pricedParts);
-  if (price === null) {
-    return 'unavailable';
-  }
-  const maxSats = pricedSum(price, maximum.parts) as number;
   return {
     allocation,
     maxUnits: maximum.usedUnits,
-    maxSats,
+    maximumParts: maximum.parts,
     maxAmount: fiat ? formatCents(maximum.usedUnits) : null,
     stoppedAtBlockingShare: maximum.stoppedAtBlockingShare,
-    price,
     fiat,
     shares: plan.shares,
   };
@@ -1454,11 +1445,16 @@ async function repaymentAmountLocked(
     if (plan.stoppedAtBlockingShare) {
       return c.json({ error: OPEN_PAYMENT_BODY }, 409);
     }
+    const price = await invoicePartsPricer(deps, opened.row, plan.maximumParts);
+    const maxSats = price === null ? null : pricedSum(price, plan.maximumParts);
+    if (maxSats === null) {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
+    }
     return c.json(
       {
         error: AMOUNT_TOO_HIGH_BODY,
         code: 'amount_too_high',
-        maxSats: plan.maxSats,
+        maxSats,
         maxAmount: plan.maxAmount,
       },
       400,
@@ -1470,7 +1466,11 @@ async function repaymentAmountLocked(
   if (plan.allocation.parts.length > REPAYMENT_BILLS_MAX) {
     const capped = cappedAllocation(plan.shares, parsed.units);
     const cappedUnits = capped.parts.reduce((sum, part) => sum + part.units, 0n);
-    const cappedSats = pricedSum(plan.price, capped.parts);
+    const price = await invoicePartsPricer(deps, opened.row, capped.parts);
+    const cappedSats = price === null ? null : pricedSum(price, capped.parts);
+    if (cappedSats === null) {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
+    }
     return c.json(
       {
         error: TOO_MANY_SHARES_BODY,
@@ -1530,12 +1530,42 @@ async function repaymentAmountLocked(
     [...completedParts.values()]
       .filter((part) => part.dayIndex === dayIndex && part.accountId === accountId)
       .reduce((sum, part) => sum + part.units, 0n);
+  const waitingParts = (
+    waitingShare: (typeof plan.allocation.waiting)[number],
+  ): PricedSharePart[] => {
+    const share = shares.get(`${waitingShare.dayIndex}:${waitingShare.accountId}`) as ShareState;
+    const completedIndexes = new Set(
+      [...completedParts.values()]
+        .filter(
+          (part) =>
+            part.dayIndex === waitingShare.dayIndex && part.accountId === waitingShare.accountId,
+        )
+        .map((part) => part.partIndex),
+    );
+    return unpaidShareParts({
+      ...share,
+      paidUnits: share.paidUnits + fixedUnitsForShare(share.dayIndex, share.accountId),
+      openParts: share.openParts.filter((part) => !completedIndexes.has(part.partIndex)),
+    });
+  };
+  const partsToPrice = (candidate: typeof plan.allocation): PricedSharePart[] => [
+    ...candidate.parts,
+    ...candidate.waiting.flatMap(waitingParts),
+  ];
   let allocation = plan.allocation;
+  let price: Awaited<ReturnType<typeof sharePricer>>;
   allocationLoop: while (true) {
+    // Validate exactly what this allocation will invoice or print. A refusal
+    // starts another iteration, so fallback parts are priced only when reached.
+    const allocationPrice = await invoicePartsPricer(deps, opened.row, partsToPrice(allocation));
+    if (allocationPrice === null) {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
+    }
+    price = allocationPrice;
     for (const part of allocation.parts) {
       const key = partKey(part);
       const share = shares.get(`${part.dayIndex}:${part.accountId}`) as ShareState;
-      const sats = pricedSum(plan.price, [part]) as number;
+      const sats = pricedSum(price, [part]) as number;
       const giver = await giverOf(part.accountId);
       const line = {
         dayIndex: part.dayIndex,
@@ -1615,7 +1645,7 @@ async function repaymentAmountLocked(
             replacement.usedUnits < remainingUnits
           ) {
             allocation = { ...replacement, parts: [] };
-            break allocationLoop;
+            continue allocationLoop;
           }
           allocation = replacement;
           continue allocationLoop;
@@ -1648,21 +1678,7 @@ async function repaymentAmountLocked(
   const bills = finalParts.map((part) => completed.get(partKey(part)) as Record<string, unknown>);
   const waiting: Record<string, unknown>[] = [];
   for (const waitingShare of allocation.waiting) {
-    const share = shares.get(`${waitingShare.dayIndex}:${waitingShare.accountId}`) as ShareState;
-    const completedIndexes = new Set(
-      [...completedParts.values()]
-        .filter(
-          (part) =>
-            part.dayIndex === waitingShare.dayIndex && part.accountId === waitingShare.accountId,
-        )
-        .map((part) => part.partIndex),
-    );
-    const remainder = {
-      ...share,
-      paidUnits: share.paidUnits + fixedUnitsForShare(share.dayIndex, share.accountId),
-      openParts: share.openParts.filter((part) => !completedIndexes.has(part.partIndex)),
-    };
-    const sats = pricedSum(plan.price, unpaidShareParts(remainder)) as number;
+    const sats = pricedSum(price, waitingParts(waitingShare)) as number;
     const giver = await giverOf(waitingShare.accountId);
     waiting.push({
       dayIndex: waitingShare.dayIndex,

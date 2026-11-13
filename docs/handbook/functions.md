@@ -2074,7 +2074,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Per loan:** Includes `closedAt`, `maxSats`, and `maxAmount`. On funded loans, maximums walk receivable shares in allocation order and stop before the first legacy, oversized, or claim-only reservation that would return 409; later payable shares are excluded. While collecting, only givers who can currently receive contribute. `maxSats` sums each maximum bill's separately rounded sat price. `repaidSats` sums exact part sats plus only genuine legacy full-share rows, so a completed part-based share is not counted twice; `totalSats` adds the priced unpaid remainders.
 - **Inputs:** `{ store, authStore, now, fxSpot?, lnurlServer? }`; `fxSpot.latest()` is memoized once across every loan in one request.
 - **Lender waiting:** `lenderWaiting` `{ shares, loans, sats }`: when the caller cannot receive (`receivingAddress` is null), the due, unpaid shares owed to the caller over every live funded repayable ask named by the caller's own invoice attempts (`listInvoiceAttemptsForPayer`, both `repay:` and `repayp:` attempts left out) whose `listCreditPayers` includes the caller, with the number of those loans and their sats (not-yet-invoiced fiat units use the same once-per-request spot read; open invoices keep their stored sats; null when a required currency rate is missing). All zero, without reading invoices, when the caller can receive.
-- **Returns / side effects:** 200 `{ sundayRest, loans, lenderWaiting }`. `sundayRest` is `isSundayRestHeader(now, Time-Zone)`, the rule that refuses repayments today. 401 without a session; 503 `Ask amount is unavailable` when the debt of a loan of the caller, or of a loan the caller gave to, cannot be computed, or the spot read fails; 503 `Messages are unavailable` and a `me.loans.failed` log line when the store throws. Read-only.
+- **Returns / side effects:** 200 `{ sundayRest, loans, lenderWaiting }`. `sundayRest` is `isSundayRestHeader(now, Time-Zone)`, the rule that refuses repayments today. A missing or failing spot read leaves only the affected sat fields null. 401 without a session; 503 `Ask amount is unavailable` only when the debt of a loan of the caller, or of a loan the caller gave to, cannot be computed; 503 `Messages are unavailable` and a `me.loans.failed` log line when the store throws. Read-only.
 - **Used by:** `createApp`.
 
 ## Function: serializeMessage
@@ -4385,13 +4385,6 @@ Builds the operator-only external-pubkey inspection route.
 - **Inputs:** Finite amount, `FxSpotQuote` or null, and `USD` / `CHF` / `EUR` / `PHP`.
 - **Returns / side effects:** Whole sats, or `null` when unusable. No I/O.
 - **Used by:** The repayment routes when pricing a fiat share in sats (`repaymentStatus` for `dueSats` and `next`, `repaymentInvoice`, `repaymentDueBills`, and `myLoansRoutes` for the sat figures of `GET /me/loans`). A forum ask does not call it.
-
-## Function: satsToFiatAmount
-
-- **Purpose:** Convert whole sats to a two-decimal fiat string on the same gift-day proportion (`Math.round(dayFiat * 100 * sats / day.sats)`).
-- **Inputs:** Sats, gift-day or null, and `USD` / `CHF` / `EUR` / `PHP`.
-- **Returns / side effects:** Two-decimal string, or `null` when the day, quote, or negative sats are unusable. No I/O.
-- **Used by:** The unit tests in `src/__tests__/lib/goal-rate.test.ts`. A forum ask does not call it. A BTC ask prices each fiat snapshot with `satsToUsdCents` from the spot. A fiat repayment share uses `fiatToSats`.
 
 ## Function: loadGiftStatsSnapshot
 

@@ -20,23 +20,6 @@ export type GoalFiatCode = 'USD' | 'CHF' | 'EUR' | 'PHP';
 export type GoalCurrency = 'BTC' | GoalFiatCode;
 
 /**
- * Historical gift-day proportion accepted by {@link satsToFiatAmount}.
- * `usd` is `string | null` (a missing quote stays null).
- */
-export interface GoalRateDay {
-  /** Sats paid that UTC day. */
-  sats: number;
-  /** USD string for that day, or `null` when unusable. */
-  usd: string | null;
-  /** CHF string for that day, or `null` when unusable. */
-  chf: string | null;
-  /** EUR string for that day, or `null` when unusable. */
-  eur: string | null;
-  /** PHP string for that day, or `null` when unusable. */
-  php: string | null;
-}
-
-/**
  * Edit a BTC ask amount into the whole-sat stored string.
  *
  * Trim, then accept comma or dot with at most eight fractional digits.
@@ -50,34 +33,6 @@ export interface GoalRateDay {
  */
 export function canonicalGoalAmount(raw: string): string | null {
   return canonicalDecimal(raw, 8);
-}
-
-/** A day is usable when it is present, `sats` is finite, and `sats > 0`. */
-function dayIsUsable(day: GoalRateDay | null): day is GoalRateDay {
-  return day !== null && Number.isFinite(day.sats) && day.sats > 0;
-}
-
-/**
- * Map a fiat code onto the day's quote. Unusable when the field is null, not a
- * finite number, or `0`.
- */
-function dayFiat(day: GoalRateDay, currency: GoalFiatCode): number | null {
-  const raw =
-    currency === 'USD'
-      ? day.usd
-      : currency === 'CHF'
-        ? day.chf
-        : currency === 'EUR'
-          ? day.eur
-          : day.php;
-  if (raw === null) {
-    return null;
-  }
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value === 0) {
-    return null;
-  }
-  return value;
 }
 
 /**
@@ -110,31 +65,4 @@ export function fiatToSats(
   }
   const rounded = Math.round((amount * 100_000_000) / rate);
   return rounded === 0 ? 1 : rounded;
-}
-
-/**
- * Convert whole sats to a two-decimal fiat string on a gift-day proportion.
- *
- * `null` when the day or that currency is unusable or `sats < 0`.
- * `cents = Math.round(dayFiat * 100 * sats / day.sats)`.
- *
- * @param sats - Whole sats (may be zero).
- * @param day - Latest gift-day, or `null`.
- * @param currency - USD/CHF/EUR/PHP field on `day`.
- * @returns Two-decimal string, or `null`.
- */
-export function satsToFiatAmount(
-  sats: number,
-  day: GoalRateDay | null,
-  currency: GoalFiatCode,
-): string | null {
-  if (!dayIsUsable(day) || sats < 0) {
-    return null;
-  }
-  const quote = dayFiat(day, currency);
-  if (quote === null) {
-    return null;
-  }
-  const cents = Math.round((quote * 100 * sats) / day.sats);
-  return (cents / 100).toFixed(2);
 }
