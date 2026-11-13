@@ -879,7 +879,12 @@ describe('GET /fond/summary', () => {
   });
 
   it('sums completed movements, latest balance, and paid payouts', async () => {
-    const { app, payouts, walletStore } = await makeApp();
+    const { app, auth, payouts, walletStore } = await makeApp({ seedFond: false });
+    const currentWallet = `02${'d'.repeat(64)}`;
+    const previousWallet = `02${'e'.repeat(64)}`;
+    await fondAccount(auth, { walletRequired: true });
+    await auth.claimSparkPubkey('fond-account', currentWallet);
+    await auth.markSparkPubkeyVerified('fond-account', currentWallet, FOND, 1);
     await walletStore.upsertPayments([
       walletPayment({ paymentId: 'in-1', amountSats: 1_000 }),
       walletPayment({ paymentId: 'in-2', amountSats: 250 }),
@@ -892,6 +897,7 @@ describe('GET /fond/summary', () => {
     await walletStore.recordBalance({
       id: 'old',
       accountId: 'fond-account',
+      walletPubkey: currentWallet,
       balanceSats: 10,
       syncedAt: new Date('2026-11-10T09:00:00.000Z'),
       receivedAt: new Date('2026-11-10T09:00:00.000Z'),
@@ -899,9 +905,18 @@ describe('GET /fond/summary', () => {
     await walletStore.recordBalance({
       id: 'new',
       accountId: 'fond-account',
+      walletPubkey: currentWallet,
       balanceSats: 1_209,
       syncedAt: new Date('2026-11-10T10:00:00.000Z'),
       receivedAt: new Date('2026-11-10T10:00:00.000Z'),
+    });
+    await walletStore.recordBalance({
+      id: 'previous-wallet-newer',
+      accountId: 'fond-account',
+      walletPubkey: previousWallet,
+      balanceSats: 9_999,
+      syncedAt: new Date('2026-11-10T11:00:00.000Z'),
+      receivedAt: new Date('2026-11-10T11:00:00.000Z'),
     });
     await paidRow(payouts, 'aaaa', '1.00');
     await paidRow(payouts, 'bbbb', '2.50');
@@ -919,6 +934,30 @@ describe('GET /fond/summary', () => {
       balanceSyncedAt: '2026-11-10T10:00:00.000Z',
       payoutsPaid: 2,
       payoutsPaidUsd: '3.50',
+    });
+  });
+
+  it('falls back to the Fond legacy balance when its verified wallet has no keyed snapshot', async () => {
+    const { app, auth, walletStore } = await makeApp({ seedFond: false });
+    const currentWallet = `02${'d'.repeat(64)}`;
+    await fondAccount(auth, { walletRequired: true });
+    await auth.claimSparkPubkey('fond-account', currentWallet);
+    await auth.markSparkPubkeyVerified('fond-account', currentWallet, FOND, 1);
+    await walletStore.recordBalance({
+      id: 'legacy',
+      accountId: 'fond-account',
+      walletPubkey: null,
+      balanceSats: 77,
+      syncedAt: new Date('2026-11-10T10:00:00.000Z'),
+      receivedAt: new Date('2026-11-10T10:00:00.000Z'),
+    });
+
+    const res = await app.request('/fond/summary');
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      balanceSats: 77,
+      balanceSyncedAt: '2026-11-10T10:00:00.000Z',
     });
   });
 

@@ -1,4 +1,4 @@
--- Member wallet balance snapshots (viewer or legacy app report), idempotent reported payments,
+-- Member wallet balance snapshots (viewer or app report), idempotent reported payments,
 -- complete server-observed Bitcoin/token history, and full-scan watermarks.
 -- Boot migration precedes db_change attachment so every durable write is audited.
 

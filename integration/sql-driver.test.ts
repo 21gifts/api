@@ -3257,8 +3257,10 @@ describe('PostgresWalletStore', () => {
         syncedAt: receivedAt,
         receivedAt,
       });
-      const latest = await store.latestBalance(accountId);
+      const latest = await store.latestBalance(accountId, null);
+      const legacyFallback = await store.latestBalance(accountId, `02${'a'.repeat(64)}`);
       expect(latest?.id).toBe(snapshotId);
+      expect(legacyFallback?.id).toBe(snapshotId);
       expect(latest?.balanceSats).toBe(1000);
       expect(latest?.accountId).toBe(accountId);
 

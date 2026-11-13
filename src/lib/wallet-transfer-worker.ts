@@ -78,6 +78,22 @@ function receiverStatuses(rows: ReadonlyArray<{ status: number }>): WalletTransf
   return 'pending';
 }
 
+function outboundReceiverStatus(
+  receivers: ReadonlyArray<{ id: string; status: number }>,
+  leaves: ReadonlyArray<{ receiverId: string }>,
+): WalletTransferStatus {
+  const receiverById = new Map(
+    receivers.filter((receiver) => receiver.id !== '').map((receiver) => [receiver.id, receiver]),
+  );
+  if (
+    leaves.length > 0 &&
+    leaves.every((leaf) => receiverById.get(leaf.receiverId)?.status === 6)
+  ) {
+    return 'completed';
+  }
+  return 'pending';
+}
+
 function tokenStatus(value: number): WalletTokenTransactionStatus {
   if (value === 0) return 'started';
   if (value === 1) return 'signed';
@@ -134,6 +150,7 @@ function normalizedTransfer(
       direction = 'out';
       const leaves = transfer.leaves.filter((leaf) => senderIds.has(leaf.senderId));
       amountSats = safeSum(leaves.map((leaf) => leaf.value));
+      status = outboundReceiverStatus(receivers, leaves);
       counterpartyPubkeys = outboundCounterpartiesOf(receivers, leaves, wallet.sparkPubkey);
       counterpartyPubkey = counterpartyPubkeys[0] ?? null;
     } else if (receiverIds.size > 0) {

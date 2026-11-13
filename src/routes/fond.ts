@@ -315,7 +315,10 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         }
         const [payments, balance, payouts] = await Promise.all([
           deps.walletStore.paymentTotals(account.id),
-          deps.walletStore.latestBalance(account.id),
+          deps.walletStore.latestBalance(
+            account.id,
+            typeof account.sparkPubkeyVerifiedAt === 'number' ? account.sparkPubkey! : null,
+          ),
           deps.fondPayoutStore.paidTotals(),
         ]);
         return c.json(

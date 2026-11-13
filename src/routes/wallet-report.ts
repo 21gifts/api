@@ -2,7 +2,7 @@
 
 import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
 import type { LnurlServerConfig } from '@/lib/config';
 import { IP_RATE_WINDOW_MS, IpRateLimiter } from '@/lib/ip-rate-limit';
@@ -22,6 +22,12 @@ export const WALLET_REPORTS_PER_MINUTE = 60;
 
 /** Payments of one report classified at the same time (each runs a few store lookups). */
 export const WALLET_REPORT_CONCURRENCY = 8;
+
+function verifiedWalletPubkey(
+  account: Pick<Account, 'sparkPubkey' | 'sparkPubkeyVerifiedAt'>,
+): string | null {
+  return typeof account.sparkPubkeyVerifiedAt === 'number' ? account.sparkPubkey! : null;
+}
 
 /** Collaborators required by the wallet report route. */
 export interface WalletReportRouteDeps {
@@ -117,6 +123,7 @@ export function walletReportRoutes(deps: WalletReportRouteDeps): Hono {
       await deps.walletStore.recordBalance({
         id: crypto.randomUUID(),
         accountId: account.id,
+        walletPubkey: verifiedWalletPubkey(account),
         balanceSats: parsed.report.balanceSats,
         syncedAt: parsed.report.syncedAt,
         receivedAt: seenAt,

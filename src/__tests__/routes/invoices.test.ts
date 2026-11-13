@@ -4878,6 +4878,39 @@ describe('GET /invoices/eligible', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['a promoted founder', { role: 'founder' as const }],
+    ['the platform account', { role: 'verified' as const, isPlatform: true }],
+  ])('does not treat %s as the server welcome exception', async (_label, patch) => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    await authStore.updateAccount({ ...account!, ...patch });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("does not let a daily roster comment 'Welcome' bypass the shop payment", async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);

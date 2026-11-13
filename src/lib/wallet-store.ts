@@ -79,17 +79,21 @@ export interface WalletStore {
   upsertPayments(rows: readonly WalletPaymentRecord[]): Promise<void>;
 
   /**
-   * Return the newest received balance snapshot for an account.
+   * Return the newest snapshot for the current wallet, with legacy null-key fallback.
    *
    * @param accountId - Reporting account id.
+   * @param walletPubkey - Current verified wallet key, or null when none is verified.
    * @returns A caller-owned snapshot, or `undefined`.
    */
-  latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined>;
+  latestBalance(
+    accountId: string,
+    walletPubkey: string | null,
+  ): Promise<WalletBalanceSnapshot | undefined>;
 
   /**
-   * Return the newest received balance snapshot of every account and UTC day.
+   * Return the newest received balance snapshot of every account, wallet key, and UTC day.
    *
-   * @returns One caller-owned snapshot per account and UTC day, ordered by account then time.
+   * @returns One caller-owned snapshot per account, wallet key, and UTC day.
    */
   dailyBalances(): Promise<WalletBalanceSnapshot[]>;
 
@@ -435,15 +439,29 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
-   * Return the newest snapshot by receive time and id.
+   * Return the newest current-wallet snapshot, or the newest legacy null-key row when absent.
    *
    * @param accountId - Reporting account id.
+   * @param walletPubkey - Current verified wallet key, or null when none is verified.
    * @returns A snapshot copy, or `undefined`.
    */
-  latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined> {
+  latestBalance(
+    accountId: string,
+    walletPubkey: string | null,
+  ): Promise<WalletBalanceSnapshot | undefined> {
     const row = this.#balances
-      .filter((candidate) => candidate.accountId === accountId)
+      .filter((candidate) => {
+        const candidateKey = candidate.walletPubkey ?? null;
+        return (
+          candidate.accountId === accountId &&
+          (candidateKey === walletPubkey || candidateKey === null)
+        );
+      })
       .sort((a, b) => {
+        const byWallet =
+          Number((b.walletPubkey ?? null) === walletPubkey) -
+          Number((a.walletPubkey ?? null) === walletPubkey);
+        if (byWallet !== 0) return byWallet;
         const byTime = b.receivedAt.getTime() - a.receivedAt.getTime();
         return byTime === 0 ? b.id.localeCompare(a.id) : byTime;
       })[0];
@@ -451,25 +469,31 @@ export class InMemoryWalletStore implements WalletStore {
   }
 
   /**
-   * Return the newest snapshot of every account and UTC day.
+   * Return the newest snapshot of every account, wallet key, and UTC day.
    *
-   * @returns One snapshot copy per account and UTC day, oldest received time first per account.
+   * @returns One snapshot copy per wallet and UTC day, ordered by account, key, then time.
    */
   dailyBalances(): Promise<WalletBalanceSnapshot[]> {
-    const byAccountDay = new Map<string, WalletBalanceSnapshot>();
+    const byWalletDay = new Map<string, WalletBalanceSnapshot>();
     for (const row of this.#balances) {
-      const key = `${row.accountId}\u0000${utcDayKey(row.receivedAt.getTime())}`;
-      const current = byAccountDay.get(key);
+      const key = `${row.accountId}\u0000${row.walletPubkey ?? ''}\u0000${utcDayKey(
+        row.receivedAt.getTime(),
+      )}`;
+      const current = byWalletDay.get(key);
       if (current === undefined || isLaterBalance(row, current)) {
-        byAccountDay.set(key, row);
+        byWalletDay.set(key, row);
       }
     }
     return Promise.resolve(
-      [...byAccountDay.values()]
+      [...byWalletDay.values()]
         .sort((left, right) => {
           const byAccount = left.accountId.localeCompare(right.accountId);
           if (byAccount !== 0) {
             return byAccount;
+          }
+          const byWallet = (left.walletPubkey ?? '').localeCompare(right.walletPubkey ?? '');
+          if (byWallet !== 0) {
+            return byWallet;
           }
           return left.receivedAt.getTime() - right.receivedAt.getTime();
         })
@@ -811,39 +835,43 @@ WHERE EXCLUDED.last_observed_at >= ${OBSERVED_WATERMARK}
   }
 
   /**
-   * Read the latest balance snapshot for an account.
+   * Read the latest current-wallet snapshot, with legacy null-key fallback.
    *
    * @param accountId - Reporting account id (`$1`).
+   * @param walletPubkey - Current verified wallet key (`$2`), or null.
    * @returns A mapped snapshot, or `undefined`.
    */
-  async latestBalance(accountId: string): Promise<WalletBalanceSnapshot | undefined> {
+  async latestBalance(
+    accountId: string,
+    walletPubkey: string | null,
+  ): Promise<WalletBalanceSnapshot | undefined> {
     const rows = await this.sql.query<WalletBalanceSqlRow>(
       `SELECT id, account_id, wallet_pubkey, balance_sats, synced_at, received_at
 FROM wallet_balance_snapshot
-WHERE account_id = $1
-ORDER BY received_at DESC, id DESC
+WHERE account_id = $1 AND (wallet_pubkey = $2 OR wallet_pubkey IS NULL)
+ORDER BY CASE WHEN wallet_pubkey IS NOT DISTINCT FROM $2 THEN 0 ELSE 1 END,
+  received_at DESC, id DESC
 LIMIT 1`,
-      [accountId],
+      [accountId, walletPubkey],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapBalance(row);
   }
 
   /**
-   * Read the last snapshot of every account and UTC day in one query.
+   * Read the last snapshot of every account, wallet key, and UTC day in one query.
    *
-   * The existing `(account_id, received_at DESC, id DESC)` index supplies the
-   * account and received-time order. The derived day can still need a sort, but
-   * the query returns only one row per account and day, never the whole table.
+   * The query returns only one row per account, wallet key, and day, never the
+   * whole table.
    *
-   * @returns Mapped snapshots, at most one per account and UTC day.
+   * @returns Mapped snapshots, at most one per account, wallet key, and UTC day.
    */
   async dailyBalances(): Promise<WalletBalanceSnapshot[]> {
     const rows = await this.sql.query<WalletBalanceSqlRow>(
-      `SELECT DISTINCT ON (account_id, ((received_at AT TIME ZONE 'UTC')::date))
+      `SELECT DISTINCT ON (account_id, wallet_pubkey, ((received_at AT TIME ZONE 'UTC')::date))
 id, account_id, wallet_pubkey, balance_sats, synced_at, received_at
 FROM wallet_balance_snapshot
-ORDER BY account_id, ((received_at AT TIME ZONE 'UTC')::date), received_at DESC, id DESC`,
+ORDER BY account_id, wallet_pubkey NULLS FIRST, ((received_at AT TIME ZONE 'UTC')::date), received_at DESC, id DESC`,
     );
     return rows.map(mapBalance);
   }

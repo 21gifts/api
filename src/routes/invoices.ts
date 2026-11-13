@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { earnsModeratorGroupPay, isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
+import { earnsModeratorGroupPay, isModeratorGroupMember } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
@@ -344,6 +344,10 @@ async function welcomePostedFields(
   };
 }
 
+function isWelcomeRecipient(account: Pick<Account, 'role' | 'isPlatform'>): boolean {
+  return account.role === 'verified' && account.isPlatform !== true;
+}
+
 /**
  * Whether this account is still owed its one welcome gift. This is deliberately
  * derived from server-owned account and gift-ledger facts, never a request flag.
@@ -353,7 +357,7 @@ async function welcomeGiftOwed(
   account: Account,
 ): Promise<boolean> {
   return (
-    roleAtLeast(account.role, 'verified') &&
+    isWelcomeRecipient(account) &&
     !(await accountWelcomed({
       auth: deps.authStore,
       messages: deps.messageStore,
@@ -876,7 +880,7 @@ async function issueGiftInvoiceLocked(
   if (
     await welcomeShopPaymentException(
       deps.fetchImpl,
-      async () => roleAtLeast(account.role, 'verified') && !(await welcomeRefused()),
+      async () => isWelcomeRecipient(account) && !(await welcomeRefused()),
       welcomeRequest,
     )
   ) {

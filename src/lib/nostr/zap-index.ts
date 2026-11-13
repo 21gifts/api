@@ -38,6 +38,7 @@ import {
 } from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { effectiveStatus } from '@/lib/funding';
+import { latestTodayMediaPostId } from '@/lib/funding-ping';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
@@ -2853,7 +2854,9 @@ async function insertExternalGiftReply(
  * including a reply target reset to top-level; `replyLimiter` when it is a
  * reply; neither for a {@link forumRateLimitExempt} payer), then `notifyForumPost` / `notifyForumReply` (not `notifyZap`)
  * and a top-level `spendPing` only when `eligibleToday` (same gate as
- * `POST /messages`; otherwise `spend.ping.skipped` / `not_eligible`). When
+ * `POST /messages`) and today's newest media note exists; that media note id
+ * is sent, never the created text-only compose id. Otherwise logs
+ * `spend.ping.skipped` with `not_eligible` or `media_post`. When
  * the parent is itself a reply, sets `payerAccountId`
  * to null and returns without `store.create` so the receipt never occupies
  * the awaiting-gift-reply queue.
@@ -2980,12 +2983,17 @@ async function insertGiftReply(
       if (!eligible) {
         logEvent('spend.ping.skipped', { reason: reason ?? 'not_eligible' });
       } else {
-        await args.spendPing.ping(
-          spendAddress,
-          created.id,
-          'daily',
-          effectiveStatus(grant, args.now()),
-        );
+        const mediaPostId = await latestTodayMediaPostId(args.store, args.payer.id, args.now());
+        if (mediaPostId === null) {
+          logEvent('spend.ping.skipped', { reason: 'media_post' });
+        } else {
+          await args.spendPing.ping(
+            spendAddress,
+            mediaPostId,
+            'daily',
+            effectiveStatus(grant, args.now()),
+          );
+        }
       }
     } catch {
       logEvent('spend.ping.failed');

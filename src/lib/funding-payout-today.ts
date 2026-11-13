@@ -59,7 +59,7 @@ function paidKindToday(
       (gift) =>
         gift.kind === kind &&
         handleOf(gift.recipientWosUser) === recipient &&
-        gift.paidAt.toISOString().slice(0, 10) === day,
+        utcDayKey(gift.paidAt.getTime()) === day,
     )
   );
 }

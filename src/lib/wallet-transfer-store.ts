@@ -1,6 +1,7 @@
 /** Persistence for server-verified Spark wallet transfers. */
 
 import type { SqlClient } from '@/lib/auth/sql';
+import { utcDayKey } from '@/lib/funding';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** Direction as seen from the wallet that granted the viewer key. */
@@ -126,7 +127,7 @@ function substantiveEqual(left: WalletTransferRecord, right: WalletTransferRecor
 
 function dayOf(row: WalletTransferRecord): string | null {
   const at = row.transferUpdatedAt ?? row.transferCreatedAt;
-  return at === null ? null : at.toISOString().slice(0, 10);
+  return at === null ? null : utcDayKey(at.getTime());
 }
 
 /** Process-local adapter used by database-free boots and tests. */

@@ -9,7 +9,7 @@ import type { AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { DailyRosterRequestError, DAILY_ROSTER_UNAVAILABLE } from '@/lib/daily-roster';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
-import { effectiveStatus } from '@/lib/funding';
+import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { latestTodayMediaPostId } from '@/lib/funding-ping';
@@ -162,11 +162,7 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
       } catch {
         return c.json({ error: 'Gift ledger unreadable' }, 503);
       }
-      welcomePaidOnUtcDay = welcomeGiftPaidOnUtcDay(
-        outbound,
-        address,
-        new Date(nowMs).toISOString().slice(0, 10),
-      );
+      welcomePaidOnUtcDay = welcomeGiftPaidOnUtcDay(outbound, address, utcDayKey(nowMs));
     }
 
     let roster: unknown;

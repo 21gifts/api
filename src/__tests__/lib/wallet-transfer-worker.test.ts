@@ -627,6 +627,7 @@ describe('runWalletTransferTick', () => {
           ],
           receivers: [
             { id: 'receiver-shop', identityPublicKey: bytes(SHOP), amountSats: 34, status: 5 },
+            { id: '', identityPublicKey: bytes(MEMBER), amountSats: 0, status: 6 },
           ],
           leaves: [
             { senderId: 'sender-owner', receiverId: 'receiver-shop', value: 13 },
@@ -742,7 +743,7 @@ describe('runWalletTransferTick', () => {
           id: 'self-counterparty',
           senders: [{ id: 'sender-owner', identityPublicKey: bytes(OWNER) }],
           receivers: [
-            { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 1, status: 5 },
+            { id: 'receiver-owner', identityPublicKey: bytes(OWNER), amountSats: 1, status: 6 },
           ],
           leaves: [{ senderId: 'sender-owner', receiverId: 'receiver-owner', value: 1 }],
         }),
@@ -831,6 +832,7 @@ describe('runWalletTransferTick', () => {
     });
     expect(stored.find((record) => record.transferId === 'multi-party')).toMatchObject({
       direction: 'out',
+      status: 'pending',
       amountSats: 34,
       counterpartyPubkey: SHOP,
     });
@@ -853,6 +855,7 @@ describe('runWalletTransferTick', () => {
       amountSats: 2,
     });
     expect(stored.find((record) => record.transferId === 'self-counterparty')).toMatchObject({
+      status: 'completed',
       counterpartyPubkey: OWNER,
       counterpartyPubkeys: [OWNER],
     });

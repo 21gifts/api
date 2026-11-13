@@ -1518,9 +1518,10 @@ describe('debugPaymentsRoutes', () => {
     });
 
     it.each([
-      ['the start day', '2026-10-29', false],
-      ['the day before the start day', '2026-10-30', true],
-    ])('settling a platform-note zap on %s', async (_label, requiredFrom, pinged) => {
+      ['the start day', '2026-10-29', true, false],
+      ['the day before the start day', '2026-10-30', true, true],
+      ['the day before the start day without media', '2026-10-30', false, false],
+    ])('settling a platform-note zap on %s', async (_label, requiredFrom, hasMedia, pinged) => {
       const store = new InMemoryMessageStore();
       const auth = new InMemoryAuthStore();
       await auth.createAccount(
@@ -1537,6 +1538,20 @@ describe('debugPaymentsRoutes', () => {
         name: 'Ada',
         forumLawsDismissed: false,
       });
+      if (hasMedia) {
+        await store.create(
+          {
+            id: '19191919-1919-4191-8191-191919191919',
+            accountId: 'settle-payer',
+            name: 'Ada',
+            text: 'today photo',
+            createdAt: new Date('2026-10-29T08:00:00.000Z'),
+            hasPhoto: false,
+            ...unsignedNostrDefaults(),
+          },
+          SPEND_PHOTO,
+        );
+      }
       const preimage = '16'.repeat(32);
       const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
       await seedSettleInvoice(store, paymentHash);

@@ -61,7 +61,7 @@ does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
 report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-01, a 21.gifts recovery share for the current verified wallet from `RECOVERY_SHARE_REQUIRED_FROM`, and a completed server-verified shop payment today or yesterday UTC);
-its preflight omits only that shop-payment condition while server-owned facts show an account at least `verified` that has not received its welcome gift, and this does not make any other invoice payable. `POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when server-owned facts show that the account is at least `verified`, has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
+its preflight omits only that shop-payment condition while server-owned facts satisfy the welcome path's exact recipient rule (role `verified`, not the platform account) and show that account has not received its welcome gift; this does not make any other invoice payable. `POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when those same recipient facts hold, the account has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
 Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
@@ -4506,9 +4506,11 @@ Alternatively, a live member session whose role is at least
 other table is 404. The route passes this allowlist into the store, so catalog
 discovery, row counts, and page catalog checks for that session never inspect
 another table. Lower roles are 401. An admin session never opens writes or another debug route.
-Both operator tokens unset or blank → **Response** `503` for a non-session caller
-`{ "error": "Debug is not configured" }`. Missing or non-matching bearer →
-**Response** `401` `{ "error": "Unauthorized" }`. Token matches but this
+Both operator tokens unset or blank and no live session at least
+`software_developer` → **Response** `503`
+`{ "error": "Debug is not configured" }`. A bearer that is neither a configured
+operator token nor such a session, including a lower-role session and a session
+`HEAD`, → **Response** `401` `{ "error": "Unauthorized" }`. Token matches but this
 process has no SQL client → **Response** `503`
 `{ "error": "Database is not configured" }`. No `table` returns
 `{ tables: [{ name, rowCount }] }`. `table` returns 200 rows and
@@ -4549,10 +4551,9 @@ record of the value-movement facts those two sources observe or report.
 
 - `wallet_balance_snapshot`: one row per accepted report. `id`, `account_id`
   (reporting member), nullable `wallet_pubkey` (set for an operator-viewer
-  sync, null on legacy app reports), `balance_sats` (wallet balance at sync), `synced_at`
+  sync and current app reports, null on legacy app reports), `balance_sats` (wallet balance at sync), `synced_at`
   (sync time the app reported), `received_at` (server time of the report).
-  `GET /wallets/stats` reads the last snapshot per account and UTC day; no
-  write path or schema changes for that public read.
+  `GET /wallets/stats` reads the last snapshot per account, wallet key, and UTC day.
 - `wallet_payment`: one row per member and wallet payment id, key
   `(account_id, payment_id)`. `direction` (`in` / `out`, seen from
   `account_id`), `status` (`pending` / `completed` / `failed`), `amount_sats`,
@@ -4710,9 +4711,11 @@ Same `DEBUG_TOKEN` gate as `GET /debug/accounts`.
 
 ### `GET /debug/accounts/:id/wallet`
 
-Operator read of one account's wallet, read-only: the newest stored balance
-snapshot (`balanceSats`, ISO-8601 `syncedAt` and `receivedAt`, and floored,
-non-negative `ageSeconds`), or `null` when the account never reported, plus
+Operator read of one account's wallet, read-only: the newest snapshot for its
+current verified wallet key, falling back to the newest legacy null-key app
+report only when that key has no row and never selecting a previous wallet key
+(`balanceSats`, ISO-8601 `syncedAt` and `receivedAt`, and floored,
+non-negative `ageSeconds`), or `null` when neither source exists, plus
 that account's stored payments newest first (`paidAt`, then payment id), at
 most `limit` rows (default 50, decimal integer 1..500). `nextCursor` is an
 opaque cursor when another row exists and is omitted on the last page. Every
@@ -6022,7 +6025,9 @@ payments the api has not acknowledged yet.
   kept out by the allow-list (secret-named fields are never read) and by the
   app, which never sends a preimage, seed, PRF output or key.
 
-The api stores one row in `wallet_balance_snapshot` per report and upserts
+The api stores one row in `wallet_balance_snapshot` per report, associated
+with the account's current verified wallet key (or null only when no wallet is
+verified), and upserts
 each payment into `wallet_payment` by `(account, id)`. Re-sending a payment
 is harmless: status, amounts, method, time, category, and counterparty are
 overwritten (so `pending` becomes `completed`), detail fields keep their
@@ -7799,7 +7804,10 @@ missing `pushStore` still writes in-app rows when `auth` is set; enqueue
 failure logs `push.enqueue.failed`). A member/invoice zap on the official platform profile
 note skips `notifyZap` and fans out `notifyForumPost` / `notifyForumReply`
 plus a top-level `spendPing` only when `eligibleToday` (same gate as
-`POST /messages`; ineligible logs `spend.ping.skipped` / `not_eligible`).
+`POST /messages`) and `latestTodayMediaPostId` finds the payer's qualifying
+media note from the current UTC day. That media note id is sent; the newly
+created text-only compose note is never sent. Ineligible logs
+`spend.ping.skipped` / `not_eligible`, and missing media logs `media_post`.
 An external zap on that same note still inserts a gift-reply under it. `GET /notifications` applies the same
 `notificationLevel` filter to stored rows. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
@@ -8331,19 +8339,27 @@ query throws.
 Public wallet totals across all 21.gifts member wallets. No auth. The source is
 `wallet_balance_snapshot`, filled directly by the Spark viewer worker as well
 as by the supplementary `POST /me/wallet/report`. Viewer rows name
-`wallet_pubkey`; legacy app rows leave it null. A wallet is an `account_id`
-with at least one visible snapshot. The
+`wallet_pubkey`; current app reports use that same verified key, while legacy
+app rows leave it null. A wallet identity is `(account_id, wallet_pubkey)`.
+Null-key rows are an account's migration fallback when it has no visible keyed
+row; when visible keyed rows exist for that account, those identities win and
+the legacy rows are not counted as an additional wallet. The
 response never includes account ids, per-account balances, or any other
 per-account value.
 
-An account's balance at the end of UTC day D is the `balance_sats` of its
+Each wallet identity's balance at the end of UTC day D is the `balance_sats` of its
 snapshot with the greatest `(received_at, id)` among rows with
-`received_at < D + 1 day 00:00 UTC`, the same order as `latestBalance`. An
-account with no such row is not part of day D. A balance carries forward over
+`received_at < D + 1 day 00:00 UTC`. An identity with no such row is not part
+of day D. A balance carries forward over
 days without a new snapshot. `totalSats` of day D sums every carried-forward
 wallet balance; `fundedWalletCount` counts those balances greater than 0.
 `walletCount` counts every wallet present at the end of that day, including a
 wallet whose balance is 0.
+
+Account-scoped current-balance reads take the account's current verified
+`wallet_pubkey`, prefer that key even when a previous wallet has a newer
+snapshot, and fall back to the newest legacy null-key row only when the current
+key has no row. With no verified wallet they read only null-key rows.
 
 `balanceOverTime` has no gaps: every UTC day from the earliest visible
 `received_at` through the current UTC day. A snapshot whose UTC day is after the

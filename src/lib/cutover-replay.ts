@@ -353,7 +353,11 @@ export async function replayPayoutWindow(
           : 'daily';
     // Only a verified account earns a welcome, once; other welcome triggers are not events.
     if (payout === 'welcome') {
-      if (account?.role !== 'verified' || booked.has(`${account.id}|welcome`)) {
+      if (
+        account === undefined ||
+        account.role !== 'verified' ||
+        booked.has(`${account.id}|welcome`)
+      ) {
         continue;
       }
       booked.add(`${account.id}|welcome`);

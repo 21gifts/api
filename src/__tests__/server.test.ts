@@ -926,7 +926,7 @@ describe('createApp', () => {
     });
     expect(wallet.status).toBe(200);
     expect(await wallet.json()).toEqual({ acknowledgedIds: ['p1'] });
-    expect(await walletStore.latestBalance('acc-injected')).toMatchObject({
+    expect(await walletStore.latestBalance('acc-injected', null)).toMatchObject({
       accountId: 'acc-injected',
       balanceSats: 1000,
     });

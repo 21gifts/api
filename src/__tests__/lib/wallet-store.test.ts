@@ -153,19 +153,42 @@ describe('wallet schema', () => {
 describe('InMemoryWalletStore', () => {
   it('records snapshots, returns newest with id tie-break, filters accounts, and copies dates', async () => {
     const store = new InMemoryWalletStore();
-    expect(await store.latestBalance('account')).toBeUndefined();
+    expect(await store.latestBalance('account', null)).toBeUndefined();
     await store.recordBalance(balance({ id: 'a' }));
     await store.recordBalance(balance({ id: 'b', receivedAt: T2 }));
     await store.recordBalance(balance({ id: 'd', receivedAt: new Date(T2) }));
     await store.recordBalance(balance({ id: 'c', accountId: 'other', receivedAt: T2 }));
-    const latest = await store.latestBalance('account');
+    const latest = await store.latestBalance('account', null);
     expect(latest?.id).toBe('d');
     latest?.syncedAt.setTime(0);
     latest?.receivedAt.setTime(0);
-    expect((await store.latestBalance('account'))?.receivedAt).toEqual(T2);
+    expect((await store.latestBalance('account', null))?.receivedAt).toEqual(T2);
   });
 
-  it('returns the last snapshot per account and UTC day, with the id tie-break', async () => {
+  it('returns only the requested wallet from keyed-only snapshots', async () => {
+    const store = new InMemoryWalletStore();
+    const current = `02${'b'.repeat(64)}`;
+    const previous = `02${'c'.repeat(64)}`;
+    await store.recordBalance(balance({ id: 'current', walletPubkey: current }));
+    await store.recordBalance(balance({ id: 'previous', walletPubkey: previous, receivedAt: T2 }));
+    expect((await store.latestBalance('account', current))?.id).toBe('current');
+    expect(await store.latestBalance('account', `02${'d'.repeat(64)}`)).toBeUndefined();
+    expect(await store.latestBalance('account', null)).toBeUndefined();
+  });
+
+  it('prefers the current wallet and falls back only to legacy rows in mixed data', async () => {
+    const store = new InMemoryWalletStore();
+    const current = `02${'b'.repeat(64)}`;
+    const previous = `02${'c'.repeat(64)}`;
+    await store.recordBalance(balance({ id: 'current', walletPubkey: current }));
+    await store.recordBalance(balance({ id: 'previous', walletPubkey: previous, receivedAt: T2 }));
+    await store.recordBalance(balance({ id: 'legacy', walletPubkey: null, receivedAt: T2 }));
+    expect((await store.latestBalance('account', current))?.id).toBe('current');
+    expect((await store.latestBalance('account', `02${'d'.repeat(64)}`))?.id).toBe('legacy');
+    expect((await store.latestBalance('account', null))?.id).toBe('legacy');
+  });
+
+  it('returns the last snapshot per account, wallet key, and UTC day', async () => {
     const store = new InMemoryWalletStore();
     await store.recordBalance(balance({ id: 'a', balanceSats: 1 }));
     await store.recordBalance(balance({ id: 'b', balanceSats: 2 }));
@@ -175,10 +198,14 @@ describe('InMemoryWalletStore', () => {
     await store.recordBalance(
       balance({ id: 'e', accountId: 'other', balanceSats: 5, receivedAt: T2 }),
     );
+    await store.recordBalance(
+      balance({ id: 'wallet', walletPubkey: VIEWER_KEY, balanceSats: 7, receivedAt: T2 }),
+    );
     const rows = await store.dailyBalances();
     expect(rows.map((row) => [row.accountId, row.id, row.balanceSats])).toEqual([
       ['account', 'b', 2],
       ['account', 'd', 4],
+      ['account', 'wallet', 7],
       ['other', 'e', 5],
     ]);
     rows[0]?.receivedAt.setTime(0);
@@ -700,16 +727,19 @@ describe('PostgresWalletStore', () => {
       },
     ];
     const store = new PostgresWalletStore(sql);
-    await expect(store.latestBalance('account')).resolves.toEqual(
+    await expect(store.latestBalance('account', VIEWER_KEY)).resolves.toEqual(
       balance({ walletPubkey: VIEWER_KEY, receivedAt: T2 }),
     );
-    expect(sql.queries[0]?.text).toContain('ORDER BY received_at DESC, id DESC');
-    expect(sql.queries[0]?.params).toEqual(['account']);
+    expect(sql.queries[0]?.text).toContain('wallet_pubkey = $2 OR wallet_pubkey IS NULL');
+    expect(sql.queries[0]?.text).toContain(
+      'CASE WHEN wallet_pubkey IS NOT DISTINCT FROM $2 THEN 0 ELSE 1 END',
+    );
+    expect(sql.queries[0]?.params).toEqual(['account', VIEWER_KEY]);
     sql.rows = [];
-    await expect(store.latestBalance('none')).resolves.toBeUndefined();
+    await expect(store.latestBalance('none', null)).resolves.toBeUndefined();
   });
 
-  it('maps the one-per-account-and-day snapshot query', async () => {
+  it('maps the one-per-account-wallet-and-day snapshot query', async () => {
     const sql = new MockSql();
     sql.rows = [
       {
@@ -724,7 +754,7 @@ describe('PostgresWalletStore', () => {
     const rows = await new PostgresWalletStore(sql).dailyBalances();
     expect(sql.queries).toHaveLength(1);
     expect(sql.queries[0]?.text).toContain(
-      "SELECT DISTINCT ON (account_id, ((received_at AT TIME ZONE 'UTC')::date))",
+      "SELECT DISTINCT ON (account_id, wallet_pubkey, ((received_at AT TIME ZONE 'UTC')::date))",
     );
     expect(sql.queries[0]?.text).toContain('received_at DESC, id DESC');
     expect(sql.queries[0]?.params).toEqual([]);
