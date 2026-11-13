@@ -194,7 +194,8 @@ function account(
 describe('replayPayoutWindow', () => {
   it('reports no_shop_payment when the shop payment rule blocks a payout', async () => {
     const h = await harness({ grants: [admitted(ADA)] });
-    h.deps.walletTransfers = { hasShopPayment: vi.fn(async () => false) };
+    const hasShopPayment = vi.fn(async () => false);
+    h.deps.walletTransfers = { hasShopPayment };
     await h.member(ADA, 'ada', 'moderator');
     await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
 
@@ -208,6 +209,7 @@ describe('replayPayoutWindow', () => {
         detail: 'no_shop_payment',
       }),
     ]);
+    expect(hasShopPayment).toHaveBeenCalledWith(ADA, '2026-10-28', '2026-10-29');
     expect(h.spend.pingOnDay).not.toHaveBeenCalled();
   });
 

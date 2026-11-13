@@ -4503,7 +4503,9 @@ Alternatively, a live member session whose role is at least
 `software_developer` may use this same GET route, but sees only
 `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`, and
 `wallet_token_transaction`; its table list contains only those four and any
-other table is 404. Lower roles are 401. An admin session never opens writes or another debug route.
+other table is 404. The route passes this allowlist into the store, so catalog
+discovery, row counts, and page catalog checks for that session never inspect
+another table. Lower roles are 401. An admin session never opens writes or another debug route.
 Both operator tokens unset or blank → **Response** `503` for a non-session caller
 `{ "error": "Debug is not configured" }`. Missing or non-matching bearer →
 **Response** `401` `{ "error": "Unauthorized" }`. Token matches but this
@@ -4535,12 +4537,15 @@ redacted. An account merge moves these rows to the surviving account, with the
 two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
 
 `wallet_transfer` is the server-verified ledger of every Bitcoin value
-movement and `wallet_token_transaction` is the server-verified token ledger
-of explicit non-secret facts. Spark transfer responses have no fee field and no Lightning/on-chain
+movement the operator poll observes and `wallet_token_transaction` is the
+server-verified token ledger of explicit non-secret facts the poll observes.
+Each observed current-state change is stored; polling cannot observe a status
+transition that begins and ends between polls, while append-only `db_change`
+keeps every change that was observed. Spark transfer responses have no fee field and no Lightning/on-chain
 destination. The supplementary `wallet_payment` report adds app-side fee,
 destination, invoice, memo, and method details. The viewer ledgers and
 `wallet_payment` together, not either source alone, are the complete non-secret
-value-movement record.
+record of the value-movement facts those two sources observe or report.
 
 - `wallet_balance_snapshot`: one row per accepted report. `id`, `account_id`
   (reporting member), nullable `wallet_pubkey` (set for an operator-viewer
@@ -4566,7 +4571,9 @@ value-movement record.
   current/previous-wallet account cache), optional Spark invoice,
   operator creation/update times, and first/last server observation times.
   Rows are retained; account merge moves them to the survivor like
-  `wallet_payment`.
+  `wallet_payment`. If both accounts have this composite key, the survivor row
+  keeps the earliest `first_seen_at`, the mutable state and `last_seen_at` from
+  the latest observation, then the source duplicate is deleted.
 - `wallet_token_transaction`: one row per
   `(account_id, wallet_pubkey, transaction_hash)`. It stores only the token
   identifier, owner-relative direction and decimal amount, counterparty keys,
@@ -4577,9 +4584,11 @@ value-movement record.
   wallet; its amount and counterparties are the outputs to other owners.
   Otherwise it is incoming, its amount is the sum of this wallet's outputs,
   and its counterparties are the previous-output owners. Mint and create rows
-  use the public issuer key as counterparty.
+  use the public issuer key as counterparty. Account-merge duplicates use the
+  same earliest-first/latest-state reconciliation as `wallet_transfer`.
 - `wallet_transfer_sync`: the durable per-account/per-wallet time of the last
-  complete history pass. It drives the daily full reread and is operational
+  complete history pass. An account-merge duplicate keeps the maximum time.
+  It drives the daily full reread and is operational
   state, not a payment-history surface for member sessions.
 - `member_event`: one row per accepted event. `id`, `account_id`, `name` (one
   of `MEMBER_EVENT_NAMES`), `at` (client time), `path` (no query or fragment),
@@ -6069,7 +6078,7 @@ two rows or by two rows of the same direction is not paired. A paired row moves
 `updated_at` (never backwards) but not `last_observed_at`. Like any resolved
 category, a later re-send without details keeps it.
 
-**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, clears a counterparty that is one of the two merged accounts, then moves the rest.
+**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, reconciles duplicate viewer transfer/token rows to earliest first observation and latest mutable state/last observation, keeps the maximum duplicate full-sync time, clears a counterparty that is one of the two merged accounts, then moves the rest.
 
 The app report is supplementary and is not the source of truth for complete
 wallet history. At boot the api loads one deployment viewer from

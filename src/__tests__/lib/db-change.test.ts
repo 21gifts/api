@@ -51,15 +51,14 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     );
     const guardBlock = joined.slice(joined.indexOf('$guard$'));
     const dropAt = guardBlock.indexOf('DROP TRIGGER IF EXISTS db_change_immutable');
-    const tokenPayloadCleanupAt = guardBlock.indexOf("table_name = 'wallet_token_transaction'");
     const afterMatchAt = guardBlock.indexOf("a.view_key = d.after ->> 'view_key'");
     const beforeMatchAt = guardBlock.indexOf("a.view_key = d.before ->> 'view_key'");
     const recreateAt = guardBlock.indexOf(
       'CREATE TRIGGER db_change_immutable BEFORE UPDATE OR DELETE ON db_change',
     );
     expect(dropAt).toBeGreaterThan(-1);
-    expect(tokenPayloadCleanupAt).toBeGreaterThan(dropAt);
-    expect(guardBlock).toContain("before = before - 'payload', after = after - 'payload'");
+    expect(guardBlock).not.toContain("table_name = 'wallet_token_transaction'");
+    expect(guardBlock).not.toContain("before = before - 'payload'");
     expect(afterMatchAt).toBeGreaterThan(dropAt);
     expect(beforeMatchAt).toBeGreaterThan(afterMatchAt);
     expect(recreateAt).toBeGreaterThan(beforeMatchAt);

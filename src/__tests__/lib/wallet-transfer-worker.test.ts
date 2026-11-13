@@ -403,9 +403,9 @@ describe('runWalletTransferTick', () => {
     expect(output).not.toContain('spark1secret');
   });
 
-  it('retries a level-triggered catch-up until delivery succeeds, then deduplicates the UTC day', async () => {
+  const catchUpRetry = async (recordedKind: 'daily' | 'welcome'): Promise<void> => {
     let now = NOW;
-    let dailyPaid = false;
+    let payoutRecorded = false;
     const store: WalletTransferStore = {
       listWallets: async () => [
         { accountId: 'retry-account', sparkPubkey: OWNER, sparkAddress: 'spark1address' },
@@ -468,13 +468,13 @@ describe('runWalletTransferTick', () => {
       },
       gifts: {
         listOutbound: async () =>
-          dailyPaid
+          payoutRecorded
             ? [
                 {
                   paidAt: new Date(now),
                   amountSats: 1,
                   recipientWosUser: 'Alice@21.gifts',
-                  kind: 'daily' as const,
+                  kind: recordedKind,
                 },
               ]
             : [],
@@ -502,10 +502,15 @@ describe('runWalletTransferTick', () => {
     expect((await runWalletTransferTick(deps)).size).toBe(0);
     expect(ping).toHaveBeenCalledTimes(3);
     now += 86_400_000;
-    dailyPaid = true;
+    payoutRecorded = true;
     expect((await runWalletTransferTick(deps)).size).toBe(0);
     expect(ping).toHaveBeenCalledTimes(3);
-  });
+  };
+
+  it.each(['daily', 'welcome'] as const)(
+    'retries a level-triggered catch-up until delivery succeeds, then treats a %s payout as paid for the UTC day',
+    catchUpRetry,
+  );
 
   it('continues catch-up eligibility without reading gifts when the account has no username', async () => {
     const store: WalletTransferStore = {

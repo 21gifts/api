@@ -1877,7 +1877,7 @@ test('Function: fetchBtcUsdSpot — empty stats skip USD conversion', async ({ r
   expect(body.totalUsd).toBe('0.00');
 });
 
-test('Function: usdToMsat — Fond conversion is off when its signer is unset', async ({
+test('Function: usdToMsat — default boot cannot reach conversion because the Fond signer is unset', async ({
   request,
 }) => {
   const res = await request.post('/fond/payouts/00000000-0000-4000-8000-000000000001/invoice');
@@ -5178,13 +5178,15 @@ test('Function: startWalletTransferWorker — default boot serves HTTP', async (
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: latestTodayMediaPostId — GET /me exposes the server payout fact', async ({
+test('Function: latestTodayMediaPostId — default member stops at verify before the media lookup', async ({
   request,
 }) => {
   const member = await memberSession(request);
   const me = await request.get('/me', { headers: { authorization: member.authorization } });
   expect(me.status()).toBe(200);
-  expect(await me.json()).toHaveProperty('grantPayoutToday');
+  expect(await me.json()).toMatchObject({
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
 });
 
 test('Function: loadFundingPayoutToday — GET /me exposes one payout explanation', async ({

@@ -159,16 +159,19 @@ describe('debugDbRoutes', () => {
       accountId: '00000000-0000-4000-8000-000000000001',
       createdAt: 1,
     });
-    const debugStore = store({
-      listTables: () =>
-        Promise.resolve([
+    const listTables = vi.fn((allowlist?: readonly string[]) =>
+      Promise.resolve(
+        [
           { name: 'account', rowCount: 1 },
           { name: 'wallet_balance_snapshot', rowCount: 2 },
           { name: 'wallet_payment', rowCount: 3 },
           { name: 'wallet_transfer', rowCount: 4 },
           { name: 'wallet_token_transaction', rowCount: 5 },
-        ]),
-    });
+        ].filter((table) => allowlist === undefined || allowlist.includes(table.name)),
+      ),
+    );
+    const readPage = vi.fn(store().readPage);
+    const debugStore = store({ listTables, readPage });
     const client = new Hono().route(
       '/debug/db',
       debugDbRoutes({
@@ -189,6 +192,12 @@ describe('debugDbRoutes', () => {
         { name: 'wallet_token_transaction', rowCount: 5 },
       ],
     });
+    expect(listTables).toHaveBeenCalledWith([
+      'wallet_balance_snapshot',
+      'wallet_payment',
+      'wallet_transfer',
+      'wallet_token_transaction',
+    ]);
     const refused = await client.request('/debug/db?table=account', {
       headers: { authorization: 'Bearer member-session' },
     });
@@ -197,6 +206,12 @@ describe('debugDbRoutes', () => {
       headers: { authorization: 'Bearer member-session' },
     });
     expect(wallet.status).toBe(200);
+    expect(readPage).toHaveBeenCalledWith('wallet_transfer', null, [
+      'wallet_balance_snapshot',
+      'wallet_payment',
+      'wallet_transfer',
+      'wallet_token_transaction',
+    ]);
   });
 
   it('rejects lower member roles, expired sessions, and non-GET member access', async () => {

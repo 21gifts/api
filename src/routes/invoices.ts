@@ -363,6 +363,43 @@ async function welcomeGiftOwed(
   );
 }
 
+type WelcomeExceptionRequest = Pick<
+  IssueGiftInvoiceInput,
+  'amountMsat' | 'amountUsd' | 'comment' | 'messageId' | 'groupMessageId'
+>;
+
+function canonicalWelcomeRequest(input: WelcomeExceptionRequest): boolean {
+  return (
+    input.comment === 'Welcome' &&
+    input.messageId === undefined &&
+    input.groupMessageId === undefined &&
+    input.amountUsd === '1.00'
+  );
+}
+
+/** Shared fail-closed shop-payment exception for welcome preflight and issue. */
+async function welcomeShopPaymentException(
+  fetchImpl: FetchFn,
+  welcomeOwed: () => Promise<boolean>,
+  input?: WelcomeExceptionRequest,
+): Promise<boolean> {
+  if (input !== undefined && !canonicalWelcomeRequest(input)) return false;
+  if (!(await welcomeOwed())) return false;
+  let spot: string | null;
+  try {
+    spot = await fetchBtcUsdSpot(fetchImpl);
+  } catch {
+    spot = null;
+  }
+  const oneDollarMsat = spot === null ? null : usdToMsat('1.00', spot);
+  if (oneDollarMsat === null) return false;
+  return (
+    input === undefined ||
+    BigInt(input.amountMsat) * 100n <=
+      BigInt(oneDollarMsat) * BigInt(100 + WELCOME_AMOUNT_SPOT_TOLERANCE_PERCENT)
+  );
+}
+
 /**
  * Whether an account has at least one live top-level forum row that is not
  * the auto-created profile note. Replies do not count.
@@ -827,33 +864,25 @@ async function issueGiftInvoiceLocked(
     });
     return welcomed;
   };
-  const canonicalWelcomeRequest =
-    input.comment === 'Welcome' &&
-    input.messageId === undefined &&
-    input.groupMessageId === undefined &&
-    amountUsd === '1.00';
+  const welcomeRequest: WelcomeExceptionRequest = {
+    amountMsat,
+    ...(amountUsd === undefined ? {} : { amountUsd }),
+    ...(input.comment === undefined ? {} : { comment: input.comment }),
+    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+    ...(input.groupMessageId === undefined ? {} : { groupMessageId: input.groupMessageId }),
+  };
+  const canonicalWelcome = canonicalWelcomeRequest(welcomeRequest);
   let serverPayoutKind: 'welcome' | undefined;
   if (
-    canonicalWelcomeRequest &&
-    roleAtLeast(account.role, 'verified') &&
-    !(await welcomeRefused())
+    await welcomeShopPaymentException(
+      deps.fetchImpl,
+      async () => roleAtLeast(account.role, 'verified') && !(await welcomeRefused()),
+      welcomeRequest,
+    )
   ) {
-    let spot: string | null;
-    try {
-      spot = await fetchBtcUsdSpot(deps.fetchImpl);
-    } catch {
-      spot = null;
-    }
-    const oneDollarMsat = spot === null ? null : usdToMsat('1.00', spot);
-    if (
-      oneDollarMsat !== null &&
-      BigInt(amountMsat) * 100n <=
-        BigInt(oneDollarMsat) * BigInt(100 + WELCOME_AMOUNT_SPOT_TOLERANCE_PERCENT)
-    ) {
-      serverPayoutKind = input.serverPayoutKind ?? 'welcome';
-    }
+    serverPayoutKind = input.serverPayoutKind ?? 'welcome';
   }
-  const genuineWelcome = serverPayoutKind === 'welcome' && canonicalWelcomeRequest;
+  const genuineWelcome = serverPayoutKind === 'welcome' && canonicalWelcome;
 
   const { eligible } = await loadPayoutEligibility(
     fundingStore,
@@ -1117,14 +1146,16 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ eligible: false, status: 'none' }, 200);
       }
       const nowMs = deps.now();
-      const welcomeOwed = await welcomeGiftOwed(deps, account);
+      const welcomeException = await welcomeShopPaymentException(deps.fetchImpl, () =>
+        welcomeGiftOwed(deps, account),
+      );
       const { grant, eligible } = await loadPayoutEligibility(
         fundingStore,
         deps.authStore,
         account,
         nowMs,
         deps.recoveryShareRequiredFrom ?? null,
-        welcomeOwed ? undefined : deps.walletTransfers,
+        welcomeException ? undefined : deps.walletTransfers,
       );
       return c.json({ eligible, status: ownerFundingStatus(grant, nowMs) }, 200);
     })

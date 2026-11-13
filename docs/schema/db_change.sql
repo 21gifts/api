@@ -14,8 +14,7 @@
 -- Secret columns keep their sha256 hash. The no-op comparison still happens on
 -- the raw images before redaction. The log itself
 -- rejects UPDATE, DELETE, and TRUNCATE at runtime. migrateDbChangeSchema drops
--- that trigger once to remove the retired wallet_token_transaction.payload
--- field from historical before/after images and hash view_key values that still match a live
+-- that trigger once to hash view_key values that still match a live
 -- account.view_key, then recreates it. Non-matching rows stay unchanged.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -125,10 +124,6 @@ $dbch$;
 DO $guard$
 BEGIN
   DROP TRIGGER IF EXISTS db_change_immutable ON db_change;
-  UPDATE db_change
-  SET before = before - 'payload', after = after - 'payload'
-  WHERE table_name = 'wallet_token_transaction'
-    AND ((before IS NOT NULL AND before ? 'payload') OR (after IS NOT NULL AND after ? 'payload'));
   UPDATE db_change AS d
   SET after = jsonb_set(
     d.after,

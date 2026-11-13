@@ -32,12 +32,13 @@ export interface DebugDbRouteDeps {
   now?: () => number;
 }
 
-const MEMBER_WALLET_TABLES = new Set([
+const MEMBER_WALLET_TABLE_NAMES = [
   'wallet_balance_snapshot',
   'wallet_payment',
   'wallet_transfer',
   'wallet_token_transaction',
-]);
+] as const;
+const MEMBER_WALLET_TABLES = new Set<string>(MEMBER_WALLET_TABLE_NAMES);
 
 function bearer(header: string | undefined): string | null {
   if (header === undefined || !header.startsWith('Bearer ')) return null;
@@ -93,16 +94,18 @@ export function debugDbRoutes(deps: DebugDbRouteDeps): Hono {
     }
     try {
       if (table === undefined || table === '') {
-        const tables = (await store.listTables()).filter(
-          (entry) => !memberAccess || MEMBER_WALLET_TABLES.has(entry.name),
-        );
+        const tables = await store.listTables(memberAccess ? MEMBER_WALLET_TABLE_NAMES : undefined);
         logEvent('debug.db.listed', { count: tables.length });
         return c.json({ tables }, 200);
       }
       if (memberAccess && !MEMBER_WALLET_TABLES.has(table)) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const page = await store.readPage(table, cursor ?? null);
+      const page = await store.readPage(
+        table,
+        cursor ?? null,
+        memberAccess ? MEMBER_WALLET_TABLE_NAMES : undefined,
+      );
       if (page === undefined) {
         return c.json({ error: 'Not found' }, 404);
       }

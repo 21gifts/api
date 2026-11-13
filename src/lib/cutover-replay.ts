@@ -412,6 +412,7 @@ export async function replayPayoutWindow(
       nowMs,
       deps.recoveryShareRequiredFrom,
       deps.walletTransfers,
+      day,
     );
     const ineligible = notEligibleDetail(
       account,

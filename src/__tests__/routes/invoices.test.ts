@@ -4554,6 +4554,7 @@ describe('GET /invoices/eligible', () => {
   it('keeps an unwelcomed verified member eligible for the welcome preflight without a shop payment', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
+    mockedSpot.mockResolvedValueOnce('100000');
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
@@ -4562,6 +4563,33 @@ describe('GET /invoices/eligible', () => {
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
+  });
+
+  it('requires a shop payment in the welcome preflight when the spot is unavailable', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+  });
+
+  it('requires a shop payment in the welcome preflight when the spot lookup throws', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    mockedSpot.mockRejectedValueOnce(new Error('down'));
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
   });
 
   it('still requires a shop payment in eligible after the account received its welcome gift', async () => {

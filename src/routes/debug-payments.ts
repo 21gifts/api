@@ -365,6 +365,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       if (address === null) {
         return c.json({ error: 'No Lightning address' }, 409);
       }
+      const day = utcDayKey(message.createdAt.getTime());
       let payout;
       try {
         payout = await loadPayoutEligibility(
@@ -374,6 +375,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
           deps.now(),
           deps.recoveryShareRequiredFrom ?? null,
           deps.walletTransfers,
+          day,
         );
       } catch {
         logEvent('debug.spend_ping.failed', { messageId });
@@ -392,7 +394,6 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         logEvent('debug.spend_ping.skipped', { messageId, reason: 'no_media' });
         return c.json({ error: 'Message has no media' }, 409);
       }
-      const day = utcDayKey(message.createdAt.getTime());
       if (day > utcDayKey(deps.now())) {
         return c.json({ error: 'Message is not from today' }, 409);
       }

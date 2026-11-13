@@ -229,8 +229,10 @@ function quoteIdentifier(identifier: string): string {
  * loan schedule and converted to canonical parts. A schedule that cannot be
  * reconstructed refuses the merge without writes. Parts from both identities
  * are then moved without changing their immutable part indexes.
- * Viewer-sourced histories follow `wallet_payment`: only duplicate transfer
- * ids or token hashes for the same wallet on the survivor are collapsed,
+ * Viewer-sourced histories follow `wallet_payment`: duplicate transfer ids or
+ * token hashes for the same wallet reconcile the earliest first observation
+ * with the mutable state from the latest observation, and duplicate sync rows
+ * keep the latest full-sync time,
  * transfer self-counterparty account caches are cleared while the attributed
  * public-key list (including a self-transfer's own key) is retained, and every
  * remaining history and full-sync row moves to the surviving account.
@@ -1066,6 +1068,26 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     await tx.query(
+      `UPDATE wallet_transfer AS dst
+       SET direction = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.direction ELSE dst.direction END,
+           type = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.type ELSE dst.type END,
+           status = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END,
+           amount_sats = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.amount_sats ELSE dst.amount_sats END,
+           counterparty_pubkey = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.counterparty_pubkey ELSE dst.counterparty_pubkey END,
+           counterparty_pubkeys = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.counterparty_pubkeys ELSE dst.counterparty_pubkeys END,
+           counterparty_account_id = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.counterparty_account_id ELSE dst.counterparty_account_id END,
+           spark_invoice = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.spark_invoice ELSE dst.spark_invoice END,
+           transfer_created_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transfer_created_at ELSE dst.transfer_created_at END,
+           transfer_updated_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transfer_updated_at ELSE dst.transfer_updated_at END,
+           first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at),
+           last_seen_at = GREATEST(src.last_seen_at, dst.last_seen_at)
+       FROM wallet_transfer AS src
+       WHERE src.account_id = $1 AND dst.account_id = $2
+         AND dst.wallet_pubkey = src.wallet_pubkey
+         AND dst.transfer_id = src.transfer_id`,
+      accountParams,
+    );
+    await tx.query(
       `DELETE FROM wallet_transfer AS src
        WHERE src.account_id = $1
          AND EXISTS (
@@ -1077,6 +1099,25 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     await tx.query(
+      `UPDATE wallet_token_transaction AS dst
+       SET token_identifier = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.token_identifier ELSE dst.token_identifier END,
+           direction = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.direction ELSE dst.direction END,
+           amount = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.amount ELSE dst.amount END,
+           counterparty_pubkeys = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.counterparty_pubkeys ELSE dst.counterparty_pubkeys END,
+           spark_invoices = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.spark_invoices ELSE dst.spark_invoices END,
+           type = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.type ELSE dst.type END,
+           status = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END,
+           transaction_created_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transaction_created_at ELSE dst.transaction_created_at END,
+           transaction_expiry_at = CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.transaction_expiry_at ELSE dst.transaction_expiry_at END,
+           first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at),
+           last_seen_at = GREATEST(src.last_seen_at, dst.last_seen_at)
+       FROM wallet_token_transaction AS src
+       WHERE src.account_id = $1 AND dst.account_id = $2
+         AND dst.wallet_pubkey = src.wallet_pubkey
+         AND dst.transaction_hash = src.transaction_hash`,
+      accountParams,
+    );
+    await tx.query(
       `DELETE FROM wallet_token_transaction AS src
        WHERE src.account_id = $1
          AND EXISTS (
@@ -1085,6 +1126,14 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
              AND dst.wallet_pubkey = src.wallet_pubkey
              AND dst.transaction_hash = src.transaction_hash
          )`,
+      accountParams,
+    );
+    await tx.query(
+      `UPDATE wallet_transfer_sync AS dst
+       SET last_full_sync_at = GREATEST(src.last_full_sync_at, dst.last_full_sync_at)
+       FROM wallet_transfer_sync AS src
+       WHERE src.account_id = $1 AND dst.account_id = $2
+         AND dst.wallet_pubkey = src.wallet_pubkey`,
       accountParams,
     );
     await tx.query(

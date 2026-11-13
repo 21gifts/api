@@ -77,6 +77,24 @@ describe('loadPayoutEligibility', () => {
     expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-30', '2026-10-01');
   });
 
+  it('uses an explicit booked UTC day for a historical payout payment window', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        '2026-09-29',
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: true });
+    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-28', '2026-09-29');
+  });
+
   it('does not read shop transfers when the grant already refuses', async () => {
     const s = stores(undefined, true);
     const hasShopPayment = vi.fn(async () => true);

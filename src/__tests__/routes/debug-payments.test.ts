@@ -1637,12 +1637,13 @@ describe('debugPaymentsRoutes', () => {
     it('replays every event of the window onto its own day', async () => {
       const { store, auth, fundingStore } = await seeded();
       const spendPing = spendPingMock();
+      const hasShopPayment = vi.fn(async () => true);
       const app = mount(store, 'secret', {
         spendPing,
         auth,
         fundingStore,
         now: WINDOW_NOW,
-        walletTransfers: { hasShopPayment: async () => true },
+        walletTransfers: { hasShopPayment },
       });
       const res = await post(app, WINDOW);
       expect(res.status).toBe(200);
@@ -1660,6 +1661,7 @@ describe('debugPaymentsRoutes', () => {
       expect(spendPing.pingOnDay.mock.calls).toEqual([
         ['ada@example.test', MESSAGE_ID, '2026-09-29', 'admitted', 'daily'],
       ]);
+      expect(hasShopPayment).toHaveBeenCalledWith(ACCOUNT_ID, '2026-09-28', '2026-09-29');
       const replayed = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.replayed');
       expect(replayed).toMatchObject({ dryRun: false, events: 2, paid: 1 });
     });

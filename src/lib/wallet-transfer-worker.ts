@@ -330,7 +330,7 @@ async function syncWallet(
     const account = await deps.auth.getAccount(wallet.accountId);
     if (
       account !== undefined &&
-      !(await hasDailyPayoutToday(deps.gifts, account.username, today))
+      !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
     ) {
       const nowMs = deps.now();
       const payout = await loadPayoutEligibility(
@@ -516,7 +516,7 @@ function successfulCatchUpPingsFor(store: WalletTransferStore, today: string): S
   return successes;
 }
 
-async function hasDailyPayoutToday(
+async function hasRecordedPayoutToday(
   gifts: Pick<GiftStore, 'listOutbound'> | undefined,
   username: string | null | undefined,
   today: string,
@@ -527,7 +527,9 @@ async function hasDailyPayoutToday(
   return (await gifts.listOutbound()).some((gift) => {
     const recipient = gift.recipientWosUser.trim().toLowerCase().split('@')[0]!;
     return (
-      gift.kind === 'daily' && recipient === handle && utcDayKey(gift.paidAt.getTime()) === today
+      (gift.kind === 'daily' || gift.kind === 'welcome') &&
+      recipient === handle &&
+      utcDayKey(gift.paidAt.getTime()) === today
     );
   });
 }

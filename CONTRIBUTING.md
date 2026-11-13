@@ -158,6 +158,8 @@ LNURL-pay;
 `inGrantProgramToday` and `loadPayoutEligibility`, which decide only for a member with a verified
 wallet (`LNURL_SERVER_URL`) on a payout path (spend invoices need `SPEND_API_TOKEN`), so their tests
 assert `GET /invoices/eligible` 503 unconfigured;
+`latestTodayMediaPostId`, which is reached only after an account passes the payout gates; the
+default boot has no verified wallet and its member `GET /me` stops at `verify` before the media lookup;
 `pingTodayMedia`, which pings only with a configured spend ping (`SPEND_URL` and `SPEND_API_TOKEN`)
 after a staff decision or a stored recovery share, so its test asserts `POST /funding/trial` 401
 without a session;
@@ -172,6 +174,8 @@ off on the default boot (its test asserts the window body's 503 `Spend ping is n
 provider, so their tests assert the empty `GET /fx/spot` result for the pinned refused
 `BTC_FIAT_SPOT_URL`;
 `satsToUsdCents`, `usdCentsToFiatCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list;
+`usdToMsat`, whose default-boot gift list is empty, whose Fond payout route is unmounted without
+`PAYOUT_SIGNER=fond`, and whose invoice path needs the pinned-off spend/LNURL configuration;
 `PostgresShopIdentityStore` and `migrateShopIdentitySchema`, which need `DATABASE_URL`;
 `signEventForShop`, which only the Nostr worker calls (it needs `DATABASE_URL`, `NOSTR_NSEC_KEK`, and a publisher);
 `shopOcpPlaceInput`, `runOcpPlaceOutboxPass`, `runOcpPhotoOutboxPass`, `ocpPhotoSetHash`, `queueAllShopPlaces`, `queueAllShopPhotos`, and `startOcpOutboxWorker`, which need the OpenCryptoPay map target (`OCP_MAP_BASE_URL` + `OCP_PLACE_INGEST_TOKEN`);
@@ -336,7 +340,9 @@ database.
 
 - **The 21.gifts applications have public surfaces.** The forum and its notes,
   forum gifts, hearts, credit requests and their repayments, shops, and the
-  aggregate Fond summary are public. The private parts of the app stay private
+  Fond's activity and transactions are public. `GET /fond/summary` is the
+  existing Fond surface; a public Fond transaction list is separate work. The
+  private parts of the app stay private
   as decided elsewhere:
   conversations, notifications, the contact mailbox, a shop's own till
   (`GET /pos`), and notes hidden by staff. A gift inside a conversation
@@ -364,35 +370,39 @@ The wallet rule in detail:
   - What a payer needs to pay a member is public: the receiving address
     `<username>@<host>` and the invoice (BOLT11 or Spark) issued for one
     payment.
-  - The Fond account is a member account with role `fond`. Its only public
-    wallet surface is the aggregate totals of `GET /fond/summary`, not every
-    Fond transaction.
+  - The Fond is a 21.gifts application. Its activity and transactions are
+    public; `GET /fond/summary` is the existing surface, and a public
+    transaction list is separate work.
   - `GET /wallets/stats` publishes totals over all wallets that never name or
     single out one account.
   - The owner's previous-wallet lookup (`GET /me/previous-wallets`) returns
     the stored `sparkPubkey`, `sparkAddress`, and `replacedAt`, plus the soft
     balance a public Spark explorer already shows (or `null`), only to the
     owner.
-- **Completely visible to 21.gifts.** Every wallet event **must** be stored in
-  this api's database: every payment in either direction and of every method
-  (Spark, Lightning, on-chain, token), every status it passes through
-  (`pending`, `completed`, `failed`), with amount, fee, time, method,
-  counterparty, and invoice or destination, and every balance sync. Nothing a
-  wallet does may be missing, filtered, sampled, aggregated away, or kept only
-  in the browser. A wallet event that reaches no table is a defect. A change
-  that drops a field, a status, or a method from storage is a defect.
+- **Completely visible to 21.gifts.** Every wallet event the api observes
+  **must** be stored in this api's database: every observed payment in either
+  direction and of every method (Spark, Lightning, on-chain, token), every
+  status observed by the operator poll (`pending`, `completed`, `failed`),
+  with the facts its source supplies, and every observed balance sync. Polling
+  cannot observe a transition that begins and ends between polls and does not
+  claim to capture it. `wallet_transfer` stores each status the poll observes;
+  append-only `db_change` keeps every observed status change. No observed
+  wallet event may be filtered, sampled, aggregated away, or kept only in the
+  browser.
   The server-verified ledger is split deliberately: `wallet_transfer` stores
   every operator-observed Bitcoin value movement and
   `wallet_token_transaction` stores every complete operator-observed token
   transaction. Spark transfers do not contain a fee or a Lightning/on-chain
   destination. `wallet_payment` is the app report that adds those app-side
   details (fee, destination, invoice, memo and method). The viewer ledger and
-  `wallet_payment` together are the complete wallet record; a reviewer must
+  `wallet_payment` together are the complete record of the facts those two
+  sources observe or report; a reviewer must
   not demand invented always-null viewer columns or accept either half being
   omitted.
   21.gifts reads every current and previous wallet directly through the Spark
   viewer identity key that the wallet grants. The viewer is 21.gifts' own
-  read-only key and can never move funds. Its mnemonic is stored only as an
+  read-only key and can never move funds. By explicit product-owner decision,
+  its mnemonic is stored only as an
   AES-GCM envelope in `spark_viewer_key.viewer_mnemonic_ciphertext` under
   `NOSTR_NSEC_KEK`, with the KEK id in `viewer_kek_id`, and is never stored in
   plaintext. Breez SDK Spark private mode stays on.
@@ -401,11 +411,12 @@ The wallet rule in detail:
   (`DEBUG_TOKEN`, `DEBUG_READ_TOKEN`) **must** be able to read every stored
   wallet record of every member, including `wallet_token_transaction`. A member reads only their own wallet data. No
   other role and no other member reads it.
-- **Never member key material.** Completeness never includes member secrets:
+- **Never key material means member key material.** Completeness never includes member secrets:
   the recovery phrase, seed, PRF output, preimages, and any private or spending
-  key are never collected, stored, or logged. The deployment's read-only
-  viewer mnemonic is never stored in plaintext and is never logged or
-  returned.
+  key are never collected, stored, or logged. By explicit product-owner
+  decision, the deployment's own viewer key is stored only encrypted under
+  `NOSTR_NSEC_KEK`; it is never stored in plaintext, logged, or returned, and
+  it can never move funds.
 
 ### Tests
 

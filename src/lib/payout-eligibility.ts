@@ -32,6 +32,8 @@ import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
  *   `null` when it is not required yet.
  * @param walletTransfers - Server-verified transfer store. Production callers
  *   pass it; omitted legacy callers retain their pre-viewer behavior.
+ * @param shopPaymentUtcDay - UTC payout day whose day and preceding day form
+ *   the shop-payment window. Defaults to the UTC day of `nowMs`.
  * @returns The stored grant (for `effectiveStatus`) and {@link eligibleToday}
  *   with the share fact.
  * @throws Whatever either store throws.
@@ -43,6 +45,7 @@ export async function loadPayoutEligibility(
   nowMs: number,
   recoveryShareRequiredFrom: string | null,
   walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>,
+  shopPaymentUtcDay = utcDayKey(nowMs),
 ): Promise<{
   grant: FundingGrant | undefined;
   eligible: boolean;
@@ -67,8 +70,8 @@ export async function loadPayoutEligibility(
   if (otherwiseEligible && walletTransfers !== undefined) {
     shopPaymentRecent = await walletTransfers.hasShopPayment(
       account.id,
-      addUtcDays(utcDayKey(nowMs), -1),
-      utcDayKey(nowMs),
+      addUtcDays(shopPaymentUtcDay, -1),
+      shopPaymentUtcDay,
     );
   }
   return {

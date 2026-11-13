@@ -1124,17 +1124,50 @@ describe('mergeAccounts', () => {
     const transferCollision = queries.findIndex((query) =>
       query.text.includes('DELETE FROM wallet_transfer AS src'),
     );
+    const transferReconcile = queries.findIndex((query) =>
+      query.text.includes('UPDATE wallet_transfer AS dst'),
+    );
+    expect(transferReconcile).toBeGreaterThan(walletCollision);
+    expect(transferReconcile).toBeLessThan(transferCollision);
+    expect(queries[transferReconcile]?.text).toContain(
+      'CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END',
+    );
+    expect(queries[transferReconcile]?.text).toContain(
+      'first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at)',
+    );
+    expect(queries[transferReconcile]?.text).toContain(
+      'last_seen_at = GREATEST(src.last_seen_at, dst.last_seen_at)',
+    );
     expect(transferCollision).toBeGreaterThan(walletCollision);
     expect(transferCollision).toBeLessThan(catalog);
     expect(queries[transferCollision]?.params).toEqual([FROM, INTO]);
     expect(queries[transferCollision]?.text).toContain('dst.transfer_id = src.transfer_id');
     expect(queries[transferCollision]?.text).toContain('dst.wallet_pubkey = src.wallet_pubkey');
-    expect(
-      queries.some((query) => query.text.includes('DELETE FROM wallet_token_transaction AS src')),
-    ).toBe(true);
-    expect(
-      queries.some((query) => query.text.includes('DELETE FROM wallet_transfer_sync AS src')),
-    ).toBe(true);
+    const tokenReconcile = queries.findIndex((query) =>
+      query.text.includes('UPDATE wallet_token_transaction AS dst'),
+    );
+    const tokenDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM wallet_token_transaction AS src'),
+    );
+    expect(tokenReconcile).toBeGreaterThan(transferCollision);
+    expect(tokenReconcile).toBeLessThan(tokenDelete);
+    expect(queries[tokenReconcile]?.text).toContain(
+      'CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END',
+    );
+    expect(queries[tokenReconcile]?.text).toContain(
+      'first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at)',
+    );
+    const syncReconcile = queries.findIndex((query) =>
+      query.text.includes('UPDATE wallet_transfer_sync AS dst'),
+    );
+    const syncDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM wallet_transfer_sync AS src'),
+    );
+    expect(syncReconcile).toBeGreaterThan(tokenDelete);
+    expect(syncReconcile).toBeLessThan(syncDelete);
+    expect(queries[syncReconcile]?.text).toContain(
+      'last_full_sync_at = GREATEST(src.last_full_sync_at, dst.last_full_sync_at)',
+    );
     const walletSelfCounterparty = queries.findIndex((query) =>
       query.text.includes('SET counterparty_account_id = NULL'),
     );
