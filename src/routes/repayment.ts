@@ -1577,6 +1577,9 @@ async function repaymentAmountLocked(
             }),
             remainingBillSlots,
           );
+          if (replacement.openBillExceedsAmount) {
+            return c.json({ error: OPEN_PAYMENT_BODY }, 409);
+          }
           if (
             replacement.parts.length === remainingBillSlots &&
             replacement.usedUnits < remainingUnits

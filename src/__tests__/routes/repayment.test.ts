@@ -2555,6 +2555,36 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
+  it('rejects a replacement whose open bill exceeds the remaining prepay amount', async () => {
+    const { app, messages, clock } = await loanSetup({
+      termDays: 1,
+      refuseUsername: 'giver0',
+      givers: [
+        { id: WALLET_GIVER, sats: 10, wallet: true },
+        { id: NO_WALLET, sats: 10, wallet: true },
+      ],
+    });
+    const openBill = {
+      ...openPartAttempt(10, 10n, 10n, new Date(clock.now)),
+      authorAccountId: NO_WALLET,
+      lightningAddress: 'giver1@example.test',
+      description: repaymentPartDescription(0, NO_WALLET, 0, 10n, 10n),
+    };
+    await messages.recordInvoiceAttempt(openBill);
+
+    const response = await app.request(`/messages/${CREDIT}/repayment`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${AUTHOR}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ amount: '5' }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'A payment for this share is still open' });
+    expect(await messages.listInvoiceAttemptsForMessage(CREDIT)).toEqual([
+      expect.objectContaining(openBill),
+    ]);
+  });
+
   it('formats fiat amounts for a prepay share moved to waiting', async () => {
     await withNip57(async () => {
       const { app } = await loanSetup({
