@@ -302,6 +302,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     heartStats: boom,
     heartSenders: boom,
     listInvoiceAttempts: boom,
+    listInvoiceAttemptsForMessage: boom,
     listRecentOkInvoiceAttempts: boom,
     recordZapIngest: boom,
     listZapIngests: boom,
@@ -327,10 +328,20 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listBlockedPubkeyRows: boom,
     listUnattributedIndexedReceipts: (_limit, _before) => boom(),
     listCreditPayers: boom,
+    previewCreditPayerSnapshot: boom,
     sumUnassignedCreditSats: boom,
     listRepayments: boom,
     listLoanLedger: boom,
     markRepaymentPaid: boom,
+    listRepaymentParts: boom,
+    withAccountLocks: async () => boom(),
+    withMessageLock: async () => boom(),
+    withRepaymentLock: async () => boom(),
+    markRepaymentPartPaid: boom,
+    isClaimOnlyRepaymentInvoice: boom,
+    settleRepaymentPayment: boom,
+    settleRepaymentPaymentLocked: boom,
+    closeCredit: boom,
     ...overrides,
   };
 }
@@ -376,6 +387,54 @@ describe('GET /messages', () => {
     const res = await mount(await rulesStore()).request('/messages', { headers: AUTH });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  it('exposes goalClosedAt on closed credits in list and single-message JSON only', async () => {
+    const closedId = '16161616-1616-4161-8161-161616161616';
+    const openId = '17171717-1717-4171-8171-171717171717';
+    const closedAt = new Date('2026-11-12T09:10:11.000Z');
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: closedId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'closed credit',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalClosedAt: closedAt,
+      },
+      {
+        id: openId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'open credit',
+        createdAt: new Date(now() + 1),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+      },
+    ]);
+    const app = mount(await rulesStore(), messageStore);
+
+    const listed = await app.request('/messages', { headers: AUTH });
+    expect(listed.status).toBe(200);
+    const listBody = (await listed.json()) as {
+      messages: Array<{ id: string; goalClosedAt?: string }>;
+    };
+    expect(listBody.messages.find((row) => row.id === closedId)?.goalClosedAt).toBe(
+      closedAt.toISOString(),
+    );
+    expect(listBody.messages.find((row) => row.id === openId)).not.toHaveProperty('goalClosedAt');
+
+    const single = await app.request(`/messages/${closedId}`);
+    expect(single.status).toBe(200);
+    expect(await single.json()).toMatchObject({
+      id: closedId,
+      goalRepayable: true,
+      goalClosedAt: closedAt.toISOString(),
+    });
   });
 
   it('drops missing-file video notes from the list', async () => {
@@ -4509,6 +4568,7 @@ describe('POST /messages', () => {
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      listInvoiceAttemptsForMessage: (messageId) => base.listInvoiceAttemptsForMessage(messageId),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
@@ -4516,10 +4576,25 @@ describe('POST /messages', () => {
       findOkInvoiceByDescription: (messageId, description) =>
         base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      previewCreditPayerSnapshot: (messageId, currency, through) =>
+        base.previewCreditPayerSnapshot(messageId, currency, through),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
+      listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, () => run(store)),
+      withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+      withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+        base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+      markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+        base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
+      settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
+      closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -4660,6 +4735,7 @@ describe('POST /messages', () => {
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      listInvoiceAttemptsForMessage: (messageId) => base.listInvoiceAttemptsForMessage(messageId),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
@@ -4667,10 +4743,25 @@ describe('POST /messages', () => {
       findOkInvoiceByDescription: (messageId, description) =>
         base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      previewCreditPayerSnapshot: (messageId, currency, through) =>
+        base.previewCreditPayerSnapshot(messageId, currency, through),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
+      listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, () => run(store)),
+      withMessageLock: (messageId, run) => base.withMessageLock(messageId, run),
+      withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+        base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+      markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+        base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
+      settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
+      closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -5000,6 +5091,251 @@ describe('POST /messages/:id/invoice', () => {
       expect(await hit()).toBe(200);
     });
     expect(await hit()).toBe(429);
+  });
+
+  it('does not let an account merge delete the payer during a paused invoice mint', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    const messageId = '57575757-5757-4757-8757-575757575757';
+    await messageStore.create({
+      id: messageId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    let releaseMint!: () => void;
+    const mintGate = new Promise<void>((resolve) => {
+      releaseMint = resolve;
+    });
+    let mintPaused!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      mintPaused = resolve;
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://example.test/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      mintPaused();
+      await mintGate;
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const app = mount(authStore, messageStore, {
+      nostrKek: kek,
+      lnurlServer: LNURL_SERVER,
+      fetchImpl,
+    });
+
+    await withNip57True(async () => {
+      const mint = app.request(`/messages/${messageId}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      await paused;
+      let mergeEntered = false;
+      const merge = messageStore.withAccountLocks(['acc'], async () => {
+        mergeEntered = true;
+        await authStore.deleteAccount('acc');
+      });
+      await Promise.resolve();
+      expect(mergeEntered).toBe(false);
+
+      releaseMint();
+      expect((await mint).status).toBe(200);
+      await merge;
+      expect(mergeEntered).toBe(true);
+    });
+  });
+
+  it('does not persist a minted invoice when the payer is gone at the final re-read', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    const messageId = '58585858-5858-4858-8858-585858585858';
+    await messageStore.create({
+      id: messageId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://example.test/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      await authStore.deleteAccount('acc');
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const app = mount(authStore, messageStore, {
+      nostrKek: kek,
+      lnurlServer: LNURL_SERVER,
+      fetchImpl,
+    });
+
+    await withNip57True(async () => {
+      const response = await app.request(`/messages/${messageId}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+
+      expect(response.status).toBe(401);
+      expect(await messageStore.listInvoiceAttemptsForMessage(messageId)).toEqual([]);
+    });
+  });
+
+  it('rechecks a payer deleted by the merge that held the account lock first', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    let releaseMerge!: () => void;
+    const mergeGate = new Promise<void>((resolve) => {
+      releaseMerge = resolve;
+    });
+    let mergeEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      mergeEntered = resolve;
+    });
+    const held = messageStore.withAccountLocks(['acc'], async () => {
+      mergeEntered();
+      await mergeGate;
+    });
+    await entered;
+    const withAccountLocks = messageStore.withAccountLocks.bind(messageStore);
+    let invoiceLockRequested!: () => void;
+    const requested = new Promise<void>((resolve) => {
+      invoiceLockRequested = resolve;
+    });
+    vi.spyOn(messageStore, 'withAccountLocks').mockImplementation((accountIds, run) => {
+      invoiceLockRequested();
+      return withAccountLocks(accountIds, run);
+    });
+    const app = mount(authStore, messageStore);
+    const request = app.request('/messages/59595959-5959-4959-8959-595959595959/invoice', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    await requested;
+    await authStore.deleteAccount('acc');
+    releaseMerge();
+    await held;
+
+    expect((await request).status).toBe(401);
+  });
+
+  it('locks an uppercase direct gift id until mint storage finishes before close', async () => {
+    const { parseNostrKek } = await import('@/lib/nostr/kek');
+    const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
+    const kek = parseNostrKek('11'.repeat(32));
+    const authStore = await namedStore('Ada');
+    await ensureAccountNostrKey(authStore, 'acc', kek);
+    const messageStore = new InMemoryMessageStore();
+    const messageId = 'a6565656-5656-4656-8656-565656565656';
+    await messageStore.create({
+      id: messageId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'collecting credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId: 'ee'.repeat(32),
+      goalSats: 1_000,
+      goalRepayable: true,
+      goalTermDays: 2,
+      goalFundedAt: null,
+    });
+    let entered = (): void => undefined;
+    const mintStarted = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release = (): void => undefined;
+    const mintGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return Response.json({
+          callback: 'https://example.test/lnurlp/callback',
+          minSendable: 1000,
+          maxSendable: 10_000_000_000,
+          allowsNostr: true,
+          nostrPubkey: 'aa'.repeat(32),
+        });
+      }
+      entered();
+      await mintGate;
+      return Response.json({ pr: 'lnbc21n1test' });
+    };
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messageStore,
+        authStore,
+        now,
+        nostrKek: kek,
+        lnurlServer: LNURL_SERVER,
+        fetchImpl,
+        postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
+        invoiceLimiter: new InvoiceRateLimiter(),
+      }),
+    );
+    await withNip57True(async () => {
+      const issue = app.request(`/messages/${messageId.toUpperCase()}/invoice`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21 }),
+      });
+      await mintStarted;
+      let closeFinished = false;
+      const close = messageStore.closeCredit(messageId, new Date(now())).then((result) => {
+        closeFinished = true;
+        return result;
+      });
+      await Promise.resolve();
+      expect(closeFinished).toBe(false);
+      release();
+      expect((await issue).status).toBe(200);
+      expect(await messageStore.listInvoiceAttemptsForMessage(messageId)).toHaveLength(1);
+      expect((await close)?.closedAt).toEqual(new Date(now()));
+    });
   });
 
   it('does not consume the invoice limiter on a missing id', async () => {
@@ -6789,6 +7125,7 @@ describe('POST /messages/:id/invoice', () => {
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
       heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
+      listInvoiceAttemptsForMessage: (messageId) => base.listInvoiceAttemptsForMessage(messageId),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
       listZapIngests: (limit) => base.listZapIngests(limit),
@@ -6796,10 +7133,25 @@ describe('POST /messages/:id/invoice', () => {
       findOkInvoiceByDescription: (messageId, description) =>
         base.findOkInvoiceByDescription(messageId, description),
       listCreditPayers: (messageId) => base.listCreditPayers(messageId),
+      previewCreditPayerSnapshot: (messageId, currency, through) =>
+        base.previewCreditPayerSnapshot(messageId, currency, through),
       sumUnassignedCreditSats: (messageId) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId) => base.listRepayments(messageId),
       listLoanLedger: (accountId) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row) => base.markRepaymentPaid(row),
+      listRepaymentParts: (messageId) => base.listRepaymentParts(messageId),
+      withAccountLocks: (accountIds, run) => base.withAccountLocks(accountIds, () => run(store)),
+      withMessageLock: (messageId, run) => base.withMessageLock(messageId, () => run(store)),
+      withRepaymentLock: (messageId, dayIndex, recipientAccountId, run) =>
+        base.withRepaymentLock(messageId, dayIndex, recipientAccountId, run),
+      markRepaymentPartPaid: (row) => base.markRepaymentPartPaid(row),
+      isClaimOnlyRepaymentInvoice: (paymentHash, identity) =>
+        base.isClaimOnlyRepaymentInvoice(paymentHash, identity),
+      settleRepaymentPayment: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPayment(paymentHash, receiptEventId, claimedAt, settlement),
+      settleRepaymentPaymentLocked: (paymentHash, receiptEventId, claimedAt, settlement) =>
+        base.settleRepaymentPaymentLocked(paymentHash, receiptEventId, claimedAt, settlement),
+      closeCredit: (messageId, at) => base.closeCredit(messageId, at),
       findOkInvoiceByPr: (pr) => base.findOkInvoiceByPr(pr),
       updateZapReceiptGift: (...args: Parameters<InMemoryMessageStore['updateZapReceiptGift']>) =>
         base.updateZapReceiptGift(...args),
@@ -10811,6 +11163,155 @@ describe('DELETE /messages/:id', () => {
     expect(res.status).toBe(204);
   });
 
+  it('deletes a credit whose only share is fully settled by parts', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const creditId = '22222222-2222-4222-8222-222222222222';
+    await messages.create({
+      id: creditId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'settled credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: new Date('2099-01-01T00:00:00.000Z'),
+    });
+    await messages.recordZapReceipt('credit-gift', creditId, 10, null);
+    await messages.updateZapReceiptGift('credit-gift', { payerAccountId: 'giver' });
+    await messages.markRepaymentPartPaid({
+      messageId: creditId,
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      partIndex: 0,
+      units: 10n,
+      sats: 10,
+      shareUnits: 10n,
+      paidAt: new Date(now()),
+    });
+
+    const response = await mount(auth, messages).request(`/messages/${creditId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(response.status).toBe(204);
+  });
+
+  it('deletes an early-closed fiat credit whose frozen schedule has no positive units', async () => {
+    const { auth, messages } = await staffStore('founder');
+    for (const [creditId, goalAmount] of [
+      ['24242424-2424-4242-8242-242424242424', '1.00'],
+      ['25252525-2525-4252-8252-252525252525', null],
+    ] as const) {
+      await messages.create({
+        id: creditId,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'debt-free fiat credit',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 100,
+        goalCurrency: 'USD',
+        goalAmount,
+        goalRepayable: true,
+        goalTermDays: 1,
+        goalFundedAt: null,
+      });
+      await messages.recordZapReceipt(`unassigned-fiat-gift-${creditId}`, creditId, 10, null);
+      await messages.closeCredit(creditId, new Date('2099-01-01T00:00:00.000Z'));
+
+      expect((await messages.getById(creditId))?.goalDebtFrozen).toBe(true);
+      const response = await mount(auth, messages).request(`/messages/${creditId}`, {
+        method: 'DELETE',
+        headers: AUTH,
+      });
+
+      expect(response.status).toBe(204);
+    }
+  });
+
+  it('keeps an early-closed fiat credit open only for its positive frozen remainder', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const creditId = '26262626-2626-4262-8262-262626262626';
+    await messages.create({
+      id: creditId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'frozen fiat remainder',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 100,
+      goalCurrency: 'USD',
+      goalAmount: '1.00',
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: null,
+    });
+    await messages.recordZapReceipt('priced-fiat-gift', creditId, 10, {
+      usd: '1.00',
+      chf: null,
+      eur: null,
+      php: null,
+    });
+    await messages.updateZapReceiptGift('priced-fiat-gift', { payerAccountId: 'giver' });
+    await messages.closeCredit(creditId, new Date('2099-01-01T00:00:00.000Z'));
+
+    const open = await mount(auth, messages).request(`/messages/${creditId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(open.status).toBe(409);
+
+    await messages.markRepaymentPartPaid({
+      messageId: creditId,
+      dayIndex: 0,
+      recipientAccountId: 'giver',
+      partIndex: 0,
+      units: 100n,
+      sats: 10,
+      shareUnits: 100n,
+      paidAt: new Date(now()),
+    });
+    const settled = await mount(auth, messages).request(`/messages/${creditId}`, {
+      method: 'DELETE',
+      headers: AUTH,
+    });
+    expect(settled.status).toBe(204);
+  });
+
+  it('uses the payer as the recorded author of a closed external credit invoice', async () => {
+    const { auth, messages } = await staffStore('founder');
+    const creditId = '23232323-2323-4232-8232-232323232323';
+    await messages.create({
+      id: creditId,
+      accountId: null,
+      name: 'External',
+      text: 'closed external credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalClosedAt: new Date(now()),
+      authorPubkey: '23'.repeat(32),
+    });
+    const response = await mount(auth, messages).request(`/messages/${creditId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 1 }),
+    });
+    expect(response.status).toBe(409);
+    expect((await messages.listInvoiceAttempts(1))[0]).toMatchObject({
+      result: 'credit_closed',
+      authorAccountId: 'acc',
+    });
+  });
+
   it('returns 204 when already tagged', async () => {
     const { auth, messages } = await staffStore('founder');
     expect(await messages.markDeleted(NOTE_ID, new Date(now() - 1_000), 'acc')).toBe(true);
@@ -10898,6 +11399,21 @@ describe('DELETE /messages/:id', () => {
 
   it('hides the note from public reads, list, invoice, and inReplyTo', async () => {
     const { auth, messages } = await staffStore('founder');
+    const closedHiddenId = '33333333-3333-4333-8333-333333333333';
+    await messages.create({
+      id: closedHiddenId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'closed hidden credit',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 10,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalClosedAt: new Date(now()),
+    });
+    expect(await messages.markDeleted(closedHiddenId, new Date(now()), 'acc')).toBe(true);
     const mp4Bytes = new Uint8Array(32);
     mp4Bytes.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
     const videoId = '22222222-2222-4222-8222-222222222222';
@@ -10943,6 +11459,19 @@ describe('DELETE /messages/:id', () => {
         })
       ).status,
     ).toBe(404);
+    const closedHiddenInvoice = await app.request(`/messages/${closedHiddenId}/invoice`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(closedHiddenInvoice.status).toBe(404);
+    expect(await closedHiddenInvoice.json()).toEqual({ error: 'Not found' });
+    expect(
+      (await messages.listInvoiceAttempts(2)).find((row) => row.messageId === closedHiddenId),
+    ).toMatchObject({
+      messageId: closedHiddenId,
+      result: 'not_found',
+    });
     expect(
       (
         await app.request('/messages', {

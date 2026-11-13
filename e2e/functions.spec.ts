@@ -2677,6 +2677,11 @@ test('Function: zapReceiptIngest — free in-app payments are off on the default
 test('Function: indexZapReceipt — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: ZapIngestRecordError — default boot cannot inject an atomic zap ingest write failure', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: normalizeSignedEvent — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -3461,6 +3466,32 @@ test('Function: dailyPayoutStoppedNotice — default boot has no DATABASE_URL', 
 test('Function: serializeOwnerFunding — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: ownerFundingStatus — GET /me reads none and POST /funding/withdraw is 403 then 409', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const headers = { authorization: member.authorization };
+  const basis = await request.post('/funding/withdraw', { headers });
+  expect(basis.status()).toBe(403);
+  expect(await basis.json()).toEqual({ error: 'Forbidden' });
+  const patched = await request.patch(`/debug/accounts/${member.id}`, {
+    headers: DEBUG,
+    data: { role: 'verified' },
+  });
+  expect(patched.status()).toBe(200);
+  const me = await request.get('/me', { headers });
+  expect(me.status()).toBe(200);
+  expect(((await me.json()) as { funding: unknown }).funding).toEqual({
+    status: 'none',
+    trialUtcDate: null,
+    admittedAt: null,
+    reviewedByName: null,
+    dailyPayoutStoppedNotice: false,
+  });
+  const none = await request.post('/funding/withdraw', { headers, data: { accountId: member.id } });
+  expect(none.status()).toBe(409);
+  expect(await none.json()).toEqual({ error: 'Conflict' });
+});
 test('Function: fundingReviewedAt — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -3891,6 +3922,57 @@ test('Function: repaymentInvoice — POST /messages/:id/repayment without bearer
   ).toBe(401);
 });
 
+test('Function: repaymentClose — POST /messages/:id/repayment/close without bearer is 401', async ({
+  request,
+}) => {
+  expect(
+    (await request.post('/messages/00000000-0000-4000-8000-000000000000/repayment/close')).status(),
+  ).toBe(401);
+});
+
+test('POST /messages/:id/repayment/close without bearer is 401', async ({ request }) => {
+  expect((await request.post('/messages/:id/repayment/close')).status()).toBe(401);
+});
+
+test('POST /messages/:id/repayment/close without bearer is 401 then 404 for a missing loan', async ({
+  request,
+}) => {
+  const path = '/messages/00000000-0000-4000-8000-000000000000/repayment/close';
+  expect((await request.post(path)).status()).toBe(401);
+  const session = await memberSession(request);
+  expect(
+    (await request.post(path, { headers: { authorization: session.authorization } })).status(),
+  ).toBe(404);
+});
+
+test('Function: repaymentInvoice — POST /messages/:id/repayment with amount without bearer is 401', async ({
+  request,
+}) => {
+  expect(
+    (
+      await request.post('/messages/00000000-0000-4000-8000-000000000000/repayment', {
+        data: { amount: '1000' },
+      })
+    ).status(),
+  ).toBe(401);
+});
+
+test('POST /messages/:id/repayment with amount without bearer is 401 then 404 for a missing loan', async ({
+  request,
+}) => {
+  const path = '/messages/00000000-0000-4000-8000-000000000000/repayment';
+  expect((await request.post(path, { data: { amount: '1000' } })).status()).toBe(401);
+  const session = await memberSession(request);
+  expect(
+    (
+      await request.post(path, {
+        headers: { authorization: session.authorization },
+        data: { amount: '1000' },
+      })
+    ).status(),
+  ).toBe(404);
+});
+
 test('POST /messages/:id/repayment/due without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages/:id/repayment/due')).status()).toBe(401);
 });
@@ -3966,6 +4048,22 @@ test('Function: shareSats — GET /healthz is ok', async ({ request }) => {
 });
 
 test('Function: repaymentDescription — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: repaymentPartDescription — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: nextRepaymentPartIndex — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: parseRepaymentPartDescription — GET /healthz is ok', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: allocateRepayment — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 

@@ -290,6 +290,44 @@ describe('GET /me', () => {
     expect(funded.funding.dailyPayoutStoppedNotice).toBe(true);
   });
 
+  it('returns a withdrawn grant exactly like no grant, notice off, for a listed account', async () => {
+    const store = new InMemoryAuthStore();
+    const id = '14101481-f421-42ef-9d37-6df3ccb6b25f';
+    await store.createAccount({
+      id,
+      linkingKey: LINKING_KEY,
+      role: 'verified',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: id, createdAt: 1_000_000 });
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: id,
+        status: 'withdrawn',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: id,
+        trialUtcDate: null,
+        admittedAt: null,
+        note: null,
+      },
+    ]);
+    const res = await mount(store, { fundingStore }).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { funding: unknown }).funding).toEqual({
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
+    });
+  });
+
   it('returns hasPosted false when the only live row is the profile note', async () => {
     const store = await seededStore();
     const existing = await store.getAccount('acc');

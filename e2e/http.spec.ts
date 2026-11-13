@@ -1519,6 +1519,23 @@ test('POST /funding/apply without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /funding/withdraw without bearer is 401', async ({ request }) => {
+  const res = await request.post('/funding/withdraw');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('GET /funding/withdrawals is operator-only', async ({ request }) => {
+  const none = await request.get('/funding/withdrawals');
+  expect(none.status()).toBe(401);
+  expect(await none.json()).toEqual({ error: 'Unauthorized' });
+  const operator = await request.get('/funding/withdrawals', { headers: DEBUG });
+  expect(operator.status()).toBe(200);
+  expect(Array.isArray(((await operator.json()) as { withdrawals: unknown }).withdrawals)).toBe(
+    true,
+  );
+});
+
 test('GET /funding/applications without bearer is 401', async ({ request }) => {
   const res = await request.get('/funding/applications');
   expect(res.status()).toBe(401);

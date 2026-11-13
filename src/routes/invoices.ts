@@ -27,7 +27,7 @@ import type { MessageStore } from '@/lib/message-store';
 import { fiatFromUsd, normalizeAmountUsd, type FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
-import { effectiveStatus } from '@/lib/funding';
+import { ownerFundingStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { checkSpendAuth } from '@/lib/spend-auth';
@@ -90,6 +90,7 @@ export interface InvoiceRouteDeps {
     | 'create'
     | 'listPostsByAccount'
     | 'markDeleted'
+    | 'withMessageLock'
   >;
   /** Clock, epoch milliseconds. */
   now: () => number;
@@ -400,7 +401,7 @@ export interface IssueGiftInvoiceInput {
 /** Issue action result: an invoice, or the HTTP error the spend route returned. */
 export type IssueGiftInvoiceResult =
   | { ok: true; invoice: GiftInvoice }
-  | { ok: false; status: 400 | 403 | 409 | 502 | 503; error: string };
+  | { ok: false; status: 400 | 403 | 409 | 502 | 503; error: string; code?: 'credit_closed' };
 
 /** Proof action result: a paid body, or the HTTP error the spend route returned. */
 export type ProveGiftInvoiceResult =
@@ -696,14 +697,30 @@ async function finishPaid(
 
 /**
  * Issue one gift invoice from a request body, exactly as `POST /invoices`
- * did before the extraction. Validation, passkey/funding/post/welcome gates,
- * LNURL-pay fetch, BOLT11 check, and invoice persistence stay in this order.
+ * did before the extraction. After validation, a locked live top-level closed
+ * credit is refused before passkey/funding/welcome/post/platform gates.
+ * LNURL-pay fetch, BOLT11 check, and invoice persistence follow those gates.
  *
  * @param deps - Action collaborators.
  * @param input - Request fields.
  * @returns The issued invoice, or the HTTP error to return.
  */
 export async function issueGiftInvoice(
+  deps: GiftActionDeps,
+  input: IssueGiftInvoiceInput,
+): Promise<IssueGiftInvoiceResult> {
+  const messageId = input.messageId;
+  if (messageId !== undefined && MESSAGE_ID_RE.test(messageId)) {
+    const canonicalInput = { ...input, messageId: messageId.toLowerCase() };
+    return deps.messageStore.withMessageLock(messageId, (lockedStore) =>
+      issueGiftInvoiceLocked({ ...deps, messageStore: lockedStore }, canonicalInput),
+    );
+  }
+  return issueGiftInvoiceLocked(deps, input);
+}
+
+/** Issue an invoice after the optional forum message lock has been acquired. */
+async function issueGiftInvoiceLocked(
   deps: GiftActionDeps,
   input: IssueGiftInvoiceInput,
 ): Promise<IssueGiftInvoiceResult> {
@@ -735,6 +752,23 @@ export async function issueGiftInvoice(
   const amountMsat = input.amountMsat;
   if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {
     return { ok: false, status: 400, error: 'Expected a JSON body with address and amountMsat' };
+  }
+
+  const forumMessage =
+    input.messageId === undefined ? undefined : await deps.messageStore.getById(input.messageId);
+  if (
+    forumMessage !== undefined &&
+    forumMessage.deletedAt === null &&
+    forumMessage.parentId === null &&
+    forumMessage.goalClosedAt instanceof Date
+  ) {
+    logEvent('invoice.credit_closed', { messageId: forumMessage.id });
+    return {
+      ok: false,
+      status: 409,
+      error: 'This credit no longer collects',
+      code: 'credit_closed',
+    };
   }
 
   const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
@@ -777,7 +811,7 @@ export async function issueGiftInvoice(
 
   let resolvedGroupMessageId: string | undefined;
   if (input.messageId !== undefined) {
-    const message = await deps.messageStore.getById(input.messageId);
+    const message = forumMessage;
     if (
       message === undefined ||
       message.deletedAt !== null ||
@@ -1024,7 +1058,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         nowMs,
         deps.recoveryShareRequiredFrom ?? null,
       );
-      return c.json({ eligible, status: effectiveStatus(grant, nowMs) }, 200);
+      return c.json({ eligible, status: ownerFundingStatus(grant, nowMs) }, 200);
     })
     .get('/posted', async (c) => {
       const denied = authGate(
@@ -1121,7 +1155,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         },
       );
       if (!result.ok) {
-        return c.json({ error: result.error }, result.status);
+        return c.json(
+          result.code === undefined
+            ? { error: result.error }
+            : { error: result.error, code: result.code },
+          result.status,
+        );
       }
       return c.json(
         {

@@ -43,12 +43,46 @@ async function createMergeAccount(
  */
 function mergeDbForStore(
   store: InMemoryAuthStore,
-  options: { bothGrants?: boolean; shopPaymentOpen?: boolean } = {},
+  options: {
+    bothGrants?: boolean;
+    shopPaymentOpen?: boolean;
+    repaymentUnavailable?: boolean;
+  } = {},
 ): MergeDb {
   return {
     async begin(run) {
       return run({
         async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+          if (text.includes('SELECT legacy.message_id')) {
+            return (
+              options.repaymentUnavailable === true
+                ? [
+                    {
+                      message_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+                      day_index: 0,
+                      recipient_account_id: MERGE_FROM,
+                      due_sats: 10,
+                      paid_at: new Date(0),
+                      goal_currency: 'USD',
+                      goal_amount: null,
+                      goal_term_days: 1,
+                    },
+                  ]
+                : []
+            ) as T[];
+          }
+          if (text.includes('WITH named AS') && text.includes('message_credit_payer_snapshot')) {
+            return [
+              {
+                account_id: MERGE_FROM,
+                sats: 10,
+                usd: null,
+                chf: null,
+                eur: null,
+                php: null,
+              },
+            ] as T[];
+          }
           if (text.includes('FOR UPDATE')) {
             const rows: Array<{
               id: string;
@@ -1504,6 +1538,20 @@ describe('debugRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'A payment is already open' });
     expect(await store.getAccount(MERGE_FROM)).toBeDefined();
+  });
+
+  it('POST /debug/accounts/merge returns 409 when legacy repayment units are unavailable', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store, { repaymentUnavailable: true }),
+    });
+
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Repayment history is unavailable' });
   });
 
   it('POST /debug/accounts/merge returns the moved message count', async () => {

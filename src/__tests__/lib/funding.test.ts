@@ -13,7 +13,9 @@ import {
   fundingGrantRequired,
   fundingReviewedAt,
   grantPlaces,
+  fundingReviewedByName,
   inGrantProgramToday,
+  ownerFundingStatus,
   serializeOwnerFunding,
 } from '@/lib/funding';
 
@@ -228,6 +230,7 @@ describe('effectiveStatus and eligibleToday matrix', () => {
       { status: 'trial', trialUtcDate: GATE_TOMORROW, effective: 'trial', eligibleVerified: false },
       { status: 'admitted', trialUtcDate: null, effective: 'admitted', eligibleVerified: true },
       { status: 'rejected', trialUtcDate: null, effective: 'rejected', eligibleVerified: false },
+      { status: 'withdrawn', trialUtcDate: null, effective: 'withdrawn', eligibleVerified: false },
     ];
     for (const row of cases) {
       const stored = grant({ status: row.status, trialUtcDate: row.trialUtcDate });
@@ -488,5 +491,84 @@ describe('RECOVERY_SHARE_REQUIRED_FROM', () => {
       expect(eligibleToday(NON_BASIS, undefined, START_DAY_BEGIN, true, null)).toBe(false);
       expect(eligibleToday('basis', admitted, DAY_BEFORE_END, true, FROM)).toBe(false);
     });
+  });
+});
+
+describe('withdrawn grant', () => {
+  const WITHDRAWN_AT = Date.parse('2026-10-20T08:00:00.000Z');
+  const AFTER_GATE_MS = Date.parse('2026-10-20T12:00:00.000Z');
+  const AFTER_GATE_TODAY = '2026-10-20';
+
+  function withdrawn(overrides: Partial<FundingGrant> = {}): FundingGrant {
+    return grant({
+      status: 'withdrawn',
+      decidedAt: WITHDRAWN_AT,
+      decidedBy: 'acc',
+      note: 'kept',
+      ...overrides,
+    });
+  }
+
+  it('effectiveStatus reports withdrawn for staff', () => {
+    expect(effectiveStatus(withdrawn(), AFTER_GATE_MS)).toBe('withdrawn');
+  });
+
+  it('ownerFundingStatus maps withdrawn to none and keeps every other status', () => {
+    expect(ownerFundingStatus(withdrawn(), AFTER_GATE_MS)).toBe('none');
+    expect(ownerFundingStatus(undefined, AFTER_GATE_MS)).toBe('none');
+    expect(ownerFundingStatus(grant({ status: 'rejected' }), AFTER_GATE_MS)).toBe('rejected');
+    expect(ownerFundingStatus(grant({ status: 'admitted' }), AFTER_GATE_MS)).toBe('admitted');
+    expect(ownerFundingStatus(trial('2026-10-19'), AFTER_GATE_MS)).toBe('pending');
+  });
+
+  it('is not in the grant program and not eligible, even with a stale trial day or admission', () => {
+    const stale = withdrawn({ trialUtcDate: AFTER_GATE_TODAY, admittedAt: WITHDRAWN_AT });
+    expect(inGrantProgramToday(withdrawn(), AFTER_GATE_MS)).toBe(false);
+    expect(inGrantProgramToday(stale, AFTER_GATE_MS)).toBe(false);
+    expect(eligibleToday(NON_BASIS, withdrawn(), AFTER_GATE_MS, true, null)).toBe(false);
+    expect(eligibleToday('fond', stale, AFTER_GATE_MS, true, SHARE_FROM)).toBe(false);
+  });
+
+  it('serializes on the owner wire exactly like no grant, with the notice off', () => {
+    const none = {
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
+    };
+    expect(serializeOwnerFunding(NON_BASIS, withdrawn(), AFTER_GATE_MS, 'Mod', 'acc')).toEqual(
+      none,
+    );
+    expect(
+      serializeOwnerFunding(NON_BASIS, withdrawn(), AFTER_GATE_MS, 'Mod', NOTICE_IDS[0]),
+    ).toEqual(none);
+    expect(dailyPayoutStoppedNotice(NOTICE_IDS[0], withdrawn(), AFTER_GATE_MS)).toBe(false);
+    expect(serializeOwnerFunding('basis', withdrawn(), AFTER_GATE_MS, null, 'acc')).toBeNull();
+  });
+
+  it('shows no member-card admission stamp or reviewer', async () => {
+    const stale = withdrawn({ admittedAt: WITHDRAWN_AT });
+    expect(fundingReviewedAt(stale, AFTER_GATE_MS)).toBeNull();
+    let looked = false;
+    const name = await fundingReviewedByName(stale, AFTER_GATE_MS, () => {
+      looked = true;
+      return Promise.resolve({ name: 'Ada' });
+    });
+    expect(name).toBeNull();
+    expect(looked).toBe(false);
+  });
+
+  it('does not count toward the round places', () => {
+    const round = { ...CURRENT_GRANT_ROUND, startsAtMs: 0, places: 2 };
+    expect(
+      countRoundAdmissions(
+        [
+          grant({ accountId: 'a', status: 'admitted', admittedAt: WITHDRAWN_AT }),
+          withdrawn({ accountId: 'b', admittedAt: WITHDRAWN_AT }),
+        ],
+        round,
+      ),
+    ).toBe(1);
   });
 });

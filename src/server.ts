@@ -184,8 +184,8 @@ export interface AppDeps {
   debugToken?: string;
   /**
    * Read-only bearer for `GET /debug/db`, `GET /debug/accounts/:id/wallet`,
-   * `GET /funding/goal`, the operator staff GET reads, and
-   * `GET /funding/daily-roster/links`
+   * `GET /funding/goal`, the operator staff GET reads,
+   * `GET /funding/daily-roster/links`, and `GET /funding/withdrawals`
    * (default: `process.env.DEBUG_READ_TOKEN`).
    * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
    * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without

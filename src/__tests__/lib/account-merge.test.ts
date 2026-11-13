@@ -5,6 +5,7 @@ const FROM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const INTO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const PROFILE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const FINAL = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 
 interface RecordedQuery {
   text: string;
@@ -32,6 +33,8 @@ interface FakeShopRow {
 }
 
 interface FakeDatabaseOptions {
+  fromId?: string;
+  intoId?: string;
   platform?: boolean;
   bothGrants?: boolean;
   shopPayments?: readonly { id: string }[];
@@ -51,6 +54,92 @@ interface FakeDatabaseOptions {
   pendingCharges?: readonly { id: string }[];
   /** Rows of the survivor's open shop payment beside the merged account's pending charge. */
   openBesideCharge?: readonly { id: string }[];
+  /** Legacy full-share repayments read before the first merge write. */
+  legacyRepayments?: readonly {
+    message_id: string;
+    day_index: number;
+    recipient_account_id: string;
+    due_sats: number;
+    paid_at: Date;
+    goal_currency: string | null;
+    goal_amount: string | null;
+    goal_term_days: number | null;
+    goal_debt_frozen?: boolean;
+  }[];
+  /** Original credit payers used to reconstruct each legacy share. */
+  repaymentPayers?: readonly {
+    account_id: string;
+    sats: number;
+    usd: string | null;
+    chf: string | null;
+    eur: string | null;
+    php: string | null;
+    debt_frozen?: boolean;
+    goal_currency?: string | null;
+    snapshot_currency?: string | null;
+    snapshot_units?: string | number | null;
+  }[];
+  /** Anonymous sats returned when legacy debt reconstruction asks for them. */
+  unassignedRepaymentSats?: number;
+  /** Canonical parts returned while choosing a legacy conversion index. */
+  repaymentParts?: readonly {
+    day_index: number;
+    recipient_account_id: string;
+    part_index: number;
+    units: number;
+    sats: number;
+    paid_at: Date;
+  }[];
+  /** Invoice attempts returned while choosing a legacy conversion index. */
+  repaymentInvoiceAttempts?: readonly {
+    id: string;
+    created_at: Date;
+    message_id: string;
+    payer_account_id: string;
+    author_account_id: string;
+    amount_sats: number;
+    lightning_address: string | null;
+    zap_request: null;
+    result: string;
+    http_status: number;
+    pr: string | null;
+    payment_hash: string | null;
+    description: string | null;
+    description_hash: string | null;
+    is_nip57_invoice: boolean;
+    lnurl_response: null;
+  }[];
+  /** Repayable credits where both identities gave and some repayment settled. */
+  repaymentConflicts?: readonly { message_id: string }[];
+  /** Successful historical repayment invoices involving either identity. */
+  historicalRepaymentInvoices?: readonly {
+    message_id: string;
+    author_account_id: string;
+    amount_sats: number;
+    description: string;
+  }[];
+  /** Exact legacy-settlement lookup used by historical invoice checks. */
+  exactLegacySettlement?: boolean;
+  /** Loan fields used to reconstruct a converted legacy settlement. */
+  repaymentContext?: {
+    goal_currency: string | null;
+    goal_amount: string | null;
+    goal_term_days: number | null;
+    goal_debt_frozen: boolean;
+  };
+  /** Existing source/survivor invoices or settled rows with the same immutable part key. */
+  partKeyCollisions?: readonly { message_id: string }[];
+  /** Successful repayment invoice candidates on affected source-funded credits. */
+  openRepaymentInvoices?: readonly {
+    message_id: string;
+    author_account_id: string;
+    amount_sats: number;
+    payment_hash: string | null;
+    description: string;
+    created_at: Date;
+    pr: string;
+    payment_claimed: boolean;
+  }[];
 }
 
 function fakeDatabase(options: FakeDatabaseOptions = {}): {
@@ -58,6 +147,8 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
   queries: RecordedQuery[];
   begins: { n: number };
 } {
+  const fromId = options.fromId ?? FROM;
+  const intoId = options.intoId ?? INTO;
   const queries: RecordedQuery[] = [];
   const begins = { n: 0 };
   const db: MergeDb = {
@@ -66,6 +157,62 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
       return run({
         async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
           queries.push({ text, params });
+          if (text.includes('SELECT affected.message_id')) {
+            return [PROFILE, OTHER].map((message_id) => ({
+              message_id,
+            })) as T[];
+          }
+          if (
+            text.includes('SELECT legacy.message_id') &&
+            text.includes('FROM message_repayment AS legacy')
+          ) {
+            return (options.legacyRepayments ?? []) as T[];
+          }
+          if (text.includes('WITH payers AS') && text.includes('message_credit_payer_snapshot')) {
+            return (options.repaymentPayers ?? []) as T[];
+          }
+          if (text.includes('payer_account_id IS NULL') && text.includes('SUM(r.sats)')) {
+            return [{ sats: options.unassignedRepaymentSats ?? 0 }] as T[];
+          }
+          if (
+            text.includes('FROM message_repayment_part') &&
+            text.includes('ORDER BY day_index ASC')
+          ) {
+            return (options.repaymentParts ?? []) as T[];
+          }
+          if (text.includes('FROM message_invoice') && text.includes('WHERE message_id = $1')) {
+            return (options.repaymentInvoiceAttempts ?? []) as T[];
+          }
+          if (text.includes('FROM message_invoice AS historical')) {
+            return (options.historicalRepaymentInvoices ?? []) as T[];
+          }
+          if (
+            text.includes('FROM message AS credit') &&
+            text.includes('FROM message_repayment AS settled')
+          ) {
+            return (options.repaymentConflicts ?? []) as T[];
+          }
+          if (
+            text.includes('WITH part_invoices AS') &&
+            text.includes('survivor.part_index = source.part_index')
+          ) {
+            return (options.partKeyCollisions ?? []) as T[];
+          }
+          if (text.includes('FROM message_invoice AS invoice')) {
+            return (options.openRepaymentInvoices ?? []) as T[];
+          }
+          if (text.includes('FROM message_repayment AS settled') && text.includes('AS settled')) {
+            return [{ settled: options.exactLegacySettlement === true }] as T[];
+          }
+          if (
+            text.includes('SELECT goal_currency') &&
+            text.includes('goal_debt_frozen') &&
+            text.includes('FROM message')
+          ) {
+            return (
+              options.repaymentContext === undefined ? [] : [options.repaymentContext]
+            ) as T[];
+          }
           if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
             return [];
           }
@@ -84,13 +231,13 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
             }
             return [
               {
-                id: FROM,
+                id: fromId,
                 is_platform: options.platform === true,
                 role: options.fromRole ?? 'verified',
                 profile_message_id: options.fromProfile ?? null,
               },
               {
-                id: INTO,
+                id: intoId,
                 is_platform: options.intoPlatform === true,
                 role: options.intoRole ?? 'verified',
                 profile_message_id: options.intoProfile ?? null,
@@ -172,6 +319,768 @@ function doomedReadIndex(queries: readonly RecordedQuery[]): number {
 }
 
 describe('mergeAccounts', () => {
+  it('takes account then message locks and moves canonical parts without changing indexes', async () => {
+    const { db, queries } = fakeDatabase();
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+
+    const snapshot = queries.findIndex((query) =>
+      query.text.includes('INSERT INTO message_credit_payer_snapshot'),
+    );
+    const parts = queries.findIndex(
+      (query) =>
+        query.text.includes('UPDATE message_repayment_part') &&
+        query.text.includes('SET recipient_account_id = $2::uuid'),
+    );
+    const accountDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM account WHERE id = $1'),
+    );
+    const accountAdvisoryLocks = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => query.params[0] === 21002101);
+    const affectedMessageQuery = queries.findIndex((query) =>
+      query.text.includes('SELECT affected.message_id'),
+    );
+    const messageLocks = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => query.params[0] === 21002102);
+    const accountRowLocks = queries.findIndex(
+      (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
+    );
+    const repaymentRowLocks = queries.findIndex(
+      (query) =>
+        query.text.includes('FROM message_repayment AS legacy') &&
+        query.text.includes('FOR UPDATE OF legacy, message'),
+    );
+
+    expect(accountAdvisoryLocks.map(({ index }) => index)).toEqual([0, 1]);
+    expect(accountAdvisoryLocks.map(({ query }) => query.params)).toEqual([
+      [21002101, FROM],
+      [21002101, INTO],
+    ]);
+    expect(affectedMessageQuery).toBeGreaterThan(accountAdvisoryLocks[1]!.index);
+    expect(queries[affectedMessageQuery]?.text).toContain('ORDER BY affected.message_id');
+    expect(messageLocks.map(({ query }) => query.params)).toEqual([
+      [21002102, PROFILE],
+      [21002102, OTHER],
+    ]);
+    expect(messageLocks[0]!.index).toBeGreaterThan(affectedMessageQuery);
+    expect(accountRowLocks).toBeGreaterThan(messageLocks[1]!.index);
+    expect(repaymentRowLocks).toBeGreaterThan(accountRowLocks);
+    expect(snapshot).toBeGreaterThanOrEqual(0);
+    expect(queries[snapshot]?.text).toContain('SUM(units)::bigint');
+    expect(queries[snapshot]?.text).toContain('ON CONFLICT (message_id, account_id) DO UPDATE');
+    expect(parts).toBeGreaterThan(snapshot);
+    expect(queries[parts]?.text).toContain('SET recipient_account_id = $2');
+    expect(queries[parts]?.text).not.toContain('part_index');
+    expect(parts).toBeLessThan(accountDelete);
+    expect(queries[parts]?.params).toEqual([FROM, INTO]);
+  });
+
+  it('locks invoice and receipt messages for either identity before account rows', async () => {
+    const { db, queries } = fakeDatabase();
+
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+
+    const accountAdvisoryLocks = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => query.params[0] === 21002101);
+    const affectedMessageQuery = queries.findIndex((query) =>
+      query.text.includes('SELECT affected.message_id'),
+    );
+    const messageLocks = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => query.params[0] === 21002102);
+    const accountLocks = queries.findIndex(
+      (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
+    );
+    expect(accountAdvisoryLocks[1]!.index).toBeLessThan(affectedMessageQuery);
+    expect(queries[affectedMessageQuery]?.text).toContain('SELECT id AS message_id FROM message');
+    expect(queries[affectedMessageQuery]?.text).toContain(
+      'account_id = $1::uuid OR account_id = $2::uuid',
+    );
+    expect(queries[affectedMessageQuery]?.text).toContain('SELECT message_id FROM message_invoice');
+    expect(queries[affectedMessageQuery]?.text).toContain('payer_account_id = $1::uuid');
+    expect(queries[affectedMessageQuery]?.text).toContain('author_account_id = $2::uuid');
+    expect(queries[affectedMessageQuery]?.text).toContain(
+      'SELECT message_id FROM nostr_zap_receipt',
+    );
+    expect(queries[affectedMessageQuery]?.text).toContain(
+      'payer_account_id = $1::uuid OR payer_account_id = $2::uuid',
+    );
+    expect(queries[affectedMessageQuery]?.text).not.toContain('UNION ALL');
+    expect(
+      queries[affectedMessageQuery]?.text.match(/ORDER BY affected\.message_id/g),
+    ).toHaveLength(1);
+    expect(messageLocks[0]!.index).toBeGreaterThan(affectedMessageQuery);
+    expect(messageLocks[1]!.index).toBeLessThan(accountLocks);
+  });
+
+  it('refuses an invoice-or-settlement part-key collision before any write', async () => {
+    const { db, queries } = fakeDatabase({
+      partKeyCollisions: [{ message_id: '33333333-3333-4333-8333-333333333333' }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    const collision = queries.at(-1);
+    const invoiceRefusal = queries.findIndex((query) => query.text.includes('AS payment_claimed'));
+    expect(queries.indexOf(collision as RecordedQuery)).toBeGreaterThan(invoiceRefusal);
+    expect(collision?.text).toContain('FROM message_invoice AS invoice');
+    expect(collision?.text).toContain("invoice.result = 'ok'");
+    expect(collision?.text).toContain('invoice.author_account_id = $1::uuid');
+    expect(collision?.text).toContain('invoice.author_account_id = $2::uuid');
+    expect(collision?.text).toContain('FROM message_repayment_part AS settled');
+    expect(collision?.text).toContain('UNION ALL');
+    expect(collision?.text).toContain('survivor.part_index = source.part_index');
+    expect(collision?.params).toEqual([FROM, INTO]);
+    expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
+  });
+
+  it('uses oldest ingests to convert a legacy fiat share before merging', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const { db, queries } = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 5000,
+          paid_at: paidAt,
+          goal_currency: 'USD',
+          goal_amount: '2.00',
+          goal_term_days: 1,
+        },
+      ],
+      repaymentPayers: [
+        { account_id: FROM, sats: 50, usd: '1.00', chf: null, eur: null, php: null },
+        { account_id: INTO, sats: 50, usd: '1.00', chf: null, eur: null, php: null },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+    const converted = queries.find(
+      (query) =>
+        query.text.includes('INSERT INTO message_repayment_part') &&
+        query.text.includes('$4::integer'),
+    );
+    const deleted = queries.find(
+      (query) =>
+        query.text.includes('DELETE FROM message_repayment') && query.params[0] === messageId,
+    );
+    const identityMove = queries.findIndex((query) =>
+      query.text.includes('UPDATE message_repayment_part'),
+    );
+    const canonicalPayers = queries.find((query) => query.text.includes('nostr_zap_ingest'));
+
+    expect(converted?.params).toEqual([messageId, 0, FROM, 0, '100', 5000, paidAt]);
+    expect(converted?.text).toContain('$1::uuid, $2::integer, $3::uuid, $4::integer');
+    expect(converted?.text).toContain('$5::bigint, $6::bigint, $7::timestamptz');
+    expect(canonicalPayers?.text).toContain('ORDER BY created_at ASC, id ASC');
+    expect(canonicalPayers?.text).not.toContain('ORDER BY created_at DESC');
+    expect(canonicalPayers?.params).toEqual([messageId, true, false, null, false]);
+    expect(deleted?.params).toEqual([messageId, 0, FROM]);
+    expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
+  });
+
+  it('allows a second merge after a paid legacy share was converted exactly once', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const legacyAttempt = {
+      id: '99999999-9999-4999-8999-999999999999',
+      created_at: new Date('2026-11-11T11:00:00.000Z'),
+      message_id: messageId,
+      payer_account_id: PROFILE,
+      author_account_id: FROM,
+      amount_sats: 100,
+      lightning_address: null,
+      zap_request: null,
+      result: 'ok',
+      http_status: 200,
+      pr: 'paid-legacy',
+      payment_hash: 'ab'.repeat(32),
+      description: `repay:0:${FROM}`,
+      description_hash: null,
+      is_nip57_invoice: true,
+      lnurl_response: null,
+    } as const;
+    const first = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 100,
+          paid_at: paidAt,
+          goal_currency: 'BTC',
+          goal_amount: '100',
+          goal_term_days: 1,
+          goal_debt_frozen: false,
+        },
+      ],
+      repaymentPayers: [
+        { account_id: FROM, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+      repaymentInvoiceAttempts: [legacyAttempt],
+      historicalRepaymentInvoices: [
+        {
+          message_id: messageId,
+          author_account_id: FROM,
+          amount_sats: 100,
+          description: legacyAttempt.description,
+        },
+      ],
+      exactLegacySettlement: true,
+    });
+    await expect(
+      mergeAccounts(first.db, { from: FROM, into: INTO, verify: 'into' }),
+    ).resolves.toEqual({ ok: true, messages: 1 });
+    expect(
+      first.queries.filter((query) => query.text.includes('INSERT INTO message_repayment_part')),
+    ).toHaveLength(1);
+
+    const movedAttempt = { ...legacyAttempt, author_account_id: INTO };
+    const second = fakeDatabase({
+      fromId: INTO,
+      intoId: FINAL,
+      repaymentParts: [
+        {
+          day_index: 1,
+          recipient_account_id: FINAL,
+          part_index: 0,
+          units: 1,
+          sats: 1,
+          paid_at: paidAt,
+        },
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 0,
+          units: 100,
+          sats: 100,
+          paid_at: paidAt,
+        },
+      ],
+      repaymentInvoiceAttempts: [movedAttempt],
+      historicalRepaymentInvoices: [
+        {
+          message_id: messageId,
+          author_account_id: INTO,
+          amount_sats: 100,
+          description: legacyAttempt.description,
+        },
+      ],
+      repaymentContext: {
+        goal_currency: 'BTC',
+        goal_amount: '100',
+        goal_term_days: 1,
+        goal_debt_frozen: false,
+      },
+      repaymentPayers: [
+        { account_id: INTO, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+    });
+    await expect(
+      mergeAccounts(second.db, { from: INTO, into: FINAL, verify: 'into' }),
+    ).resolves.toEqual({ ok: true, messages: 1 });
+    expect(
+      second.queries.filter((query) => query.text.includes('INSERT INTO message_repayment_part')),
+    ).toHaveLength(0);
+    expect(
+      second.queries.filter((query) => query.text.includes('DELETE FROM message_repayment')),
+    ).toHaveLength(0);
+    expect(second.queries).toContainEqual({
+      text: `UPDATE message_repayment_part
+       SET recipient_account_id = $2::uuid
+       WHERE recipient_account_id = $1::uuid`,
+      params: [INTO, FINAL],
+    });
+
+    const wrongIndex = fakeDatabase({
+      fromId: INTO,
+      intoId: FINAL,
+      repaymentParts: [
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 1,
+          units: 100,
+          sats: 100,
+          paid_at: paidAt,
+        },
+      ],
+      repaymentInvoiceAttempts: [movedAttempt],
+      historicalRepaymentInvoices: [
+        {
+          message_id: messageId,
+          author_account_id: INTO,
+          amount_sats: 100,
+          description: legacyAttempt.description,
+        },
+      ],
+      repaymentContext: {
+        goal_currency: 'BTC',
+        goal_amount: '100',
+        goal_term_days: 1,
+        goal_debt_frozen: false,
+      },
+      repaymentPayers: [
+        { account_id: INTO, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+    });
+    await expect(
+      mergeAccounts(wrongIndex.db, { from: INTO, into: FINAL, verify: 'into' }),
+    ).resolves.toEqual({ ok: false, error: 'repayment_unavailable' });
+    expect(
+      wrongIndex.queries.some((query) =>
+        /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart()),
+      ),
+    ).toBe(false);
+
+    const unavailableUnits = fakeDatabase({
+      fromId: INTO,
+      intoId: FINAL,
+      repaymentParts: [
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 0,
+          units: 100,
+          sats: 100,
+          paid_at: paidAt,
+        },
+      ],
+      repaymentInvoiceAttempts: [movedAttempt],
+      historicalRepaymentInvoices: [
+        {
+          message_id: messageId,
+          author_account_id: INTO,
+          amount_sats: 100,
+          description: legacyAttempt.description,
+        },
+      ],
+      repaymentContext: {
+        goal_currency: 'USD',
+        goal_amount: '2.00',
+        goal_term_days: 1,
+        goal_debt_frozen: false,
+      },
+      repaymentPayers: [
+        { account_id: INTO, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+    });
+    await expect(
+      mergeAccounts(unavailableUnits.db, { from: INTO, into: FINAL, verify: 'into' }),
+    ).resolves.toEqual({ ok: false, error: 'repayment_unavailable' });
+    expect(
+      unavailableUnits.queries.some((query) =>
+        /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart()),
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps an expired part invoice index distinct through legacy conversion and late receipt', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const { db, queries } = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 100,
+          paid_at: paidAt,
+          goal_currency: null,
+          goal_amount: null,
+          goal_term_days: 1,
+        },
+      ],
+      repaymentPayers: [
+        { account_id: FROM, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+      repaymentInvoiceAttempts: [
+        {
+          id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          created_at: new Date('2026-11-10T12:00:00.000Z'),
+          message_id: messageId,
+          payer_account_id: OTHER,
+          author_account_id: FROM,
+          amount_sats: 100,
+          lightning_address: null,
+          zap_request: null,
+          result: 'ok',
+          http_status: 200,
+          pr: 'expired-part-invoice',
+          payment_hash: 'expired-part-hash',
+          description: `repayp:0:${FROM}:0:100:200`,
+          description_hash: null,
+          is_nip57_invoice: true,
+          lnurl_response: null,
+        },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+    const converted = queries.find(
+      (query) =>
+        query.text.includes('INSERT INTO message_repayment_part') && query.params[0] === messageId,
+    );
+    expect(converted?.params).toEqual([messageId, 0, FROM, 1, '100', 100, paidAt]);
+    expect(converted?.text).toContain('$4::integer');
+    expect(
+      queries.filter(
+        (query) =>
+          query.text.includes('FROM message_invoice') &&
+          query.text.includes('WHERE message_id = $1') &&
+          query.params[0] === messageId,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('reconstructs frozen fiat legacy debt from named snapshots without anonymous sats', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const { db, queries } = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: INTO,
+          due_sats: 4000,
+          paid_at: paidAt,
+          goal_currency: 'USD',
+          goal_amount: '9.99',
+          goal_term_days: 1,
+          goal_debt_frozen: true,
+        },
+      ],
+      repaymentPayers: [
+        {
+          account_id: INTO,
+          sats: 40,
+          usd: null,
+          chf: null,
+          eur: null,
+          php: null,
+          debt_frozen: true,
+          goal_currency: 'USD',
+          snapshot_currency: 'USD',
+          snapshot_units: 40,
+        },
+      ],
+      unassignedRepaymentSats: 60,
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+    const converted = queries.find(
+      (query) =>
+        query.text.includes('INSERT INTO message_repayment_part') && query.params[0] === messageId,
+    );
+    expect(converted?.params).toEqual([messageId, 0, INTO, 0, '40', 4000, paidAt]);
+    expect(queries.some((query) => query.text.includes('payer_account_id IS NULL'))).toBe(false);
+  });
+
+  it('refuses a merge without writes when legacy loan units cannot be reconstructed', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const { db, queries } = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 5000,
+          paid_at: new Date('2026-11-11T12:00:00.000Z'),
+          goal_currency: 'USD',
+          goal_amount: null,
+          goal_term_days: 1,
+        },
+      ],
+      repaymentPayers: [{ account_id: FROM, sats: 50, usd: null, chf: null, eur: null, php: null }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    expect(
+      queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+    ).toBe(false);
+
+    const missingShare = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 9,
+          recipient_account_id: FROM,
+          due_sats: 5000,
+          paid_at: new Date('2026-11-11T12:00:00.000Z'),
+          goal_currency: 'USD',
+          goal_amount: '1.00',
+          goal_term_days: 1,
+        },
+      ],
+      repaymentPayers: [
+        { account_id: FROM, sats: 50, usd: '1.00', chf: null, eur: null, php: null },
+      ],
+    });
+    await expect(
+      mergeAccounts(missingShare.db, { from: FROM, into: INTO, verify: 'into' }),
+    ).resolves.toEqual({ ok: false, error: 'repayment_unavailable' });
+    expect(
+      missingShare.queries.some((query) =>
+        /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart()),
+      ),
+    ).toBe(false);
+  });
+
+  it('refuses without writes when both accounts gave to a credit with a settled repayment', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const { db, queries } = fakeDatabase({
+      repaymentConflicts: [{ message_id: messageId }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    const conflict = queries.find((query) => query.text.includes('source_gift'));
+    expect(conflict?.params).toEqual([FROM, INTO]);
+    expect(conflict?.text).toContain('credit.goal_repayable IS TRUE');
+    expect(conflict?.text).toContain('source_gift.payer_account_id = $1');
+    expect(conflict?.text).toContain('survivor_gift.payer_account_id = $2');
+    expect(conflict?.text).toContain('source_gift.recorded_at <= credit.goal_funded_at');
+    expect(conflict?.text).toContain('survivor_gift.recorded_at <= credit.goal_funded_at');
+    expect(conflict?.text).toContain('FROM message_repayment AS settled');
+    expect(conflict?.text).toContain('FROM message_repayment_part AS settled_part');
+    expect(
+      queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+    ).toBe(false);
+  });
+
+  it('refuses a payable source invoice when only the source funded the credit', async () => {
+    const { db, queries } = fakeDatabase({
+      openRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          payment_hash: null,
+          description: `repay:0:${INTO}`,
+          created_at: new Date(),
+          pr: 'lnbc-open-repayment',
+          payment_claimed: false,
+        },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    const open = queries.find((query) => query.text.includes('FROM message_invoice AS invoice'));
+    expect(open?.params).toEqual([FROM, INTO]);
+    expect(open?.text).toContain('source_gift.payer_account_id = $1');
+    expect(open?.text).not.toContain('survivor_gift');
+    expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $1::text");
+    expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $1::text || ':%'");
+    expect(open?.text).toContain("invoice.description LIKE 'repay:%:' || $2::text");
+    expect(open?.text).toContain("invoice.description LIKE 'repayp:%:' || $2::text || ':%'");
+    expect(open?.text).toContain('AS payment_claimed');
+    expect(
+      queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+    ).toBe(false);
+  });
+
+  it.each([
+    ['part', `repayp:0:${FROM}:1:100:200`],
+    ['legacy', `repay:0:${FROM}`],
+  ])(
+    'refuses an expired unpaid %s invoice for either identity without exact settlement',
+    async (_kind, description) => {
+      const { db, queries } = fakeDatabase({
+        openRepaymentInvoices: [
+          {
+            message_id: PROFILE,
+            author_account_id: FROM,
+            amount_sats: 100,
+            payment_hash: null,
+            description,
+            created_at: new Date(0),
+            pr: 'expired-unpaid-repayment',
+            payment_claimed: false,
+          },
+        ],
+        historicalRepaymentInvoices: [
+          {
+            message_id: PROFILE,
+            author_account_id: FROM,
+            amount_sats: 100,
+            description,
+          },
+        ],
+        repaymentContext: {
+          goal_currency: 'BTC',
+          goal_amount: '100',
+          goal_term_days: 1,
+          goal_debt_frozen: false,
+        },
+        repaymentPayers: [
+          { account_id: FROM, sats: 100, usd: null, chf: null, eur: null, php: null },
+        ],
+      });
+
+      await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+        ok: false,
+        error: 'repayment_unavailable',
+      });
+      const openRefusal = queries.findIndex((query) => query.text.includes('AS payment_claimed'));
+      const historicalRefusal = queries.findIndex((query) =>
+        query.text.includes('FROM message_invoice AS historical'),
+      );
+      const partCollisionRefusal = queries.findIndex((query) =>
+        query.text.includes('WITH part_invoices AS'),
+      );
+      const historical = queries[historicalRefusal];
+      expect(partCollisionRefusal).toBeGreaterThan(openRefusal);
+      expect(historicalRefusal).toBeGreaterThan(partCollisionRefusal);
+      expect(historical?.params).toEqual([FROM, INTO]);
+      expect(historical?.text).toContain('credit.goal_repayable IS TRUE');
+      expect(historical?.text).toContain("historical.result = 'ok'");
+      expect(historical?.text).toContain("historical.description LIKE 'repay:%'");
+      expect(historical?.text).toContain("historical.description LIKE 'repayp:%'");
+      expect(historical?.text).toContain('historical.author_account_id = $1::uuid');
+      expect(historical?.text).toContain('historical.author_account_id = $2::uuid');
+      expect(historical?.text).toContain("historical.description LIKE 'repay:%:' || $1::text");
+      expect(historical?.text).toContain(
+        "historical.description LIKE 'repayp:%:' || $2::text || ':%'",
+      );
+      expect(historical?.text).toContain('ORDER BY historical.created_at, historical.id');
+      expect(historical?.text).not.toContain('historical.payment_hash');
+      expect(historical?.text).not.toContain('historical.pr');
+      expect(historical?.text).not.toContain('FROM message_repayment AS settled');
+      expect(
+        queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+      ).toBe(false);
+    },
+  );
+
+  it('refuses an expired claim-only sibling part by its exact part index', async () => {
+    const paymentHash = 'ab'.repeat(32);
+    const { db, queries } = fakeDatabase({
+      openRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          payment_hash: paymentHash,
+          description: `repayp:0:${INTO}:1:100:200`,
+          created_at: new Date(0),
+          pr: 'expired-repayment',
+          payment_claimed: true,
+        },
+      ],
+      repaymentParts: [
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 0,
+          units: 100,
+          sats: 100,
+          paid_at: new Date(0),
+        },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'repayment_unavailable',
+    });
+    const open = queries.find((query) => query.text.includes('FROM message_invoice AS invoice'));
+    expect(open?.text).toContain('AS payment_claimed');
+    const exact = queries.find(
+      (query) =>
+        query.text.includes('FROM message_repayment_part') &&
+        query.text.includes('ORDER BY day_index ASC'),
+    );
+    expect(exact?.params).toEqual([PROFILE]);
+    expect(
+      queries.some((query) => /^(?:INSERT|UPDATE|DELETE)\b/.test(query.text.trimStart())),
+    ).toBe(false);
+  });
+
+  it('allows an expired claimed invoice whose exact part is settled', async () => {
+    const { db } = fakeDatabase({
+      openRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          payment_hash: 'cd'.repeat(32),
+          description: `repayp:0:${INTO}:1:100:200`,
+          created_at: new Date(0),
+          pr: 'expired-settled-repayment',
+          payment_claimed: true,
+        },
+      ],
+      repaymentParts: [
+        {
+          day_index: 0,
+          recipient_account_id: INTO,
+          part_index: 1,
+          units: 100,
+          sats: 100,
+          paid_at: new Date(0),
+        },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+  });
+
+  it('ignores malformed repayment-like descriptions in the merge scan', async () => {
+    const { db } = fakeDatabase({
+      openRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          payment_hash: null,
+          description: 'repay:not-canonical',
+          created_at: new Date(),
+          pr: 'malformed-repayment',
+          payment_claimed: false,
+        },
+      ],
+      historicalRepaymentInvoices: [
+        {
+          message_id: PROFILE,
+          author_account_id: INTO,
+          amount_sats: 100,
+          description: 'repay:not-canonical',
+        },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+  });
+
   it('moves message.shop_account_id to the surviving account, so a shop stays listed', async () => {
     const { db, queries } = fakeDatabase();
     await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
@@ -362,9 +1271,12 @@ describe('mergeAccounts', () => {
           query.params[0] === INTO,
       ),
     ).toBe(true);
-    expect(queries.some((query) => query.text.includes('$2') && !query.text.includes('$1'))).toBe(
-      false,
+    const moved = queries.find((query) =>
+      query.text.includes(
+        "UPDATE trust_edge SET subject_id = $2 WHERE subject_id = $1 AND kind = 'verify'",
+      ),
     );
+    expect(moved?.params).toEqual([FROM, INTO]);
   });
 
   it('returns same_account without opening a transaction', async () => {
@@ -488,8 +1400,14 @@ describe('mergeAccounts', () => {
     expect(flat).toBe(
       "SELECT p.id FROM shop_payment AS p WHERE p.account_id = $2 AND p.status = 'open' AND EXISTS ( SELECT 1 FROM pos_charge AS c WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now() ) AND NOT EXISTS ( SELECT 1 FROM pos_charge AS s WHERE s.account_id = $2 AND s.status = 'pending' AND s.expires_at > now() ) LIMIT 1",
     );
-    // Checked under both account locks, after the merged account's own check, before any write.
-    expect(queries[0]?.text).toContain('FROM account');
+    // Checked under account advisory locks, affected message locks, and both
+    // account row locks, after the source's own check and before any write.
+    expect(queries[0]?.text).toContain('pg_advisory_xact_lock');
+    expect(
+      queries.findIndex(
+        (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
+      ),
+    ).toBeGreaterThan(0);
     expect(queries.filter((query) => query.text.includes('FROM shop_payment'))).toHaveLength(2);
     expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
   });

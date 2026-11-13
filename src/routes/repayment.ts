@@ -4,15 +4,21 @@ import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import { inspectBolt11, invoiceStillOpen, isNip57Invoice } from '@/lib/bolt11';
 import {
+  allocateRepayment,
   dueDayCount,
+  fiatAmountToCents,
   formatCents,
+  nextRepaymentPartIndex,
   parseRepaymentDescription,
+  parseRepaymentPartDescription,
   payerDebtUnits,
   repaymentDescription,
+  repaymentPartDescription,
   repaymentDueDate,
   repaymentLedger,
   repaymentSchedule,
   repaymentStartMs,
+  type RepaymentAllocationPart,
   type RepaymentSlice,
 } from '@/lib/credit-repayment';
 import type { LnurlServerConfig } from '@/lib/config';
@@ -69,7 +75,8 @@ function repaymentLimiterOf(deps: RepaymentDeps): InvoiceRateLimiter {
 
 /**
  * Debt of one credit. Sats with no account are weight only when a fiat
- * snapshot is missing, and that weight is not repaid.
+ * snapshot is missing, and that weight is not repaid. Frozen fiat debt comes
+ * only from its snapshot; an empty snapshot owes nothing.
  *
  * @param deps - Store.
  * @param row - Credit note.
@@ -85,13 +92,21 @@ async function creditOwed(
 }> {
   const payers = await deps.store.listCreditPayers(row.id);
   const unassignedSats = await deps.store.sumUnassignedCreditSats(row.id);
+  const debtPayers =
+    row.goalDebtFrozen && isFiatCredit(row)
+      ? payers
+      : [...payers, { accountId: '', sats: unassignedSats }];
   return {
     payers,
     unassignedSats,
-    owed: payerDebtUnits(row.goalCurrency, row.goalAmount, [
-      ...payers,
-      { accountId: '', sats: unassignedSats },
-    ]),
+    owed:
+      row.goalDebtFrozen && isFiatCredit(row) && debtPayers.length === 0
+        ? []
+        : payerDebtUnits(
+            row.goalCurrency,
+            row.goalDebtFrozen && isFiatCredit(row) ? null : row.goalAmount,
+            debtPayers,
+          ),
   };
 }
 
@@ -101,12 +116,31 @@ export const REPAYMENT_BILLS_MAX = 60;
 /** Characters of the note text in a `GET /me/loans` row. */
 const LOAN_TEXT_CHARS = 160;
 
-/** One due, unpaid share, and whether its giver can receive right now. */
-interface DueShare {
+/** One paid part or open bill of a giver-day share. */
+interface SharePart {
+  partIndex: number;
+  units: bigint;
+}
+
+/** An open invoice that still reserves part of a share. */
+interface OpenSharePart extends RepaymentAllocationPart {
+  open: true;
+  description: string;
+  /** Fixed sats of the invoice when it was minted. */
+  amountSats: number;
+}
+
+/** One giver-day share with what is settled and what is open. */
+interface ShareState {
   dayIndex: number;
   accountId: string;
-  /** Whole sats or whole cents. */
   units: bigint;
+  paidUnits: bigint;
+  parts: SharePart[];
+  openParts: OpenSharePart[];
+  /** A legacy, oversized, or claim-only bill conflicts with the current remainder. */
+  legacyOpen: boolean;
+  nextPartIndex: number;
   canReceive: boolean;
   /** The giver cannot receive, or had no verified wallet yet on the share's day: never behind. */
   excused: boolean;
@@ -115,12 +149,50 @@ interface DueShare {
 /** Schedule state of one funded credit at `nowMs`. */
 interface DuePlan {
   daysDue: number;
-  /** Leading due days with no unpaid share that is not excused. */
+  /** Leading due days with no unpaid remainder that is not excused. */
   daysPaid: number;
   schedule: RepaymentSlice[];
   paid: Awaited<ReturnType<MessageStore['listRepayments']>>;
+  parts: Awaited<ReturnType<MessageStore['listRepaymentParts']>>;
+  /** Every giver-day share with paid and open parts, in schedule order. */
+  shares: ShareState[];
   /** Due, unpaid shares: oldest day first, then schedule order. */
-  due: DueShare[];
+  due: ShareState[];
+}
+
+/** Already-read settlement data used to build one consistent due plan. */
+interface DuePlanSnapshot {
+  owed: Exclude<Awaited<ReturnType<typeof creditOwed>>['owed'], 'unavailable'>;
+  paid: Awaited<ReturnType<MessageStore['listRepayments']>>;
+  parts: Awaited<ReturnType<MessageStore['listRepaymentParts']>>;
+}
+
+/** Check one parsed repayment invoice against its exact settlement identity. */
+function isClaimOnlyRepaymentAttempt(
+  store: MessageStore,
+  attempt: MessageInvoiceAttempt,
+  whole: NonNullable<ReturnType<typeof parseRepaymentDescription>>,
+  part: ReturnType<typeof parseRepaymentPartDescription>,
+): Promise<boolean> {
+  return store.isClaimOnlyRepaymentInvoice(
+    attempt.paymentHash,
+    part === null
+      ? {
+          kind: 'legacy',
+          messageId: attempt.messageId,
+          dayIndex: whole.dayIndex,
+          recipientAccountId: attempt.authorAccountId,
+        }
+      : {
+          kind: 'part',
+          messageId: attempt.messageId,
+          dayIndex: part.dayIndex,
+          recipientAccountId: attempt.authorAccountId,
+          partIndex: part.partIndex,
+          units: part.units,
+          sats: attempt.amountSats,
+        },
+  );
 }
 
 /**
@@ -150,46 +222,159 @@ async function receiverMap(
 }
 
 /**
- * Due, unpaid shares of a funded credit.
+ * Due, unpaid shares of a funded credit, with settled parts and open bills.
+ *
+ * Open bills never reserve a share twice: they are read from successful
+ * invoice attempts by description and kept while still payable. A claimed
+ * invoice without its exact settlement row stays reserved after expiry.
  *
  * @param deps - Store, auth, and the optional LNURL server.
  * @param row - Funded credit note.
  * @param nowMs - Clock.
+ * @param snapshot - Optional already-read debt and settlement rows.
  * @returns The plan, or `unavailable` when the debt cannot be computed.
  */
+function duePlan(
+  deps: RepaymentDeps,
+  row: MessageRow,
+  nowMs: number,
+  snapshot: DuePlanSnapshot,
+): Promise<DuePlan>;
+function duePlan(
+  deps: RepaymentDeps,
+  row: MessageRow,
+  nowMs: number,
+  snapshot?: undefined,
+): Promise<DuePlan | 'unavailable'>;
 async function duePlan(
   deps: RepaymentDeps,
   row: MessageRow,
   nowMs: number,
+  snapshot?: DuePlanSnapshot,
 ): Promise<DuePlan | 'unavailable'> {
   const termDays = row.goalTermDays as number;
   const fundedAt = row.goalFundedAt as Date;
   const daysDue = dueDayCount(fundedAt.getTime(), nowMs, termDays, row.id);
-  const paid = await deps.store.listRepayments(row.id);
-  const { owed } = await creditOwed(deps, row);
+  const paid = snapshot?.paid ?? (await deps.store.listRepayments(row.id));
+  const parts = snapshot?.parts ?? (await deps.store.listRepaymentParts(row.id));
+  const owed = snapshot?.owed ?? (await creditOwed(deps, row)).owed;
   if (owed === 'unavailable') {
     return 'unavailable';
   }
   const schedule = repaymentSchedule(termDays, owed);
-  const settled = new Set(paid.map((item) => `${item.dayIndex}:${item.recipientAccountId}`));
-  const unpaid = schedule.filter(
-    (slice) => slice.dayIndex < daysDue && !settled.has(`${slice.dayIndex}:${slice.accountId}`),
+  const invoiceAttempts = await deps.store.listInvoiceAttemptsForMessage(row.id);
+  const sharesWithParts = new Set(
+    parts.map((part) => `${part.dayIndex}:${part.recipientAccountId}`),
   );
+  const settled = new Set(
+    paid
+      .filter((item) => !sharesWithParts.has(`${item.dayIndex}:${item.recipientAccountId}`))
+      .map((item) => `${item.dayIndex}:${item.recipientAccountId}`),
+  );
+  const paidByShare = new Map<string, bigint>();
+  const partsByShare = new Map<string, SharePart[]>();
+  for (const part of parts) {
+    const key = `${part.dayIndex}:${part.recipientAccountId}`;
+    paidByShare.set(key, (paidByShare.get(key) ?? 0n) + part.units);
+    const list = partsByShare.get(key) ?? [];
+    list.push({ partIndex: part.partIndex, units: part.units });
+    partsByShare.set(key, list);
+  }
   const receivers = await receiverMap(
     deps,
-    unpaid.map((slice) => slice.accountId),
+    schedule.map((slice) => slice.accountId),
   );
   const startMs = repaymentStartMs(fundedAt.getTime(), row.id);
-  const due = unpaid.map((slice) => {
+  const shares: ShareState[] = [];
+  for (const slice of schedule) {
+    const key = `${slice.dayIndex}:${slice.accountId}`;
     const since = receivers.get(slice.accountId) as number | null;
-    return {
+    const sharePaid = settled.has(key);
+    const settledUnits = sharePaid ? slice.units : (paidByShare.get(key) ?? 0n);
+    const paidParts = partsByShare.get(key) ?? [];
+    const openParts: OpenSharePart[] = [];
+    let legacyOpen = false;
+    let reserved = settledUnits;
+    for (const attempt of invoiceAttempts) {
+      if (attempt.result !== 'ok' || attempt.pr === null) {
+        continue;
+      }
+      const whole = parseRepaymentDescription(attempt.description);
+      const part = parseRepaymentPartDescription(attempt.description);
+      const parsed = part ?? whole;
+      if (
+        parsed === null ||
+        parsed.dayIndex !== slice.dayIndex ||
+        parsed.recipientAccountId !== slice.accountId
+      ) {
+        continue;
+      }
+      const claimOnly = await isClaimOnlyRepaymentAttempt(deps.store, attempt, parsed, part);
+      const claimed =
+        attempt.paymentHash !== null &&
+        (await deps.store.zapPaymentReceiptId(attempt.paymentHash)) !== undefined;
+      if (claimed && !claimOnly) {
+        continue;
+      }
+      if (!claimOnly && !invoiceStillOpen(attempt.pr, attempt.createdAt.getTime(), nowMs)) {
+        continue;
+      }
+      if (claimOnly) {
+        legacyOpen = true;
+      }
+      if (part === null && settledUnits > 0n) {
+        // The old full-share bill is still payable, so it blocks every new
+        // remainder bill until it expires. Reusing it would overpay the share.
+        legacyOpen = true;
+        continue;
+      }
+      if (
+        part !== null &&
+        paidParts.some((paidPart) => paidPart.partIndex === part.partIndex) &&
+        !claimOnly
+      ) {
+        continue;
+      }
+      const units = part === null ? slice.units : part.units;
+      const left = slice.units > reserved ? slice.units - reserved : 0n;
+      if (left <= 0n) {
+        break;
+      }
+      if (units > left) {
+        legacyOpen = true;
+        continue;
+      }
+      openParts.push({
+        dayIndex: slice.dayIndex,
+        accountId: slice.accountId,
+        partIndex: part?.partIndex ?? 0,
+        units,
+        open: true,
+        description: attempt.description as string,
+        amountSats: attempt.amountSats,
+      });
+      reserved += units;
+    }
+    openParts.sort((a, b) => a.partIndex - b.partIndex);
+    shares.push({
       dayIndex: slice.dayIndex,
       accountId: slice.accountId,
       units: slice.units,
+      paidUnits: settledUnits,
+      parts: paidParts,
+      openParts,
+      legacyOpen,
+      nextPartIndex: nextRepaymentPartIndex(
+        slice.dayIndex,
+        [slice.accountId],
+        parts,
+        invoiceAttempts,
+      ),
       canReceive: since !== null,
       excused: since === null || slice.dayIndex < Math.floor((since - startMs) / 86_400_000),
-    };
-  });
+    });
+  }
+  const due = shares.filter((share) => share.dayIndex < daysDue && share.paidUnits < share.units);
   let daysPaid = 0;
   while (
     daysPaid < daysDue &&
@@ -197,7 +382,7 @@ async function duePlan(
   ) {
     daysPaid += 1;
   }
-  return { daysDue, daysPaid, schedule, paid, due };
+  return { daysDue, daysPaid, schedule, paid, parts, shares, due };
 }
 
 /**
@@ -260,11 +445,26 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
     return c.json({ error: 'Ask amount is unavailable' }, 503);
   }
   const paid = await deps.store.listRepayments(row.id);
+  const parts = await deps.store.listRepaymentParts(row.id);
   const fundedAt = row.goalFundedAt instanceof Date ? row.goalFundedAt : null;
+  const partKeys = new Set(parts.map((part) => `${part.dayIndex}:${part.recipientAccountId}`));
+  const ledgerPaid = [
+    ...paid
+      .filter((item) => !partKeys.has(`${item.dayIndex}:${item.recipientAccountId}`))
+      .map((item) => ({
+        dayIndex: item.dayIndex,
+        accountId: item.recipientAccountId,
+      })),
+    ...parts.map((part) => ({
+      dayIndex: part.dayIndex,
+      accountId: part.recipientAccountId,
+      paidUnits: part.units,
+    })),
+  ];
   const lines = repaymentLedger(
     row.goalTermDays as number,
     owed,
-    paid.map((item) => ({ dayIndex: item.dayIndex, accountId: item.recipientAccountId })),
+    ledgerPaid,
     fundedAt === null ? null : fundedAt.getTime(),
     nowMs,
     row.id,
@@ -275,35 +475,51 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
   }
   const owedById = new Map(owed.map((payer) => [payer.accountId, payer.units]));
   const fiat = isFiatCredit(row);
-  const paidSats = new Map(
-    paid.map((item) => [`${item.dayIndex}:${item.recipientAccountId}`, item.dueSats]),
-  );
+  const paidSats = new Map<string, number>();
+  for (const item of paid) {
+    const key = `${item.dayIndex}:${item.recipientAccountId}`;
+    if (!partKeys.has(key)) {
+      paidSats.set(key, (paidSats.get(key) ?? 0) + item.dueSats);
+    }
+  }
+  for (const part of parts) {
+    const key = `${part.dayIndex}:${part.recipientAccountId}`;
+    paidSats.set(key, (paidSats.get(key) ?? 0) + part.sats);
+  }
   let daysDue = 0;
   let daysPaid = 0;
   let next: { dayIndex: number; sats: number; recipientAccountId: string } | null = null;
+  let price: Awaited<ReturnType<typeof sharePricer>> | null = null;
   if (fundedAt !== null) {
-    const share = await nextShare(deps, row, nowMs);
+    const plan = await duePlan(deps, row, nowMs, { owed, paid, parts });
+    price = plan.due.length > 0 ? await sharePricer(deps, row).catch(() => null) : null;
+    const share = await nextShare(deps, row, nowMs, { plan, price });
     if (share.error !== null) {
       return c.json({ error: share.error }, share.status);
     }
     daysDue = share.daysDue;
     daysPaid = share.daysPaid;
-    next =
-      share.share === null
-        ? null
-        : {
-            dayIndex: share.share.dayIndex,
-            sats: share.share.sats,
-            recipientAccountId: share.share.accountId,
-          };
+    if (share.share !== null) {
+      const nextShareState = share.share;
+      const nextLine = lines.find(
+        (line) =>
+          line.dayIndex === nextShareState.dayIndex && line.accountId === nextShareState.accountId,
+      ) as (typeof lines)[number];
+      const unpaidSats = (price as (units: bigint) => number)(nextLine.units - nextLine.paidUnits);
+      next = {
+        dayIndex: nextShareState.dayIndex,
+        sats: unpaidSats,
+        recipientAccountId: nextShareState.accountId,
+      };
+    }
   }
-  const price = lines.some((line) => line.status === 'due') ? await sharePricer(deps, row) : null;
   const waits = (line: (typeof lines)[number]): boolean =>
     line.status === 'due' && !(names.get(line.accountId) as { canReceive: boolean }).canReceive;
   return c.json(
     {
       currency: fiat ? row.goalCurrency : 'BTC',
       fundedAt: fundedAt === null ? null : fundedAt.toISOString(),
+      closedAt: row.goalClosedAt instanceof Date ? row.goalClosedAt.toISOString() : null,
       startsOn: fundedAt === null ? null : repaymentDueDate(fundedAt.getTime(), 0, row.id),
       termDays: row.goalTermDays,
       daysDue,
@@ -329,7 +545,8 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
       }),
       repayments: lines.map((line) => {
         const identity = names.get(line.accountId) as { name: string; username: string | null };
-        const settled = paidSats.get(`${line.dayIndex}:${line.accountId}`);
+        const paidForLine = paidSats.get(`${line.dayIndex}:${line.accountId}`) ?? 0;
+        const remainder = line.units - line.paidUnits;
         return {
           dayIndex: line.dayIndex,
           dueOn: line.dueOn,
@@ -337,11 +554,14 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
           name: identity.name,
           username: identity.username,
           amount: fiat ? formatCents(line.units) : null,
-          sats: fiat ? (settled ?? null) : Number(line.units),
+          sats: fiat ? (line.status === 'paid' ? paidForLine : null) : Number(line.units),
+          paidSats: paidForLine,
+          paidAmount: fiat ? formatCents(line.paidUnits) : null,
           status: line.status,
           waiting: waits(line),
           via: 'lightning',
-          dueSats: line.status === 'due' && price !== null ? price(line.units) : null,
+          dueSats:
+            line.status === 'due' && price !== null && remainder > 0n ? price(remainder) : null,
         };
       }),
       next,
@@ -384,6 +604,31 @@ async function readableCredit(deps: RepaymentDeps, c: Context): Promise<Response
   return row;
 }
 
+/** Re-read and authorize a credit after its message lock has been acquired. */
+async function lockedCredit(
+  store: MessageStore,
+  opened: { account: Account; row: MessageRow },
+  allowCollecting = false,
+): Promise<MessageRow | undefined> {
+  const row = await store.getById(opened.row.id);
+  if (
+    row === undefined ||
+    row.deletedAt !== null ||
+    row.goalRepayable !== true ||
+    row.goalTermDays === null ||
+    /* v8 ignore next -- copyRow stores null, never undefined */
+    row.goalTermDays === undefined ||
+    (!allowCollecting &&
+      (row.goalFundedAt === null ||
+        /* v8 ignore next -- copyRow stores null, never undefined */
+        row.goalFundedAt === undefined)) ||
+    row.accountId !== opened.account.id
+  ) {
+    return undefined;
+  }
+  return row;
+}
+
 /** A bill for one share, or the error the pay route answers. */
 type RepaymentBill =
   | { ok: true; pr: string; amountSats: number; sparkInvoice: string | null }
@@ -393,21 +638,17 @@ type RepaymentBill =
       body: { error: string; code?: typeof CANNOT_RECEIVE };
     };
 
-/**
- * Bill for one share at the giver's receiving address: the open, still
- * payable bill for that share when there is one, else a new zap request,
- * BOLT11, stored invoice row, and Spark invoice.
- *
- * @param deps - Store, auth, LNURL fetch, and the optional LNURL server and Spark store.
- * @param opened - Author, credit, and clock.
- * @param share - Day, giver, and sats.
- * @param mayMint - Asked only before a new bill is minted; false is a 429.
- * @returns The bill, or the error.
- */
-async function repaymentBill(
+/** Mint or reuse a bill while the common message lock is held. */
+async function repaymentBillLocked(
   deps: RepaymentDeps,
   opened: { account: Account; row: MessageRow; nowMs: number },
-  share: { dayIndex: number; accountId: string; sats: number },
+  share: {
+    dayIndex: number;
+    accountId: string;
+    shareUnits: bigint;
+    sats: number;
+    description: string;
+  },
   mayMint: () => boolean,
 ): Promise<RepaymentBill> {
   if (opened.row.eventId === null || opened.row.eventId === '') {
@@ -432,8 +673,102 @@ async function repaymentBill(
     return { ok: false, status: 503, body: { error: 'Messages are unavailable' } };
   }
   const amountMsat = share.sats * 1000;
-  const description = repaymentDescription(share.dayIndex, share.accountId);
-  const outstanding = await deps.store.findOkInvoiceByDescription(opened.row.id, description);
+  const description = share.description;
+  const requestedPart = parseRepaymentPartDescription(description);
+  const paidParts = (await deps.store.listRepaymentParts(opened.row.id)).filter(
+    (part) => part.dayIndex === share.dayIndex && part.recipientAccountId === share.accountId,
+  );
+  const paidUnits = paidParts.reduce((sum, part) => sum + part.units, 0n);
+  const legacyPaid = (await deps.store.listRepayments(opened.row.id)).some(
+    (paid) =>
+      paid.dayIndex === share.dayIndex &&
+      paid.recipientAccountId === share.accountId &&
+      paidParts.length === 0,
+  );
+  const attempts = await deps.store.listInvoiceAttemptsForMessage(opened.row.id);
+  const openAttempts: Array<{
+    attempt: MessageInvoiceAttempt;
+    part: ReturnType<typeof parseRepaymentPartDescription>;
+    claimOnly: boolean;
+  }> = [];
+  for (const attempt of attempts) {
+    const parsed = parseRepaymentDescription(attempt.description);
+    if (
+      attempt.result !== 'ok' ||
+      attempt.pr === null ||
+      parsed === null ||
+      parsed.dayIndex !== share.dayIndex ||
+      parsed.recipientAccountId !== share.accountId
+    ) {
+      continue;
+    }
+    const part = parseRepaymentPartDescription(attempt.description);
+    const claimOnly = await isClaimOnlyRepaymentAttempt(deps.store, attempt, parsed, part);
+    const claimed =
+      attempt.paymentHash !== null &&
+      (await deps.store.zapPaymentReceiptId(attempt.paymentHash)) !== undefined;
+    if (claimed && !claimOnly) {
+      continue;
+    }
+    if (!claimOnly && !invoiceStillOpen(attempt.pr, attempt.createdAt.getTime(), opened.nowMs)) {
+      continue;
+    }
+    openAttempts.push({
+      attempt,
+      part,
+      claimOnly,
+    });
+  }
+  if (openAttempts.some((item) => item.claimOnly)) {
+    return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
+  }
+  const outstanding = openAttempts.find(
+    (item) => item.attempt.description === description,
+  )?.attempt;
+  if (requestedPart === null) {
+    if (legacyPaid || paidUnits > 0n || openAttempts.some((item) => item.attempt !== outstanding)) {
+      return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
+    }
+  } else {
+    let reservedUnits = paidUnits;
+    const nextPartIndex = nextRepaymentPartIndex(
+      share.dayIndex,
+      [share.accountId],
+      paidParts,
+      attempts,
+    );
+    const immutableParts = new Map<number, { units: bigint; sats: number }>();
+    for (const paidPart of paidParts) {
+      immutableParts.set(paidPart.partIndex, { units: paidPart.units, sats: paidPart.sats });
+    }
+    for (const open of openAttempts) {
+      const part = open.part;
+      const immutable = part === null ? undefined : immutableParts.get(part.partIndex);
+      if (
+        part === null ||
+        part.shareUnits !== share.shareUnits ||
+        immutable !== undefined ||
+        (!isFiatCredit(opened.row) && open.attempt.amountSats !== Number(part.units))
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: 'A payment for this share is still open' },
+        };
+      }
+      immutableParts.set(part.partIndex, { units: part.units, sats: open.attempt.amountSats });
+      reservedUnits += part.units;
+    }
+    if (
+      legacyPaid ||
+      reservedUnits > share.shareUnits ||
+      (outstanding === undefined &&
+        (requestedPart.partIndex !== nextPartIndex ||
+          requestedPart.units > share.shareUnits - reservedUnits))
+    ) {
+      return { ok: false, status: 409, body: { error: 'A payment for this share is still open' } };
+    }
+  }
   if (
     outstanding !== undefined &&
     outstanding.pr !== null &&
@@ -568,17 +903,34 @@ function billError(c: Context, bill: Extract<RepaymentBill, { ok: false }>): Res
 }
 
 /**
- * BOLT11 that pays the next giver who can receive their share, at that giver's
- * receiving address (`receivingAddress`), plus a Spark invoice for it when the
- * giver is wallet-backed.
+ * With no body, returns a BOLT11 that pays the next giver who can receive their
+ * share, plus a Spark invoice when the giver is wallet-backed. With an
+ * `{ amount: string }` body, prepays that amount in plan order.
  *
  * @param deps - Store, auth, clock, LNURL fetch, and the optional LNURL server and
  *   Spark invoice store.
  * @param c - Request.
- * @returns `{ pr, amountSats, sparkInvoice }`, or an error.
+ * @returns The next bill, the requested amount's bills and waiting shares, or an error.
  */
 export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise<Response> {
-  const opened = await openCredit(deps, c);
+  const requestBody = await c.req.text();
+  const hasBody = requestBody.trim() !== '';
+  let body: unknown = undefined;
+  let bodyParsed = true;
+  if (hasBody) {
+    try {
+      body = JSON.parse(requestBody);
+    } catch {
+      bodyParsed = false;
+    }
+  }
+  const bodyObject =
+    body !== null && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  const hasAmountBody =
+    hasBody && (!bodyParsed || bodyObject === null || Object.keys(bodyObject).length > 0);
+  const opened = await openCredit(deps, c, hasAmountBody ? { allowCollecting: true } : undefined);
   if (opened instanceof Response) {
     return opened;
   }
@@ -586,22 +938,76 @@ export async function repaymentInvoice(deps: RepaymentDeps, c: Context): Promise
   if (!payGate.ok) {
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
   }
-  const next = await nextShare(deps, opened.row, opened.nowMs);
-  if (next.error !== null) {
-    return c.json({ error: next.error }, next.status);
+  if (hasAmountBody) {
+    const amount = bodyObject?.['amount'];
+    const fiat = isFiatCredit(opened.row);
+    const parsed: PrepayAmount | null = fiat ? fiatPrepayAmount(amount) : btcPrepayAmount(amount);
+    if (parsed === null) {
+      return c.json({ error: INVALID_AMOUNT_BODY, code: 'invalid_amount' }, 400);
+    }
+    return deps.store.withMessageLock(opened.row.id, async (locked) => {
+      const row = await lockedCredit(locked, opened, true);
+      if (row === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      opened.row = row;
+      opened.nowMs = deps.now();
+      return repaymentAmountLocked({ ...deps, store: locked }, c, opened, parsed);
+    });
   }
-  if (next.share === null) {
-    return next.waiting
-      ? c.json({ error: 'A giver has no Lightning address', code: CANNOT_RECEIVE }, 400)
-      : c.json({ error: 'Nothing is due' }, 400);
+  return deps.store.withMessageLock(opened.row.id, async (locked) => {
+    const row = await lockedCredit(locked, opened);
+    if (row === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    opened.row = row;
+    opened.nowMs = deps.now();
+    const lockedDeps = { ...deps, store: locked };
+    const next = await nextShare(lockedDeps, row, opened.nowMs);
+    if (next.error !== null) {
+      return c.json({ error: next.error }, next.status);
+    }
+    if (next.share === null) {
+      return next.waiting
+        ? c.json({ error: 'A giver has no Lightning address', code: CANNOT_RECEIVE }, 400)
+        : c.json({ error: 'Nothing is due' }, 400);
+    }
+    const bill = await repaymentBillLocked(lockedDeps, opened, next.share, () =>
+      repaymentLimiterOf(deps).allow(opened.account.id, opened.nowMs),
+    );
+    if (!bill.ok) {
+      return billError(c, bill);
+    }
+    return c.json(
+      { pr: bill.pr, amountSats: bill.amountSats, sparkInvoice: bill.sparkInvoice },
+      200,
+    );
+  });
+}
+
+/** The open bill or unpaid remainder that a due route may bill for one share. */
+function billableSharePart(share: ShareState): {
+  units: bigint;
+  description: string;
+} {
+  const open = share.openParts[0];
+  if (open !== undefined) {
+    return { units: open.units, description: open.description };
   }
-  const bill = await repaymentBill(deps, opened, next.share, () =>
-    repaymentLimiterOf(deps).allow(opened.account.id, opened.nowMs),
-  );
-  if (!bill.ok) {
-    return billError(c, bill);
-  }
-  return c.json({ pr: bill.pr, amountSats: bill.amountSats, sparkInvoice: bill.sparkInvoice }, 200);
+  const units = share.units - share.paidUnits;
+  return {
+    units,
+    description:
+      units === share.units
+        ? repaymentDescription(share.dayIndex, share.accountId)
+        : repaymentPartDescription(
+            share.dayIndex,
+            share.accountId,
+            share.nextPartIndex,
+            units,
+            share.units,
+          ),
+  };
 }
 
 /**
@@ -624,6 +1030,23 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
   if (!payGate.ok) {
     return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
   }
+  return deps.store.withMessageLock(opened.row.id, async (locked) => {
+    const row = await lockedCredit(locked, opened);
+    if (row === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    opened.row = row;
+    opened.nowMs = deps.now();
+    return repaymentDueBillsLocked({ ...deps, store: locked }, c, opened);
+  });
+}
+
+/** Plan and reserve all due bills while the common message lock is held. */
+async function repaymentDueBillsLocked(
+  deps: RepaymentDeps,
+  c: Context,
+  opened: { account: Account; row: MessageRow; nowMs: number },
+): Promise<Response> {
   const plan = await duePlan(deps, opened.row, opened.nowMs);
   if (plan === 'unavailable') {
     return c.json({ error: 'Ask amount is unavailable' }, 503);
@@ -662,28 +1085,50 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
     if (payable && bills.length >= REPAYMENT_BILLS_MAX) {
       continue;
     }
-    const sats = price(share.units);
-    if (sats === null) {
+    const waitingUnits = share.units - share.paidUnits;
+    const waitingSats = price(waitingUnits);
+    if (waitingSats === null) {
       return c.json({ error: 'Ask amount is unavailable' }, 503);
     }
     const giver = await giverOf(share.accountId);
+    const waitingLine = {
+      dayIndex: share.dayIndex,
+      recipientAccountId: share.accountId,
+      name: giver.name,
+      username: giver.username,
+      amountSats: waitingSats,
+      amount: fiat ? formatCents(waitingUnits) : null,
+    };
+    if (!payable) {
+      waiting.push(waitingLine);
+      continue;
+    }
+    const part = billableSharePart(share);
+    const sats = price(part.units) as number;
     const line = {
       dayIndex: share.dayIndex,
       recipientAccountId: share.accountId,
       name: giver.name,
       username: giver.username,
       amountSats: sats,
-      amount: fiat ? formatCents(share.units) : null,
+      amount: fiat ? formatCents(part.units) : null,
     };
-    if (!payable) {
-      waiting.push(line);
-      continue;
-    }
-    const bill = await repaymentBill(deps, opened, { ...share, sats }, mayMint);
+    const bill = await repaymentBillLocked(
+      deps,
+      opened,
+      {
+        dayIndex: share.dayIndex,
+        accountId: share.accountId,
+        shareUnits: share.units,
+        sats,
+        description: part.description,
+      },
+      mayMint,
+    );
     if (!bill.ok) {
       if (bill.body.code === CANNOT_RECEIVE) {
         refused.add(share.accountId);
-        waiting.push(line);
+        waiting.push(waitingLine);
         continue;
       }
       return billError(c, bill);
@@ -698,9 +1143,525 @@ export async function repaymentDueBills(deps: RepaymentDeps, c: Context): Promis
   return c.json({ bills, waiting }, 200);
 }
 
+/** Parsed free amount from `POST /messages/:id/repayment` in loan units. */
+type PrepayAmount = { units: bigint; typed: string };
+
+const AMOUNT_TOO_HIGH_BODY = 'Amount is above what is left';
+const INVALID_AMOUNT_BODY = 'Invalid amount';
+const NOTHING_DUE_BODY = 'Nothing is due';
+const OPEN_PAYMENT_BODY = 'A payment for this share is still open';
+const TOO_MANY_SHARES_BODY = 'Too many shares for one payment';
+
+/**
+ * Whole sats from a BTC prepay amount string. Only digits are accepted.
+ *
+ * @param amount - Request body amount.
+ * @returns Units and the typed string, or null.
+ */
+function btcPrepayAmount(amount: unknown): PrepayAmount | null {
+  if (typeof amount !== 'string' || !/^[0-9]+$/.test(amount)) {
+    return null;
+  }
+  const units = BigInt(amount);
+  return units > 0n ? { units, typed: amount } : null;
+}
+
+/**
+ * Cents from a fiat prepay amount string with at most two decimals.
+ * Comma and dot are both accepted; the typed text is kept for the echo.
+ *
+ * @param amount - Request body amount.
+ * @returns Units and the exact typed decimal string, or null.
+ */
+function fiatPrepayAmount(amount: unknown): { units: bigint; typed: string } | null {
+  if (typeof amount !== 'string') {
+    return null;
+  }
+  const typed = amount;
+  if (!/^[0-9]+(?:[.,][0-9]{1,2})?$/.test(typed)) {
+    return null;
+  }
+  const normalized = typed.replace(',', '.');
+  const units = fiatAmountToCents(normalized) as bigint;
+  if (units <= 0n) {
+    return null;
+  }
+  return { units, typed };
+}
+
+/**
+ * One payment's worth of plan-order allocation, with open bills represented
+ * as the same stored description that minted them.
+ */
+interface PrepayPlan {
+  allocation: ReturnType<typeof allocateRepayment>;
+  /** Largest prefix that cannot hit an existing-payment conflict. */
+  maxUnits: bigint;
+  maxSats: number | null;
+  maxAmount: string | null;
+  /** The accepted prefix ended because the next receivable share conflicts. */
+  stoppedAtBlockingShare: boolean;
+  price: (units: bigint) => number | null;
+  fiat: boolean;
+  shares: ShareState[];
+}
+
+/**
+ * Read the current plan for a prepayment and allocate one amount.
+ *
+ * @param deps - Store, auth, rate loader, and optional LNURL server.
+ * @param row - Funded credit.
+ * @param nowMs - Clock.
+ * @param amountUnits - Requested units.
+ * @param maxParts - Maximum new bills.
+ * @returns The allocation and max, or an error.
+ */
+async function prepayPlan(
+  deps: RepaymentDeps,
+  row: MessageRow,
+  nowMs: number,
+  amountUnits: bigint,
+  maxParts: number,
+): Promise<PrepayPlan | 'unavailable'> {
+  const plan = await duePlan(deps, row, nowMs);
+  if (plan === 'unavailable') {
+    return 'unavailable';
+  }
+  const fiat = isFiatCredit(row);
+  const remainingShares = plan.shares.filter((share) => share.paidUnits < share.units);
+  const allocation = allocateRepayment(
+    amountUnits,
+    remainingShares.map((share) => ({
+      dayIndex: share.dayIndex,
+      accountId: share.accountId,
+      units: share.units,
+      paidUnits: share.paidUnits,
+      nextPartIndex: share.nextPartIndex,
+      openParts: share.openParts,
+      canReceive: share.canReceive,
+    })),
+    maxParts,
+  );
+  const maximum = maximumAcceptedRepayment(remainingShares);
+  const price = maximum.usedUnits === 0n ? () => 0 : await sharePricer(deps, row).catch(() => null);
+  if (price === null) {
+    return 'unavailable';
+  }
+  const maxSats = pricedSum(price, maximum.parts);
+  return {
+    allocation,
+    maxUnits: maximum.usedUnits,
+    maxSats,
+    maxAmount: fiat ? formatCents(maximum.usedUnits) : null,
+    stoppedAtBlockingShare: maximum.stoppedAtBlockingShare,
+    price,
+    fiat,
+    shares: plan.shares,
+  };
+}
+
+/**
+ * Largest plan-order prefix an amount request can accept without 409.
+ *
+ * Unreceivable shares are skipped just as allocation skips them. A receivable
+ * legacy/oversized/claim-only reservation is the first blocking share, so no
+ * later remainder is advertised even when it could otherwise receive.
+ */
+function maximumAcceptedRepayment(
+  shares: readonly ShareState[],
+  maxBills: number = Number.MAX_SAFE_INTEGER,
+): ReturnType<typeof allocateRepayment> & { stoppedAtBlockingShare: boolean } {
+  const prefix: ShareState[] = [];
+  let stoppedAtBlockingShare = false;
+  for (const share of shares) {
+    if (share.canReceive && share.paidUnits < share.units && share.legacyOpen) {
+      stoppedAtBlockingShare = true;
+      break;
+    }
+    prefix.push(share);
+  }
+  const maxUnits = prefix
+    .filter((share) => share.canReceive && share.paidUnits < share.units)
+    .reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
+  return {
+    ...allocateRepayment(
+      maxUnits,
+      prefix.map((share) => ({
+        dayIndex: share.dayIndex,
+        accountId: share.accountId,
+        units: share.units,
+        paidUnits: share.paidUnits,
+        nextPartIndex: share.nextPartIndex,
+        openParts: share.openParts,
+        canReceive: share.canReceive,
+      })),
+      maxBills,
+    ),
+    stoppedAtBlockingShare,
+  };
+}
+
+/**
+ * `POST /messages/:id/repayment/close`: end collecting on the caller's live
+ * repayable ask. Sets `goal_closed_at`; a still-collecting ask also gets
+ * `goal_funded_at` at the close instant. Idempotent.
+ *
+ * @param deps - Store, auth, and clock.
+ * @param c - Request.
+ * @returns The stored timestamps and collected total, or an error.
+ */
+export async function repaymentClose(deps: RepaymentDeps, c: Context): Promise<Response> {
+  const opened = await openCredit(deps, c, { allowCollecting: true });
+  if (opened instanceof Response) {
+    return opened;
+  }
+  const payGate = requireAction(opened.account, 'forum.pay');
+  if (!payGate.ok) {
+    return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: payGate.missing }, 409);
+  }
+  return deps.store.withMessageLock(opened.row.id, async (locked) => {
+    const row = await lockedCredit(locked, opened, true);
+    if (row === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    const lockedDeps = { ...deps, store: locked };
+    const beforeClose = await creditOwed(lockedDeps, row);
+    if (beforeClose.owed === 'unavailable' && row.goalFundedAt instanceof Date) {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
+    }
+    const closed = await locked.closeCredit(row.id, new Date(deps.now()), true);
+    if (closed === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    const closedRow = await lockedCredit(locked, opened);
+    if (closedRow === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    // An early fiat close freezes collected gift-time cents (including missing
+    // snapshots as zero), so its final debt comes from the same locked state.
+    const { owed } =
+      row.goalFundedAt === null && isFiatCredit(row)
+        ? await creditOwed(lockedDeps, closedRow)
+        : beforeClose;
+    if (owed === 'unavailable') {
+      return c.json({ error: 'Ask amount is unavailable' }, 503);
+    }
+    // Debt stays bounded at funding. The close receipt is also immutable: an
+    // idempotent call sees only receipts recorded through the first close.
+    const fiat = isFiatCredit(closedRow);
+    const includeUnassignedFiat = fiat && !closedRow.goalDebtFrozen;
+    const collectedPayers = await locked.previewCreditPayerSnapshot(
+      closedRow.id,
+      fiat ? (closedRow.goalCurrency as GoalFiatCode) : 'USD',
+      'closed',
+      includeUnassignedFiat,
+    );
+    const collectedUnits = closedRow.goalDebtFrozen
+      ? owed.reduce((sum, payer) => sum + payer.units, 0n)
+      : collectedPayers.reduce((sum, payer) => sum + payer.units, 0n);
+    const collectedSats =
+      collectedPayers.reduce((sum, payer) => sum + payer.sats, 0) +
+      (includeUnassignedFiat
+        ? 0
+        : await locked.sumUnassignedCreditSats(closedRow.id, true, 'closed'));
+    return c.json(
+      {
+        fundedAt: closed.fundedAt.toISOString(),
+        closedAt: closed.closedAt.toISOString(),
+        collectedSats,
+        collectedAmount: fiat ? formatCents(collectedUnits) : null,
+      },
+      200,
+    );
+  });
+}
+
+/**
+ * Largest amount up to the request that fits into {@link REPAYMENT_BILLS_MAX}
+ * bills, counting open bills first. A share reached after the cap contributes
+ * nothing.
+ *
+ * @param shares - Current plan shares in order.
+ * @param requested - Requested units.
+ * @returns Units covered by the first 60 parts.
+ */
+function cappedAllocation(
+  shares: readonly ShareState[],
+  requested: bigint,
+): ReturnType<typeof allocateRepayment> {
+  return allocateRepayment(
+    requested,
+    shares.map((share) => ({
+      dayIndex: share.dayIndex,
+      accountId: share.accountId,
+      units: share.units,
+      paidUnits: share.paidUnits,
+      nextPartIndex: share.nextPartIndex,
+      openParts: share.openParts,
+      canReceive: share.canReceive,
+    })),
+    REPAYMENT_BILLS_MAX,
+  );
+}
+
+/** Close when needed, then plan and reserve a prepayment under one message lock. */
+async function repaymentAmountLocked(
+  deps: RepaymentDeps,
+  c: Context,
+  opened: { account: Account; row: MessageRow; nowMs: number },
+  parsed: PrepayAmount,
+): Promise<Response> {
+  if (opened.row.goalFundedAt === null && opened.row.goalClosedAt === null) {
+    const closed = await deps.store.closeCredit(opened.row.id, new Date(deps.now()), true);
+    if (closed === undefined) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    const closedRow = await lockedCredit(deps.store, opened);
+    // `closeCredit` succeeded while this message lock is still held, so the
+    // same credit cannot disappear before this locked read completes.
+    opened.row = closedRow!;
+  }
+  const plan = await prepayPlan(
+    deps,
+    opened.row,
+    opened.nowMs,
+    parsed.units,
+    Number.MAX_SAFE_INTEGER,
+  );
+  if (plan === 'unavailable') {
+    return c.json({ error: 'Ask amount is unavailable' }, 503);
+  }
+  if (plan.maxSats === null) {
+    return c.json({ error: 'Ask amount is unavailable' }, 503);
+  }
+  if (plan.allocation.maxUnits === 0n) {
+    return c.json({ error: NOTHING_DUE_BODY }, 400);
+  }
+  if (parsed.units > plan.maxUnits) {
+    if (plan.stoppedAtBlockingShare) {
+      return c.json({ error: OPEN_PAYMENT_BODY }, 409);
+    }
+    return c.json(
+      {
+        error: AMOUNT_TOO_HIGH_BODY,
+        code: 'amount_too_high',
+        maxSats: plan.maxSats,
+        maxAmount: plan.maxAmount,
+      },
+      400,
+    );
+  }
+  if (plan.allocation.openBillExceedsAmount) {
+    return c.json({ error: OPEN_PAYMENT_BODY }, 409);
+  }
+  if (plan.allocation.parts.length > REPAYMENT_BILLS_MAX) {
+    const capped = cappedAllocation(plan.shares, parsed.units);
+    const cappedUnits = capped.parts.reduce((sum, part) => sum + part.units, 0n);
+    const cappedSats = pricedSum(plan.price, capped.parts);
+    return c.json(
+      {
+        error: TOO_MANY_SHARES_BODY,
+        code: 'too_many_shares',
+        maxSats: cappedSats,
+        maxAmount: plan.fiat ? formatCents(cappedUnits) : null,
+      },
+      400,
+    );
+  }
+  for (const part of plan.allocation.parts) {
+    if (part.open && part.description !== undefined) {
+      const attempt = await deps.store.findOkInvoiceByDescription(opened.row.id, part.description);
+      if (
+        !plan.fiat &&
+        attempt !== undefined &&
+        attempt.pr !== null &&
+        attempt.amountSats !== Number(part.units)
+      ) {
+        return c.json({ error: OPEN_PAYMENT_BODY }, 409);
+      }
+    }
+  }
+  let mintAllowed: boolean | undefined;
+  const mayMint = (): boolean => {
+    mintAllowed ??= repaymentLimiterOf(deps).allow(opened.account.id, opened.nowMs);
+    return mintAllowed;
+  };
+  const givers = new Map<string, ReturnType<typeof publicGiver>>();
+  const giverOf = (accountId: string): ReturnType<typeof publicGiver> => {
+    let giver = givers.get(accountId);
+    if (giver === undefined) {
+      giver = publicGiver(deps, accountId);
+      givers.set(accountId, giver);
+    }
+    return giver;
+  };
+  const refused = new Set<string>();
+  const shares = new Map(
+    plan.shares.map((share) => [`${share.dayIndex}:${share.accountId}`, share]),
+  );
+  const allocationShares = (): Parameters<typeof allocateRepayment>[1] =>
+    plan.shares.map((share) => ({
+      dayIndex: share.dayIndex,
+      accountId: share.accountId,
+      units: share.units,
+      paidUnits: share.paidUnits,
+      nextPartIndex: share.nextPartIndex,
+      openParts: share.openParts,
+      canReceive: share.canReceive && !refused.has(share.accountId),
+    }));
+  const partKey = (part: (typeof plan.allocation.parts)[number]): string =>
+    `${part.dayIndex}:${part.accountId}:${part.partIndex}:${part.units.toString()}`;
+  const completed = new Map<string, Record<string, unknown>>();
+  const completedParts = new Map<string, (typeof plan.allocation.parts)[number]>();
+  const fixedUnitsForShare = (dayIndex: number, accountId: string): bigint =>
+    [...completedParts.values()]
+      .filter((part) => part.dayIndex === dayIndex && part.accountId === accountId)
+      .reduce((sum, part) => sum + part.units, 0n);
+  let allocation = plan.allocation;
+  allocationLoop: while (true) {
+    for (const part of allocation.parts) {
+      const key = partKey(part);
+      const share = shares.get(`${part.dayIndex}:${part.accountId}`) as ShareState;
+      const sats = plan.price(part.units) as number;
+      const giver = await giverOf(part.accountId);
+      const line = {
+        dayIndex: part.dayIndex,
+        recipientAccountId: part.accountId,
+        name: giver.name,
+        username: giver.username,
+        amountSats: sats,
+        amount: plan.fiat ? formatCents(part.units) : null,
+      };
+      const bill = await repaymentBillLocked(
+        deps,
+        opened,
+        {
+          dayIndex: part.dayIndex,
+          accountId: part.accountId,
+          shareUnits: share.units,
+          sats,
+          description:
+            part.description ??
+            repaymentPartDescription(
+              part.dayIndex,
+              part.accountId,
+              part.partIndex,
+              part.units,
+              share.units,
+            ),
+        },
+        mayMint,
+      );
+      if (!bill.ok) {
+        if (bill.body.code === CANNOT_RECEIVE) {
+          refused.add(part.accountId);
+          const fixedUnits = [...completedParts.values()].reduce(
+            (sum, completedPart) => sum + completedPart.units,
+            0n,
+          );
+          const remainingUnits = parsed.units - fixedUnits;
+          const remainingBillSlots = Math.max(0, REPAYMENT_BILLS_MAX - completedParts.size);
+          const replacement = allocateRepayment(
+            remainingUnits,
+            allocationShares().map((allocationShare) => {
+              const fixed = fixedUnitsForShare(allocationShare.dayIndex, allocationShare.accountId);
+              const completedIndexes = new Set(
+                [...completedParts.values()]
+                  .filter(
+                    (completedPart) =>
+                      completedPart.dayIndex === allocationShare.dayIndex &&
+                      completedPart.accountId === allocationShare.accountId,
+                  )
+                  .map((completedPart) => completedPart.partIndex),
+              );
+              return {
+                ...allocationShare,
+                paidUnits: allocationShare.paidUnits + fixed,
+                nextPartIndex: Math.max(
+                  allocationShare.nextPartIndex,
+                  ...[...completedParts.values()]
+                    .filter(
+                      (completedPart) =>
+                        completedPart.dayIndex === allocationShare.dayIndex &&
+                        completedPart.accountId === allocationShare.accountId,
+                    )
+                    .map((completedPart) => completedPart.partIndex + 1),
+                ),
+                openParts: allocationShare.openParts.filter(
+                  (openPart) => !completedIndexes.has(openPart.partIndex),
+                ),
+              };
+            }),
+            remainingBillSlots,
+          );
+          if (replacement.openBillExceedsAmount) {
+            return c.json({ error: OPEN_PAYMENT_BODY }, 409);
+          }
+          if (
+            replacement.parts.length === remainingBillSlots &&
+            replacement.usedUnits < remainingUnits
+          ) {
+            allocation = { ...replacement, parts: [] };
+            break allocationLoop;
+          }
+          allocation = replacement;
+          continue allocationLoop;
+        }
+        return billError(c, bill);
+      }
+      completed.set(key, {
+        ...line,
+        amountSats: bill.amountSats,
+        pr: bill.pr,
+        sparkInvoice: bill.sparkInvoice,
+      });
+      completedParts.set(key, part);
+    }
+    break;
+  }
+  const finalPartMap = new Map(allocation.parts.map((part) => [partKey(part), part] as const));
+  for (const [key, part] of completedParts) {
+    finalPartMap.set(key, part);
+  }
+  const finalParts = [...finalPartMap.values()].sort((a, b) => {
+    const aOrder = plan.shares.findIndex(
+      (share) => share.dayIndex === a.dayIndex && share.accountId === a.accountId,
+    );
+    const bOrder = plan.shares.findIndex(
+      (share) => share.dayIndex === b.dayIndex && share.accountId === b.accountId,
+    );
+    return aOrder - bOrder || a.partIndex - b.partIndex;
+  });
+  const bills = finalParts.map((part) => completed.get(partKey(part)) as Record<string, unknown>);
+  const waiting: Record<string, unknown>[] = [];
+  for (const share of allocation.waiting) {
+    const sats = plan.price(share.units) as number;
+    const giver = await giverOf(share.accountId);
+    waiting.push({
+      dayIndex: share.dayIndex,
+      recipientAccountId: share.accountId,
+      name: giver.name,
+      username: giver.username,
+      amountSats: sats,
+      amount: plan.fiat ? formatCents(share.units) : null,
+    });
+  }
+  const amountSats = bills.reduce((sum, bill) => sum + Number(bill['amountSats']), 0);
+  return c.json(
+    {
+      amountSats,
+      amount: plan.fiat ? parsed.typed : null,
+      bills,
+      waiting,
+    },
+    200,
+  );
+}
+
 async function openCredit(
   deps: RepaymentDeps,
   c: Context,
+  options?: { allowCollecting?: boolean },
 ): Promise<Response | { account: Account; row: MessageRow; nowMs: number }> {
   const token = bearerToken(c.req.header('authorization'));
   if (token === null) {
@@ -722,9 +1683,10 @@ async function openCredit(
     row.goalTermDays === null ||
     /* v8 ignore next -- copyRow stores null, never undefined */
     row.goalTermDays === undefined ||
-    row.goalFundedAt === null ||
-    /* v8 ignore next -- copyRow stores null, never undefined */
-    row.goalFundedAt === undefined ||
+    (options?.allowCollecting !== true &&
+      (row.goalFundedAt === null ||
+        /* v8 ignore next -- copyRow stores null, never undefined */
+        row.goalFundedAt === undefined)) ||
     row.accountId !== account.id
   ) {
     return c.json({ error: 'Not found' }, 404);
@@ -737,20 +1699,38 @@ async function openCredit(
  * cannot receive are skipped; `waiting` says some were. A due share that
  * cannot be priced (a fiat loan with no rate, or a rate loader that fails) is
  * 503, whoever its giver is.
+ *
+ * @param deps - Store, auth, and optional rate loader.
+ * @param row - Funded credit note.
+ * @param nowMs - Clock.
+ * @param prepared - Optional plan snapshot and its already-read price function.
+ * @returns The next payable share or the route error state.
  */
 async function nextShare(
   deps: RepaymentDeps,
   row: MessageRow,
   nowMs: number,
+  prepared?: {
+    plan: DuePlan | 'unavailable';
+    price: Awaited<ReturnType<typeof sharePricer>> | null;
+  },
 ): Promise<{
   daysDue: number;
   daysPaid: number;
-  share: { dayIndex: number; accountId: string; sats: number } | null;
+  share: {
+    dayIndex: number;
+    accountId: string;
+    sats: number;
+    description: string;
+    units: bigint;
+    shareUnits: bigint;
+    partIndex: number;
+  } | null;
   waiting: boolean;
   error: string | null;
   status: 400 | 503;
 }> {
-  const plan = await duePlan(deps, row, nowMs);
+  const plan = prepared?.plan ?? (await duePlan(deps, row, nowMs));
   if (plan === 'unavailable') {
     return {
       daysDue: dueDayCount(
@@ -772,8 +1752,9 @@ async function nextShare(
   }
   // Every due share needs a price, whether or not its giver can receive. A rate
   // loader that fails is the same 503 as a missing rate.
-  const price = await sharePricer(deps, row).catch(() => null);
-  if (price === null || plan.due.some((share) => price(share.units) === null)) {
+  const price =
+    prepared === undefined ? await sharePricer(deps, row).catch(() => null) : prepared.price;
+  if (price === null || plan.due.some((share) => price(share.units - share.paidUnits) === null)) {
     return {
       daysDue,
       daysPaid,
@@ -783,15 +1764,35 @@ async function nextShare(
       status: 503,
     };
   }
-  const payable = plan.due.find((share) => share.canReceive);
+  const payable = plan.due.find((share) => share.canReceive && share.paidUnits < share.units);
   if (payable === undefined) {
     return { daysDue, daysPaid, share: null, waiting: true, error: null, status: 400 };
   }
-  const sats = price(payable.units) as number;
+  const openPart = payable.openParts[0];
+  const units = openPart === undefined ? payable.units - payable.paidUnits : openPart.units;
+  const sats = price(units) as number;
   return {
     daysDue,
     daysPaid,
-    share: { dayIndex: payable.dayIndex, accountId: payable.accountId, sats },
+    share: {
+      dayIndex: payable.dayIndex,
+      accountId: payable.accountId,
+      sats,
+      description:
+        openPart?.description ??
+        (openPart === undefined && units === payable.units
+          ? repaymentDescription(payable.dayIndex, payable.accountId)
+          : repaymentPartDescription(
+              payable.dayIndex,
+              payable.accountId,
+              payable.nextPartIndex,
+              units,
+              payable.units,
+            )),
+      units,
+      shareUnits: payable.units,
+      partIndex: openPart?.partIndex ?? payable.nextPartIndex,
+    },
     waiting: false,
     error: null,
     status: 400,
@@ -805,19 +1806,19 @@ export type MyLoansRouteDeps = Pick<
 >;
 
 /**
- * Sum of priced shares, or null when one has no price.
+ * Sum new parts at the current price and open parts at their stored invoice sats.
  *
  * @param price - Units → sats.
- * @param shares - Shares to price.
+ * @param shares - Shares or allocation parts to price.
  * @returns Sats, or null.
  */
 function pricedSum(
   price: (units: bigint) => number | null,
-  shares: readonly { units: bigint }[],
+  shares: readonly { units: bigint; open?: boolean; amountSats?: number }[],
 ): number | null {
   let total = 0;
   for (const share of shares) {
-    const sats = price(share.units);
+    const sats = share.open === true ? (share.amountSats as number) : price(share.units);
     if (sats === null) {
       return null;
     }
@@ -861,25 +1862,59 @@ async function loanRow(
     amountPhp: row.amountPhp ?? null,
     termDays: row.goalTermDays,
     fundedAt: fundedAt === null ? null : fundedAt.toISOString(),
+    closedAt: row.goalClosedAt instanceof Date ? row.goalClosedAt.toISOString() : null,
   };
   if (fundedAt === null) {
-    const { owed } = await creditOwed(deps, row);
-    if (owed === 'unavailable') {
-      return 'unavailable';
+    let named: { accountId: string; units: bigint }[];
+    if (fiat) {
+      named = (
+        await deps.store.previewCreditPayerSnapshot(
+          row.id,
+          row.goalCurrency as GoalFiatCode,
+          new Date(nowMs),
+        )
+      ).map((payer) => ({ accountId: payer.accountId, units: payer.units }));
+    } else {
+      const { owed } = await creditOwed(deps, row);
+      // Sats with no account are not repaid, as in the schedule.
+      named = (owed as { accountId: string; units: bigint }[]).filter(
+        (payer) => payer.accountId !== '',
+      );
     }
-    // Sats with no account are not repaid, as in the schedule.
-    const named = owed.filter((payer) => payer.accountId !== '');
+    named = named.filter((payer) => payer.units > 0n);
+    const receivers = await receiverMap(
+      deps,
+      named.map((payer) => payer.accountId),
+    );
+    const payable = named.filter((payer) => receivers.get(payer.accountId) !== null);
     // The rate is read only when there is a debt to price. A failing loader is 503; a missing rate leaves sats null.
     const price = named.length === 0 ? undefined : await sharePricer(deps, row).catch(() => null);
     if (price === null) {
       return 'unavailable';
     }
+    const maxUnits = payable.reduce((sum, payer) => sum + payer.units, 0n);
+    const payableIds = new Set(payable.map((payer) => payer.accountId));
+    const totalShares = repaymentSchedule(row.goalTermDays as number, named);
+    const maximumShares = totalShares.filter((share) => payableIds.has(share.accountId));
+    const maximum = allocateRepayment(
+      maxUnits,
+      maximumShares.map((share) => ({
+        ...share,
+        paidUnits: 0n,
+        nextPartIndex: 0,
+        openParts: [],
+        canReceive: true,
+      })),
+      REPAYMENT_BILLS_MAX,
+    );
     return {
       ...base,
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
-      totalSats: price === undefined ? 0 : pricedSum(price, named),
+      totalSats: price === undefined ? 0 : pricedSum(price, totalShares),
+      maxSats: price === undefined ? (fiat ? null : 0) : pricedSum(price, maximum.parts),
+      maxAmount: cents(maximum.usedUnits),
       due: {
         payableSats: 0,
         payableAmount: cents(0n),
@@ -898,10 +1933,7 @@ async function loanRow(
   if (plan === 'unavailable') {
     return 'unavailable';
   }
-  const settled = new Set(plan.paid.map((item) => `${item.dayIndex}:${item.recipientAccountId}`));
-  const open = plan.schedule.filter(
-    (slice) => !settled.has(`${slice.dayIndex}:${slice.accountId}`),
-  );
+  const open = plan.shares.filter((share) => share.paidUnits < share.units);
   if (open.length === 0) {
     return null;
   }
@@ -910,12 +1942,20 @@ async function loanRow(
   if (price === null) {
     return 'unavailable';
   }
-  const repaidSats = plan.paid.reduce((sum, item) => sum + item.dueSats, 0);
-  const openSats = pricedSum(price, open);
+  const paidParts = plan.parts;
+  const partKeys = new Set(paidParts.map((part) => `${part.dayIndex}:${part.recipientAccountId}`));
+  const legacyRepaidSats = plan.paid
+    .filter((item) => !partKeys.has(`${item.dayIndex}:${item.recipientAccountId}`))
+    .reduce((sum, item) => sum + item.dueSats, 0);
+  const repaidSats = paidParts.reduce((sum, part) => sum + part.sats, legacyRepaidSats);
+  const openSats = pricedSum(
+    price,
+    open.map((share) => ({ units: share.units - share.paidUnits })),
+  );
   const payable = plan.due.filter((share) => share.canReceive);
   const waiting = plan.due.filter((share) => !share.canReceive);
-  const units = (shares: readonly { units: bigint }[]): bigint =>
-    shares.reduce((sum, share) => sum + share.units, 0n);
+  const remainderUnits = (shares: readonly ShareState[]): bigint =>
+    shares.reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
   const people = (shares: readonly { accountId: string }[]): number =>
     new Set(shares.map((share) => share.accountId)).size;
   const today = Math.floor((nowMs - repaymentStartMs(fundedAt.getTime(), row.id)) / 86_400_000);
@@ -924,20 +1964,29 @@ async function loanRow(
       .filter((share) => !share.excused && share.dayIndex < today)
       .map((share) => share.dayIndex),
   );
-  const nextDay = open.find((slice) => slice.dayIndex >= plan.daysDue)?.dayIndex;
-  const nextShares = open.filter((slice) => slice.dayIndex === nextDay);
+  const nextDay = open.find((share) => share.dayIndex >= plan.daysDue)?.dayIndex;
+  const nextShares = open.filter((share) => share.dayIndex === nextDay);
+  const maximum = maximumAcceptedRepayment(plan.shares, REPAYMENT_BILLS_MAX);
   return {
     ...base,
     daysDue: plan.daysDue,
     daysPaid: plan.daysPaid,
     repaidSats,
     totalSats: openSats === null ? null : repaidSats + openSats,
+    maxSats: pricedSum(price, maximum.parts),
+    maxAmount: cents(maximum.usedUnits),
     due: {
-      payableSats: pricedSum(price, payable),
-      payableAmount: cents(units(payable)),
+      payableSats: pricedSum(
+        price,
+        payable.map((share) => ({ units: share.units - share.paidUnits })),
+      ),
+      payableAmount: cents(remainderUnits(payable)),
       payablePeople: people(payable),
-      waitingSats: pricedSum(price, waiting),
-      waitingAmount: cents(units(waiting)),
+      waitingSats: pricedSum(
+        price,
+        waiting.map((share) => ({ units: share.units - share.paidUnits })),
+      ),
+      waitingAmount: cents(remainderUnits(waiting)),
       waitingPeople: people(waiting),
       waitingShares: waiting.length,
       behindDays: behind.size,
@@ -948,8 +1997,11 @@ async function loanRow(
         ? null
         : {
             dueOn: repaymentDueDate(fundedAt.getTime(), nextDay, row.id),
-            sats: pricedSum(price, nextShares),
-            amount: cents(units(nextShares)),
+            sats: pricedSum(
+              price,
+              nextShares.map((share) => ({ units: share.units - share.paidUnits })),
+            ),
+            amount: cents(remainderUnits(nextShares)),
           },
   };
 }
@@ -1009,7 +2061,12 @@ async function lenderWaiting(
       return 'unavailable';
     }
     shares += mine.length;
-    loanSats.push(pricedSum(price, mine));
+    loanSats.push(
+      pricedSum(
+        price,
+        mine.map((share) => ({ units: share.units - share.paidUnits })),
+      ),
+    );
   }
   return {
     shares,

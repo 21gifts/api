@@ -523,6 +523,7 @@ describe('GET /view/:viewKey feeds', () => {
     await adaAccount(store);
     const messages = new InMemoryMessageStore();
     const createdAt = new Date(1_000_000);
+    const closedAt = new Date('2026-11-12T09:10:11.000Z');
     await messages.create({
       id: 'post-1',
       accountId: 'acc',
@@ -550,6 +551,7 @@ describe('GET /view/:viewKey feeds', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
       goalRepayable: true,
+      goalClosedAt: closedAt,
     });
     await messages.create({
       ...unsignedNostrDefaults(),
@@ -563,21 +565,25 @@ describe('GET /view/:viewKey feeds', () => {
     });
     const app = mount(store, messages);
     const posts = (await (await app.request(`/view/${VIEW_KEY}/posts`)).json()) as {
-      messages: Array<{ id: string; hearted: boolean }>;
+      messages: Array<{ id: string; hearted: boolean; goalClosedAt?: string }>;
     };
     const shops = (await (await app.request(`/view/${VIEW_KEY}/shops`)).json()) as {
       messages: Array<{ id: string }>;
     };
     const credits = (await (await app.request(`/view/${VIEW_KEY}/credits`)).json()) as {
-      messages: Array<{ id: string }>;
+      messages: Array<{ id: string; goalClosedAt?: string }>;
     };
     const replies = (await (await app.request(`/view/${VIEW_KEY}/replies`)).json()) as {
       messages: Array<{ id: string; hearted: boolean }>;
     };
     expect(posts.messages.map((row) => row.id).sort()).toEqual(['credit-1', 'post-1', 'shop-1']);
     expect(posts.messages.every((row) => row.hearted === false)).toBe(true);
+    expect(posts.messages.find((row) => row.id === 'credit-1')?.goalClosedAt).toBe(
+      closedAt.toISOString(),
+    );
     expect(shops.messages.map((row) => row.id)).toEqual(['shop-1']);
     expect(credits.messages.map((row) => row.id)).toEqual(['credit-1']);
+    expect(credits.messages[0]?.goalClosedAt).toBe(closedAt.toISOString());
     expect(replies.messages.map((row) => row.id)).toEqual(['reply-1']);
     expect(replies.messages[0]?.hearted).toBe(false);
   });

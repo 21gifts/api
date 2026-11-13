@@ -297,6 +297,36 @@ describe('GET /members/:accountId', () => {
     ).toBeNull();
   });
 
+  it('shows no funding review stamp or reviewer for a withdrawn grant', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: ACCOUNT_ID,
+        status: 'withdrawn',
+        appliedAt: 1,
+        decidedAt: now(),
+        decidedBy: ACCOUNT_ID,
+        trialUtcDate: null,
+        admittedAt: now(),
+        note: null,
+      },
+    ]);
+    const res = await mount(
+      authStore,
+      new InMemoryMessageStore(),
+      new InMemoryTrustStore(),
+      fundingStore,
+    ).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      fundingReviewedAt: number | null;
+      fundingReviewedByName: string | null;
+    };
+    expect(body.fundingReviewedAt).toBeNull();
+    expect(body.fundingReviewedByName).toBeNull();
+  });
+
   it('marks the profile note not payable when eventId is empty', async () => {
     const authStore = await seededCaller();
     const noteId = '55555555-5555-4555-8555-555555555555';
@@ -1496,6 +1526,7 @@ describe('GET /members/:accountId/credits', () => {
     const messageStore = new InMemoryMessageStore();
     const older = '53535353-5353-4353-8353-535353535353';
     const newer = '54545454-5454-4454-8454-545454545454';
+    const closedAt = new Date('2026-11-12T09:10:11.000Z');
     await messageStore.create({
       id: older,
       accountId: ACCOUNT_ID,
@@ -1517,6 +1548,7 @@ describe('GET /members/:accountId/credits', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
       goalRepayable: true,
+      goalClosedAt: closedAt,
       shopAccount: { id: OTHER_ID, username: 'bob', name: 'Bob' },
     });
     await messageStore.create({
@@ -1562,16 +1594,19 @@ describe('GET /members/:accountId/credits', () => {
         replyCount?: number;
         payable: boolean;
         parentId?: string;
+        goalClosedAt?: string;
       }>;
     };
     expect(body.messages.map((item) => item.id)).toEqual([newer, older]);
     expect(body.messages[0]?.accountId).toBe(ACCOUNT_ID);
     expect(body.messages[0]?.replyCount).toBe(1);
     expect(body.messages[0]?.payable).toBe(true);
+    expect(body.messages[0]?.goalClosedAt).toBe(closedAt.toISOString());
     expect(body.messages[0]).not.toHaveProperty('parentId');
     expect(body.messages[1]?.accountId).toBe(ACCOUNT_ID);
     expect(body.messages[1]?.replyCount).toBe(0);
     expect(body.messages[1]?.payable).toBe(false);
+    expect(body.messages[1]).not.toHaveProperty('goalClosedAt');
     expect(body.messages[1]).not.toHaveProperty('parentId');
   });
 

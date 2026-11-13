@@ -264,7 +264,8 @@ media (else 403 `Forum post required`); omitted
 `POST /invoices` 403s
 `Funding grant required` when not eligible. `GET /invoices/eligible?address=`
 is the spend lookup and returns 200 `{ eligible, status }` (`status` is
-`effectiveStatus`; unknown/`basis` are `{ eligible: false, status: "none" }`).
+`ownerFundingStatus`, so a withdrawn grant reads `none`; unknown/`basis` are
+`{ eligible: false, status: "none" }`).
 `POST /invoices/proof` does not check the grant.
 Every spend lookup and `POST /invoices` match `address` only as a member's
 wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive,

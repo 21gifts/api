@@ -4,9 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 63
-- Columns: 607
-- Foreign keys: 59
+- Tables: 65
+- Columns: 620
+- Foreign keys: 61
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
@@ -39,11 +39,13 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`member_habit_log`](tables/member_habit_log.md)                                 | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 3       | 1            |
 | [`member_habit_revision`](tables/member_habit_revision.md)                       | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 4       | 1            |
 | [`member_spark_invoice`](tables/member_spark_invoice.md)                         | [src/lib/spark-invoice-store.ts](../../src/lib/spark-invoice-store.ts) | 8       | 0            |
-| [`message`](tables/message.md)                                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 54      | 3            |
+| [`message`](tables/message.md)                                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 56      | 3            |
+| [`message_credit_payer_snapshot`](tables/message_credit_payer_snapshot.md)       | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 4       | 1            |
 | [`message_edit`](tables/message_edit.md)                                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 7       | 1            |
 | [`message_extra_photo`](tables/message_extra_photo.md)                           | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 5       | 1            |
 | [`message_invoice`](tables/message_invoice.md)                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 24      | 0            |
 | [`message_repayment`](tables/message_repayment.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 5       | 1            |
+| [`message_repayment_part`](tables/message_repayment_part.md)                     | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 7       | 1            |
 | [`message_translation`](tables/message_translation.md)                           | [src/lib/translation-store.ts](../../src/lib/translation-store.ts)     | 5       | 1            |
 | [`nostr_blocked_pubkey`](tables/nostr_blocked_pubkey.md)                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 4       | 0            |
 | [`nostr_zap_ingest`](tables/nostr_zap_ingest.md)                                 | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 14      | 0            |
