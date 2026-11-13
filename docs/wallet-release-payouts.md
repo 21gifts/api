@@ -423,7 +423,10 @@ they are eligible, on the in-app wallet only, when all of these hold:
 7. From deployment of the viewer rule, the member's wallet has a completed
    server-verified payment to a live 21.gifts shop on that payout UTC day or
    the day before. There is no configured start day. This applies to daily
-   grants and moderator stipends, but not the one-time welcome gift.
+   grants and moderator stipends, but not the one-time welcome gift when the
+   server sees an account at least verified, not welcomed before, exact USD
+   `1.00` / `Welcome`, and no `messageId` or `groupMessageId`. Those are the
+   gift's own once-per-account facts, not a public payout-kind override.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under

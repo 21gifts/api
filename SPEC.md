@@ -61,7 +61,7 @@ does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
 report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-01, a 21.gifts recovery share for the current verified wallet from `RECOVERY_SHARE_REQUIRED_FROM`, and a completed server-verified shop payment today or yesterday UTC);
-`POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition.
+`POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when server-owned facts show that the account is at least `verified`, has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, and neither `messageId` nor `groupMessageId` is set. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
 Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
@@ -6113,9 +6113,15 @@ counterparties follow the `wallet_token_transaction` rules above, and invoice
 attachment strings are stored in `spark_invoices`. Each primary token page is
 stored first; an unresolved input therefore remains incoming. Input-owner
 enrichment then advances one lookup page per independently timed call and keeps
-its process-local cursor/owner progress across ticks. An enrichment failure or
-timeout never prevents token upserts, catch-up, the balance snapshot, or the
-daily full-sync watermark. It normalizes SDK enums into `wallet_transfer`, resolves counterparties against verified current and previous wallet
+bounded process-local cursor/owner progress across ticks. The cache contains
+only allow-listed transaction facts and the outpoints/output ids required for
+the lookup, never raw SDK rows or revocation/withdrawal secrets. A cursor is
+consumed only after a successful response returns a new non-empty cursor. A
+failure evicts that page's progress so the next tick retries it; a refreshed
+page with new unknown input ids reopens the lookup. Finished and stale entries
+are evicted. An enrichment failure or timeout never prevents token upserts,
+catch-up, the balance snapshot, or the daily full-sync watermark. It normalizes
+SDK enums into `wallet_transfer`, resolves counterparties against verified current and previous wallet
 keys, and writes an owned balance snapshot. Private wallets that have not yet
 granted the viewer simply return no transfers. Changed wallets log only
 `wallet_transfer.synced { accountId, inserted, updated }`; errors log only
@@ -6129,10 +6135,13 @@ resolves to the till account of a live top-level `#21GiftsShop` note. Its update
 (creation time fallback) must be the payout UTC day or the day before. This
 condition applies to posts, zap-paid notes, spend daily runs, spend invoices,
 operator replay, and moderator stipends. The one-time welcome gift is exempt
-only when the server-selected welcome payout has no stored welcome for that
-account, no forum `messageId`, and the server welcome instruction's exact
-1.00 USD amount. A caller-supplied or daily roster comment `Welcome` is not the
-exception. A failed decision reports `no_shop_payment`. On every tick, while
+only when server-owned facts show an account at least `verified` with no stored
+welcome, comment exactly `Welcome`, neither `messageId` nor `groupMessageId`,
+and a normalized exact USD `1.00`. The public body has no payout-kind override;
+the internal `serverPayoutKind` cannot weaken these checks. Those facts are the
+welcome gift's own once-per-account conditions, so a caller can obtain at most
+that one entitlement. A roster `Welcome` with a message id or another amount
+is not the exception. A failed decision reports `no_shop_payment`. On every tick, while
 such a payment is in D-1..D, the member is eligible, today's media exists, and
 no daily payout is recorded today, the worker calls `pingTodayMedia` until a
 delivery is accepted. Failed deliveries enter the existing wallet backoff;
@@ -7573,7 +7582,7 @@ Otherwise no ping, log `spend.ping.skipped` / `no_shop_payment` for that
 missing condition, `not_eligible` for another ineligible condition, or
 `no_media` (eligible text-only). When `role === 'verified'` and any live
 top-level photo or video exists, including the About-me note, the api also
-POSTs `{ address, messageId, kind: "welcome" }` for that note, independent
+POSTs `{ address, kind: "welcome" }` for that note, independent
 of `eligibleToday` and independent of whether the new row itself has media.
 Spend pays the welcome gift and does not also pay the daily gift on that
 same UTC day. A later UTC day still pays the daily gift.

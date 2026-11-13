@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { earnsModeratorGroupPay, isModeratorGroupMember } from '@/lib/auth/roles';
+import { earnsModeratorGroupPay, isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import {
@@ -337,6 +337,25 @@ async function welcomePostedFields(
 }
 
 /**
+ * Whether this account is still owed its one welcome gift. This is deliberately
+ * derived from server-owned account and gift-ledger facts, never a request flag.
+ */
+async function welcomeGiftOwed(
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
+  account: Account,
+): Promise<boolean> {
+  return (
+    roleAtLeast(account.role, 'verified') &&
+    !(await accountWelcomed({
+      auth: deps.authStore,
+      messages: deps.messageStore,
+      gifts: deps.giftStore,
+      account,
+    }))
+  );
+}
+
+/**
  * Whether an account has at least one live top-level forum row that is not
  * the auto-created profile note. Replies do not count.
  *
@@ -395,7 +414,7 @@ export interface IssueGiftInvoiceInput {
   amountMsat: number;
   /** Optional LUD-12 comment. */
   comment?: string;
-  /** Daily/welcome trigger post id. */
+  /** Daily trigger post id; canonical welcome payouts deliberately omit it. */
   messageId?: string;
   /** Moderator trigger message id. */
   groupMessageId?: string;
@@ -789,21 +808,27 @@ async function issueGiftInvoiceLocked(
   }
   const account = receiver.account;
 
-  const serverWelcomeCandidate =
-    input.serverPayoutKind === 'welcome' &&
-    input.comment === 'Welcome' &&
-    input.messageId === undefined &&
-    input.groupMessageId === undefined &&
-    amountUsd === '1.00';
-  const welcomeRefused = async (): Promise<boolean> =>
-    input.comment === 'Welcome' &&
-    (await accountWelcomed({
+  let welcomed: Promise<boolean> | undefined;
+  const welcomeRefused = (): Promise<boolean> => {
+    if (input.comment !== 'Welcome') return Promise.resolve(false);
+    welcomed ??= accountWelcomed({
       auth: deps.authStore,
       messages: deps.messageStore,
       gifts: deps.giftStore,
       account,
-    }));
-  const genuineWelcome = serverWelcomeCandidate && !(await welcomeRefused());
+    });
+    return welcomed;
+  };
+  const canonicalWelcomeRequest =
+    input.comment === 'Welcome' &&
+    input.messageId === undefined &&
+    input.groupMessageId === undefined &&
+    amountUsd === '1.00';
+  const serverPayoutKind =
+    canonicalWelcomeRequest && roleAtLeast(account.role, 'verified') && !(await welcomeRefused())
+      ? (input.serverPayoutKind ?? 'welcome')
+      : undefined;
+  const genuineWelcome = serverPayoutKind === 'welcome' && canonicalWelcomeRequest;
 
   const { eligible } = await loadPayoutEligibility(
     fundingStore,
@@ -1067,13 +1092,14 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ eligible: false, status: 'none' }, 200);
       }
       const nowMs = deps.now();
+      const welcomeOwed = await welcomeGiftOwed(deps, account);
       const { grant, eligible } = await loadPayoutEligibility(
         fundingStore,
         deps.authStore,
         account,
         nowMs,
         deps.recoveryShareRequiredFrom ?? null,
-        deps.walletTransfers,
+        welcomeOwed ? undefined : deps.walletTransfers,
       );
       return c.json({ eligible, status: ownerFundingStatus(grant, nowMs) }, 200);
     })

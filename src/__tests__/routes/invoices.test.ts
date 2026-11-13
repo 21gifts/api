@@ -4541,12 +4541,34 @@ describe('GET /invoices/eligible', () => {
     expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
   });
 
-  it('returns eligible false when an admitted member has no recent verified shop payment', async () => {
+  it('keeps an unwelcomed verified member eligible for the welcome preflight without a shop payment', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const res = await spendApp({
       spendApiToken: TOKEN,
       authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
+  });
+
+  it('still requires a shop payment in eligible after the account received its welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(3),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
       walletTransferStore: fakeWalletTransferStore(false),
       now: () => GATE_MS,
     }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
@@ -4574,7 +4596,7 @@ describe('GET /invoices/eligible', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("does not let a public comment 'Welcome' bypass the verified shop payment", async () => {
+  it('still requires a shop payment when Welcome has another normalized amount', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
@@ -4589,7 +4611,106 @@ describe('GET /invoices/eligible', () => {
       '/invoices',
       auth({
         method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '2.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('issues the one-dollar welcome on the spend route without a shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '1',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires a shop payment for a second canonical welcome request', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(3),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a basis account as the server welcome exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    await authStore.updateAccount({ ...account!, role: 'basis' });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
       }),
     );
     expect(res.status).toBe(403);
@@ -4626,7 +4747,7 @@ describe('GET /invoices/eligible', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('lets only the server-decided one-dollar welcome path skip the shop payment', async () => {
+  it('keeps internal welcome provenance compatible with the same server-side facts', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());

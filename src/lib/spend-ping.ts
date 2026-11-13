@@ -156,7 +156,7 @@ export class FondQueueSink implements PayoutSink {
     if (amountUsd === null || typeof comment !== 'string') {
       return { outcome: 'failed' };
     }
-    const messageId = kind === 'moderator' ? null : textOrNull(body['messageId']);
+    const messageId = kind === 'daily' ? textOrNull(body['messageId']) : null;
     const groupMessageId = kind === 'moderator' ? textOrNull(body['groupMessageId']) : null;
     try {
       const result = await this.#store.enqueue({
@@ -216,13 +216,13 @@ export interface SpendPing {
    * Notify the signer that `address` just created a top-level forum post
    * (`kind` omitted or `'daily'`), a moderator-group message
    * (`kind === 'moderator'`), or a verified welcome media post
-   * (`kind === 'welcome'`). Daily JSON uses `messageId`; welcome JSON is
-   * `{ address, messageId, kind: "welcome" }`.
+   * (`kind === 'welcome'`). Daily JSON uses `messageId`; welcome JSON omits
+   * it because the one-time payout is not attached to a forum gift reply.
    *
    * @param address - Recipient Lightning Address.
-   * @param messageId - Forum post id (daily JSON `messageId` / welcome
-   *   JSON `messageId`) or conversation message id (moderator JSON
-   *   `groupMessageId`).
+   * @param messageId - Forum post id (daily JSON `messageId`; only used to
+   *   trigger, not deliver, a welcome) or conversation message id (moderator
+   *   JSON `groupMessageId`).
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
    * @param grantStatus - Effective grant status; daily only.
    * @returns Delivery outcome when the implementation can report it; legacy
@@ -259,8 +259,8 @@ export interface SpendPing {
  */
 export class NoopSpendPing implements SpendPing {
   /**
-   * Ignore the address, message id (daily `messageId` / welcome
-   * `messageId` / moderator `groupMessageId`), optional kind, and
+   * Ignore the address, message id (daily `messageId` / welcome trigger /
+   * moderator `groupMessageId`), optional kind, and
    * optional grant status.
    *
    * @param _address - Unused.
@@ -357,9 +357,8 @@ export class HttpSpendPing implements SpendPing {
    * throws. Never logs the token.
    *
    * @param address - Recipient Lightning Address (JSON body).
-   * @param messageId - Forum post id for daily/welcome pings (JSON
-   *   `messageId`); conversation message id for moderator pings (JSON
-   *   `groupMessageId`).
+   * @param messageId - Forum post id for daily JSON or a welcome trigger;
+   *   conversation message id for moderator JSON (`groupMessageId`).
    * @param kind - `'daily'` (default), `'moderator'`, or `'welcome'`.
    * @param grantStatus - Effective grant status; forwarded only for daily.
    */
@@ -410,7 +409,6 @@ export class HttpSpendPing implements SpendPing {
         : resolvedKind === 'welcome'
           ? {
               address,
-              messageId,
               kind: 'welcome',
               amountUsd: decision.amountUsd,
               comment: decision.comment,

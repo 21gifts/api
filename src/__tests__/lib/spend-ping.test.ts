@@ -469,7 +469,6 @@ describe('HttpSpendPing', () => {
     expect(seenInit?.body).toBe(
       JSON.stringify({
         address: ADDRESS,
-        messageId: MESSAGE_ID,
         kind: 'welcome',
         amountUsd: 1,
         comment: 'Welcome',
@@ -915,7 +914,6 @@ describe('HttpSpendPing', () => {
     expect(seenInit?.body).toBe(
       JSON.stringify({
         address: ADDRESS,
-        messageId: MESSAGE_ID,
         kind: 'welcome',
         amountUsd: 1,
         comment: 'Welcome',
@@ -1783,7 +1781,7 @@ describe('FondQueueSink', () => {
       amountUsd: '3',
     });
     expect(rows.find((row) => row.kind === 'welcome')).toMatchObject({
-      messageId: MESSAGE_ID,
+      messageId: null,
       groupMessageId: null,
       amountUsd: '1',
     });

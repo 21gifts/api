@@ -21,6 +21,9 @@ const VIEWER_AAD = new TextEncoder().encode('spark_viewer_key');
 /** Fixed advisory-lock namespace for the single deployment viewer key. */
 const SPARK_VIEWER_KEY_LOCK = 21_499_021;
 
+/** Hard process-local bound for token owner lookups that are still in progress. */
+const MAX_TOKEN_OWNER_RESOLUTIONS = 128;
+
 /** One transfer returned by the SDK adapter. */
 export interface SparkViewerTransfer {
   id: string;
@@ -313,12 +316,11 @@ function tokenOutputOwners(values: readonly unknown[]): Array<{
   });
 }
 
-function inputReferences(value: unknown): Array<{ outpoint: string; outputId: string | null }> {
-  if (typeof value !== 'object' || value === null) return [];
-  const row = value as Record<string, unknown>;
-  const transaction = row['tokenTransaction'];
-  if (typeof transaction !== 'object' || transaction === null) return [];
-  const tokenInputs = (transaction as Record<string, unknown>)['tokenInputs'];
+function inputReferences(
+  row: Record<string, unknown>,
+  transaction: Record<string, unknown>,
+): Array<{ outpoint: string; outputId: string | null }> {
+  const tokenInputs = transaction['tokenInputs'];
   if (typeof tokenInputs !== 'object' || tokenInputs === null) return [];
   const input = tokenInputs as Record<string, unknown>;
   if (input['$case'] !== 'transferInput') return [];
@@ -361,22 +363,102 @@ function inputReferences(value: unknown): Array<{ outpoint: string; outputId: st
   });
 }
 
-function inputOwnerIndexes(values: readonly unknown[]): {
+/** Non-secret transaction facts retained while input owners are resolved. */
+interface TokenTransactionProjection {
+  hash: string;
+  status: number;
+  type: SparkViewerTokenTransaction['type'];
+  outputs: ReturnType<typeof tokenOutputOwners>;
+  inputs: Array<{ outpoint: string; outputId: string | null }>;
+  issuerPublicKey: string | null;
+  mintTokenIdentifier: string | null;
+  sparkInvoices: string[];
+  createdTime: Date | undefined;
+  expiryTime: Date | undefined;
+}
+
+/**
+ * Copy the allow-listed token facts plus the outpoints/output ids needed for
+ * owner lookup. SDK rows, confirmation metadata, and output secrets are
+ * discarded before a process-local resolution can retain anything.
+ */
+function tokenTransactionProjection(value: unknown): TokenTransactionProjection | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const row = value as Record<string, unknown>;
+  const hash = transactionHashOf(row);
+  const transaction = row['tokenTransaction'];
+  if (
+    hash === null ||
+    typeof row['status'] !== 'number' ||
+    typeof transaction !== 'object' ||
+    transaction === null
+  ) {
+    return null;
+  }
+  const tx = transaction as Record<string, unknown>;
+  const tokenInputs =
+    typeof tx['tokenInputs'] === 'object' && tx['tokenInputs'] !== null
+      ? (tx['tokenInputs'] as Record<string, unknown>)
+      : {};
+  const inputCase = tokenInputs['$case'];
+  const type =
+    inputCase === 'createInput'
+      ? 'create'
+      : inputCase === 'mintInput'
+        ? 'mint'
+        : inputCase === 'transferInput'
+          ? 'transfer'
+          : 'unknown';
+  const mintInput =
+    inputCase === 'mintInput' && typeof tokenInputs['mintInput'] === 'object'
+      ? (tokenInputs['mintInput'] as Record<string, unknown>)
+      : {};
+  const createInput =
+    inputCase === 'createInput' && typeof tokenInputs['createInput'] === 'object'
+      ? (tokenInputs['createInput'] as Record<string, unknown>)
+      : {};
+  const createdTime = tx['clientCreatedTimestamp'];
+  const expiryTime = tx['expiryTime'];
+  return {
+    hash,
+    status: row['status'],
+    type,
+    outputs: tokenOutputOwners(Array.isArray(tx['tokenOutputs']) ? tx['tokenOutputs'] : []),
+    inputs: inputReferences(row, tx),
+    issuerPublicKey: compressedPublicKey(
+      inputCase === 'mintInput' ? mintInput['issuerPublicKey'] : createInput['issuerPublicKey'],
+    ),
+    mintTokenIdentifier:
+      mintInput['tokenIdentifier'] instanceof Uint8Array
+        ? bytesToHex(mintInput['tokenIdentifier'])
+        : null,
+    sparkInvoices: Array.isArray(tx['invoiceAttachments'])
+      ? tx['invoiceAttachments'].flatMap((attachment) => {
+          if (typeof attachment !== 'object' || attachment === null) return [];
+          const invoice = (attachment as Record<string, unknown>)['sparkInvoice'];
+          return typeof invoice === 'string' && invoice !== '' ? [invoice] : [];
+        })
+      : [],
+    createdTime: createdTime instanceof Date ? new Date(createdTime.getTime()) : undefined,
+    expiryTime: expiryTime instanceof Date ? new Date(expiryTime.getTime()) : undefined,
+  };
+}
+
+function tokenTransactionProjections(values: readonly unknown[]): TokenTransactionProjection[] {
+  return values
+    .map(tokenTransactionProjection)
+    .filter((row): row is TokenTransactionProjection => row !== null);
+}
+
+function inputOwnerIndexes(values: readonly TokenTransactionProjection[]): {
   byOutpoint: Map<string, string>;
   byOutputId: Map<string, string>;
 } {
   const byOutpoint = new Map<string, string>();
   const byOutputId = new Map<string, string>();
   for (const value of values) {
-    if (typeof value !== 'object' || value === null) continue;
-    const row = value as Record<string, unknown>;
-    const hash = transactionHashOf(row);
-    const transaction = row['tokenTransaction'];
-    if (hash === null || typeof transaction !== 'object' || transaction === null) continue;
-    const rawOutputs = (transaction as Record<string, unknown>)['tokenOutputs'];
-    const outputs = tokenOutputOwners(Array.isArray(rawOutputs) ? rawOutputs : []);
-    outputs.forEach((output) => {
-      byOutpoint.set(`${hash}:${String(output.vout)}`, output.owner);
+    value.outputs.forEach((output) => {
+      byOutpoint.set(`${value.hash}:${String(output.vout)}`, output.owner);
       if (output.id !== null) byOutputId.set(output.id, output.owner);
     });
   }
@@ -392,11 +474,11 @@ function mergeInputOwnerIndexes(
 }
 
 function unresolvedInputReferences(
-  transactions: readonly unknown[],
+  transactions: readonly TokenTransactionProjection[],
   owners: { byOutpoint: ReadonlyMap<string, string>; byOutputId: ReadonlyMap<string, string> },
 ): Array<{ outpoint: string; outputId: string | null }> {
   return transactions.flatMap((transaction) =>
-    inputReferences(transaction).filter(
+    transaction.inputs.filter(
       (reference) =>
         !owners.byOutpoint.has(reference.outpoint) &&
         (reference.outputId === null || !owners.byOutputId.has(reference.outputId)),
@@ -405,120 +487,80 @@ function unresolvedInputReferences(
 }
 
 function tokenTransactionOf(
-  value: unknown,
+  row: TokenTransactionProjection,
   walletPubkey: string,
   inputOwners: readonly string[],
-): SparkViewerTokenTransaction | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const row = value as Record<string, unknown>;
-  if (!(row['tokenTransactionHash'] instanceof Uint8Array) || typeof row['status'] !== 'number') {
-    return null;
-  }
-  const transaction = row['tokenTransaction'];
-  if (typeof transaction !== 'object' || transaction === null) return null;
-  const tx = transaction as Record<string, unknown>;
-  const tokenInputs =
-    typeof tx['tokenInputs'] === 'object' && tx['tokenInputs'] !== null
-      ? (tx['tokenInputs'] as Record<string, unknown>)
-      : {};
-  const inputCase = tokenInputs['$case'];
-  const type =
-    inputCase === 'createInput'
-      ? 'create'
-      : inputCase === 'mintInput'
-        ? 'mint'
-        : inputCase === 'transferInput'
-          ? 'transfer'
-          : 'unknown';
-  const outputs = tokenOutputOwners(Array.isArray(tx['tokenOutputs']) ? tx['tokenOutputs'] : []);
-  const externalOutputs = outputs.filter((output) => output.owner !== walletPubkey);
-  const ownOutputs = outputs.filter((output) => output.owner === walletPubkey);
-  const direction = type === 'transfer' && inputOwners.includes(walletPubkey) ? 'out' : 'in';
+): SparkViewerTokenTransaction {
+  const externalOutputs = row.outputs.filter((output) => output.owner !== walletPubkey);
+  const ownOutputs = row.outputs.filter((output) => output.owner === walletPubkey);
+  const direction = row.type === 'transfer' && inputOwners.includes(walletPubkey) ? 'out' : 'in';
   const attributedOutputs = direction === 'out' ? externalOutputs : ownOutputs;
   const amount = attributedOutputs.reduce((sum, output) => sum + output.amount, 0n);
-  const mintInput =
-    inputCase === 'mintInput' && typeof tokenInputs['mintInput'] === 'object'
-      ? (tokenInputs['mintInput'] as Record<string, unknown>)
-      : {};
-  const createInput =
-    inputCase === 'createInput' && typeof tokenInputs['createInput'] === 'object'
-      ? (tokenInputs['createInput'] as Record<string, unknown>)
-      : {};
-  const issuerPublicKey = compressedPublicKey(
-    inputCase === 'mintInput' ? mintInput['issuerPublicKey'] : createInput['issuerPublicKey'],
-  );
   const tokenIdentifier =
-    outputs.find((output) => output.tokenIdentifier !== null)?.tokenIdentifier ??
-    (mintInput['tokenIdentifier'] instanceof Uint8Array
-      ? bytesToHex(mintInput['tokenIdentifier'])
-      : null);
-  const createdTime = tx['clientCreatedTimestamp'];
-  const expiryTime = tx['expiryTime'];
-  const sparkInvoices = Array.isArray(tx['invoiceAttachments'])
-    ? tx['invoiceAttachments'].flatMap((attachment) => {
-        if (typeof attachment !== 'object' || attachment === null) return [];
-        const invoice = (attachment as Record<string, unknown>)['sparkInvoice'];
-        return typeof invoice === 'string' && invoice !== '' ? [invoice] : [];
-      })
-    : [];
+    row.outputs.find((output) => output.tokenIdentifier !== null)?.tokenIdentifier ??
+    row.mintTokenIdentifier;
   const counterpartyPubkeys =
-    type === 'create' || type === 'mint'
-      ? issuerPublicKey === null
+    row.type === 'create' || row.type === 'mint'
+      ? row.issuerPublicKey === null
         ? []
-        : [issuerPublicKey]
+        : [row.issuerPublicKey]
       : direction === 'out'
         ? externalOutputs.map((output) => output.owner)
         : inputOwners;
   return {
-    hash: bytesToHex(row['tokenTransactionHash']),
+    hash: row.hash,
     tokenIdentifier,
     direction,
     amount: amount.toString(),
     counterpartyPubkeys: [...new Set(counterpartyPubkeys)].sort(),
-    sparkInvoices,
-    type,
-    status: row['status'],
-    createdTime: createdTime instanceof Date ? new Date(createdTime.getTime()) : undefined,
-    expiryTime: expiryTime instanceof Date ? new Date(expiryTime.getTime()) : undefined,
+    sparkInvoices: [...row.sparkInvoices],
+    type: row.type,
+    status: row.status,
+    createdTime: row.createdTime === undefined ? undefined : new Date(row.createdTime.getTime()),
+    expiryTime: row.expiryTime === undefined ? undefined : new Date(row.expiryTime.getTime()),
   };
 }
 
 function tokenTransactionsOf(
-  transactions: readonly unknown[],
+  transactions: readonly TokenTransactionProjection[],
   walletPubkey: string,
   owners: { byOutpoint: ReadonlyMap<string, string>; byOutputId: ReadonlyMap<string, string> },
 ): SparkViewerTokenTransaction[] {
-  return transactions
-    .map((transaction) => {
-      const inputOwners = inputReferences(transaction).flatMap((reference) => {
-        const owner =
-          owners.byOutpoint.get(reference.outpoint) ??
-          (reference.outputId === null ? undefined : owners.byOutputId.get(reference.outputId));
-        return owner === undefined ? [] : [owner];
-      });
-      return tokenTransactionOf(transaction, walletPubkey, inputOwners);
-    })
-    .filter((row): row is SparkViewerTokenTransaction => row !== null);
+  return transactions.map((transaction) => {
+    const inputOwners = transaction.inputs.flatMap((reference) => {
+      const owner =
+        owners.byOutpoint.get(reference.outpoint) ??
+        (reference.outputId === null ? undefined : owners.byOutputId.get(reference.outputId));
+      return owner === undefined ? [] : [owner];
+    });
+    return tokenTransactionOf(transaction, walletPubkey, inputOwners);
+  });
 }
 
 interface CachedTokenOwnerResolution extends SparkViewerTokenOwnerResolution {
   current(): SparkViewerTokenTransaction[];
-  update(transactions: readonly unknown[]): void;
+  finished(): boolean;
+  update(transactions: readonly TokenTransactionProjection[], historyCursor: string | null): void;
 }
 
 function tokenOwnerResolution(
   sdk: SdkViewer,
   input: { sparkAddress: string; walletPubkey: string; pageSize: number },
-  transactions: readonly unknown[],
+  transactions: readonly TokenTransactionProjection[],
   owners: ReturnType<typeof inputOwnerIndexes>,
   historyCursor: string | null,
+  onFinished: () => void,
+  onFailure: () => void,
 ): CachedTokenOwnerResolution {
-  let currentTransactions = transactions;
-  const unresolvedOutputIds = [
+  let currentProjections = transactions;
+  let unresolved = unresolvedInputReferences(currentProjections, owners);
+  let unresolvedKey = unresolved
+    .map((reference) => `${reference.outpoint}\u0000${reference.outputId ?? ''}`)
+    .sort()
+    .join('\u0001');
+  let unresolvedOutputIds = [
     ...new Set(
-      unresolvedInputReferences(currentTransactions, owners).flatMap((reference) =>
-        reference.outputId === null ? [] : [reference.outputId],
-      ),
+      unresolved.flatMap((reference) => (reference.outputId === null ? [] : [reference.outputId])),
     ),
   ];
   let lookupCursor: string | undefined;
@@ -528,9 +570,9 @@ function tokenOwnerResolution(
   let inFlight: Promise<SparkViewerTokenOwnerPage> | undefined;
 
   const current = (): SparkViewerTokenTransaction[] =>
-    tokenTransactionsOf(currentTransactions, input.walletPubkey, owners);
+    tokenTransactionsOf(currentProjections, input.walletPubkey, owners);
   const done = (): boolean =>
-    unresolvedInputReferences(currentTransactions, owners).length === 0 ||
+    unresolvedInputReferences(currentProjections, owners).length === 0 ||
     (outputLookupDone && historyCursor === null);
 
   const advance = async (): Promise<SparkViewerTokenOwnerPage> => {
@@ -544,7 +586,11 @@ function tokenOwnerResolution(
       });
       mergeInputOwnerIndexes(
         owners,
-        inputOwnerIndexes(Array.isArray(lookup.transactions) ? lookup.transactions : []),
+        inputOwnerIndexes(
+          tokenTransactionProjections(
+            Array.isArray(lookup.transactions) ? lookup.transactions : [],
+          ),
+        ),
       );
       const lookupResponse =
         typeof lookup.pageResponse === 'object' && lookup.pageResponse !== null
@@ -567,10 +613,6 @@ function tokenOwnerResolution(
       return { transactions: current(), done: done() };
     }
     const cursor = historyCursor as string;
-    if (seenHistoryCursors.has(cursor)) {
-      throw new Error('Spark viewer token input history cursor did not advance');
-    }
-    seenHistoryCursors.add(cursor);
     const history = await sdk.getTokenTransactions({
       sparkAddresses: [input.sparkAddress],
       pageSize: input.pageSize,
@@ -579,31 +621,74 @@ function tokenOwnerResolution(
     });
     mergeInputOwnerIndexes(
       owners,
-      inputOwnerIndexes(Array.isArray(history.transactions) ? history.transactions : []),
+      inputOwnerIndexes(
+        tokenTransactionProjections(
+          Array.isArray(history.transactions) ? history.transactions : [],
+        ),
+      ),
     );
     const historyResponse =
       typeof history.pageResponse === 'object' && history.pageResponse !== null
         ? (history.pageResponse as Record<string, unknown>)
         : {};
-    historyCursor =
-      historyResponse['hasPreviousPage'] === true &&
-      typeof historyResponse['previousCursor'] === 'string' &&
-      historyResponse['previousCursor'] !== ''
-        ? historyResponse['previousCursor']
-        : null;
+    if (historyResponse['hasPreviousPage'] === true) {
+      const previousCursor = historyResponse['previousCursor'];
+      if (
+        typeof previousCursor !== 'string' ||
+        previousCursor === '' ||
+        previousCursor === cursor ||
+        seenHistoryCursors.has(previousCursor)
+      ) {
+        throw new Error('Spark viewer token input history cursor did not advance');
+      }
+      seenHistoryCursors.add(previousCursor);
+      historyCursor = previousCursor;
+    } else {
+      historyCursor = null;
+    }
     return { transactions: current(), done: done() };
   };
 
   return {
     current,
-    update(nextTransactions) {
-      currentTransactions = nextTransactions;
+    finished: done,
+    update(nextTransactions, nextHistoryCursor) {
+      currentProjections = nextTransactions;
       mergeInputOwnerIndexes(owners, inputOwnerIndexes(nextTransactions));
+      unresolved = unresolvedInputReferences(currentProjections, owners);
+      const nextUnresolvedKey = unresolved
+        .map((reference) => `${reference.outpoint}\u0000${reference.outputId ?? ''}`)
+        .sort()
+        .join('\u0001');
+      if (nextUnresolvedKey !== unresolvedKey) {
+        unresolvedKey = nextUnresolvedKey;
+        unresolvedOutputIds = [
+          ...new Set(
+            unresolved.flatMap((reference) =>
+              reference.outputId === null ? [] : [reference.outputId],
+            ),
+          ),
+        ];
+        lookupCursor = undefined;
+        outputLookupDone = unresolvedOutputIds.length === 0;
+        seenLookupCursors.clear();
+        historyCursor = nextHistoryCursor;
+        seenHistoryCursors.clear();
+      }
     },
     next() {
-      inFlight ??= advance().finally(() => {
-        inFlight = undefined;
-      });
+      inFlight ??= advance()
+        .then((page) => {
+          if (page.done) onFinished();
+          return page;
+        })
+        .catch((error: unknown) => {
+          onFailure();
+          throw error;
+        })
+        .finally(() => {
+          inFlight = undefined;
+        });
       return inFlight;
     },
   };
@@ -645,7 +730,8 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
       });
       const rawCount = Array.isArray(page.transactions) ? page.transactions.length : 0;
       const rawTransactions = Array.isArray(page.transactions) ? page.transactions : [];
-      const localOwners = inputOwnerIndexes(rawTransactions);
+      const projectedTransactions = tokenTransactionProjections(rawTransactions);
+      const localOwners = inputOwnerIndexes(projectedTransactions);
       const pageResponse =
         typeof page.pageResponse === 'object' && page.pageResponse !== null
           ? (page.pageResponse as Record<string, unknown>)
@@ -656,34 +742,49 @@ async function viewerFromMnemonic(mnemonic: string): Promise<SparkViewer> {
         pageResponse['previousCursor'] !== ''
           ? pageResponse['previousCursor']
           : null;
-      const pageKey = `${input.sparkAddress}\u0000${input.walletPubkey}\u0000${input.cursor ?? ''}\u0000${rawTransactions
-        .map((transaction) =>
-          typeof transaction === 'object' && transaction !== null
-            ? (transactionHashOf(transaction as Record<string, unknown>) ?? '')
-            : '',
-        )
+      const pagePrefix = `${input.sparkAddress}\u0000${input.walletPubkey}\u0000${input.cursor ?? ''}\u0000`;
+      const pageKey = `${pagePrefix}${projectedTransactions
+        .map((transaction) => transaction.hash)
         .join(',')}`;
       const needsOwnerResolution =
-        unresolvedInputReferences(rawTransactions, localOwners).length > 0;
+        unresolvedInputReferences(projectedTransactions, localOwners).length > 0;
+      for (const [key, cached] of ownerResolutions) {
+        if (cached.finished() || (key.startsWith(pagePrefix) && key !== pageKey)) {
+          ownerResolutions.delete(key);
+        }
+      }
       let ownerResolution: CachedTokenOwnerResolution | undefined;
       let transactions: SparkViewerTokenTransaction[];
       if (needsOwnerResolution) {
         ownerResolution = ownerResolutions.get(pageKey);
         if (ownerResolution === undefined) {
-          ownerResolution = tokenOwnerResolution(
+          const removeCreated = (): void => {
+            if (ownerResolutions.get(pageKey) === created) ownerResolutions.delete(pageKey);
+          };
+          const created = tokenOwnerResolution(
             sdk,
             input,
-            rawTransactions,
+            projectedTransactions,
             localOwners,
             historyCursor,
+            removeCreated,
+            removeCreated,
           );
+          ownerResolution = created;
           ownerResolutions.set(pageKey, ownerResolution);
+          while (ownerResolutions.size > MAX_TOKEN_OWNER_RESOLUTIONS) {
+            const oldest = ownerResolutions.keys().next().value as string;
+            ownerResolutions.delete(oldest);
+          }
         } else {
-          ownerResolution.update(rawTransactions);
+          ownerResolutions.delete(pageKey);
+          ownerResolutions.set(pageKey, ownerResolution);
+          ownerResolution.update(projectedTransactions, historyCursor);
         }
         transactions = ownerResolution.current();
       } else {
-        transactions = tokenTransactionsOf(rawTransactions, input.walletPubkey, localOwners);
+        ownerResolutions.delete(pageKey);
+        transactions = tokenTransactionsOf(projectedTransactions, input.walletPubkey, localOwners);
       }
       return {
         transactions,
