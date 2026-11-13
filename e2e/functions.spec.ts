@@ -1,7 +1,60 @@
+import { createHash } from 'node:crypto';
 import { expect, test, type APIRequestContext } from '@playwright/test';
+import { bech32 } from '@scure/base';
+import { Hono } from 'hono';
+import { InMemoryAuthStore } from '@/lib/auth/store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryMessageStore } from '@/lib/message-store';
+import { ensureAccountNostrKey } from '@/lib/nostr/keys';
+import { parseNostrKek } from '@/lib/nostr/kek';
+import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { messagesRoutes } from '@/routes/messages';
 import { startFreshWalletStatsServer } from './helpers/fresh-wallet-stats-server';
 
 const DEBUG = { authorization: 'Bearer e2e-debug-token' };
+
+const REPAYMENT_E2E_LNURL = {
+  baseUrl: 'http://lnurl.test',
+  publicBaseUrl: 'https://example.test',
+  host: 'example.test',
+} as const;
+
+/** Big-endian 5-bit words of a non-negative integer. */
+function repaymentInvoiceWords(value: number, minWords = 1): number[] {
+  const words: number[] = [];
+  let rest = value;
+  while (rest > 0) {
+    words.unshift(rest & 31);
+    rest = Math.floor(rest / 32);
+  }
+  while (words.length < minWords) {
+    words.unshift(0);
+  }
+  return words;
+}
+
+/** One BOLT11 tagged field. */
+function repaymentInvoiceTag(type: number, words: number[]): number[] {
+  return [type, ...repaymentInvoiceWords(words.length, 2), ...words];
+}
+
+/** Minimal BOLT11 carrying the callback's NIP-57 description hash. */
+function repaymentPartInvoice(amountMsat: number, zapRequest: string, nowMs: number): string {
+  const paymentHash = createHash('sha256').update('repayment-e2e-payment').digest();
+  const descriptionHash = createHash('sha256').update(zapRequest).digest();
+  const secret = createHash('sha256').update('repayment-e2e-secret').digest();
+  const hrp = `lnbc${(amountMsat / 1000) * 10}n`;
+  const words = [
+    ...repaymentInvoiceWords(Math.floor(nowMs / 1000), 7),
+    ...repaymentInvoiceTag(1, bech32.toWords(paymentHash)),
+    ...repaymentInvoiceTag(16, bech32.toWords(secret)),
+    ...repaymentInvoiceTag(23, bech32.toWords(descriptionHash)),
+    ...repaymentInvoiceTag(6, repaymentInvoiceWords(1200)),
+    ...repaymentInvoiceTag(24, repaymentInvoiceWords(18)),
+    ...repaymentInvoiceTag(5, [16, 8, 0]),
+  ];
+  return bech32.encode(hrp, [...words, ...bech32.toWords(new Uint8Array(65))], false);
+}
 
 async function memberSession(
   request: APIRequestContext,
@@ -4027,6 +4080,116 @@ test('Function: repaymentDescription — GET /healthz is ok', async ({ request }
 
 test('Function: repaymentPartDescription — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: nextRepaymentPartIndex — repayment POST mints part zero', async () => {
+  const nowMs = Date.UTC(2026, 10, 19, 12);
+  const borrowerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const giverId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const creditId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const kek = parseNostrKek('11'.repeat(32));
+  const auth = new InMemoryAuthStore();
+  await auth.createAccount({
+    id: borrowerId,
+    linkingKey: null,
+    role: 'verified',
+    name: 'Borrower',
+    username: 'borrower',
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'a'.repeat(64),
+    createdAt: 1,
+    rulesAgreedAt: 1,
+  });
+  await auth.createSession({ token: borrowerId, accountId: borrowerId, createdAt: nowMs });
+  await ensureAccountNostrKey(auth, borrowerId, kek);
+  await auth.createAccount({
+    id: giverId,
+    linkingKey: null,
+    role: 'verified',
+    name: 'Giver',
+    username: 'giver',
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'b'.repeat(64),
+    createdAt: 1,
+    rulesAgreedAt: 1,
+    walletRequired: true,
+  });
+  const giverWalletKey = `02${'22'.repeat(32)}`;
+  await auth.claimSparkPubkey(giverId, giverWalletKey);
+  expect(await auth.markSparkPubkeyVerified(giverId, giverWalletKey, 'giver', 2)).toBe(true);
+  await ensureAccountNostrKey(auth, giverId, kek);
+
+  const messages = new InMemoryMessageStore();
+  await messages.create({
+    id: creditId,
+    accountId: borrowerId,
+    name: 'Borrower',
+    text: 'Repayment part index e2e',
+    createdAt: new Date(Date.UTC(2026, 10, 17, 12)),
+    hasPhoto: false,
+    ...unsignedNostrDefaults(),
+    eventId: 'ee'.repeat(32),
+    sats: 100,
+    goalSats: 100,
+    goalRepayable: true,
+    goalTermDays: 1,
+    goalFundedAt: new Date(Date.UTC(2026, 10, 17, 12)),
+  });
+  await messages.recordZapReceipt('repayment-e2e-gift', creditId, 100, null);
+  await messages.updateZapReceiptGift('repayment-e2e-gift', { payerAccountId: giverId });
+
+  const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+    const url = new URL(String(input));
+    if (url.pathname === '/.well-known/lnurlp/giver') {
+      return Response.json({
+        tag: 'payRequest',
+        callback: `${REPAYMENT_E2E_LNURL.publicBaseUrl}/lnurlp/giver/invoice`,
+        metadata: '[["text/plain","Giver"]]',
+        minSendable: 1000,
+        maxSendable: 1_000_000_000,
+        allowsNostr: true,
+        nostrPubkey: 'dd'.repeat(32),
+      });
+    }
+    const amountMsat = Number(url.searchParams.get('amount'));
+    const zapRequest = url.searchParams.get('nostr');
+    expect(url.pathname).toBe('/lnurlp/giver/invoice');
+    expect(zapRequest).not.toBeNull();
+    return Response.json({ pr: repaymentPartInvoice(amountMsat, zapRequest ?? '', nowMs) });
+  };
+  const app = new Hono().route(
+    '/messages',
+    messagesRoutes({
+      store: messages,
+      authStore: auth,
+      now: () => nowMs,
+      nostrKek: kek,
+      fetchImpl,
+      lnurlServer: REPAYMENT_E2E_LNURL,
+      postLimiter: new PostRateLimiter(),
+      invoiceLimiter: new InvoiceRateLimiter(),
+      repaymentLimiter: new InvoiceRateLimiter({ burstCap: 10, hourCap: 10 }),
+    }),
+  );
+
+  const response = await app.request(`/messages/${creditId}/repayment`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${borrowerId}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ amount: '40' }),
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    amountSats: 40,
+    bills: [{ dayIndex: 0, recipientAccountId: giverId, amountSats: 40 }],
+  });
+  const attempts = await messages.listInvoiceAttemptsForMessage(creditId);
+  expect(attempts).toHaveLength(1);
+  expect(attempts[0]?.description).toBe(`repayp:0:${giverId}:0:40:100`);
 });
 
 test('Function: parseRepaymentPartDescription — GET /healthz is ok', async ({ request }) => {

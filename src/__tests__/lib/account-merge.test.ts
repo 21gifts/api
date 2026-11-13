@@ -78,6 +78,34 @@ interface FakeDatabaseOptions {
   }[];
   /** Anonymous sats returned when legacy debt reconstruction asks for them. */
   unassignedRepaymentSats?: number;
+  /** Canonical parts returned while choosing a legacy conversion index. */
+  repaymentParts?: readonly {
+    day_index: number;
+    recipient_account_id: string;
+    part_index: number;
+    units: number;
+    sats: number;
+    paid_at: Date;
+  }[];
+  /** Invoice attempts returned while choosing a legacy conversion index. */
+  repaymentInvoiceAttempts?: readonly {
+    id: string;
+    created_at: Date;
+    message_id: string;
+    payer_account_id: string;
+    author_account_id: string;
+    amount_sats: number;
+    lightning_address: string | null;
+    zap_request: null;
+    result: string;
+    http_status: number;
+    pr: string | null;
+    payment_hash: string | null;
+    description: string | null;
+    description_hash: string | null;
+    is_nip57_invoice: boolean;
+    lnurl_response: null;
+  }[];
   /** Repayable credits where both identities gave and some repayment settled. */
   repaymentConflicts?: readonly { message_id: string }[];
   /** Existing source/survivor invoices or settled rows with the same immutable part key. */
@@ -126,6 +154,15 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           }
           if (text.includes('payer_account_id IS NULL') && text.includes('SUM(r.sats)')) {
             return [{ sats: options.unassignedRepaymentSats ?? 0 }] as T[];
+          }
+          if (
+            text.includes('FROM message_repayment_part') &&
+            text.includes('ORDER BY day_index ASC')
+          ) {
+            return (options.repaymentParts ?? []) as T[];
+          }
+          if (text.includes('FROM message_invoice') && text.includes('WHERE message_id = $1')) {
+            return (options.repaymentInvoiceAttempts ?? []) as T[];
           }
           if (text.includes('FROM message AS credit') && text.includes('source_gift')) {
             return (options.repaymentConflicts ?? []) as T[];
@@ -396,7 +433,7 @@ describe('mergeAccounts', () => {
     const converted = queries.find(
       (query) =>
         query.text.includes('INSERT INTO message_repayment_part') &&
-        query.text.includes('COALESCE(MAX(part_index) + 1, 0)'),
+        query.text.includes('$4::integer'),
     );
     const deleted = queries.find(
       (query) =>
@@ -407,14 +444,75 @@ describe('mergeAccounts', () => {
     );
     const canonicalPayers = queries.find((query) => query.text.includes('nostr_zap_ingest'));
 
-    expect(converted?.params).toEqual([messageId, 0, FROM, '100', 5000, paidAt, INTO]);
-    expect(converted?.text).toContain('SELECT $1::uuid, $2::integer, $3::uuid');
-    expect(converted?.text).toContain('$4::bigint, $5::bigint, $6::timestamptz');
+    expect(converted?.params).toEqual([messageId, 0, FROM, 0, '100', 5000, paidAt]);
+    expect(converted?.text).toContain('$1::uuid, $2::integer, $3::uuid, $4::integer');
+    expect(converted?.text).toContain('$5::bigint, $6::bigint, $7::timestamptz');
     expect(canonicalPayers?.text).toContain('ORDER BY created_at ASC, id ASC');
     expect(canonicalPayers?.text).not.toContain('ORDER BY created_at DESC');
     expect(canonicalPayers?.params).toEqual([messageId, true, false, null, false]);
     expect(deleted?.params).toEqual([messageId, 0, FROM]);
     expect(queries.indexOf(converted as RecordedQuery)).toBeLessThan(identityMove);
+  });
+
+  it('keeps an expired part invoice index distinct through legacy conversion and late receipt', async () => {
+    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const paidAt = new Date('2026-11-11T12:00:00.000Z');
+    const { db, queries } = fakeDatabase({
+      legacyRepayments: [
+        {
+          message_id: messageId,
+          day_index: 0,
+          recipient_account_id: FROM,
+          due_sats: 100,
+          paid_at: paidAt,
+          goal_currency: null,
+          goal_amount: null,
+          goal_term_days: 1,
+        },
+      ],
+      repaymentPayers: [
+        { account_id: FROM, sats: 100, usd: null, chf: null, eur: null, php: null },
+      ],
+      repaymentInvoiceAttempts: [
+        {
+          id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          created_at: new Date('2026-11-10T12:00:00.000Z'),
+          message_id: messageId,
+          payer_account_id: OTHER,
+          author_account_id: FROM,
+          amount_sats: 100,
+          lightning_address: null,
+          zap_request: null,
+          result: 'ok',
+          http_status: 200,
+          pr: 'expired-part-invoice',
+          payment_hash: 'expired-part-hash',
+          description: `repayp:0:${FROM}:0:100:200`,
+          description_hash: null,
+          is_nip57_invoice: true,
+          lnurl_response: null,
+        },
+      ],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+    const converted = queries.find(
+      (query) =>
+        query.text.includes('INSERT INTO message_repayment_part') && query.params[0] === messageId,
+    );
+    expect(converted?.params).toEqual([messageId, 0, FROM, 1, '100', 100, paidAt]);
+    expect(converted?.text).toContain('$4::integer');
+    expect(
+      queries.filter(
+        (query) =>
+          query.text.includes('FROM message_invoice') &&
+          query.text.includes('WHERE message_id = $1') &&
+          query.params[0] === messageId,
+      ),
+    ).toHaveLength(1);
   });
 
   it('reconstructs frozen fiat legacy debt from named snapshots without anonymous sats', async () => {
@@ -459,7 +557,7 @@ describe('mergeAccounts', () => {
       (query) =>
         query.text.includes('INSERT INTO message_repayment_part') && query.params[0] === messageId,
     );
-    expect(converted?.params).toEqual([messageId, 0, INTO, '40', 4000, paidAt, FROM]);
+    expect(converted?.params).toEqual([messageId, 0, INTO, 0, '40', 4000, paidAt]);
     expect(queries.some((query) => query.text.includes('payer_account_id IS NULL'))).toBe(false);
   });
 

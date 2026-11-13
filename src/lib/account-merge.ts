@@ -2,6 +2,7 @@ import type { SqlClient } from '@/lib/auth/sql';
 import { invoiceStillOpen } from '@/lib/bolt11';
 import {
   fiatAmountToCents,
+  nextRepaymentPartIndex,
   parseRepaymentDescription,
   parseRepaymentPartDescription,
   payerDebtUnits,
@@ -506,30 +507,40 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       canonicalLegacy.push({ ...legacy, units: share.units });
     }
     for (const legacy of canonicalLegacy) {
+      // Use the same store history and index rule as invoice minting. In
+      // particular, invoice ownership follows its current author, while both
+      // identities still share one namespace before the account move below.
+      const parts = await repaymentStore.listRepaymentParts(legacy.message_id);
+      const attempts = await repaymentStore.listInvoiceAttemptsForMessage(legacy.message_id);
+      const partIndex = nextRepaymentPartIndex(
+        Number(legacy.day_index),
+        accountParams,
+        parts,
+        attempts,
+      );
       await tx.query(
         `INSERT INTO message_repayment_part (
            message_id, day_index, recipient_account_id, part_index, units, sats, paid_at
          )
-         SELECT $1::uuid, $2::integer, $3::uuid,
-                COALESCE(MAX(part_index) + 1, 0),
-                $4::bigint, $5::bigint, $6::timestamptz
-         FROM message_repayment_part
-         WHERE message_id = $1::uuid
-           AND day_index = $2::integer
-           AND recipient_account_id IN ($3::uuid, $7::uuid)`,
+         VALUES (
+           $1::uuid, $2::integer, $3::uuid, $4::integer,
+           $5::bigint, $6::bigint, $7::timestamptz
+         )`,
         [
           legacy.message_id,
           Number(legacy.day_index),
           legacy.recipient_account_id,
+          partIndex,
           legacy.units.toString(),
           legacy.due_sats,
           legacy.paid_at,
-          legacy.recipient_account_id === input.from ? input.into : input.from,
         ],
       );
       await tx.query(
         `DELETE FROM message_repayment
-         WHERE message_id = $1 AND day_index = $2 AND recipient_account_id = $3`,
+         WHERE message_id = $1::uuid
+           AND day_index = $2::integer
+           AND recipient_account_id = $3::uuid`,
         [legacy.message_id, Number(legacy.day_index), legacy.recipient_account_id],
       );
     }

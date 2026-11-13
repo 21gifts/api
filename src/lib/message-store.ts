@@ -8982,7 +8982,7 @@ export class PostgresMessageStore implements MessageStore {
     }>(
       `SELECT day_index, recipient_account_id, part_index, units, sats, paid_at
        FROM message_repayment_part
-       WHERE message_id = $1
+       WHERE message_id = $1::uuid
        ORDER BY day_index ASC, recipient_account_id ASC, part_index ASC`,
       [messageId],
     );
@@ -9917,7 +9917,7 @@ export class PostgresMessageStore implements MessageStore {
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
               fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
-       WHERE message_id = $1
+       WHERE message_id = $1::uuid
        ORDER BY created_at DESC, id DESC`,
       [messageId],
     );

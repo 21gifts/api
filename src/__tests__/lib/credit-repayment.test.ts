@@ -6,6 +6,7 @@ import {
   dueDayCount,
   fiatAmountToCents,
   formatCents,
+  nextRepaymentPartIndex,
   parseRepaymentDescription,
   parseRepaymentPartDescription,
   payerDebtUnits,
@@ -91,6 +92,47 @@ describe('credit repayment', () => {
     });
     expect(parseRepaymentDescription(null)).toBeNull();
     expect(parseRepaymentDescription('gift')).toBeNull();
+  });
+
+  it('allocates part indexes above settled parts and successful historical invoices', () => {
+    const first = '11111111-1111-4111-8111-111111111111';
+    const second = '22222222-2222-4222-8222-222222222222';
+    const other = '33333333-3333-4333-8333-333333333333';
+    expect(
+      nextRepaymentPartIndex(
+        0,
+        [first, second],
+        [
+          { dayIndex: 0, recipientAccountId: first, partIndex: 2 },
+          { dayIndex: 1, recipientAccountId: first, partIndex: 8 },
+          { dayIndex: 0, recipientAccountId: other, partIndex: 9 },
+        ],
+        [
+          {
+            authorAccountId: second,
+            description: repaymentPartDescription(0, other, 4, 1n, 10n),
+            result: 'ok',
+          },
+          {
+            authorAccountId: first,
+            description: repaymentPartDescription(0, first, 7, 1n, 10n),
+            result: 'error',
+          },
+          {
+            authorAccountId: other,
+            description: repaymentPartDescription(0, other, 6, 1n, 10n),
+            result: 'ok',
+          },
+          {
+            authorAccountId: first,
+            description: repaymentPartDescription(1, first, 5, 1n, 10n),
+            result: 'ok',
+          },
+          { authorAccountId: first, description: 'not-a-part', result: 'ok' },
+        ],
+      ),
+    ).toBe(5);
+    expect(nextRepaymentPartIndex(0, [first], [], [])).toBe(0);
   });
 
   it('parses part repayment descriptions without breaking the old marker', () => {

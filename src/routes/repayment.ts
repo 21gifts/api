@@ -8,6 +8,7 @@ import {
   dueDayCount,
   fiatAmountToCents,
   formatCents,
+  nextRepaymentPartIndex,
   parseRepaymentDescription,
   parseRepaymentPartDescription,
   payerDebtUnits,
@@ -363,20 +364,12 @@ async function duePlan(
       parts: paidParts,
       openParts,
       legacyOpen,
-      nextPartIndex: [
-        ...paidParts,
-        ...invoiceAttempts.flatMap((attempt) => {
-          const historical = parseRepaymentPartDescription(attempt.description);
-          // A merge moves the invoice author but deliberately leaves its
-          // settlement description unchanged. Reserve the index for the
-          // current recipient identity so a delayed receipt cannot collide.
-          return historical !== null &&
-            historical.dayIndex === slice.dayIndex &&
-            attempt.authorAccountId === slice.accountId
-            ? [{ partIndex: historical.partIndex, units: historical.units }]
-            : [];
-        }),
-      ].reduce((next, part) => Math.max(next, part.partIndex + 1), 0),
+      nextPartIndex: nextRepaymentPartIndex(
+        slice.dayIndex,
+        [slice.accountId],
+        parts,
+        invoiceAttempts,
+      ),
       canReceive: since !== null,
       excused: since === null || slice.dayIndex < Math.floor((since - startMs) / 86_400_000),
     });
@@ -738,20 +731,15 @@ async function repaymentBillLocked(
     }
   } else {
     let reservedUnits = paidUnits;
-    let nextPartIndex = paidParts.reduce((next, part) => Math.max(next, part.partIndex + 1), 0);
+    const nextPartIndex = nextRepaymentPartIndex(
+      share.dayIndex,
+      [share.accountId],
+      paidParts,
+      attempts,
+    );
     const immutableParts = new Map<number, { units: bigint; sats: number }>();
     for (const paidPart of paidParts) {
       immutableParts.set(paidPart.partIndex, { units: paidPart.units, sats: paidPart.sats });
-    }
-    for (const attempt of attempts) {
-      const historical = parseRepaymentPartDescription(attempt.description);
-      if (
-        historical !== null &&
-        historical.dayIndex === share.dayIndex &&
-        attempt.authorAccountId === share.accountId
-      ) {
-        nextPartIndex = Math.max(nextPartIndex, historical.partIndex + 1);
-      }
     }
     for (const open of openAttempts) {
       const part = open.part;

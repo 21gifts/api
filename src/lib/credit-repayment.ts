@@ -108,6 +108,52 @@ export function parseRepaymentPartDescription(
 }
 
 /**
+ * First unused immutable part index for one giver-day across settlements and
+ * every successfully issued historical part invoice. Invoice descriptions can
+ * retain an account id that was merged away, so invoice ownership follows the
+ * attempt's current author instead.
+ *
+ * @param dayIndex - Zero-based day in the term.
+ * @param recipientAccountIds - Current recipient identities that share the
+ * index space.
+ * @param settledParts - Canonical parts already settled on the credit.
+ * @param invoiceAttempts - Historical invoice attempts on the credit.
+ * @returns One above the greatest historical index, or zero when none exists.
+ */
+export function nextRepaymentPartIndex(
+  dayIndex: number,
+  recipientAccountIds: readonly string[],
+  settledParts: readonly {
+    dayIndex: number;
+    recipientAccountId: string;
+    partIndex: number;
+  }[],
+  invoiceAttempts: readonly {
+    authorAccountId: string;
+    description: string | null;
+    result: string;
+  }[],
+): number {
+  const recipients = new Set(recipientAccountIds);
+  let next = 0;
+  for (const part of settledParts) {
+    if (part.dayIndex === dayIndex && recipients.has(part.recipientAccountId)) {
+      next = Math.max(next, part.partIndex + 1);
+    }
+  }
+  for (const attempt of invoiceAttempts) {
+    if (attempt.result !== 'ok' || !recipients.has(attempt.authorAccountId)) {
+      continue;
+    }
+    const part = parseRepaymentPartDescription(attempt.description);
+    if (part !== null && part.dayIndex === dayIndex) {
+      next = Math.max(next, part.partIndex + 1);
+    }
+  }
+  return next;
+}
+
+/**
  * Read a repayment marker. Anything else is a normal gift invoice.
  *
  * @param description - Invoice attempt description, or null.

@@ -1925,6 +1925,13 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Returns / side effects:** `{ dayIndex, recipientAccountId, partIndex, units, shareUnits }`, or null. No I/O.
 - **Used by:** `parseRepaymentDescription`, the zap-index settlement path, and the repayment plan readers.
 
+## Function: nextRepaymentPartIndex
+
+- **Purpose:** Choose the first unused immutable part index for one giver-day across canonical settlements and every successfully issued historical part invoice. Current recipient identities share the index space; historical invoice ownership follows the attempt's current author even when its stored description still names an account that was merged away.
+- **Inputs:** Day index, current recipient account ids, settled repayment parts, and historical invoice attempts.
+- **Returns / side effects:** One above the greatest matching historical part index, or zero when none exists. Failed attempts, other days, and unrelated recipients are ignored. No I/O.
+- **Used by:** The repayment plan and invoice-minting paths in `repayment.ts`, and legacy repayment conversion in `mergeAccounts`.
+
 ## Function: allocateRepayment
 
 - **Purpose:** Apply a prepayment amount to unpaid share remainders in plan order. Open bills are returned as the same part only while they fit in the request; an open bill larger than the request remainder reports a conflict; waiting givers consume nothing; a share reached last may be paid partially; the bill cap is enforced.
