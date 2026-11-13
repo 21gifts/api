@@ -203,8 +203,7 @@ describe('giftsForRecipient', () => {
 
 describe('buildGiftStats', () => {
   it('returns zeros, empty series, and fx for no gifts (no rates required)', () => {
-    const stats = buildGiftStats([], new Map());
-    expect(stats).toEqual({
+    expect(buildGiftStats([], new Map())).toEqual({
       totalSats: 0,
       totalBtc: '0.00000000',
       totalUsd: '0.00',
@@ -216,10 +215,10 @@ describe('buildGiftStats', () => {
       firstPaidAt: null,
       lastPaidAt: null,
       spendOverTime: [],
+      byRecipient: [],
       byMonth: [],
       fx: FX,
     });
-    expect(stats).not.toHaveProperty('byRecipient');
   });
 
   it('aggregates a single day with BTC and USD', () => {
@@ -248,7 +247,18 @@ describe('buildGiftStats', () => {
         ...NULL_FIAT_DAY,
       },
     ]);
-    expect(stats).not.toHaveProperty('byRecipient');
+    expect(stats.byRecipient).toEqual([
+      {
+        recipient: 'alice',
+        giftCount: 1,
+        sats: 1000,
+        btc: '0.00001000',
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
     expect(stats.byMonth).toEqual([
       {
         month: '2026-06',
@@ -295,7 +305,13 @@ describe('buildGiftStats', () => {
       eur: null,
       php: null,
     });
-    expect(stats).not.toHaveProperty('byRecipient');
+    expect(stats.byRecipient[0]).toMatchObject({
+      recipient: 'alice',
+      usd: null,
+      chf: null,
+      eur: null,
+      php: null,
+    });
     expect(stats.byMonth).toEqual([
       {
         month: '2026-06',
@@ -589,7 +605,18 @@ describe('buildGiftStats', () => {
         ...NULL_FIAT_DAY,
       },
     ]);
-    expect(stats).not.toHaveProperty('byRecipient');
+    expect(stats.byRecipient).toEqual([
+      {
+        recipient: 'alice',
+        giftCount: 1,
+        sats: 1000,
+        btc: '0.00001000',
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
     expect(stats.byMonth).toEqual([
       {
         month: '2026-06',
@@ -604,20 +631,18 @@ describe('buildGiftStats', () => {
     ]);
   });
 
-  it('counts distinct stored handles and does not list them', () => {
+  it('sorts recipients by sats descending then name', () => {
     const stats = buildGiftStats(
       [
         row('2026-06-01T00:00:00.000Z', 50, 'zeta'),
         row('2026-06-01T01:00:00.000Z', 50, 'alpha'),
         row('2026-06-01T02:00:00.000Z', 80, 'mid'),
-        row('2026-06-01T03:00:00.000Z', 10, 'alpha'),
-        row('2026-06-01T04:00:00.000Z', 10, 'Alpha'),
       ],
       RATE_100K,
     );
-    expect(stats.recipientCount).toBe(4);
-    expect(stats.spendOverTime[0]?.giftCount).toBe(5);
-    expect(stats).not.toHaveProperty('byRecipient');
+    expect(stats.byRecipient.map((r) => r.recipient)).toEqual(['mid', 'alpha', 'zeta']);
+    expect(stats.recipientCount).toBe(3);
+    expect(stats.spendOverTime[0]?.giftCount).toBe(3);
   });
 
   it('counts two outbound gifts on the same UTC day', () => {

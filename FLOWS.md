@@ -237,7 +237,7 @@ HTTP cited: `/lightning-address`, `/gifts/stats`, `/gifts?day=` (see `SPEC.md`).
 Public gift totals are **Shipped** as `GET /gifts/stats` (sats, BTC,
 historical USD at each gift's UTC-day Coinbase BTC-USD close, and
 CHF/EUR/PHP = USD × that UTC day's ECB rate, last business day if closed;
-UTC spend-over-time, recipient count, per month). Individual gifts for one UTC day
+UTC spend-over-time, per person, per month). Individual gifts for one UTC day
 are **Shipped** as `GET /gifts?day=YYYY-MM-DD`. No invoices. The app
 statistics page and `/stats/{day}` consume those routes.
 

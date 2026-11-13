@@ -400,9 +400,7 @@ describe('createApp', () => {
   it('mounts /gifts/stats with BTC, USD, and fx on empty stats', async () => {
     const res = await createApp().request('/gifts/stats');
     expect(res.status).toBe(200);
-    const body: unknown = await res.json();
-    expect(body).not.toHaveProperty('byRecipient');
-    expect(body).toEqual({
+    expect(await res.json()).toEqual({
       totalSats: 0,
       totalBtc: '0.00000000',
       totalUsd: '0.00',
@@ -414,6 +412,7 @@ describe('createApp', () => {
       firstPaidAt: null,
       lastPaidAt: null,
       spendOverTime: [],
+      byRecipient: [],
       byMonth: [],
       fx: {
         quote: 'BTC-USD',
