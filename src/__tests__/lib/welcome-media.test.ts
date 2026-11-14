@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
+import { resolveFondUsername } from '@/lib/config';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { accountWelcomed, syncWelcomePing, welcomeSweepCandidates } from '@/lib/welcome-media';
@@ -929,6 +930,79 @@ describe('accountWelcomed', () => {
       await accountWelcomed({ auth: NO_PLATFORM, messages, gifts: listOnly, account: ada }),
     ).toBe(true);
     expect(await accountWelcomed({ auth: NO_PLATFORM, messages, account: ada })).toBe(false);
+  });
+
+  it('counts a Fond Welcome reply as welcomed', async () => {
+    const fondUsername = resolveFondUsername(process.env);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(
+      account({ id: 'plat', role: 'basis', isPlatform: true, viewKey: 'f'.repeat(64) }),
+    );
+    await auth.createAccount(
+      account({
+        id: 'fond-acc',
+        role: 'fond',
+        username: fondUsername,
+        viewKey: 'e'.repeat(64),
+      }),
+    );
+    const messages = await photoStore();
+    await messages.create({
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      accountId: 'fond-acc',
+      name: 'Tondo Fond',
+      text: 'Welcome',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(true);
+    expect(await accountWelcomed({ auth, messages, account: { ...ada, id: 'other' } })).toBe(false);
+  });
+
+  it('counts a Fond Welcome reply when no platform account is configured', async () => {
+    const fondUsername = resolveFondUsername(process.env);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(
+      account({ id: 'fond-acc', role: 'fond', username: fondUsername, viewKey: 'e'.repeat(64) }),
+    );
+    const messages = await photoStore();
+    await messages.create({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      accountId: 'fond-acc',
+      name: 'Tondo Fond',
+      text: ' Welcome ',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(true);
+    expect(await accountWelcomed({ auth, messages, account: { ...ada, id: 'other' } })).toBe(false);
+  });
+
+  it('does not read the Fond account twice when it is also the platform account', async () => {
+    const fondUsername = resolveFondUsername(process.env);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(
+      account({
+        id: 'plat',
+        role: 'founder',
+        isPlatform: true,
+        username: fondUsername,
+        viewKey: 'f'.repeat(64),
+      }),
+    );
+    await auth.createAccount(
+      account({ id: 'nameless', role: 'basis', username: null, viewKey: 'c'.repeat(64) }),
+    );
+    const messages = await photoStore();
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(false);
   });
 
   it('counts a platform Welcome reply', async () => {
