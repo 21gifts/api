@@ -143,8 +143,8 @@ async function welcomedBefore(
  * address, or a welcome gift with description `21gifts welcome` recorded
  * under its username at or after its wallet was verified.
  *
- * @param args - Auth store (platform lookup), forum store, optional gift
- *   store, and the account.
+ * @param args - Auth store (platform and configured Fond account lookup),
+ *   forum store, optional gift store, and the account.
  * @returns `true` when the welcome gift was already paid.
  */
 export async function accountWelcomed(args: {
