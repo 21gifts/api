@@ -6983,10 +6983,12 @@ open rows: **200** `{ "status": "ok", "open" }`, or **503**
 `{ "status": "overdue", "open", "overdue" }` when a row of today is older
 than 15 minutes or a row of yesterday is still open; a store throw is
 **503** `{ "status": "unavailable" }`. `GET /fond/summary` returns
-`{ username, receivedSats, paidOutSats, feesSats, balanceSats, balanceSyncedAt, payoutsPaid, payoutsPaidUsd }`
+`{ username, receivedSats, paidOutSats, feesSats, balanceSats, balanceSyncedAt, payoutsPaid, payoutsPaidUsd, onchainAddress }`
 from the Fond account's completed wallet payments, its latest balance
-snapshot, and the paid payouts (zeros and `null` when that account is
-missing or cannot sign Fond payouts); a store throw or an unsafe sat total
+snapshot, the paid payouts, and the on-chain deposit address set by
+`PUT /fond/deposit-address` (zeros and `null` when that account is
+missing or cannot sign Fond payouts; `onchainAddress` is `null` when none is
+registered); a store throw or an unsafe sat total
 is **503** `{ "error": "Fond summary is unavailable" }`.
 
 `GET /fond/payouts` and `POST /fond/payouts/:id/invoice` need the Fond
@@ -7556,8 +7558,8 @@ POST with the same account, parent, normalised text, media bytes, and pin return
 The same media with a different pin is **409**
 `{ "error": "A live note with this media already exists" }`.
 Text-only posts are unchanged (still **429** on burst). After a **new**
-top-level persist, the welcome POST is sent and awaited before the daily
-POST. `address` is the author's wallet-backed receiving address (no verified
+top-level persist, the welcome ping is sent and awaited before the daily
+ping. `address` is the author's wallet-backed receiving address (no verified
 wallet → no ping). With `PAYOUT_SIGNER=fond` the api queues the decided instruction for `address` in `fond_payout` for the Fond member
 (see [Fond payouts](#fond-payouts-fond); awaited; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant and,
@@ -7569,7 +7571,8 @@ missing condition, `not_eligible` for another ineligible condition, or
 `no_media` (eligible text-only). When the author is an exactly `verified`
 non-platform account and any live top-level photo or video exists, including
 the About-me note, the api also
-POSTs `{ address, kind: "welcome" }` for that note, independent
+pings `{ address, kind: "welcome" }` for that note (queued in `fond_payout`
+with `PAYOUT_SIGNER=fond`), independent
 of `eligibleToday` and independent of whether the new row itself has media.
 The welcome gift replaces the daily gift on that same UTC day. A later UTC
 day still queues the daily gift.
