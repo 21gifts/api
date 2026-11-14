@@ -722,11 +722,12 @@ export interface MessageStore {
 
   /**
    * Whether the account already received the one-time welcome gift: a
-   * platform reply whose trimmed text is `Welcome` under one of the account's
-   * notes (live or soft-hidden, so a hidden note or marker still counts).
+   * `Welcome` reply authored by `platformAccountId` — the platform or the Fond
+   * account — under one of the account's notes (live or soft-hidden, so a
+   * hidden note or marker still counts).
    *
    * @param accountId - Member whose notes are checked.
-   * @param platformAccountId - Official platform account id.
+   * @param platformAccountId - Platform or Fond account id.
    * @returns `true` when such a reply exists.
    */
   accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean>;
@@ -3766,10 +3767,11 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
-   * Whether a platform `Welcome` reply exists under one of the account's notes.
+   * Whether a `Welcome` reply authored by `platformAccountId` — the platform
+   * or the Fond account — exists under one of the account's notes.
    *
    * @param accountId - Member whose notes are checked.
-   * @param platformAccountId - Official platform account id.
+   * @param platformAccountId - Platform or Fond account id.
    * @returns `true` when such a reply exists (live or soft-hidden).
    */
   accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean> {
@@ -7055,11 +7057,12 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Whether a platform `Welcome` reply exists under one of the account's notes.
-   * Live and soft-hidden rows both count.
+   * Whether a `Welcome` reply authored by `platformAccountId` — the platform
+   * or the Fond account — exists under one of the account's notes. Live and
+   * soft-hidden rows both count.
    *
    * @param accountId - Member whose notes are checked (`$1`).
-   * @param platformAccountId - Official platform account id (`$2`).
+   * @param platformAccountId - Platform or Fond account id (`$2`).
    * @returns `true` when such a reply exists.
    */
   async accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean> {
