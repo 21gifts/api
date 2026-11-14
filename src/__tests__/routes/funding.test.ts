@@ -16,6 +16,11 @@ import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { fundingRoutes, GRANT_PLACES_FULL_ERROR } from '@/routes/funding';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 const now = (): number => 1_700_000_000_000;
 const TODAY = '2023-11-14';
@@ -1698,12 +1703,12 @@ describe('grant round places', () => {
 });
 
 describe('operator tokens on the staff funding GETs', () => {
-  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
 
   function operatorApp(
     authStore: InMemoryAuthStore,
     fundingStore: FundingStore,
-    tokens: { debugToken?: string; debugReadToken?: string } = TOKENS,
+    tokens: { debugToken?: string; operatorLogin?: OperatorLogin } = TOKENS,
   ): Hono {
     return new Hono().route(
       '/funding',
@@ -1720,7 +1725,7 @@ describe('operator tokens on the staff funding GETs', () => {
 
   it.each([
     ['write', 'op-write'],
-    ['read', 'op-read'],
+    ['read', OP_READ],
   ] as const)(
     'reads the queue, one application, and the payout matrix with the %s token',
     async (_kind, token) => {
@@ -2115,7 +2120,7 @@ describe('POST /funding/withdraw', () => {
 });
 
 describe('GET /funding/withdrawals', () => {
-  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -2130,7 +2135,7 @@ describe('GET /funding/withdrawals', () => {
     authStore: InMemoryAuthStore,
     fundingStore: FundingStore,
     clock: () => number = now,
-    tokens: { debugToken?: string; debugReadToken?: string } = TOKENS,
+    tokens: { debugToken?: string; operatorLogin?: OperatorLogin } = TOKENS,
   ): Hono {
     return new Hono().route(
       '/funding',
@@ -2168,7 +2173,7 @@ describe('GET /funding/withdrawals', () => {
     expect(res.status).toBe(401);
   });
 
-  it.each(['op-write', 'op-read'])(
+  it.each(['op-write', OP_READ])(
     'lists every withdrawal newest first with the %s token, also after a new application',
     async (token) => {
       const { authStore, fundingStore } = await staffed([
@@ -2254,7 +2259,7 @@ describe('GET /funding/withdrawals', () => {
       ['pending'],
     );
     const reads = vi.spyOn(inner, 'getByAccountId');
-    const res = await get(withdrawalsApp(authStore, inner), '/funding/withdrawals', 'op-read');
+    const res = await get(withdrawalsApp(authStore, inner), '/funding/withdrawals', OP_READ);
     const body = (await res.json()) as {
       withdrawals: Array<{ withdrawnAt: number; from: string; reapplied: boolean }>;
     };
@@ -2267,11 +2272,7 @@ describe('GET /funding/withdrawals', () => {
 
   it('answers an empty list when nobody withdrew', async () => {
     const { authStore, fundingStore } = await staffed();
-    const res = await get(
-      withdrawalsApp(authStore, fundingStore),
-      '/funding/withdrawals',
-      'op-read',
-    );
+    const res = await get(withdrawalsApp(authStore, fundingStore), '/funding/withdrawals', OP_READ);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ withdrawals: [] });
   });

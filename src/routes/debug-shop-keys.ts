@@ -1,12 +1,13 @@
 /**
  * Operator import of a shop Nostr secret that already exists at OpenCryptoPay.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  * The secret is never logged and never returned.
  */
 
 import { Hono } from 'hono';
 import type { MessageStore } from '@/lib/message-store';
 import { requireOperator } from '@/lib/operator';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { logEvent } from '@/lib/log';
 import { shopKeyMustBeAdopted, shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 
@@ -20,6 +21,8 @@ export interface DebugShopKeyRouteDeps {
   kek: Uint8Array | undefined;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 const HEX_SECRET = /^[0-9a-f]{64}$/;

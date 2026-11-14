@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { checkOperator, requireOperator } from '@/lib/operator';
 import { DebugDbCursorError, type DebugDbStore } from '@/lib/debug-db';
 import { logEvent } from '@/lib/log';
@@ -8,12 +9,9 @@ import { roleAtLeast } from '@/lib/auth/roles';
 
 /**
  * Operator debug surface for the whole database.
- * Authenticated by `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` (Bearer), not by an
- * end-user session. `DEBUG_READ_TOKEN` is GET and HEAD on this route, opens
- * `GET /debug/accounts/:id/wallet`, and otherwise opens only
- * `GET /funding/goal`, the operator reads on staff GET routes, and the
- * operator-only `GET /funding/daily-roster/links` and `GET /funding/withdrawals`
- * (`checkOperator`). It declares `read` through `requireOperator`.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token of any level
+ * (Bearer). It declares `read` through `requireOperator`. A member session
+ * of role `software_developer` or higher reads only the wallet tables.
  * `GET /` lists ordinary public tables or one keyset page. It does not
  * create or update rows.
  */
@@ -24,8 +22,8 @@ export interface DebugDbRouteDeps {
   store: DebugDbStore | undefined;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
-  /** Optional read-only bearer. `GET /debug/db` here; it also opens the operator staff reads. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Live member sessions used for software-developer wallet-table access. */
   authStore?: AuthStore;
   /** Session-expiry clock. */
@@ -54,7 +52,7 @@ function bearer(header: string | undefined): string | null {
  * No `table` returns `{ tables }`. `table` returns one page and omits
  * `nextCursor` when there is no further page. `cursor` without `table` is 400.
  *
- * @param deps - Optional store, optional write token, optional read token.
+ * @param deps - Optional store, `DEBUG_TOKEN`, optional key login, and the session store and clock of the software-developer path.
  * @returns A Hono app exposing `GET /`.
  */
 export function debugDbRoutes(deps: DebugDbRouteDeps): Hono {
@@ -77,7 +75,8 @@ export function debugDbRoutes(deps: DebugDbRouteDeps): Hono {
       },
     }),
     async (c) => {
-      const memberAccess = checkOperator('read', deps, c.req.header('authorization')) !== true;
+      const memberAccess =
+        (await checkOperator('read', deps, c.req.header('authorization'))) !== true;
       const table = c.req.query('table');
       const cursor = c.req.query('cursor');
       if (cursor !== undefined && (table === undefined || table === '')) {

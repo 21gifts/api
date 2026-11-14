@@ -6,6 +6,7 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { createApp } from '@/server';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
 import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
@@ -538,12 +539,20 @@ describe('account activity routes', () => {
 });
 
 describe('GET /members/:accountId/activity with an operator token', () => {
-  it.each(['op-write', 'op-read'])(
+  it.each(['DEBUG_TOKEN', 'a read key token'])(
     'reads a member activity with %s and no session',
-    async (token) => {
+    async (kind) => {
       const authStore = new InMemoryAuthStore();
       await seedMember(authStore);
-      const app = createApp({ authStore, now, debugToken: 'op-write', debugReadToken: 'op-read' });
+      const keys = await seededOperatorLogin(now);
+      const app = createApp({
+        authStore,
+        now,
+        debugToken: 'op-write',
+        operatorSigners: keys.operatorSigners,
+        operatorLoginStore: keys.operatorLoginStore,
+      });
+      const token = kind === 'DEBUG_TOKEN' ? 'op-write' : keys.tokens.read;
       const res = await app.request(`/members/${ACCOUNT_ID}/activity`, {
         headers: { authorization: `Bearer ${token}` },
       });
@@ -554,7 +563,7 @@ describe('GET /members/:accountId/activity with an operator token', () => {
   it('keeps 401 for a wrong bearer', async () => {
     const authStore = new InMemoryAuthStore();
     await seedMember(authStore);
-    const app = createApp({ authStore, now, debugToken: 'op-write', debugReadToken: 'op-read' });
+    const app = createApp({ authStore, now, debugToken: 'op-write' });
     const res = await app.request(`/members/${ACCOUNT_ID}/activity`, {
       headers: { authorization: 'Bearer op-other' },
     });

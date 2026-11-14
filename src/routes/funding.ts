@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
@@ -95,10 +96,10 @@ export interface FundingRouteDeps {
   gifts: GiftStore;
   /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
   grantRound?: GrantRound;
-  /** Operator write token. Unset → no operator read on the staff GET routes, `GET /daily-roster/links`, or `GET /withdrawals`. */
+  /** `DEBUG_TOKEN` (every operator level), or unset. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes, `GET /daily-roster/links`, or `GET /withdrawals`. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /** 409 body when every place of the round is taken. */
@@ -290,7 +291,7 @@ type RosterReply =
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
-  deps: FundingRouteDeps,
+  deps: Pick<FundingRouteDeps, 'authStore' | 'now'>,
   header: string | undefined,
 ): Promise<Account | null> {
   const token = bearerToken(header);
@@ -372,9 +373,17 @@ async function dropMissingVideoRow(
   return null;
 }
 
-/** Staff session or a 401/403 JSON response. */
-async function requireStaff(
-  deps: FundingRouteDeps,
+/**
+ * Staff session (`isStaffRole`) or a 401/403 JSON response.
+ *
+ * @param deps - Auth store and clock.
+ * @param header - Raw `Authorization` header.
+ * @returns The staff caller, or 401 `Unauthorized` without a valid session
+ *   and 403 `Forbidden` below moderator.
+ * @throws Whatever the auth store throws while resolving the session; not caught here.
+ */
+export async function requireStaff(
+  deps: Pick<FundingRouteDeps, 'authStore' | 'now'>,
   header: string | undefined,
 ): Promise<{ caller: Account } | { error: string; status: 401 | 403 }> {
   const caller = await authedAccount(deps, header);
@@ -399,7 +408,7 @@ async function staffOrOperatorRead(
   deps: FundingRouteDeps,
   header: string | undefined,
 ): Promise<{ viewerAccountId: string | null } | { error: string; status: 401 | 403 }> {
-  if (checkOperator('read', deps, header) === true) {
+  if ((await checkOperator('read', deps, header)) === true) {
     return { viewerAccountId: null };
   }
   const staff = await requireStaff(deps, header);
@@ -607,7 +616,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * (compare-and-set on the status read, log `funding.withdrawn`); any other
  * status is 409 `{ error: 'Conflict' }`. `basis` is 403 Forbidden.
  *
- * `GET /withdrawals` (operator `DEBUG_TOKEN` / `DEBUG_READ_TOKEN` only, like
+ * `GET /withdrawals` (operator `DEBUG_TOKEN` / operator key token only, like
  * `GET /daily-roster/links`; any session is 401) lists every
  * withdrawal ever written, newest first, from
  * {@link FundingStore.listWithdrawals}, with the live name and whether the
@@ -727,7 +736,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/withdrawals', async (c) => {
-      if (checkOperator('read', deps, c.req.header('authorization')) !== true) {
+      if ((await checkOperator('read', deps, c.req.header('authorization'))) !== true) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       try {
@@ -1062,7 +1071,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
     })
     .get('/daily-roster', async (c) => {
       const header = c.req.header('authorization');
-      if (checkOperator('read', deps, header) === true) {
+      if ((await checkOperator('read', deps, header)) === true) {
         return answerRoster(c, await callRoster(deps, null, 'read', () => rosterStore.get()));
       }
       const opened = await openDailyRoster(deps, header);
@@ -1073,7 +1082,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       return answerRoster(c, result);
     })
     .get('/daily-roster/links', async (c) => {
-      if (checkOperator('read', deps, c.req.header('authorization')) !== true) {
+      if ((await checkOperator('read', deps, c.req.header('authorization'))) !== true) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       try {

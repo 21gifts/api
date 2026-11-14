@@ -296,6 +296,23 @@ test('POST /me/wallet/hearts without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/wallet/counterparties without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/counterparties');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/wallet/counterparties accepts ids and ignores legacy fields', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/counterparties', {
+    headers: auth,
+    data: { payments: [{ id: 'unreported', direction: 'in', invoice: 7, paymentHash: 'invalid' }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ counterparties: [] });
+});
+
 test('POST /me/wallet/hearts with a session and an unknown hash returns no hearts or repayments', async ({
   request,
 }) => {

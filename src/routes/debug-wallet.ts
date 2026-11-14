@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseClientInstant } from '@/lib/client-instant';
 import { requireOperator } from '@/lib/operator';
@@ -172,10 +173,10 @@ export interface DebugWalletRouteDeps {
   walletStore: WalletStore;
   /** Shared auth persistence port, used to 404 an unknown account id. */
   authStore: AuthStore;
-  /** Configured operator write token, or `undefined` when debug is disabled. */
+  /** `DEBUG_TOKEN`, or `undefined` when unset. */
   debugToken: string | undefined;
-  /** Optional read-only operator bearer; both tokens may read this route. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
   now?: () => number;
 }
@@ -183,7 +184,7 @@ export interface DebugWalletRouteDeps {
 /**
  * Build the `/debug/accounts/:id/wallet` route group.
  *
- * Read-only. `DEBUG_TOKEN` and `DEBUG_READ_TOKEN` both pass. One page has the
+ * Read-only. `DEBUG_TOKEN` and every operator key token pass. One page has the
  * newest balance snapshot, at most `limit` payments newest first, and
  * `nextCursor` only when another row exists.
  *

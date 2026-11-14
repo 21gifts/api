@@ -1,6 +1,7 @@
 /** Operator-only inspection of entitled and blocked external Nostr pubkeys. */
 
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT } from '@/lib/message';
@@ -12,6 +13,8 @@ export interface DebugExternalRouteDeps {
   store: MessageStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /**
