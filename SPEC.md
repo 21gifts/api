@@ -1967,8 +1967,9 @@ server-observed record.
   never used to match a payment to a charge.
 - **Entry.** `{ "id", "amountSats", "receivedAt", "kind" }`: `id` is the Spark
   transfer id (the payment id the shop's own wallet shows), `amountSats` the
-  received whole sats (summed when one transfer reached two of the account's
-  wallets), `receivedAt` the operator creation time (ISO-8601), and `kind` is
+  received whole sats (one entry per transfer id, summed when one transfer
+  reached two of the account's wallets, and `lightning` when any of those rows
+  is a Lightning receipt), `receivedAt` the operator creation time (ISO-8601), and `kind` is
   `lightning` or `spark`. No counterparty, invoice, payment hash, Spark
   address, or key is returned.
 

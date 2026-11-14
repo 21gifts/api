@@ -3843,7 +3843,7 @@ describe('GET /pos received without a till charge in Postgres', () => {
         receipt('ln', 10, { amountSats: 2100 }),
         receipt('spark', 20, { type: 'transfer' }),
         receipt('both', 21, { amountSats: 10 }),
-        receipt('both', 22, { walletPubkey: previousKey, amountSats: 11 }),
+        receipt('both', 22, { walletPubkey: previousKey, amountSats: 11, type: 'transfer' }),
         receipt('old', 24 * 60 + 1),
         receipt('other-account', 5, { accountId: otherId }),
         receipt('sent', 5, { direction: 'out' }),

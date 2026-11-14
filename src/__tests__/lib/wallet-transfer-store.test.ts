@@ -876,6 +876,11 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
     const store = new InMemoryWalletTransferStore();
     await store.upsertTransfer(receipt('both', 10, { amountSats: 10 }));
     await store.upsertTransfer(receipt('both', 12, { walletPubkey: PREVIOUS, amountSats: 11 }));
+    // One transfer id stored with two types in two wallets is still one Lightning entry.
+    await store.upsertTransfer(receipt('mixed', 40, { type: 'transfer' }));
+    await store.upsertTransfer(receipt('mixed', 41, { walletPubkey: PREVIOUS }));
+    await store.upsertTransfer(receipt('mixed-spark-last', 42, { walletPubkey: PREVIOUS }));
+    await store.upsertTransfer(receipt('mixed-spark-last', 43, { type: 'transfer' }));
     await store.upsertTransfer(receipt('a-tie', 30));
     await store.upsertTransfer(receipt('b-tie', 30));
     await store.upsertTransfer(receipt('c-tie', 30));
@@ -884,6 +889,8 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
       { id: 'c-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
       { id: 'b-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
       { id: 'a-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
+      { id: 'mixed', amountSats: 42, receivedAt: at(41), kind: 'lightning' },
+      { id: 'mixed-spark-last', amountSats: 42, receivedAt: at(43), kind: 'lightning' },
     ]);
   });
 
@@ -1035,13 +1042,13 @@ describe('PostgresWalletTransferStore.listTillReceipts', () => {
     const query = vi.fn(async (): Promise<unknown[]> => [
       {
         id: 'b',
-        type: 'preimage_swap',
+        lightning: true,
         amount_sats: '2100',
         received_at: '2026-11-12T10:00:00.000Z',
       },
       {
         id: 'a',
-        type: 'transfer',
+        lightning: false,
         amount_sats: 21,
         received_at: new Date('2026-11-12T09:00:00.000Z'),
       },
@@ -1076,5 +1083,7 @@ describe('PostgresWalletTransferStore.listTillReceipts', () => {
     expect(text).toContain("t.status = 'completed'");
     expect(text).toContain("t.type IN ('preimage_swap', 'transfer')");
     expect(text).toContain('LIMIT $5');
+    expect(text).toContain('GROUP BY transfer_id\n');
+    expect(text).toContain("bool_or(type = 'preimage_swap') AS lightning");
   });
 });

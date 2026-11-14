@@ -281,7 +281,8 @@ function selectTillReceipts(
       id: row.transferId,
       amountSats: (seen?.amountSats ?? 0) + row.amountSats,
       receivedAt: new Date(Math.min(created, seen?.receivedAt.getTime() ?? created)),
-      kind: row.type === 'preimage_swap' ? 'lightning' : 'spark',
+      // One entry per transfer id: Lightning when any of its rows is a Lightning receipt.
+      kind: row.type === 'preimage_swap' || seen?.kind === 'lightning' ? 'lightning' : 'spark',
     });
   }
   return [...byId.values()]
@@ -990,7 +991,7 @@ export class PostgresWalletTransferStore
       id: string;
       amount_sats: number | string | bigint;
       received_at: Date | string;
-      type: 'preimage_swap' | 'transfer';
+      lightning: boolean;
     }>(
       `WITH own_key AS (
          SELECT spark_pubkey AS pubkey FROM account WHERE id = $1 AND spark_pubkey IS NOT NULL
@@ -1059,10 +1060,10 @@ export class PostgresWalletTransferStore
              )
            )
        )
-       SELECT transfer_id AS id, type, sum(amount_sats) AS amount_sats,
-              min(transfer_created_at) AS received_at
+       SELECT transfer_id AS id, bool_or(type = 'preimage_swap') AS lightning,
+              sum(amount_sats) AS amount_sats, min(transfer_created_at) AS received_at
        FROM received
-       GROUP BY transfer_id, type
+       GROUP BY transfer_id
        ORDER BY received_at DESC, id DESC
        LIMIT $5`,
       [
@@ -1077,7 +1078,7 @@ export class PostgresWalletTransferStore
       id: row.id,
       amountSats: Number(row.amount_sats),
       receivedAt: row.received_at instanceof Date ? row.received_at : new Date(row.received_at),
-      kind: row.type === 'preimage_swap' ? 'lightning' : 'spark',
+      kind: row.lightning ? 'lightning' : 'spark',
     }));
   }
 }
