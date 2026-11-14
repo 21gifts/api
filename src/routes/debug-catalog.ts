@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
-import type { MiddlewareHandler } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import type { ApiLogStore } from '@/lib/api-log';
 import type { AuthStore } from '@/lib/auth/store';
 import type { ContactStore } from '@/lib/contact-store';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { isDebugCatalogTable, loadDebugTables, type DebugCatalogDeps } from '@/lib/debug-catalog';
 import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
@@ -50,19 +50,8 @@ export interface DebugCatalogRouteDeps {
   lnurlServer?: LnurlServerConfig;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
-}
-
-function requireDebugToken(deps: DebugCatalogRouteDeps): MiddlewareHandler {
-  return async (c, next) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    await next();
-  };
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {
@@ -118,8 +107,8 @@ function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {
  */
 export function debugCatalogRoutes(deps: DebugCatalogRouteDeps): Hono {
   return new Hono()
-    .use('*', requireDebugToken(deps))
-    .get('/', async (c) => {
+    .use('*', requireOperator('read', deps))
+    .get('/', requireOperator('read', deps), async (c) => {
       try {
         const tables = await loadDebugTables(catalogDeps(deps));
         logEvent('debug.dump.listed', { tables: Object.keys(tables).length });
@@ -129,7 +118,7 @@ export function debugCatalogRoutes(deps: DebugCatalogRouteDeps): Hono {
         return c.json({ error: 'Dump is unavailable' }, 503);
       }
     })
-    .get('/:table', async (c) => {
+    .get('/:table', requireOperator('read', deps), async (c) => {
       const table = c.req.param('table');
       if (!isDebugCatalogTable(table)) {
         return c.json({ error: 'Not found' }, 404);

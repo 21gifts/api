@@ -59,6 +59,8 @@ import {
 } from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
+import { migrateOperatorLoginSchema, PostgresOperatorLoginStore } from '@/lib/operator-login-store';
+import { migrateApiLogSchema, PostgresApiLogStore } from '@/lib/api-log';
 import { parseWalletReport } from '@/lib/wallet-report';
 import { buildWalletStats } from '@/lib/wallet-stats';
 import {
@@ -67,7 +69,10 @@ import {
   repairWalletPaymentPairs,
   type WalletPaymentRecord,
 } from '@/lib/wallet-store';
-import { PostgresWalletTransferStore } from '@/lib/wallet-transfer-store';
+import {
+  PostgresWalletTransferStore,
+  type WalletTransferRecord,
+} from '@/lib/wallet-transfer-store';
 import {
   migrateWelcomeInvoiceReservationSchema,
   PostgresWelcomeInvoiceReservationStore,
@@ -2444,6 +2449,81 @@ describe('PostgresPosStore paid tracking', () => {
   });
 });
 
+describe('PostgresPosStore listLatestCreatedByAccount', () => {
+  test('binds the ids as one uuid[] literal and returns the latest charge per account', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migratePosSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const first = crypto.randomUUID();
+      const second = crypto.randomUUID();
+      const idle = crypto.randomUUID();
+      for (const [id, suffix] of [
+        [first, 'a'],
+        [second, 'b'],
+        [idle, 'c'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username: `latest_${suffix}_${stamp}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+
+      const store = new PostgresPosStore(client, mergeDb);
+      const old = Date.parse('2025-01-02T03:00:00.000Z');
+      const newer = Date.parse('2026-09-01T00:00:00.000Z');
+      for (const [accountId, status, createdAtMs] of [
+        [first, 'expired', newer],
+        [first, 'cancelled', old],
+        [second, 'cancelled', old],
+      ] as const) {
+        await store.create({
+          id: crypto.randomUUID(),
+          accountId,
+          amountSats: 21,
+          status,
+          createdAt: new Date(createdAtMs),
+          expiresAt: new Date(createdAtMs + POS_CHARGE_TTL_MS),
+          paidAt: null,
+          sparkInvoice: null,
+          amountCurrency: null,
+          amountText: null,
+          fiatUsd: null,
+          fiatChf: null,
+          fiatEur: null,
+          fiatPhp: null,
+        });
+      }
+
+      const latest = await store.listLatestCreatedByAccount([first, second, idle, first]);
+      expect(latest).toHaveLength(2);
+      expect(new Map(latest.map((ref) => [ref.accountId, ref.createdAtMs]))).toEqual(
+        new Map([
+          [first, newer],
+          [second, old],
+        ]),
+      );
+      expect(await store.listLatestCreatedByAccount([])).toEqual([]);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore stored external address', () => {
   test('new rows leave it unset and writes keep existing data', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
@@ -3454,6 +3534,180 @@ describe('PostgresWalletTransferStore verified counterparty ownership', () => {
   });
 });
 
+describe('POST /me/wallet/counterparties sources in Postgres', () => {
+  test('own completed reports and the counterparty of completed observed transfers', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl, { max: 1 });
+    const hex64 = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    const receiverId = crypto.randomUUID();
+    const senderId = crypto.randomUUID();
+    const previousOwnerId = crypto.randomUUID();
+    const claimantId = crypto.randomUUID();
+    const receiverKey = `02${hex64()}`;
+    const senderKey = `03${hex64()}`;
+    const previousKey = `02${hex64()}`;
+    const claimKey = `03${hex64()}`;
+    const prefix = crypto.randomUUID();
+    const id = (name: string): string => `${prefix}-${name}`;
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migrateWalletSchema(client);
+      const auth = new PostgresAuthStore(client);
+      for (const accountId of [receiverId, senderId, previousOwnerId, claimantId]) {
+        await auth.createAccount({
+          id: accountId,
+          linkingKey: null,
+          role: 'verified',
+          name: null,
+          username: `cp_${accountId.replaceAll('-', '').slice(0, 12)}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+      await client.execute(
+        `UPDATE account
+         SET spark_pubkey = CASE WHEN id = $1 THEN $2 WHEN id = $3 THEN $4 ELSE $5 END,
+             spark_pubkey_verified_at = CASE WHEN id = $6 THEN NULL ELSE now() END
+         WHERE id IN ($1, $3, $6)`,
+        [receiverId, receiverKey, senderId, senderKey, claimKey, claimantId],
+      );
+      await client.execute(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          previousOwnerId,
+          previousKey,
+          `spark1${'q'.repeat(62)}`,
+          new Date('2026-11-11T00:00:00.000Z'),
+        ],
+      );
+      const time = new Date('2026-11-12T13:00:00.000Z');
+      const report = (
+        name: string,
+        extra: Partial<WalletPaymentRecord> = {},
+      ): WalletPaymentRecord => ({
+        accountId: receiverId,
+        paymentId: id(name),
+        direction: 'out',
+        status: 'completed',
+        amountSats: 21,
+        feeSats: 0,
+        paidAt: time,
+        method: 'spark',
+        paymentHash: null,
+        invoice: null,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'member',
+        counterpartyAccountId: null,
+        firstSeenAt: time,
+        updatedAt: time,
+        ...extra,
+      });
+      const wallet = new PostgresWalletStore(client);
+      await wallet.upsertPayments([
+        report('out'),
+        report('in', { direction: 'in' }),
+        report('pending', { status: 'pending' }),
+        report('failed', { status: 'failed' }),
+        report('sender-only', { accountId: senderId }),
+      ]);
+      expect(
+        [
+          ...(await wallet.findCompletedPayments(receiverId, [
+            { id: id('out'), direction: 'out' },
+            { id: id('in'), direction: 'in' },
+            { id: id('in'), direction: 'out' },
+            { id: id('pending'), direction: 'out' },
+            { id: id('failed'), direction: 'out' },
+            { id: id('sender-only'), direction: 'out' },
+            { id: 'bad\u0000id', direction: 'out' },
+          ])),
+        ].sort(),
+      ).toEqual([id('in'), id('out')].sort());
+
+      const transfers = new PostgresWalletTransferStore(client);
+      const transfer = (
+        name: string,
+        counterpartyPubkey: string,
+        extra: Partial<WalletTransferRecord> = {},
+      ): WalletTransferRecord => ({
+        accountId: receiverId,
+        walletPubkey: receiverKey,
+        transferId: id(name),
+        direction: 'out',
+        type: 'transfer',
+        status: 'completed',
+        amountSats: 21,
+        counterpartyPubkey,
+        counterpartyPubkeys: [counterpartyPubkey],
+        sparkInvoice: null,
+        transferCreatedAt: time,
+        transferUpdatedAt: null,
+        seenAt: time,
+        ...extra,
+      });
+      for (const row of [
+        transfer('out', senderKey),
+        transfer('in', senderKey, { direction: 'in' }),
+        transfer('previous', previousKey),
+        transfer('unverified', claimKey),
+        transfer('self', receiverKey),
+        transfer('pending', senderKey, { status: 'pending' }),
+        transfer('lightning', senderKey, { type: 'preimage_swap' }),
+        transfer('multi', senderKey, { counterpartyPubkeys: [senderKey, previousKey] }),
+        transfer('sender-side', receiverKey, { accountId: senderId, walletPubkey: senderKey }),
+      ]) {
+        await transfers.upsertTransfer(row);
+      }
+      const found = await transfers.findObservedCounterparties(receiverId, [
+        { id: id('out'), direction: 'out' },
+        { id: id('in'), direction: 'in' },
+        { id: id('previous'), direction: 'out' },
+        { id: id('unverified'), direction: 'out' },
+        { id: id('self'), direction: 'out' },
+        { id: id('pending'), direction: 'out' },
+        { id: id('lightning'), direction: 'out' },
+        { id: id('multi'), direction: 'out' },
+        { id: id('sender-side'), direction: 'in' },
+        { id: id('sender-side'), direction: 'out' },
+        { id: id('out'), direction: 'in' },
+        { id: 'bad\u0000id', direction: 'out' },
+      ]);
+      expect(found).toEqual(
+        new Map([
+          [id('in'), [senderId]],
+          [id('out'), [senderId]],
+          [id('previous'), [previousOwnerId]],
+        ]),
+      );
+    } finally {
+      await client.execute('DELETE FROM wallet_transfer WHERE account_id IN ($1, $2)', [
+        receiverId,
+        senderId,
+      ]);
+      await client.execute('DELETE FROM wallet_payment WHERE account_id IN ($1, $2)', [
+        receiverId,
+        senderId,
+      ]);
+      await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [previousOwnerId]);
+      await client.execute('DELETE FROM account WHERE id IN ($1, $2, $3, $4)', [
+        receiverId,
+        senderId,
+        previousOwnerId,
+        claimantId,
+      ]);
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresWalletStore', () => {
   test('migrate twice, balance, guarded upsert, order, db_change, and secrets', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
@@ -4062,6 +4316,105 @@ describe('PostgresFondPayoutStore', () => {
       };
       expect(cents(after.payoutsPaidUsd) - cents(before.payoutsPaidUsd)).toBe(350n);
     } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  async function depositAccounts(client: SqlClient, count: number): Promise<string[]> {
+    const ids = Array.from({ length: count }, () => crypto.randomUUID());
+    for (const id of ids) {
+      await client.execute(
+        `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at, view_key)
+VALUES ($1, 'fond', false, false, now(), $2)`,
+        [id, crypto.randomUUID().replaceAll('-', '').repeat(2)],
+      );
+    }
+    return ids;
+  }
+
+  test('stores, keeps, and replaces the deposit address with a db_change row per change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    let ids: string[] = [];
+    try {
+      await migrateAuthSchema(client);
+      await migrateFondPayoutSchema(client);
+      await migrateDbChangeSchema(client);
+      ids = await depositAccounts(client, 2);
+      const [fond = '', other = ''] = ids;
+      const store = new PostgresFondPayoutStore(client);
+      const [marker] = await client.query<{ id: string }>(
+        'SELECT coalesce(max(id), 0)::text AS id FROM db_change',
+      );
+
+      expect(await store.depositAddress(fond)).toBeNull();
+      expect(await store.setDepositAddress(fond, 'bc1qfirst')).toBe(true);
+      expect(await store.setDepositAddress(fond, 'bc1qfirst')).toBe(false);
+      expect(await store.setDepositAddress(other, 'bc1qother')).toBe(true);
+      expect(await store.setDepositAddress(fond, 'bc1qsecond')).toBe(true);
+      expect(await store.depositAddress(fond)).toBe('bc1qsecond');
+      expect(await store.depositAddress(other)).toBe('bc1qother');
+
+      const changes = await client.query<{
+        op: string;
+        before: { address: string } | null;
+        after: { address: string } | null;
+      }>(
+        `SELECT op, before, after FROM db_change
+         WHERE id > $1::bigint AND table_name = 'fond_deposit_address'
+           AND coalesce(after, before)->>'account_id' = $2
+         ORDER BY id`,
+        [marker?.id ?? '0', fond],
+      );
+      expect(
+        changes.map((row) => [row.op, row.before?.address ?? null, row.after?.address ?? null]),
+      ).toEqual([
+        ['INSERT', null, 'bc1qfirst'],
+        ['UPDATE', 'bc1qfirst', 'bc1qsecond'],
+      ]);
+    } finally {
+      await client.execute('DELETE FROM fond_deposit_address WHERE account_id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a merge drops the merged deposit address and keeps the survivor one', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    let ids: string[] = [];
+    try {
+      await migrateMergeTables(client);
+      ids = await depositAccounts(client, 4);
+      const [movedFrom = '', movedInto = '', keptFrom = '', keptInto = ''] = ids;
+      const store = new PostgresFondPayoutStore(client);
+      await store.setDepositAddress(movedFrom, 'bc1qmoved');
+      await store.setDepositAddress(keptFrom, 'bc1qdropped');
+      await store.setDepositAddress(keptInto, 'bc1qkept');
+
+      expect(
+        (await mergeAccounts(mergeDb, { from: movedFrom, into: movedInto, verify: 'into' })).ok,
+      ).toBe(true);
+      expect(
+        (await mergeAccounts(mergeDb, { from: keptFrom, into: keptInto, verify: 'into' })).ok,
+      ).toBe(true);
+
+      expect(await store.depositAddress(movedInto)).toBeNull();
+      expect(await store.depositAddress(keptInto)).toBe('bc1qkept');
+      const left = await client.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM fond_deposit_address WHERE account_id = ANY($1::uuid[])',
+        [postgresTextArrayLiteral([movedFrom, keptFrom])],
+      );
+      expect(left[0]?.n).toBe(0);
+    } finally {
+      await client.execute('DELETE FROM fond_deposit_address WHERE account_id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
       await closeIfPossible(sql);
     }
   });
@@ -5044,6 +5397,7 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateWalletSchema(client);
   await migrateDailyRosterSchema(client);
   await migrateWelcomeInvoiceReservationSchema(client);
+  await migrateFondPayoutSchema(client);
 }
 
 describe('Postgres wallet-transfer account merge reconciliation', () => {
@@ -9324,6 +9678,111 @@ describe('shop identity on Postgres', () => {
       expect(await ctx.messages.getByIds([])).toEqual([]);
     } finally {
       await ctx.cleanup();
+    }
+  });
+});
+
+describe('PostgresOperatorLoginStore and api_log.operator', () => {
+  test('single-use challenges, token lookup, expiry cleanup, operator column, db_change rows', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateApiLogSchema(client);
+      await migrateApiLogSchema(client);
+      await migrateOperatorLoginSchema(client);
+      await migrateOperatorLoginSchema(client);
+      await migrateDbChangeSchema(client);
+      const [mark] = await client.query<{ id: string }>(
+        `SELECT COALESCE(MAX(id), 0)::text AS id FROM db_change`,
+      );
+
+      const store = new PostgresOperatorLoginStore(client);
+      const now = Date.now();
+      const challenge = `itest-${crypto.randomUUID()}`;
+      await store.addChallenge(challenge, now, now + 60_000);
+      // Two consumers race for the same challenge; exactly one wins.
+      const raced = await Promise.all([
+        store.consumeChallenge(challenge, now),
+        store.consumeChallenge(challenge, now),
+      ]);
+      expect(raced.filter(Boolean)).toHaveLength(1);
+      const expired = `itest-${crypto.randomUUID()}`;
+      await store.addChallenge(expired, now - 120_000, now - 60_000);
+      expect(await store.consumeChallenge(expired, now)).toBe(false);
+
+      const tokenHash = createHash('sha256').update(crypto.randomUUID()).digest('hex');
+      const record = {
+        tokenHash,
+        operator: 'itest-operator',
+        keyFingerprint: 'SHA256:itest',
+        level: 'write' as const,
+        createdAt: now,
+        expiresAt: now + 900_000,
+      };
+      await store.addToken(record);
+      expect(await store.findToken(tokenHash, now)).toEqual(record);
+      expect(await store.findToken(tokenHash, now + 900_000)).toBeNull();
+
+      const stale = `itest-${crypto.randomUUID()}`;
+      await store.addChallenge(stale, now - 120_000, now - 60_000);
+      await store.addToken({
+        ...record,
+        tokenHash: `${tokenHash.slice(0, 60)}0000`,
+        expiresAt: now - 1,
+      });
+      await store.deleteExpired(now);
+      const left = await client.query<{ n: string }>(
+        `SELECT (SELECT count(*) FROM operator_challenge WHERE expires_at <= $1)
+              + (SELECT count(*) FROM operator_token WHERE expires_at <= $1) AS n`,
+        [new Date(now)],
+      );
+      expect(Number(left[0]?.n)).toBe(0);
+      expect(await store.findToken(tokenHash, now)).toEqual(record);
+
+      const apiLog = new PostgresApiLogStore(client);
+      const rowId = crypto.randomUUID();
+      await apiLog.append({
+        id: rowId,
+        createdAt: new Date(now),
+        method: 'GET',
+        path: '/debug/logins',
+        status: 200,
+        ms: 1,
+        accountId: null,
+        authKind: 'debug',
+        operator: 'itest-operator',
+        clientIp: null,
+        clientCountry: null,
+        cfRay: null,
+        userAgent: null,
+        acceptLanguage: null,
+        origin: null,
+      });
+      const logged = (await apiLog.listLatest(50)).find((row) => row.id === rowId);
+      expect(logged?.operator).toBe('itest-operator');
+
+      const changes = await client.query<{
+        table_name: string;
+        op: string;
+        challenge: string | null;
+      }>(
+        `SELECT table_name, op, COALESCE(after->>'challenge', before->>'challenge') AS challenge
+         FROM db_change
+         WHERE id > $1::bigint
+           AND table_name IN ('operator_challenge', 'operator_token')`,
+        [mark?.id ?? '0'],
+      );
+      const seen = new Set(changes.map((row) => `${row.table_name}:${row.op}`));
+      expect(seen.has('operator_challenge:INSERT')).toBe(true);
+      expect(seen.has('operator_challenge:DELETE')).toBe(true);
+      expect(seen.has('operator_token:INSERT')).toBe(true);
+      expect(seen.has('operator_token:DELETE')).toBe(true);
+      // The challenge column is stored as its SHA-256 hex in db_change.
+      const hashed = createHash('sha256').update(challenge).digest('hex');
+      expect(changes.some((row) => row.challenge === hashed)).toBe(true);
+      expect(changes.some((row) => row.challenge === challenge)).toBe(false);
+    } finally {
+      await closeIfPossible(sql);
     }
   });
 });

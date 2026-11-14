@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import type { MiddlewareHandler } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { serializeTrustEdge } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
@@ -10,7 +10,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Operator backfill and delete of stored trust edges. Authenticated by
- * `DEBUG_TOKEN` (Bearer), not by an end-user session. Does not change
+ * `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session. Does not change
  * `account.role`.
  */
 
@@ -22,6 +22,8 @@ export interface DebugTrustRouteDeps {
   trustStore: TrustStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (injected for testability). */
   now?: () => number;
 }
@@ -38,20 +40,6 @@ const insertBody = z.object({
     'moderator_reject',
   ]),
 });
-
-/** Shared 503/401 gate for `/debug/trust-edges`. */
-function requireDebugToken(deps: DebugTrustRouteDeps): MiddlewareHandler {
-  return async (c, next) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    await next();
-  };
-}
 
 /** Body schema for operator trust-edge delete. */
 const deleteBody = z.object({
@@ -74,8 +62,8 @@ const deleteBody = z.object({
 export function debugTrustRoutes(deps: DebugTrustRouteDeps): Hono {
   const now = deps.now ?? Date.now;
   return new Hono()
-    .use('*', requireDebugToken(deps))
-    .get('/', async (c) => {
+    .use('*', requireOperator('read', deps))
+    .get('/', requireOperator('read', deps), async (c) => {
       try {
         const edges = [...(await deps.trustStore.listEdges())].sort(
           (a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0),
@@ -86,7 +74,7 @@ export function debugTrustRoutes(deps: DebugTrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
     })
-    .post('/', async (c) => {
+    .post('/', requireOperator('write', deps), async (c) => {
       const parsed = insertBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json(
@@ -124,7 +112,7 @@ export function debugTrustRoutes(deps: DebugTrustRouteDeps): Hono {
         return c.json({ error: 'Trust chain is unavailable' }, 503);
       }
     })
-    .delete('/', async (c) => {
+    .delete('/', requireOperator('write', deps), async (c) => {
       const parsed = deleteBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with "subjectId" and "kind" strings' }, 400);

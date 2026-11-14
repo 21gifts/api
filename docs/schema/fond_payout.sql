@@ -38,3 +38,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
 CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_welcome_uidx
   ON fond_payout (kind, address)
   WHERE kind = 'welcome';
+
+-- On-chain deposit address the Fond account registers for its own wallet
+-- (PUT /fond/deposit-address); GET /fond/summary publishes it.
+CREATE TABLE IF NOT EXISTS fond_deposit_address (
+  account_id uuid PRIMARY KEY REFERENCES account (id),
+  address text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

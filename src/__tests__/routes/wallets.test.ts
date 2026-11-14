@@ -180,6 +180,7 @@ describe('GET /wallets/stats', () => {
       listPayments: () => Promise.resolve([]),
       dailyBalances: () => Promise.reject(new Error('down')),
       paymentTotals: () => Promise.resolve({ receivedSats: 0n, paidOutSats: 0n, feesSats: 0n }),
+      findCompletedPayments: () => Promise.resolve(new Set()),
     };
     const res = await createApp({ walletStore: store }).request('/wallets/stats');
     expect(res.status).toBe(503);

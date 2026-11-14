@@ -48,7 +48,10 @@ import { diagnosticsRoutes } from '@/routes/diagnostics';
 import { debugDbRoutes } from '@/routes/debug-db';
 import { debugWalletRoutes } from '@/routes/debug-wallet';
 import type { DebugDbStore } from '@/lib/debug-db';
-import { assertDistinctDebugTokens } from '@/lib/debug-token';
+import { debugAuthRoutes } from '@/routes/debug-auth';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore, type OperatorLoginStore } from '@/lib/operator-login-store';
+import { loadOperatorSigners, type OperatorSigners } from '@/lib/operator-signers';
 import type { MergeDb } from '@/lib/account-merge';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
@@ -58,6 +61,7 @@ import type { WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { pushRoutes } from '@/routes/push';
 import { walletReportRoutes } from '@/routes/wallet-report';
 import { walletHeartRoutes } from '@/routes/wallet-hearts';
+import { walletCounterpartyRoutes } from '@/routes/wallet-counterparties';
 import { memberEventRoutes } from '@/routes/member-events';
 import { myLoansRoutes } from '@/routes/repayment';
 import { debugPushRoutes } from '@/routes/debug-push';
@@ -86,7 +90,11 @@ import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
 import { walletAccountKind } from '@/lib/wallet-category';
 import { InMemoryWalletStore, type WalletStore } from '@/lib/wallet-store';
-import { InMemoryWalletTransferStore, type WalletTransferStore } from '@/lib/wallet-transfer-store';
+import {
+  InMemoryWalletTransferStore,
+  type ObservedCounterpartyStore,
+  type WalletTransferStore,
+} from '@/lib/wallet-transfer-store';
 import { InMemoryMemberEventStore, type MemberEventStore } from '@/lib/member-event-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
@@ -183,20 +191,24 @@ export interface AppDeps {
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
    * `POST /debug/trust-edges`, `POST /debug/shop-keys`,
    * `POST /debug/shop-notes`, and `POST /debug/passkey-renew/reopen`
-   * return 503. `GET /debug/db` and `GET /debug/accounts/:id/wallet` return
-   * 503 when this token and `debugReadToken` are both unset or blank.
+   * return 503 unless the SSH key login is loaded (then 401 for a missing
+   * or wrong bearer). `GET /debug/db` and `GET /debug/accounts/:id/wallet`
+   * do the same.
    */
   debugToken?: string;
   /**
-   * Read-only bearer for `GET /debug/db`, `GET /debug/accounts/:id/wallet`,
-   * `GET /funding/goal`, the operator staff GET reads,
-   * `GET /funding/daily-roster/links`, and `GET /funding/withdrawals`
-   * (default: `process.env.DEBUG_READ_TOKEN`).
-   * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
-   * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
-   * interpolating either value. No write route receives this value.
+   * Allowed-signers lines of the operator SSH key login (default:
+   * {@link loadOperatorSigners} on `env`, read once here). `null` turns the
+   * key login off: `GET /debug/auth/challenge` and `POST /debug/auth` answer
+   * 503 and only `DEBUG_TOKEN` opens the operator routes.
    */
-  debugReadToken?: string;
+  operatorSigners?: OperatorSigners | null;
+  /**
+   * Challenges and tokens of the operator SSH key login (default: a fresh
+   * {@link InMemoryOperatorLoginStore}). Boot injects
+   * {@link PostgresOperatorLoginStore} when `DATABASE_URL` is set.
+   */
+  operatorLoginStore?: OperatorLoginStore;
   /**
    * Reserved-connection transaction port for `POST /debug/accounts/merge`.
    * Omitted on a memory boot. A valid merge body
@@ -226,6 +238,12 @@ export interface AppDeps {
   walletStore?: WalletStore;
   /** Server-verified Spark transfers (default: empty in-memory store). */
   walletTransferStore?: WalletTransferStore;
+  /**
+   * Server-observed transfers that `POST /me/wallet/counterparties` names counterparties from
+   * (default: the in-memory transfer store created when `walletTransferStore` is omitted; SQL
+   * boot passes the same `PostgresWalletTransferStore` as `walletTransferStore`).
+   */
+  walletCounterparties?: ObservedCounterpartyStore;
   /** Spark viewer identity key returned in owner JSON, or null when unavailable. */
   walletViewerPublicKey?: string | null;
   /**
@@ -496,8 +514,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *
  * @param deps - Optional overrides for the auth store, clock,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
- *   debugReadToken (optional; default `process.env.DEBUG_READ_TOKEN`;
- *   equal to debugToken after trim throws before routes mount),
+ *   operatorSigners (optional; default {@link loadOperatorSigners} on env),
+ *   operatorLoginStore (optional; default {@link InMemoryOperatorLoginStore};
+ *   SQL boot injects {@link PostgresOperatorLoginStore}),
  *   mergeDb, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
@@ -528,8 +547,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
  *   mounts `POST /diagnostics` and `GET /debug/diagnostics`),
  *   walletStore (optional; default {@link InMemoryWalletStore}; mounts
- *   `POST /me/wallet/report`, `GET /wallets/stats`, and
- *   `GET /debug/accounts/:id/wallet`; SQL boot injects
+ *   `POST /me/wallet/report`, `GET /wallets/stats`,
+ *   `GET /debug/accounts/:id/wallet`, and `POST /me/wallet/counterparties`;
+ *   SQL boot injects
  *   {@link PostgresWalletStore}),
  *   and memberEventStore (optional; default {@link InMemoryMemberEventStore};
  *   mounts `POST /me/events`; SQL boot injects
@@ -540,8 +560,6 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * @throws {@link Error}
  * When `LOGINS_OPEN_DEFAULT` is set to a value other than `open` or `closed`,
  * or `RECOVERY_SHARE_REQUIRED_FROM` to anything but an ISO date.
- * @throws {@link Error}
- * When the trimmed read token is non-empty and equal to the trimmed write token, before routes mount. The message is `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and includes neither token value. An empty or missing read token does not throw.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
@@ -552,8 +570,6 @@ export function createApp(deps: AppDeps = {}): Hono {
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
   const readBrand = deps.readBrand ?? readPublicBrandFile;
   const debugToken = deps.debugToken ?? process.env['DEBUG_TOKEN'];
-  const debugReadToken = deps.debugReadToken ?? process.env['DEBUG_READ_TOKEN'];
-  assertDistinctDebugTokens(debugToken, debugReadToken);
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
@@ -566,6 +582,11 @@ export function createApp(deps: AppDeps = {}): Hono {
     deps.loginGateStore ?? new InMemoryLoginGateStore(),
     resolveLoginsOpenDefault(env),
   );
+  const operatorLogin = new OperatorLogin({
+    signers: deps.operatorSigners === undefined ? loadOperatorSigners(env) : deps.operatorSigners,
+    store: deps.operatorLoginStore ?? new InMemoryOperatorLoginStore(),
+    now,
+  });
   const requiredAppBuild = resolveRequiredAppBuild(env);
   const recoveryShareRequiredFrom = resolveRecoveryShareRequiredFrom(env);
   const invoiceRateCaps =
@@ -643,7 +664,9 @@ export function createApp(deps: AppDeps = {}): Hono {
     new InMemoryWalletStore((accountId) =>
       walletAccountKind({ authStore: store, messages: messageStore }, accountId),
     );
-  const walletTransferStore = deps.walletTransferStore ?? new InMemoryWalletTransferStore();
+  const memoryTransfers = new InMemoryWalletTransferStore();
+  const walletTransferStore = deps.walletTransferStore ?? memoryTransfers;
+  const walletCounterparties = deps.walletCounterparties ?? memoryTransfers;
   const memberEventStore = deps.memberEventStore ?? new InMemoryMemberEventStore();
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -699,7 +722,10 @@ export function createApp(deps: AppDeps = {}): Hono {
 
   const app = new Hono();
 
-  app.use('*', requestLog({ apiLogStore, authStore: store, debugToken, spendApiToken, now }));
+  app.use(
+    '*',
+    requestLog({ apiLogStore, authStore: store, debugToken, spendApiToken, operatorLogin, now }),
+  );
   // NIP-05 must stay CORS `*` for any Origin (Damus / browsers). Register this
   // before the restrictive allowlist cors so `*` is applied last on the way out
   // (Hono middleware registered first wraps later middleware).
@@ -788,6 +814,15 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/', walletHeartRoutes({ authStore: store, messages: messageStore, now }));
+  app.route(
+    '/',
+    walletCounterpartyRoutes({
+      authStore: store,
+      walletStore,
+      walletTransfers: walletCounterparties,
+      now,
+    }),
+  );
   app.route('/', memberEventRoutes({ authStore: store, store: memberEventStore, now }));
   app.route(
     '/',
@@ -900,7 +935,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       ...(debugToken === undefined ? {} : { debugToken }),
-      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+      operatorLogin,
     }),
   );
   app.route('/mentions', mentionsRoutes({ auth: store, now }));
@@ -929,7 +964,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       walletStore,
       authStore: store,
       debugToken,
-      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+      operatorLogin,
       now,
     }),
   );
@@ -938,6 +973,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugRoutes({
       store,
       debugToken,
+      operatorLogin,
       ...receivingDeps,
       conversationStore,
       messageStore,
@@ -947,19 +983,29 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
     }),
   );
-  app.route('/debug', debugLoginsRoutes({ authStore: store, loginGate, now, debugToken }));
-  app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
-  app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
-  app.route('/debug/diagnostics', debugDiagnosticsRoutes({ store: diagnosticStore, debugToken }));
+  app.route('/debug/auth', debugAuthRoutes({ operatorLogin, now }));
+  app.route(
+    '/debug',
+    debugLoginsRoutes({ authStore: store, loginGate, now, debugToken, operatorLogin }),
+  );
+  app.route(
+    '/debug/contacts',
+    debugContactsRoutes({ store: contactStore, debugToken, operatorLogin }),
+  );
+  app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken, operatorLogin }));
+  app.route(
+    '/debug/diagnostics',
+    debugDiagnosticsRoutes({ store: diagnosticStore, debugToken, operatorLogin }),
+  );
   app.route('/diagnostics', diagnosticsRoutes({ store: diagnosticStore, now }));
   app.route(
     '/debug/db',
     debugDbRoutes({
       store: deps.debugDbStore,
       debugToken,
+      operatorLogin,
       authStore: store,
       now,
-      ...(debugReadToken === undefined ? {} : { debugReadToken }),
     }),
   );
   app.route(
@@ -967,11 +1013,15 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugMessagesRoutes({
       store: messageStore,
       debugToken,
+      operatorLogin,
       shopIdentities: shopIdentityStore,
       ...(shopKek === undefined ? {} : { shopKek }),
     }),
   );
-  app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));
+  app.route(
+    '/debug/external-pubkeys',
+    debugExternalRoutes({ store: messageStore, debugToken, operatorLogin }),
+  );
   app.route(
     '/debug',
     debugPaymentsRoutes({
@@ -979,6 +1029,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       auth: store,
       now,
       debugToken,
+      operatorLogin,
       pushStore,
       notificationStore,
       ...(spendPing === undefined ? {} : { spendPing }),
@@ -999,6 +1050,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       now,
       debugToken,
+      operatorLogin,
       vapidPublicKey,
     }),
   );
@@ -1009,6 +1061,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       now,
       debugToken,
+      operatorLogin,
       vapidPublicKey,
     }),
   );
@@ -1017,6 +1070,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugPasskeyRenewRoutes({
       authStore: store,
       debugToken,
+      operatorLogin,
     }),
   );
   app.route(
@@ -1026,6 +1080,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       messages: messageStore,
       kek: shopKek,
       debugToken,
+      operatorLogin,
     }),
   );
   app.route(
@@ -1036,10 +1091,14 @@ export function createApp(deps: AppDeps = {}): Hono {
       identities: shopIdentityStore,
       kek: shopKek,
       debugToken,
+      operatorLogin,
       now,
     }),
   );
-  app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));
+  app.route(
+    '/debug/trust-edges',
+    debugTrustRoutes({ store, trustStore, debugToken, operatorLogin, now }),
+  );
   app.route(
     '/debug/dump',
     debugCatalogRoutes({
@@ -1059,6 +1118,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),
       ...receivingDeps,
       debugToken,
+      operatorLogin,
     }),
   );
   app.route('/trust-chain', trustChainRoutes({ authStore: store, trustStore, now }));
@@ -1076,7 +1136,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       giftStore,
       ...(spendPing === undefined ? {} : { spendPing }),
       ...(debugToken === undefined ? {} : { debugToken }),
-      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+      operatorLogin,
     }),
   );
   app.route(
@@ -1094,7 +1154,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       rosterStore,
       ...(spendPing === undefined ? {} : { spendPing }),
       ...(debugToken === undefined ? {} : { debugToken }),
-      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+      operatorLogin,
     }),
   );
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }));
@@ -1139,7 +1199,7 @@ export function createApp(deps: AppDeps = {}): Hono {
             repaymentLimiter: new InvoiceRateLimiter(invoiceRateCaps),
           }),
       ...(debugToken === undefined ? {} : { debugToken }),
-      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+      operatorLogin,
     }),
   );
   app.route(
@@ -1179,11 +1239,20 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   if (shopPayments !== undefined) {
-    app.route('/debug/shop-proofs', debugShopProofsRoutes({ shop: shopPayments, debugToken }));
+    app.route(
+      '/debug/shop-proofs',
+      debugShopProofsRoutes({ shop: shopPayments, debugToken, operatorLogin }),
+    );
   }
   app.route(
     '/shops/activity',
-    shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
+    shopActivityRoutes({
+      authStore: store,
+      now,
+      messages: messageStore,
+      pos: posStore,
+      identities: shopIdentityStore,
+    }),
   );
   app.route(
     '/shops',
@@ -1204,7 +1273,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       messages: messageStore,
       pos: posStore,
       debugToken,
-      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+      operatorLogin,
     }),
   );
   app.route(

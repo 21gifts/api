@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { classifyDebugDbBearer } from '@/lib/debug-token';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { checkOperator, requireOperator } from '@/lib/operator';
 import { DebugDbCursorError, type DebugDbStore } from '@/lib/debug-db';
 import { logEvent } from '@/lib/log';
 import { resolveSession } from '@/lib/auth/service';
@@ -8,12 +9,9 @@ import { roleAtLeast } from '@/lib/auth/roles';
 
 /**
  * Operator debug surface for the whole database.
- * Authenticated by `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` (Bearer), not by an
- * end-user session. `DEBUG_READ_TOKEN` is GET and HEAD on this route, opens
- * `GET /debug/accounts/:id/wallet`, and otherwise opens only
- * `GET /funding/goal`, the operator reads on staff GET routes, and the
- * operator-only `GET /funding/daily-roster/links` and `GET /funding/withdrawals`
- * (`isOperatorBearer`).
+ * Authenticated by `DEBUG_TOKEN` or an operator key token of any level
+ * (Bearer). It declares `read` through `requireOperator`. A member session
+ * of role `software_developer` or higher reads only the wallet tables.
  * `GET /` lists ordinary public tables or one keyset page. It does not
  * create or update rows.
  */
@@ -24,8 +22,8 @@ export interface DebugDbRouteDeps {
   store: DebugDbStore | undefined;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
-  /** Optional read-only bearer. `GET /debug/db` here; it also opens the operator staff reads. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Live member sessions used for software-developer wallet-table access. */
   authStore?: AuthStore;
   /** Session-expiry clock. */
@@ -37,6 +35,7 @@ const MEMBER_WALLET_TABLE_NAMES = [
   'wallet_payment',
   'wallet_transfer',
   'wallet_token_transaction',
+  'fond_deposit_address',
 ] as const;
 const MEMBER_WALLET_TABLES = new Set<string>(MEMBER_WALLET_TABLE_NAMES);
 
@@ -53,73 +52,71 @@ function bearer(header: string | undefined): string | null {
  * No `table` returns `{ tables }`. `table` returns one page and omits
  * `nextCursor` when there is no further page. `cursor` without `table` is 400.
  *
- * @param deps - Optional store, optional write token, optional read token.
+ * @param deps - Optional store, `DEBUG_TOKEN`, optional key login, and the session store and clock of the software-developer path.
  * @returns A Hono app exposing `GET /`.
  */
 export function debugDbRoutes(deps: DebugDbRouteDeps): Hono {
-  return new Hono().get('/', async (c) => {
-    const access = classifyDebugDbBearer(
-      deps.debugToken,
-      deps.debugReadToken,
-      c.req.header('authorization'),
-    );
-    let memberAccess = false;
-    if (access !== 'write' && access !== 'read') {
-      const token = bearer(c.req.header('authorization'));
-      if (token !== null && deps.authStore !== undefined) {
+  return new Hono().get(
+    '/',
+    requireOperator('read', deps, {
+      onRefused: async (c, next, refuse) => {
+        const token = bearer(c.req.header('authorization'));
+        if (token === null || deps.authStore === undefined) {
+          return refuse();
+        }
         const account = await resolveSession(deps.authStore, deps.now?.() ?? Date.now(), token);
-        memberAccess = account !== null && roleAtLeast(account.role, 'software_developer');
-        if (account !== null && !memberAccess) {
+        if (account === null) {
+          return refuse();
+        }
+        if (!roleAtLeast(account.role, 'software_developer') || c.req.method !== 'GET') {
           return c.json({ error: 'Unauthorized' }, 401);
         }
-      }
-    }
-    if (!memberAccess && access === 'unconfigured') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!memberAccess && access === 'unauthorized') {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    if (memberAccess && c.req.method !== 'GET') {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    const table = c.req.query('table');
-    const cursor = c.req.query('cursor');
-    if (cursor !== undefined && (table === undefined || table === '')) {
-      return c.json({ error: 'Invalid cursor' }, 400);
-    }
-    const store = deps.store;
-    if (store === undefined) {
-      return c.json({ error: 'Database is not configured' }, 503);
-    }
-    try {
-      if (table === undefined || table === '') {
-        const tables = await store.listTables(memberAccess ? MEMBER_WALLET_TABLE_NAMES : undefined);
-        logEvent('debug.db.listed', { count: tables.length });
-        return c.json({ tables }, 200);
-      }
-      if (memberAccess && !MEMBER_WALLET_TABLES.has(table)) {
-        return c.json({ error: 'Not found' }, 404);
-      }
-      const page = await store.readPage(
-        table,
-        cursor ?? null,
-        memberAccess ? MEMBER_WALLET_TABLE_NAMES : undefined,
-      );
-      if (page === undefined) {
-        return c.json({ error: 'Not found' }, 404);
-      }
-      logEvent('debug.db.page', { table: page.table, count: page.rows.length });
-      if (page.nextCursor === null) {
-        return c.json({ table: page.table, columns: page.columns, rows: page.rows }, 200);
-      }
-      return c.json(page, 200);
-    } catch (error) {
-      if (error instanceof DebugDbCursorError) {
+        await next();
+      },
+    }),
+    async (c) => {
+      const memberAccess =
+        (await checkOperator('read', deps, c.req.header('authorization'))) !== true;
+      const table = c.req.query('table');
+      const cursor = c.req.query('cursor');
+      if (cursor !== undefined && (table === undefined || table === '')) {
         return c.json({ error: 'Invalid cursor' }, 400);
       }
-      logEvent('debug.db.failed');
-      return c.json({ error: 'Database is unavailable' }, 503);
-    }
-  });
+      const store = deps.store;
+      if (store === undefined) {
+        return c.json({ error: 'Database is not configured' }, 503);
+      }
+      try {
+        if (table === undefined || table === '') {
+          const tables = await store.listTables(
+            memberAccess ? MEMBER_WALLET_TABLE_NAMES : undefined,
+          );
+          logEvent('debug.db.listed', { count: tables.length });
+          return c.json({ tables }, 200);
+        }
+        if (memberAccess && !MEMBER_WALLET_TABLES.has(table)) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        const page = await store.readPage(
+          table,
+          cursor ?? null,
+          memberAccess ? MEMBER_WALLET_TABLE_NAMES : undefined,
+        );
+        if (page === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+        logEvent('debug.db.page', { table: page.table, count: page.rows.length });
+        if (page.nextCursor === null) {
+          return c.json({ table: page.table, columns: page.columns, rows: page.rows }, 200);
+        }
+        return c.json(page, 200);
+      } catch (error) {
+        if (error instanceof DebugDbCursorError) {
+          return c.json({ error: 'Invalid cursor' }, 400);
+        }
+        logEvent('debug.db.failed');
+        return c.json({ error: 'Database is unavailable' }, 503);
+      }
+    },
+  );
 }

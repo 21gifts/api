@@ -102,6 +102,11 @@ import {
   type WalletStore,
 } from '@/lib/wallet-store';
 import {
+  migrateOperatorLoginSchema,
+  PostgresOperatorLoginStore,
+  type OperatorLoginStore,
+} from '@/lib/operator-login-store';
+import {
   migrateLoginGateSchema,
   PostgresLoginGateStore,
   type LoginGateStore,
@@ -117,7 +122,11 @@ import {
   type ShopIdentityStore,
 } from '@/lib/shop-identity';
 import { ensureSparkViewer, migrateSparkViewerSchema, type SparkViewer } from '@/lib/spark-viewer';
-import { PostgresWalletTransferStore, type WalletTransferStore } from '@/lib/wallet-transfer-store';
+import {
+  PostgresWalletTransferStore,
+  type ObservedCounterpartyStore,
+  type WalletTransferStore,
+} from '@/lib/wallet-transfer-store';
 import {
   PostgresWelcomeInvoiceReservationStore,
   type WelcomeInvoiceReservationStore,
@@ -249,7 +258,7 @@ export interface BootStores {
    */
   walletStore: WalletStore | undefined;
   /** Durable server-verified Spark transfer store, or undefined on memory boots. */
-  walletTransferStore: WalletTransferStore | undefined;
+  walletTransferStore: (WalletTransferStore & ObservedCounterpartyStore) | undefined;
   /** Durable atomic welcome-invoice entitlement reservations, or undefined on memory boots. */
   welcomeInvoiceReservationStore: WelcomeInvoiceReservationStore | undefined;
   /** Read-only Spark viewer, ephemeral on memory boots. */
@@ -267,6 +276,12 @@ export interface BootStores {
    * `createApp` keeps the empty in-memory default.
    */
   loginGateStore: LoginGateStore | undefined;
+  /**
+   * Postgres-backed challenges and tokens of the operator SSH key login
+   * (`operator_challenge`, `operator_token`), or `undefined` when no SQL
+   * client was opened so `createApp` keeps the in-memory default.
+   */
+  operatorLoginStore: OperatorLoginStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -321,7 +336,7 @@ export interface BootFxOptions {
  * `sparkInvoiceStore: undefined`,
  * `walletStore: undefined`,
  * `memberEventStore: undefined`,
- * `loginGateStore: undefined`,
+ * `loginGateStore: undefined`, `operatorLoginStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `shopIdentityStore: undefined`, `nostrKek: undefined`,
  * `recoveryShareKek: undefined`,
@@ -333,7 +348,7 @@ export interface BootFxOptions {
  * `message`, `shop_identity` (via `migrateShopIdentitySchema`), `contact`,
  * `member_habit` (via `migrateMemberHabitSchema`),
  * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `daily_roster`, `fond_payout`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
+ * `funding_grant`, `daily_roster`, `fond_payout` / `fond_deposit_address`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet, `member_event`, `app_setting`, and `login_allowlist` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
@@ -363,12 +378,13 @@ export interface BootFxOptions {
  * {@link PostgresFundingStore}, {@link PostgresBannerStore},
  * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore},
  * {@link PostgresDebugDbStore}, {@link PostgresWalletStore},
- * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}.
+ * {@link PostgresMemberEventStore}, {@link PostgresLoginGateStore}, and
+ * {@link PostgresOperatorLoginStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` then
  * `migrateDailyRosterSchema` then `migrateFondPayoutSchema` run after
  * auth/`account` exists and before `migrateApiLogSchema` /
  * `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`,
- * `funding_grant`, `daily_roster`, `daily_roster_entry`, and `fond_payout`. `migrateShopIdentitySchema` runs right after
+ * `funding_grant`, `daily_roster`, `daily_roster_entry`, `fond_payout`, and `fond_deposit_address`. `migrateShopIdentitySchema` runs right after
  * `migrateMessageSchema` and before `migrateDbChangeSchema`, so
  * `trg_db_change` attaches to `shop_identity`.
  * The auth schema also owns `welcome_invoice_reservation`, which every account
@@ -381,16 +397,17 @@ export interface BootFxOptions {
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`,
  * `migrateSparkViewerSchema`, `migrateMemberEventSchema`, then
- * `migrateLoginGateSchema`, then `migrateDbChangeSchema`, so
+ * `migrateLoginGateSchema`, then `migrateOperatorLoginSchema`, then
+ * `migrateDbChangeSchema`, so
  * `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet tables,
  * `member_event`,
- * `app_setting`, and `login_allowlist` are migrated between `account_image`
+ * `app_setting`, `login_allowlist`, `operator_challenge`, and `operator_token` are migrated between `account_image`
  * and `db_change` and `trg_db_change` attaches to `api_log`,
  * `account_image`, `diagnostic_event`, `spark_invoice` / `member_spark_invoice`,
  * `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`,
  * `wallet_token_transaction`, `wallet_transfer_sync`,
  * `spark_viewer_key`, `welcome_invoice_reservation`, `member_event`,
- * `app_setting`, and `login_allowlist`.
+ * `app_setting`, `login_allowlist`, `operator_challenge`, and `operator_token`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -465,6 +482,7 @@ export async function openBootStores(
       walletViewerPublicKey: memoryViewer?.publicKey ?? null,
       memberEventStore: undefined,
       loginGateStore: undefined,
+      operatorLoginStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -502,6 +520,7 @@ export async function openBootStores(
   await migrateSparkViewerSchema(sqlClient);
   await migrateMemberEventSchema(sqlClient);
   await migrateLoginGateSchema(sqlClient);
+  await migrateOperatorLoginSchema(sqlClient);
   const logSql = fx?.logSql ?? sqlClient;
   const diagnosticStore = new PostgresDiagnosticStore(logSql);
   setDiagnosticSink((event, fields) => {
@@ -735,5 +754,6 @@ export async function openBootStores(
     walletViewerPublicKey: sparkViewerKey.publicKey,
     memberEventStore: new PostgresMemberEventStore(sqlClient),
     loginGateStore: new PostgresLoginGateStore(sqlClient),
+    operatorLoginStore: new PostgresOperatorLoginStore(sqlClient),
   };
 }

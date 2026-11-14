@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseClientInstant } from '@/lib/client-instant';
-import { classifyDebugDbBearer } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import type { WalletPaymentCursor, WalletPaymentRecord, WalletStore } from '@/lib/wallet-store';
 import { MESSAGE_ID_RE } from '@/routes/messages';
@@ -172,10 +173,10 @@ export interface DebugWalletRouteDeps {
   walletStore: WalletStore;
   /** Shared auth persistence port, used to 404 an unknown account id. */
   authStore: AuthStore;
-  /** Configured operator write token, or `undefined` when debug is disabled. */
+  /** `DEBUG_TOKEN`, or `undefined` when unset. */
   debugToken: string | undefined;
-  /** Optional read-only operator bearer; both tokens may read this route. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
   now?: () => number;
 }
@@ -183,7 +184,7 @@ export interface DebugWalletRouteDeps {
 /**
  * Build the `/debug/accounts/:id/wallet` route group.
  *
- * Read-only. `DEBUG_TOKEN` and `DEBUG_READ_TOKEN` both pass. One page has the
+ * Read-only. `DEBUG_TOKEN` and every operator key token pass. One page has the
  * newest balance snapshot, at most `limit` payments newest first, and
  * `nextCursor` only when another row exists.
  *
@@ -191,18 +192,7 @@ export interface DebugWalletRouteDeps {
  * @returns A Hono app exposing `GET /:id/wallet`.
  */
 export function debugWalletRoutes(deps: DebugWalletRouteDeps): Hono {
-  return new Hono().get(WALLET_ROUTE, async (c) => {
-    const access = classifyDebugDbBearer(
-      deps.debugToken,
-      deps.debugReadToken,
-      c.req.header('authorization'),
-    );
-    if (access === 'unconfigured') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (access === 'unauthorized') {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().get(WALLET_ROUTE, requireOperator('read', deps), async (c) => {
     const id = c.req.param('id');
     if (!MESSAGE_ID_RE.test(id)) {
       return c.json({ error: 'Not found' }, 404);

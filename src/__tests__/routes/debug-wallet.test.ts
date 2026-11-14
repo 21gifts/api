@@ -14,6 +14,11 @@ import {
   decodeWalletPaymentCursor,
   encodeWalletPaymentCursor,
 } from '@/routes/debug-wallet';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 const ACCOUNT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OTHER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -81,12 +86,22 @@ class FailingWalletStore implements WalletStore {
   ): Promise<WalletPaymentRecord[]> {
     return Promise.reject(new Error('sql failed'));
   }
+
+  findCompletedPayments(
+    _accountId: string,
+    _keys: readonly {
+      id: string;
+      direction: 'in' | 'out';
+    }[],
+  ): Promise<Set<string>> {
+    return Promise.reject(new Error('sql failed'));
+  }
 }
 
 async function walletApp(
   options: {
     debugToken?: string | undefined;
-    debugReadToken?: string;
+    operatorLogin?: OperatorLogin;
     now?: () => number;
     walletStore?: WalletStore;
     withAccount?: boolean;
@@ -124,7 +139,7 @@ async function walletApp(
       walletStore: options.walletStore ?? new InMemoryWalletStore(),
       authStore,
       debugToken: options.debugToken,
-      ...(options.debugReadToken === undefined ? {} : { debugReadToken: options.debugReadToken }),
+      ...(options.operatorLogin === undefined ? {} : { operatorLogin: options.operatorLogin }),
       ...(options.now === undefined ? {} : { now: options.now }),
     }),
   );
@@ -176,12 +191,12 @@ describe('debugWalletRoutes', () => {
     warn.mockRestore();
   });
 
-  it('returns 503 when debug is not configured or both tokens are blank', async () => {
+  it('returns 503 when debug is not configured or the token is blank', async () => {
     const app = await walletApp({ debugToken: undefined });
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`);
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({ error: 'Debug is not configured' });
-    const blank = await walletApp({ debugToken: '   ', debugReadToken: '  ' });
+    const blank = await walletApp({ debugToken: '   ' });
     const blankRes = await blank.request(`/debug/accounts/${ACCOUNT_ID}/wallet`);
     expect(blankRes.status).toBe(503);
   });
@@ -195,17 +210,23 @@ describe('debugWalletRoutes', () => {
     await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
   });
 
-  it('accepts the write and read tokens', async () => {
-    const app = await walletApp({ debugToken: 'write-secret', debugReadToken: 'read-secret' });
-    for (const token of ['write-secret', 'read-secret']) {
+  it('accepts DEBUG_TOKEN and a read key token', async () => {
+    const app = await walletApp({
+      debugToken: 'write-secret',
+      operatorLogin: OP_KEYS.operatorLogin,
+    });
+    for (const token of ['write-secret', OP_READ]) {
       const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(res.status).toBe(200);
     }
-    const readOnly = await walletApp({ debugToken: undefined, debugReadToken: 'read-only' });
+    const readOnly = await walletApp({
+      debugToken: undefined,
+      operatorLogin: OP_KEYS.operatorLogin,
+    });
     const res = await readOnly.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
-      headers: { authorization: 'Bearer read-only' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
   });

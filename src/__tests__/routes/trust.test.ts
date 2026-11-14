@@ -9,6 +9,11 @@ import type { TrustEdge } from '@/lib/trust';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { trustRoutes } from '@/routes/trust';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 const now = (): number => 1_700_000_000_000;
 const FOUNDER = '11111111-1111-4111-8111-111111111111';
@@ -65,7 +70,7 @@ function mount(
     /** `false` omits the LNURL server (no receiving address). Default on. */
     lnurlServer?: false;
     debugToken?: string;
-    debugReadToken?: string;
+    operatorLogin?: OperatorLogin;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -82,7 +87,7 @@ function mount(
       ...(extras.spendPing === undefined ? {} : { spendPing: extras.spendPing }),
       ...(extras.lnurlServer === false ? {} : { lnurlServer: LNURL_SERVER }),
       ...(extras.debugToken === undefined ? {} : { debugToken: extras.debugToken }),
-      ...(extras.debugReadToken === undefined ? {} : { debugReadToken: extras.debugReadToken }),
+      ...(extras.operatorLogin === undefined ? {} : { operatorLogin: extras.operatorLogin }),
     }),
   );
 }
@@ -3836,9 +3841,9 @@ describe('GET /trust/proposals', () => {
 });
 
 describe('GET /trust/proposals with an operator token', () => {
-  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
 
-  it.each(['op-write', 'op-read'])('lists proposals with %s and no session', async (token) => {
+  it.each(['op-write', OP_READ])('lists proposals with %s and no session', async (token) => {
     const { authStore, trustStore } = await staffed();
     const res = await get(mount(authStore, trustStore, TOKENS), '/trust/proposals', token);
     expect(res.status).toBe(200);
