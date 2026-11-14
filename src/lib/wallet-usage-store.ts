@@ -51,6 +51,8 @@ interface MemoryPaymentRow extends Omit<WalletUsagePaymentRow, 'isForumGift'> {
   paymentHash?: string | null;
   /** `wallet_payment.invoice`, or null. */
   invoice?: string | null;
+  /** `wallet_payment.destination`, or null. */
+  destination?: string | null;
 }
 
 /**
@@ -95,12 +97,15 @@ interface WalletUsageSeed {
   forumGiftInvoices?: readonly MemoryForumInvoice[];
   /** Claimed zap receipt gifts. Default none. */
   zapGifts?: readonly MemoryZapGift[];
+  /** `spark_invoice.invoice` to `spark_invoice.payment_hash`. Default none. */
+  sparkInvoiceHashes?: ReadonlyMap<string, string>;
 }
 
 /**
  * Process-local usage reads for a boot without `DATABASE_URL`, and for tests.
  * The default seed is empty. `isForumGift` is derived from the seed's claimed
- * forum invoices and zap gifts with the same rule as the Postgres statement.
+ * forum invoices, zap gifts, and `sparkInvoiceHashes` with the same rule as the
+ * Postgres statement.
  */
 export class InMemoryWalletUsageStore implements WalletUsageStore {
   readonly #payments: WalletUsagePaymentRow[];
@@ -119,10 +124,11 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
     }
     const invoices = seed.forumGiftInvoices ?? [];
     const gifts = seed.zapGifts ?? [];
+    const sparkInvoiceHashes = seed.sparkInvoiceHashes ?? new Map<string, string>();
     this.#payments = seed.payments.map((row) =>
       copyPayment({
         ...row,
-        isForumGift: row.isForumGift ?? memoryIsForumGift(row, invoices, gifts),
+        isForumGift: row.isForumGift ?? memoryIsForumGift(row, invoices, gifts, sparkInvoiceHashes),
       }),
     );
     this.#forumInvoices = seed.forumInvoices.map(copyForum);
@@ -205,11 +211,16 @@ interface ChargeSqlRow {
  * paired id that begins with `row:` cannot collide with an unpaired row. The
  * key stays inside this statement and never reaches the response.
  *
+ * `spark_invoice` maps a Spark invoice text to the zap payment hash it settles.
+ * A row's candidate hashes are its own `payment_hash` plus every
+ * `spark_invoice.payment_hash` whose `invoice` equals the row's `invoice` or
+ * `destination`, all lowercased.
+ *
  * `is_forum_gift` is a paid forum gift or paid heart: a claimed, successful
  * invoice with no conversation and no `repay:` / `repayp:` description, on a
- * note whose `deleted_at` is null, matching any row's `payment_hash` or
+ * note whose `deleted_at` is null, matching a candidate hash or any row's
  * `invoice`; or a claimed zap receipt gift or paid heart on such a note,
- * unless the claimed hash belongs to a conversation or repayment invoice.
+ * unless a conversation or repayment invoice owns a candidate hash.
  * `wallet_payment.category` alone is not enough, because it also covers
  * conversation invoices and credit repayments. A `gift` or `platform` category
  * does not decide the flag, and the counterparty may be any account: the
@@ -235,6 +246,7 @@ completed AS (
          counterparty_account_id,
          payment_hash,
          invoice,
+         destination,
          CASE
            WHEN id_totals.row_count = 2
              AND id_totals.completed_count = 2
@@ -246,6 +258,17 @@ completed AS (
   FROM wallet_payment
   JOIN id_totals ON id_totals.payment_id = wallet_payment.payment_id
   WHERE wallet_payment.status = 'completed'
+),
+candidate_hashes AS (
+  SELECT group_key, lower(payment_hash) AS payment_hash
+  FROM completed
+  WHERE payment_hash IS NOT NULL
+  UNION
+  SELECT completed.group_key, lower(spark_invoice.payment_hash)
+  FROM completed
+  JOIN spark_invoice
+    ON spark_invoice.invoice = completed.invoice
+    OR spark_invoice.invoice = completed.destination
 ),
 bounds AS (
   SELECT group_key,
@@ -295,15 +318,15 @@ fund_hits AS (
 forum_gifts AS (
   SELECT DISTINCT completed.group_key
   FROM completed
+  LEFT JOIN candidate_hashes ON candidate_hashes.group_key = completed.group_key
   JOIN message_invoice invoice
     ON invoice.result = 'ok'
    AND invoice.conversation_id IS NULL
    AND coalesce(invoice.description, '') NOT LIKE 'repay:%'
    AND coalesce(invoice.description, '') NOT LIKE 'repayp:%'
    AND (
-     (completed.payment_hash IS NOT NULL
-      AND invoice.payment_hash IS NOT NULL
-      AND lower(invoice.payment_hash) = lower(completed.payment_hash))
+     (invoice.payment_hash IS NOT NULL
+      AND lower(invoice.payment_hash) = candidate_hashes.payment_hash)
      OR (completed.invoice IS NOT NULL
          AND invoice.pr IS NOT NULL
          AND invoice.pr = completed.invoice)
@@ -316,9 +339,9 @@ forum_gifts AS (
   UNION
   SELECT DISTINCT completed.group_key
   FROM completed
+  LEFT JOIN candidate_hashes ON candidate_hashes.group_key = completed.group_key
   JOIN nostr_zap_payment z
-    ON completed.payment_hash IS NOT NULL
-   AND z.payment_hash = lower(completed.payment_hash)
+    ON z.payment_hash = candidate_hashes.payment_hash
   JOIN nostr_zap_receipt receipt ON receipt.event_id = z.receipt_event_id
   JOIN message note ON note.id = receipt.message_id AND note.deleted_at IS NULL
   WHERE NOT EXISTS (
@@ -326,7 +349,7 @@ forum_gifts AS (
     FROM message_invoice other_invoice
     WHERE other_invoice.result = 'ok'
       AND other_invoice.payment_hash IS NOT NULL
-      AND lower(other_invoice.payment_hash) = lower(completed.payment_hash)
+      AND lower(other_invoice.payment_hash) = candidate_hashes.payment_hash
       AND (
         other_invoice.conversation_id IS NOT NULL
         OR coalesce(other_invoice.description, '') LIKE 'repay:%'
@@ -402,7 +425,10 @@ WHERE created_at >= $1`;
 
 /**
  * Postgres reads for `GET /wallets/usage`.
- * One statement per method. The constructor does not query.
+ * One statement per method. The constructor does not query. Reads
+ * `wallet_payment`, `account`, `spark_invoice`, `fond_payout`,
+ * `message_invoice`, `message`, `nostr_zap_payment`, `nostr_zap_receipt`, and
+ * `pos_charge`; it does not write or migrate.
  */
 export class PostgresWalletUsageStore implements WalletUsageStore {
   /**
@@ -467,21 +493,42 @@ function copyPayment(row: MemoryPaymentRow): WalletUsagePaymentRow {
  * Same forum-gift rule as the Postgres `forum_gifts` CTE, over seeded rows.
  *
  * A payment is a forum gift when a claimed, successful, non-conversation,
- * non-repayment invoice on a living note matches one of its hashes or its
- * invoice; or when a claimed zap receipt gift or paid heart on a living note
- * matches one of its hashes and no seeded conversation or repayment invoice
- * owns that hash, compared case-insensitively.
+ * non-repayment invoice on a living note matches one of its candidate hashes
+ * or its invoice; or when a claimed zap receipt gift or paid heart on a living
+ * note matches one of its candidate hashes and no seeded conversation or
+ * repayment invoice owns that hash, compared case-insensitively. A candidate
+ * hash is the row's own `payment_hash`, plus every `sparkInvoiceHashes` value
+ * for a Spark invoice equal to the row's `invoice` or `destination`.
+ *
+ * @param row - Merged payment with its optional `paymentHash`, `invoice`, and
+ *   `destination` details.
+ * @param invoices - Seeded `message_invoice` rows that can make or exclude a
+ *   forum gift.
+ * @param gifts - Seeded claimed zap receipt gifts.
+ * @param sparkInvoiceHashes - Stored Spark invoice text to the zap payment hash
+ *   it settles. Lookups use the invoice text exactly as stored.
+ * @returns `true` for a paid forum gift or paid heart.
  */
 function memoryIsForumGift(
   row: MemoryPaymentRow,
   invoices: readonly MemoryForumInvoice[],
   gifts: readonly MemoryZapGift[],
+  sparkInvoiceHashes: ReadonlyMap<string, string>,
 ): boolean {
   const hashes = new Set<string>();
   if (row.paymentHash !== null && row.paymentHash !== undefined) {
     hashes.add(row.paymentHash.toLowerCase());
   }
   const invoice = row.invoice ?? null;
+  for (const sparkInvoice of [invoice, row.destination ?? null]) {
+    if (sparkInvoice === null) {
+      continue;
+    }
+    const sparkHash = sparkInvoiceHashes.get(sparkInvoice);
+    if (sparkHash !== undefined) {
+      hashes.add(sparkHash.toLowerCase());
+    }
+  }
   const giftInvoice = invoices.some((candidate) => {
     if (candidate.conversation || candidate.repayment || candidate.hidden) {
       return false;
