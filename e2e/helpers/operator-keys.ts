@@ -180,6 +180,9 @@ async function logIn(
  * @param baseURL - Base URL of the api (default: the one registered with
  *   {@link registerOperatorBaseURL}, else the project's `baseURL`).
  * @returns The header to send.
+ * @throws When no base URL is given, registered, or set on the project.
+ * @throws When the login fails (the challenge or `POST /debug/auth` does not
+ *   answer 200, or the token has another level); the failed login is not kept.
  */
 export async function operatorHeaders(
   request: APIRequestContext,
