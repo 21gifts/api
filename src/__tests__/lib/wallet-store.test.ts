@@ -162,6 +162,27 @@ describe('wallet schema', () => {
 });
 
 describe('InMemoryWalletStore', () => {
+  it('finds only the caller’s completed payments with the requested direction', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([
+      payment({ accountId: 'me', paymentId: 'out', status: 'completed' }),
+      payment({ accountId: 'me', paymentId: 'in', direction: 'in', status: 'completed' }),
+      payment({ accountId: 'me', paymentId: 'pending', status: 'pending' }),
+      payment({ accountId: 'me', paymentId: 'failed', status: 'failed' }),
+      payment({ accountId: 'other', paymentId: 'foreign', status: 'completed' }),
+    ]);
+    const found = await store.findCompletedPayments('me', [
+      { id: 'out', direction: 'out' },
+      { id: 'in', direction: 'in' },
+      { id: 'in', direction: 'out' },
+      { id: 'pending', direction: 'out' },
+      { id: 'failed', direction: 'out' },
+      { id: 'foreign', direction: 'out' },
+      { id: 'missing', direction: 'in' },
+    ]);
+    expect([...found].sort()).toEqual(['in', 'out']);
+  });
+
   it('records snapshots, returns newest with id tie-break, filters accounts, and copies dates', async () => {
     const store = new InMemoryWalletStore();
     expect(await store.latestBalance('account', null)).toBeUndefined();
@@ -935,5 +956,22 @@ describe('PostgresWalletStore', () => {
     ]) {
       expect(serialised).not.toContain(secret);
     }
+  });
+});
+
+describe('PostgresWalletStore.findCompletedPayments', () => {
+  it('binds the ids and directions in one query and skips ids with NUL', async () => {
+    const sql = new MockSql();
+    sql.rows = [{ id: 'a' }, { id: 'b' }];
+    const found = await new PostgresWalletStore(sql).findCompletedPayments('me', [
+      { id: 'a', direction: 'in' },
+      { id: 'b', direction: 'out' },
+      { id: 'bad\u0000id', direction: 'out' },
+    ]);
+    expect([...found]).toEqual(['a', 'b']);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.params).toEqual(['me', '{"a","b"}', '{"in","out"}']);
+    expect(sql.queries[0]?.text).toContain("own.status = 'completed'");
+    expect(sql.queries[0]?.text).toContain('own.direction = k.direction');
   });
 });
