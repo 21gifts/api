@@ -1934,7 +1934,8 @@ till shows money that arrived without a charge. Only the signed-in account's
 own data is read: the completed incoming `wallet_transfer` rows the server
 observed in the account's current and previous wallets through the Spark
 viewer key, of type `preimage_swap` (Lightning) or `transfer` (a plain Spark
-transfer), created in the last 24 hours, newest first, at most 20. Deposits,
+transfer), created in the last 24 hours (and no later than now plus the
+5-minute clock allowance below), newest first, at most 20. Deposits,
 exits, leaf swaps, `unrecognized` rows, and pending, cancelled, expired, or
 returned transfers are not listed. Amount and time come only from that
 server-observed record.
@@ -1948,7 +1949,10 @@ server-observed record.
   including the platform account and other members, because they are
   payments the wallet received.
 - **No payment twice.** A payment that settled one of the account's open
-  (`pending`) or `paid` till charges is shown only as that charge. A Spark
+  (`pending`) or `paid` till charges is shown only as that charge. The paid
+  charges taken into account are those paid at or after the start of the
+  24-hour window minus the clock allowance: a payment created inside the
+  window cannot have settled a charge that was marked paid before it. A Spark
   payment settled a charge when its observed Spark invoice is the charge's
   Spark invoice (compared trimmed and case-insensitively). The observed record
   of a Lightning receipt carries no payment hash, so a Lightning receipt settled
@@ -1972,7 +1976,10 @@ server-observed record.
   received whole sats (one entry per transfer id, summed when one transfer
   reached two of the account's wallets, and `lightning` when any of those rows
   is a Lightning receipt), `receivedAt` the operator creation time (ISO-8601), and `kind` is
-  `lightning` or `spark`. No counterparty, invoice, payment hash, Spark
+  `lightning` or `spark`. There is no fiat figure (`docs/fiat-amounts.md`):
+  nobody typed an amount for such a payment and no figure was frozen when it
+  was created, so the entry carries only the received sats, and neither the
+  api nor the till prices those sats. No counterparty, invoice, payment hash, Spark
   address, or key is returned.
 
 **Response** `200`:

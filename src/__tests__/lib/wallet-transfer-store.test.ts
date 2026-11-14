@@ -843,6 +843,8 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
         receipt('ln', 10, { amountSats: 2100 }),
         receipt('spark', 20, { type: 'transfer', amountSats: 21 }),
         receipt('old', 24 * 60 + 1),
+        receipt('future-edge', -5),
+        receipt('future', -6),
         receipt('undated', 5, { transferCreatedAt: null }),
         receipt('other-account', 5, { accountId: 'other' }),
         receipt('sent', 5, { direction: 'out' }),
@@ -865,6 +867,7 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
       { ownWalletKeys: [PREVIOUS] },
     );
     await expect(store.listTillReceipts(query())).resolves.toEqual([
+      { id: 'future-edge', amountSats: 21, receivedAt: at(-5), kind: 'lightning' },
       { id: 'from-foreign', amountSats: 21, receivedAt: at(7), kind: 'spark' },
       { id: 'ln', amountSats: 2100, receivedAt: at(10), kind: 'lightning' },
       { id: 'spark', amountSats: 21, receivedAt: at(20), kind: 'spark' },

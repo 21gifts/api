@@ -170,7 +170,10 @@ export interface TillReceiptContext {
 export interface TillReceiptStore {
   /**
    * List the account's completed incoming Lightning receipts and plain Spark
-   * transfers that settled none of its open or paid till charges, newest first.
+   * transfers created from `sinceMs` to `nowMs` plus the clock allowance that
+   * settled none of its open till charges or charges paid since `sinceMs`
+   * minus the clock allowance (a payment in the window cannot have settled a
+   * charge paid before it), newest first.
    * Moves between the account's own wallets are left out: its current and
    * previous wallets and every wallet whose transfers it holds (an account
    * merge moves the merged account's transfers, not its wallet rows).
@@ -262,7 +265,8 @@ function selectTillReceipts(
       row.status !== 'completed' ||
       (row.type !== 'preimage_swap' && row.type !== 'transfer') ||
       created === undefined ||
-      created < query.sinceMs
+      created < query.sinceMs ||
+      created > query.nowMs + query.clockAllowanceMs
     ) {
       continue;
     }
@@ -1068,6 +1072,7 @@ export class PostgresWalletTransferStore
            AND t.status = 'completed'
            AND t.type IN ('preimage_swap', 'transfer')
            AND t.transfer_created_at >= $2
+           AND t.transfer_created_at <= $3::timestamptz + $4 * interval '1 millisecond'
        )
        SELECT transfer_id AS id, bool_or(type = 'preimage_swap') AS lightning,
               sum(amount_sats) AS amount_sats, min(transfer_created_at) AS received_at

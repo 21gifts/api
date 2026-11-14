@@ -3845,6 +3845,8 @@ describe('GET /pos received without a till charge in Postgres', () => {
         receipt('both', 21, { amountSats: 10 }),
         receipt('both', 22, { walletPubkey: previousKey, amountSats: 11, type: 'transfer' }),
         receipt('old', 24 * 60 + 1),
+        receipt('future-edge', -5),
+        receipt('future', -6),
         receipt('other-account', 5, { accountId: otherId }),
         receipt('sent', 5, { direction: 'out' }),
         receipt('pending', 5, { status: 'pending' }),
@@ -3892,6 +3894,7 @@ describe('GET /pos received without a till charge in Postgres', () => {
       // `first-edge`, `inside`, and `last-edge` are unreported Lightning receipts inside the
       // lifetime of the paid charge whose settling payment is not known yet: withheld.
       expect(await read()).toEqual([
+        'future-edge',
         'ln',
         'spark-cancelled',
         'ln-expired',
@@ -3901,7 +3904,7 @@ describe('GET /pos received without a till charge in Postgres', () => {
         'spark-inside',
         'before',
       ]);
-      expect(await read(2)).toEqual(['ln', 'spark-cancelled']);
+      expect(await read(2)).toEqual(['future-edge', 'ln']);
       const both = (
         await transfers.listTillReceipts({
           accountId: shopId,
@@ -3922,6 +3925,7 @@ describe('GET /pos received without a till charge in Postgres', () => {
       await wallet.upsertPayments([report('settling', hashC)]);
       await transfers.upsertTransfer(receipt('settling', 32));
       expect(await read()).toEqual([
+        'future-edge',
         'ln',
         'spark-cancelled',
         'ln-expired',
