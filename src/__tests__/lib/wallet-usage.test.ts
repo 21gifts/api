@@ -90,9 +90,19 @@ describe('walletUsagePurpose', () => {
       [pay({ payeeParty: 'fund', payerParty: 'outside', category: 'gift' }), 'other'],
       [pay({ isForumGift: true, category: 'gift' }), 'forum_gift'],
       [pay({ isForumGift: true, category: 'platform', payeeParty: 'platform' }), 'forum_gift'],
+      [pay({ category: 'platform', payerParty: 'members', payeeParty: 'members' }), 'transfer'],
+      [
+        pay({
+          category: 'platform',
+          payerAccountId: 'composer',
+          payerParty: 'members',
+          payeeAccountId: 'platform',
+          payeeParty: 'platform',
+        }),
+        'other',
+      ],
       [pay({ category: 'gift' }), 'transfer'],
       [pay({ category: 'gift', payeeParty: 'outside' }), 'other'],
-      [pay({ category: 'platform', payeeParty: 'platform' }), 'other'],
       [pay({ category: 'shop' }), 'shop_purchase'],
       [pay({ category: 'member', payerParty: 'outside' }), 'transfer'],
       [
