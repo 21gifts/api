@@ -4,7 +4,7 @@ import type { MiddlewareHandler } from 'hono';
 import type { ApiLogStore } from '@/lib/api-log';
 import type { AuthStore } from '@/lib/auth/store';
 import { resolveRequestAuth } from '@/lib/request-auth';
-import type { OperatorLogin } from '@/lib/operator-login';
+import type { OperatorKeyGrant, OperatorLogin } from '@/lib/operator-login';
 import { presentClientFields, readClientRequestMeta } from '@/lib/request-meta';
 
 /** JSON-serialisable event fields. No nested objects. */
@@ -211,6 +211,11 @@ interface RequestLogCapture {
   authorizationHeader: string | undefined;
   /** Clock reading when the request arrived; the bearer is classified at this instant. */
   requestAt: number;
+  /**
+   * Key-token grant resolved when the request arrived (`null`: no key token),
+   * or `undefined` when there is no key login or that lookup failed.
+   */
+  keyGrant: OperatorKeyGrant | null | undefined;
   /** Validated client metadata. */
   meta: ReturnType<typeof readClientRequestMeta>;
 }
@@ -236,6 +241,7 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
       debugToken: deps.debugToken,
       spendApiToken: deps.spendApiToken,
       operatorLogin: deps.operatorLogin,
+      keyGrant: captured.keyGrant,
       authStore: deps.authStore,
       now: captured.requestAt,
     });
@@ -277,7 +283,10 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
  * `/view/<segment>` and `/me/held-shares/<segment>` via {@link requestLogPath}. The audit write does not
  * delay the response unless {@link RequestLogDeps.awaitWrite} is set, so a
  * stuck insert cannot hold the client open. A store write failure logs
- * `api_log.write.failed` and does not replace the response.
+ * `api_log.write.failed` and does not replace the response. With
+ * `operatorLogin`, the grant of a key token is resolved once before the
+ * handler and carried to the audit write; a bearer that is no key token
+ * costs no lookup there.
  *
  * @param deps - Audit store, auth store, tokens, and optional clock.
  * @returns Middleware that emits `http.request` with method, path, status, and ms.
@@ -288,6 +297,19 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
     return requestClientFields.run(presentClientFields(meta), async () => {
       const started = Date.now();
       const requestAt = (deps.now ?? Date.now)();
+      // The operator of a key token is resolved once, when the request arrives, and carried to
+      // the audit write, so the row keeps it even if the token row is gone by then.
+      let keyGrant: OperatorKeyGrant | null | undefined;
+      if (deps.operatorLogin !== undefined) {
+        try {
+          keyGrant = await deps.operatorLogin.resolveBearer(
+            c.req.header('authorization'),
+            requestAt,
+          );
+        } catch {
+          keyGrant = undefined;
+        }
+      }
       await next();
       if (c.req.method === 'OPTIONS' || c.req.path === '/healthz') {
         return;
@@ -300,6 +322,7 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
         ms,
         authorizationHeader: c.req.header('authorization'),
         requestAt,
+        keyGrant,
         meta,
       };
       logEvent('http.request', {

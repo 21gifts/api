@@ -11,7 +11,7 @@ import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import type { ApiLogAuthKind } from '@/lib/api-log';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
-import type { OperatorLogin } from '@/lib/operator-login';
+import type { OperatorKeyGrant, OperatorLogin } from '@/lib/operator-login';
 
 function sessionBearerToken(header: string | undefined): string | null {
   if (header === undefined || !header.startsWith('Bearer ')) {
@@ -35,7 +35,9 @@ export interface RequestAuth {
  * Classify `Authorization` as debug, spend, session, or none.
  *
  * `DEBUG_TOKEN` is `debug` without an operator. A valid key token of the SSH
- * key login is `debug` with the operator name.
+ * key login is `debug` with the operator name. When `keyGrant` is given (the
+ * grant resolved when the request arrived, or `null` for no key token), it is
+ * used as is and the token row is not looked up again.
  *
  * @param args - Header, stores, clock, configured tokens, and the optional key login.
  * @returns Auth kind, optional account id, and the operator name of a key token. Never returns the token.
@@ -47,6 +49,7 @@ export async function resolveRequestAuth(args: {
   debugToken: string | undefined;
   spendApiToken: string | undefined;
   operatorLogin?: OperatorLogin | undefined;
+  keyGrant?: OperatorKeyGrant | null | undefined;
 }): Promise<RequestAuth> {
   const debugToken = args.debugToken?.trim() ?? '';
   if (debugToken !== '' && bearerMatchesDebugToken(debugToken, args.authorizationHeader)) {
@@ -57,7 +60,9 @@ export async function resolveRequestAuth(args: {
     return { accountId: null, authKind: 'spend', operator: null };
   }
   const grant =
-    (await args.operatorLogin?.resolveBearer(args.authorizationHeader, args.now)) ?? null;
+    args.keyGrant !== undefined
+      ? args.keyGrant
+      : ((await args.operatorLogin?.resolveBearer(args.authorizationHeader, args.now)) ?? null);
   if (grant !== null) {
     return { accountId: null, authKind: 'debug', operator: grant.operator };
   }

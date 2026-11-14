@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SESSION_TTL_MS } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { issueSession } from '@/lib/auth/service';
@@ -156,5 +156,31 @@ describe('resolveRequestAuth', () => {
       operatorLogin: keys.operatorLogin,
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
+  });
+
+  it('uses a grant carried from the request start without looking the token up again', async () => {
+    const keys = await seededOperatorLogin();
+    const resolve = vi.spyOn(keys.operatorLogin, 'resolveBearer');
+    const auth = await resolveRequestAuth({
+      authorizationHeader: `Bearer ${keys.tokens.admin}`,
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+      operatorLogin: keys.operatorLogin,
+      keyGrant: { operator: 'carried', keyFingerprint: 'SHA256:x', level: 'admin' },
+    });
+    expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: 'carried' });
+    const none = await resolveRequestAuth({
+      authorizationHeader: 'Bearer not-a-known-token',
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+      operatorLogin: keys.operatorLogin,
+      keyGrant: null,
+    });
+    expect(none).toEqual({ accountId: null, authKind: 'none', operator: null });
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

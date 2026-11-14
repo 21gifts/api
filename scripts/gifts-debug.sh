@@ -38,7 +38,8 @@
 # Operator login with SSH keys (GET /debug/auth/challenge, POST /debug/auth):
 #   DEBUG_SSH_KEY        private ed25519 key listed in the api's allowed-signers files.
 #                        When set, every api request uses a 15-minute key token kept in
-#                        ${XDG_STATE_HOME:-~/.local/state}/21gifts/ (mode 600) and logs in
+#                        ${XDG_STATE_HOME:-~/.local/state}/21gifts/ (mode 600, one file per
+#                        namespace, API URL and key) and logs in
 #                        again by itself on 401. When unset, DEBUG_TOKEN is used as before.
 #   DEBUG_SSH_ADMIN_KEY  optional second key; on a 403 whose body is the gate's
 #                        {"error":"Forbidden"} (level too low) the script logs in with it
@@ -196,13 +197,39 @@ signing_namespace() {
   esac
 }
 
-# Token file of one key; only the user can read it.
+# Token file of one key at one api. The name carries a hash of the
+# namespace, the API URL, the key path, and the public key (from <key>.pub when
+# present), so a change of any of them starts from a fresh login and an old
+# token is never sent. The directory is 0700; the file is written 0600.
 token_file() {
-  local kind="$1" dir
+  local kind="$1" key="$2" dir ns id
   dir="${XDG_STATE_HOME:-$HOME/.local/state}/21gifts"
   (umask 077 && mkdir -p "$dir")
   chmod 700 "$dir"
-  printf '%s/debug-%s-%s.token' "$dir" "$(signing_namespace)" "$kind"
+  ns=$(signing_namespace)
+  id=$(python3 -c '
+import hashlib, os, sys
+ns, url, key = sys.argv[1:4]
+path = os.path.abspath(key)
+try:
+    with open(path + ".pub", encoding="utf-8") as handle:
+        public = " ".join(handle.read().split()[:2])
+except OSError:
+    public = ""
+digest = hashlib.sha256("\n".join([ns, url, path, public]).encode("utf-8")).hexdigest()
+print(digest[:16])
+' "$ns" "$DEBUG_API_URL" "$key")
+  printf '%s/debug-%s-%s-%s.token' "$dir" "$ns" "$kind" "$id"
+}
+
+# Write the token so the file is mode 0600 whether or not it existed: a new
+# private temporary file in the same directory replaces it.
+write_token_file() {
+  local file="$1" token="$2" tmp
+  tmp=$(mktemp "$(dirname "$file")/.token.XXXXXX")
+  chmod 600 "$tmp"
+  printf '%s' "$token" > "$tmp"
+  mv -f "$tmp" "$file"
 }
 
 # Sign a fresh challenge with one key and keep the token. Prints the login
@@ -237,8 +264,8 @@ key_login() {
   rm -f "$tmp"
   [ "$status" = "200" ] || die "login failed: HTTP ${status}: ${body}"
   token=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
-  file=$(token_file "$kind")
-  (umask 077 && printf '%s' "$token" > "$file")
+  file=$(token_file "$kind" "$key")
+  write_token_file "$file" "$token"
   printf '%s' "$body" | python3 -c '
 import json, sys
 b = json.load(sys.stdin)
@@ -249,10 +276,11 @@ sys.stderr.write("logged in as %s (%s) until %s\n" % (b["operator"], b["level"],
 # Bearer of the configured key, logging in when no token is kept yet.
 key_token() {
   local kind="$1" key="$2" file
-  file=$(token_file "$kind")
+  file=$(token_file "$kind" "$key")
   if [ ! -s "$file" ]; then
     key_login "$key" "$kind"
   fi
+  chmod 600 "$file"
   cat "$file"
 }
 
