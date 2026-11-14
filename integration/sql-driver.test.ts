@@ -3054,11 +3054,13 @@ describe('removeUnadmittedDamusThreads on Postgres', () => {
         ]),
       ).toBe(0);
 
+      // The zapper snapshot read before the transaction is empty here, as if the
+      // entitlement was recorded after it; the check inside the transaction keeps the thread.
       const first = await removeUnadmittedDamusThreads({
         conversations,
         pushStore: push,
         notifications: new PostgresNotificationStore(client),
-        zappers: messages,
+        zappers: { listZapperPubkeys: async () => [] },
         auth,
         nowMs: now.getTime(),
         storesFor: txStores,

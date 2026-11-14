@@ -7719,7 +7719,13 @@ the removed threads, carrying the badge count after the removal; it is written
 in the same transaction as the deletes. The run is recorded in `app_setting`
 (`member_damus_cleanup`) in that transaction too, so later boots remove nothing
 and a thread stored after the run stays; any failure, a dismiss write
-included, rolls everything back and the next boot tries again. Every deleted
+included, rolls everything back and the next boot tries again. The step
+runs only after the boot's external-zapper backfill completed without an error
+and below its 10,000-receipt ceiling; otherwise the boot logs
+`conversations.damus_cleanup.deferred`, writes no marker, and a later boot
+runs it. Inside the transaction `nostr_zapper` is locked against new
+entitlements and read again, so a counterpart that becomes a zapper during the
+run keeps its thread. Every deleted
 and inserted row is recorded in `db_change`. The boot logs one
 `conversations.damus_cleanup` event with the number of removed threads and
 messages. `GET /conversations` no longer lists a removed thread or counts it in

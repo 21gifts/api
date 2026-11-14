@@ -395,7 +395,10 @@ export interface BootFxOptions {
  * `PUBLIC_BASE_URL` when the LNURL server resolves, else null) and logs
  * `daily_roster.accounts_linked` with `linked` and `unlinked`.
  * Once the Postgres conversation, push, and notification stores exist,
- * `removeUnadmittedDamusThreads` removes, once per database, the
+ * `removeUnadmittedDamusThreads` (only after a complete external-zapper
+ * backfill: no throw and below its ceiling; otherwise it logs
+ * `conversations.damus_cleanup.deferred` and a later boot runs it) removes,
+ * once per database, the
  * `member_damus` threads that hold no message sent by the member and whose
  * counterpart is not an entitled external zapper, writes the dismiss pushes in
  * the same transaction (stores built on the transaction client), and logs
@@ -696,6 +699,7 @@ export async function openBootStores(
     'conversation_message_translation',
   );
   await backfillZapPayments(messageStore);
+  let zappersComplete = false;
   try {
     await backfillExternalZappers(messageStore, {
       auth: authStore,
@@ -703,6 +707,9 @@ export async function openBootStores(
       urls: fx?.zapRelayUrls ?? resolveZapRelays(process.env),
       timeoutMs: fx?.nostrRelayTimeoutMs ?? 5_000,
       now,
+      onComplete: (summary) => {
+        zappersComplete = !summary.reachedCeiling;
+      },
     });
   } catch {
     logEvent('nostr.zapper.backfill.failed');
@@ -722,19 +729,25 @@ export async function openBootStores(
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
-  await removeUnadmittedDamusThreads({
-    conversations: conversationStore,
-    pushStore,
-    notifications: notificationStore,
-    zappers: messageStore,
-    auth: authStore,
-    nowMs: now(),
-    storesFor: (tx) => ({
-      conversations: new PostgresConversationStore(tx, { fetchImpl, fiatRates, now }),
-      pushStore: new PostgresPushStore(tx),
-      notifications: new PostgresNotificationStore(tx),
-    }),
-  });
+  // The cleanup keeps zapper threads, so it waits for a complete zapper
+  // backfill; a failed or capped scan defers it to a later boot.
+  if (!zappersComplete) {
+    logEvent('conversations.damus_cleanup.deferred');
+  } else {
+    await removeUnadmittedDamusThreads({
+      conversations: conversationStore,
+      pushStore,
+      notifications: notificationStore,
+      zappers: messageStore,
+      auth: authStore,
+      nowMs: now(),
+      storesFor: (tx) => ({
+        conversations: new PostgresConversationStore(tx, { fetchImpl, fiatRates, now }),
+        pushStore: new PostgresPushStore(tx),
+        notifications: new PostgresNotificationStore(tx),
+      }),
+    });
+  }
   const trustStore = new PostgresTrustStore(sqlClient);
   const fundingStore = new PostgresFundingStore(sqlClient, transactions);
   const rosterStore = new PostgresDailyRosterStore(sqlClient, rosterLnurlServer?.host ?? null);

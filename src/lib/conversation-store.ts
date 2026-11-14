@@ -1770,8 +1770,10 @@ export class PostgresConversationStore implements ConversationStore {
    * In one transaction (a client without `transaction` is refused before any
    * statement, so the marker never commits without the deletes): records the run in
    * `app_setting` (`ON CONFLICT DO NOTHING`; an existing row means the run
-   * already happened and nothing is removed), locks the threads in scope
-   * (no member message, counterpart not in `keepPubkeys`), and deletes their
+   * already happened and nothing is removed), locks `nostr_zapper` in SHARE
+   * mode (no zapper entitlement can be added until commit), locks the threads
+   * in scope (no member message, counterpart neither in `keepPubkeys` nor in
+   * `nostr_zapper` as read inside the transaction), and deletes their
    * `conversation` push outbox rows, the invoice attempts that name the thread
    * or one of its messages, translations, extra photos, read markers,
    * messages, and finally the threads. Then `beforeCommit` runs with the
@@ -1799,11 +1801,17 @@ export class PostgresConversationStore implements ConversationStore {
       if (marked.length === 0) {
         return { threads: [], messages: 0 };
       }
+      // Blocks new zapper entitlements until commit, so a counterpart that
+      // becomes a zapper while this runs cannot lose its thread.
+      await tx.execute('LOCK TABLE nostr_zapper IN SHARE MODE');
       const threads = await tx.query<{ id: string; account_a: string }>(
         `SELECT c.id, c.account_a
          FROM conversation c
          WHERE c.kind = 'member_damus'
            AND NOT (COALESCE(c.counterpart_pubkey, '') = ANY($1::text[]))
+           AND NOT EXISTS (
+             SELECT 1 FROM nostr_zapper z WHERE z.pubkey = COALESCE(c.counterpart_pubkey, '')
+           )
            AND NOT EXISTS (
              SELECT 1 FROM conversation_message m
              WHERE m.conversation_id = c.id AND m.sender_account_id IS NOT NULL

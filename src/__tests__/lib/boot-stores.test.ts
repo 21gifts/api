@@ -1164,6 +1164,43 @@ describe('openBootStores', () => {
     expect(logged[0]).toMatchObject({ threads: 1, messages: 2 });
   });
 
+  it('defers the Damus thread cleanup when the external-zapper backfill fails', async () => {
+    const operations: string[] = [];
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        operations.push(text);
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        if (text.includes('r.payer_account_id IS NULL AND r.payer_pubkey IS NULL')) {
+          throw new Error('receipts unavailable');
+        }
+        return [] as T[];
+      },
+      execute: async (text: string) => {
+        operations.push(text);
+      },
+    };
+
+    await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+      },
+    );
+
+    expect(operations.some((text) => text.includes('INSERT INTO app_setting'))).toBe(false);
+    const events = parsedEvents(warn).map((event) => event['event']);
+    expect(events).toContain('nostr.zapper.backfill.failed');
+    expect(events).toContain('conversations.damus_cleanup.deferred');
+    expect(events).not.toContain('conversations.damus_cleanup');
+  });
+
   it('links roster rows by legacy address only when the LNURL server is off', async () => {
     const queries: Array<{ text: string; params: readonly unknown[] | undefined }> = [];
     const client: SqlClient = {

@@ -1514,7 +1514,8 @@ describe('PostgresConversationStore', () => {
       "NOT (COALESCE(c.counterpart_pubkey, '') = ANY($1::text[]))",
     );
     expect(sql.queries[1]?.params).toEqual(['{}']);
-    expect(sql.executes).toEqual([]);
+    expect(sql.queries[1]?.text).toContain('SELECT 1 FROM nostr_zapper z');
+    expect(sql.executes.map((row) => row.text)).toEqual(['LOCK TABLE nostr_zapper IN SHARE MODE']);
   });
 
   it('removeDamusThreadsWithoutMemberMessage deletes dependent rows before the threads in one transaction', async () => {
@@ -1574,9 +1575,10 @@ describe('PostgresConversationStore', () => {
     expect(transactions).toBe(1);
     const literal =
       '{"00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002"}';
-    expect(order[1]?.params).toEqual([`{"${'aa'.repeat(32)}"}`]);
-    expect(hooked).toEqual([3, true, 9]);
-    const deletes = order.slice(2);
+    expect(order[1]?.text).toBe('LOCK TABLE nostr_zapper IN SHARE MODE');
+    expect(order[2]?.params).toEqual([`{"${'aa'.repeat(32)}"}`]);
+    expect(hooked).toEqual([3, true, 10]);
+    const deletes = order.slice(3);
     expect(deletes.map((row) => row.text.split('\n')[0])).toEqual([
       'DELETE FROM push_outbox p',
       'DELETE FROM message_invoice',
