@@ -229,7 +229,7 @@ Public base URLs used in examples:
 | GET    | `/shops`                                             | Public                                                            | Public. shops of { npub, name, place }, optional nextCursor, limit default 20 max 100, 400 Invalid limit / Invalid cursor, 503 Shops are unavailable.                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/shops/:npub`                                       | Public                                                            | Public shop by npub; known hex redirects; a shop that is no longer public is 410                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | POST   | `/messages`                                          | Bearer                                                            | Post text/photo; 409 if rules/name/username/verified wallet missing; 403 text-only below verified, except the free first post and a reply on the own note                                                                                                                                                                                                                                                                                                                                                                                                 |
-| GET    | `/messages/hidden`                                   | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff log of soft-hidden notes (session or DEBUG_*_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/messages/hidden`                                   | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff log of soft-hidden notes (session, `DEBUG_TOKEN`, or an operator key token)                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+)                                        | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/messages/:id/external-shops`                       | none                                                              | Public external shop list                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/messages/:id/external-credits`                     | none                                                              | Public external credit list                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -4770,7 +4770,7 @@ count when summing.
 ### `GET /debug/accounts`
 
 Operator listing of every stored account. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`). This is not an end-user
 session. Session tokens are never returned.
 
 `DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
@@ -4842,10 +4842,10 @@ returns `"accounts": []`.
 
 Environment:
 
-| Variable       | Meaning                                                                 |
-| -------------- | ----------------------------------------------------------------------- |
-| `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only. |
-| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.       |
+| Variable       | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, auth state is stored in Postgres; when unset, in-memory only.                            |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset and the SSH key login not loaded → 503; process still boots. |
 
 ### `GET /debug/accounts/:id`
 
@@ -4856,7 +4856,7 @@ columns except the retained legacy `lightning_address` and
 `passkeyChallenges`. `lightningAddress` is the receiving address (verified
 wallet) when the LNURL server is configured. Session tokens are plaintext. nsec is
 envelope hex, never decrypted. Unknown or non-UUID id → **Response** `404`.
-Same `DEBUG_TOKEN` gate as `GET /debug/accounts`.
+Same operator gate as `GET /debug/accounts` (`DEBUG_TOKEN` or a key token of level `read` or higher).
 
 ### `GET /debug/accounts/:id/wallet`
 
@@ -4917,8 +4917,7 @@ and `username`.
 Operator assignment of the account's forum display role, username, the
 official platform flag (`isPlatform`), and/or
 session refusal (`sessionRefused`). Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (same gate as
-`GET /debug/accounts`). Body is one or more of `role`, `username`, `platform`, and
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `admin` or higher (a lower key token → `403`). Body is one or more of `role`, `username`, `platform`, and
 `sessionRefused`; any other key (including `lightningAddress`) is refused.
 `username` must be alone; send `role`, `platform`, or `sessionRefused` in a
 second call:
@@ -5012,7 +5011,7 @@ new handle.
 ### `POST /debug/accounts/:id/session`
 
 Operator mint of a member bearer for the given account id. Authenticated
-with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. Response `{ "token": "<hex>" }`.
+with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `admin` or higher (a lower key token → `403`). Response `{ "token": "<hex>" }`.
 Unknown account id → **404** `{ "error": "Not found" }`. An account with
 `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
@@ -5023,7 +5022,7 @@ for e2e and operator debugging.
 ### `POST /debug/accounts/merge`
 
 Operator merge of one account into another. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. Not a member route.
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `admin` or higher (a lower key token → `403`). Not a member route.
 Body is `{ "from": "<uuid>", "into": "<uuid>", "verify": "from" | "into" }`.
 `verify` defaults to `"into"`. Success is **200**
 `{ "into": "<uuid>", "deleted": "<uuid>", "messages": <count> }`.
@@ -5182,7 +5181,7 @@ Operator retry of a shop payment proof that is `stuck`
 ([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)).
 Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve;
 otherwise Hono's default 404. Authenticated with `Authorization: Bearer`
-matching `DEBUG_TOKEN` or an operator key token. No body.
+matching `DEBUG_TOKEN` or an operator key token of level `write` or higher (a lower key token → `403`). No body.
 
 The proof moves from `stuck` back to unresolved, `give_up_at` is set 24 h
 ahead, and `shop.proof.retried` is logged. A `hex` proof without a log
@@ -5206,7 +5205,7 @@ Operator listing of every stored trust edge (`serializeTrustEdge`), newest
 `createdAt` then `id` descending. Success body is
 `{ "edges": [ serializeTrustEdge, ... ] }`. Unexpected store throw → **503**
 `{ "error": "Trust chain is unavailable" }` logged as `debug.trust_edges.failed`.
-Same `DEBUG_TOKEN` gate as the other debug routes.
+Same operator gate as the other debug routes (`DEBUG_TOKEN` or a key token of level `read` or higher).
 
 ### `GET /debug/dump`
 
@@ -5238,13 +5237,13 @@ Unknown table → **Response** `404` unless the path segment is one of
 `shop_identity`, `message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
 `nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`,
 `push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`,
-`db_change`. Same `DEBUG_TOKEN` gate. Unexpected store throw → **503**
+`db_change`. Same operator gate (`DEBUG_TOKEN` or a key token of level `read` or higher). Unexpected store throw → **503**
 `{ "error": "Dump is unavailable" }`.
 
 ### `POST /debug/trust-edges`
 
 Operator backfill of a stored trust edge. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (same 503/401 gate as the
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `write` or higher (a lower key token → `403`; same 503/401 gate as the
 other debug routes). Does **not** change `account.role`.
 
 **Request**:
@@ -5287,7 +5286,7 @@ Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`.
 ### `DELETE /debug/trust-edges`
 
 Operator delete of a stored trust edge. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (same 503/401 gate as the
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `write` or higher (a lower key token → `403`; same 503/401 gate as the
 other debug routes). Does **not** change `account.role`. Deletes the
 latest stored row of that `(subjectId, kind)` (`createdAt` desc, then
 `id` desc).
@@ -5410,10 +5409,10 @@ in-memory store starts empty; when set, rows come from Postgres `api_log`.
 
 Environment:
 
-| Variable       | Meaning                                                                  |
-| -------------- | ------------------------------------------------------------------------ |
-| `DATABASE_URL` | When set, audit rows are stored in Postgres; when unset, in-memory only. |
-| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.        |
+| Variable       | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, audit rows are stored in Postgres; when unset, in-memory only.                           |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset and the SSH key login not loaded → 503; process still boots. |
 
 ### `POST /diagnostics`
 
@@ -5477,7 +5476,7 @@ When unset, the process uses an in-memory store.
 ### `GET /debug/diagnostics`
 
 Operator listing of diagnostic rows (`diagnostic_event`). Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`). This is not an end-user
 session. Rows are newest-first (`createdAt` descending, then `id`), capped
 at **200**. `source` is `server` or `client`. `fields` holds allowlisted
 scalars only. The same values excluded from `POST /diagnostics` are never
@@ -5535,15 +5534,15 @@ in-memory store starts empty; when set, rows come from Postgres
 
 Environment:
 
-| Variable       | Meaning                                                                       |
-| -------------- | ----------------------------------------------------------------------------- |
-| `DATABASE_URL` | When set, diagnostic rows are stored in Postgres; when unset, in-memory only. |
-| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.             |
+| Variable       | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, diagnostic rows are stored in Postgres; when unset, in-memory only.                      |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset and the SSH key login not loaded → 503; process still boots. |
 
 ### `GET /debug/contacts`
 
 Operator listing of private in-app contact messages. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`). This is not an end-user
 session. Contacts are never listed on a member-facing route.
 
 `DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
@@ -5587,16 +5586,16 @@ Postgres `contact`.
 
 Environment:
 
-| Variable       | Meaning                                                                |
-| -------------- | ---------------------------------------------------------------------- |
-| `DATABASE_URL` | When set, contacts are stored in Postgres; when unset, in-memory only. |
-| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots.      |
+| Variable       | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, contacts are stored in Postgres; when unset, in-memory only.                             |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset and the SSH key login not loaded → 503; process still boots. |
 
 ### `GET /debug/invoices`
 
 Operator listing of all `message_invoice` attempts (forum
 `POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`).
-Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not
+Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`). This is not
 an end-user session.
 
 `DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
@@ -5669,10 +5668,10 @@ store starts empty.
 
 Environment:
 
-| Variable       | Meaning                                                           |
-| -------------- | ----------------------------------------------------------------- |
-| `DATABASE_URL` | When set, attempts are stored in Postgres `message_invoice`.      |
-| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots. |
+| Variable       | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, attempts are stored in Postgres `message_invoice`.                                       |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset and the SSH key login not loaded → 503; process still boots. |
 
 ### `POST /debug/invoices/settle`
 
@@ -5769,7 +5768,7 @@ remains the payment's tombstone.
 ### `GET /debug/zap-ingests`
 
 Operator listing of kind:9735 ingest decisions (`indexed` or `rejected`).
-Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not
+Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`). This is not
 an end-user session.
 
 `DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
@@ -5816,16 +5815,16 @@ Rows are newest-first, capped at **200**. Never includes nsec. When
 
 Environment:
 
-| Variable       | Meaning                                                           |
-| -------------- | ----------------------------------------------------------------- |
-| `DATABASE_URL` | When set, ingest rows are stored in Postgres `nostr_zap_ingest`.  |
-| `DEBUG_TOKEN`  | Operator bearer for this route. Unset → 503; process still boots. |
+| Variable       | Meaning                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL` | When set, ingest rows are stored in Postgres `nostr_zap_ingest`.                                   |
+| `DEBUG_TOKEN`  | Operator bearer for this route. Unset and the SSH key login not loaded → 503; process still boots. |
 
 ### `GET /debug/messages`
 
 Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
-matching `DEBUG_TOKEN` or an operator key token. Public hide does not apply. Cap 200, newest-first.
+matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`). Public hide does not apply. Cap 200, newest-first.
 JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
 `nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths,
 stored `goalSats` (JSON `null` when unset), `goalRepayable: true` only when
@@ -5921,7 +5920,7 @@ non-UUID id, or a file that does not match
 
 Operator restore of missing forum-video bytes for an **existing**
 `hasVideo` row. Authenticated with `Authorization: Bearer` matching
-`DEBUG_TOKEN` or an operator key token. This is not an end-user session. The raw body is
+`DEBUG_TOKEN` or an operator key token of level `write` or higher (a lower key token → `403`). This is not an end-user session. The raw body is
 `decodeForumVideo`'d and written under `MEDIA_DIR`; the handler does
 not insert a message row or change columns.
 
@@ -5975,15 +5974,15 @@ type) can then serve the file.
 
 Environment:
 
-| Variable      | Meaning                                                           |
-| ------------- | ----------------------------------------------------------------- |
-| `DEBUG_TOKEN` | Operator bearer for this route. Unset → 503; process still boots. |
-| `MEDIA_DIR`   | Directory the bytes are written to. Required at boot.             |
+| Variable      | Meaning                                                                                            |
+| ------------- | -------------------------------------------------------------------------------------------------- |
+| `DEBUG_TOKEN` | Operator bearer for this route. Unset and the SSH key login not loaded → 503; process still boots. |
+| `MEDIA_DIR`   | Directory the bytes are written to. Required at boot.                                              |
 
 ### `POST /debug/messages/:id/restore`
 
 Operator unhide of a soft-hidden forum note. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `write` or higher (a lower key token → `403`). This is not an end-user
 session and not a moderator UNHIDE. Calls `markUndeleted`: the
 inverse of `markDeleted`'s cascade (clears `deletedAt` / `deletedBy` on
 the hidden target and stamp-matched **direct** children; already-live
@@ -6032,7 +6031,7 @@ empty body. Public `GET /messages/:id` can then serve the note. Logs
 ### `GET /debug/external-pubkeys`
 
 Operator inspection of external Nostr identities. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token, using the same unset/blank
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`), using the same unset/blank
 **503** and missing/mismatched bearer **401** semantics as the other debug
 routes. This is the only HTTP response that intentionally exposes these
 external pubkeys.
@@ -6402,7 +6401,7 @@ after 30 batches from one account in 60 seconds; `413`
 ### `POST /debug/push-ping`
 
 Operator enqueue of a test notification. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (not an end-user session).
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `write` or higher (a lower key token → `403`) (not an end-user session).
 JSON body `{ "accountId": "<uuid>" }`. Enqueues at most one outbox row
 when the account has a stored subscription.
 
@@ -6423,7 +6422,7 @@ Success → **Response** `200`:
 ### `POST /debug/push-broadcast`
 
 Operator Web Push broadcast. Authenticated with `Authorization: Bearer`
-matching `DEBUG_TOKEN` or an operator key token (not an end-user session). JSON body (no other keys):
+matching `DEBUG_TOKEN` or an operator key token of level `admin` or higher (a lower key token → `403`) (not an end-user session). JSON body (no other keys):
 
 ```json
 {
@@ -6514,7 +6513,7 @@ subscription. Lengths count characters (code points).
 ### `POST /debug/passkey-renew/reopen`
 
 Operator reopen of the blocking passkey-renew dialog. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (not an end-user session).
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `write` or higher (a lower key token → `403`) (not an end-user session).
 JSON body `{ "accountId": "<uuid>" }`. Deletes that account's failed
 `passkey_renew_attempt` rows, acknowledged or not. Succeeded and cancelled
 rows stay. The account row is unchanged. While `walletRequired` is not true,
@@ -6580,7 +6579,7 @@ Success → **Response** `200`: the same JSON as `GET /debug/logins`.
 ### `GET /debug/welcome-sweep`
 
 Operator dry-run of the 15-minute welcome sweep. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (not an end-user session).
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`) (not an end-user session).
 Lists every account the sweep would welcome-ping now: non-platform, role exactly
 `verified`, a verified wallet with the LNURL server on, a live top-level photo or video
 (About me included), and not welcomed before (a platform `Welcome` reply, a
@@ -6610,7 +6609,7 @@ A store read that throws → **503** `{ "error": "Messages are unavailable" }`.
 ### `PUT /debug/welcome-sweep`
 
 Operator set of the welcome sweep switch. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. JSON body
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `write` or higher (a lower key token → `403`). JSON body
 `{ "enabled": <boolean> }` with no other keys. The switch lives in process
 memory: every boot starts with it off, so the sweep pings nobody until an
 operator turns it on again. The sweep reads the switch again right before each
@@ -8991,7 +8990,7 @@ Never includes `authorPubkey`, `eventId`, `nostrPublishState`,
 or photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
 A at least moderator session may GET the hidden permalink and photo/video.
 No staff UNHIDE session route (`POST /debug/messages/:id/restore` remains
-`DEBUG_TOKEN` only).
+operator only: `DEBUG_TOKEN` or a key token of level `write` or higher).
 
 Missing/invalid/expired bearer → **Response** `401`:
 
