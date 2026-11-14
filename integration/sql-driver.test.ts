@@ -3708,6 +3708,238 @@ describe('POST /me/wallet/counterparties sources in Postgres', () => {
   });
 });
 
+describe('GET /pos received without a till charge in Postgres', () => {
+  test('lists observed receipts that settled no open or paid charge of the own account', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl, { max: 1 });
+    const hex64 = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    const shopId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const shopKey = `02${hex64()}`;
+    const previousKey = `03${hex64()}`;
+    const payerKey = `02${hex64()}`;
+    const prefix = crypto.randomUUID();
+    const id = (name: string): string => `${prefix}-${name}`;
+    const now = Date.parse('2026-11-12T12:00:00.000Z');
+    const at = (minutes: number): Date => new Date(now - minutes * 60_000);
+    const hashA = hex64();
+    const hashB = hex64();
+    const hashC = hex64();
+    const chargeIds = {
+      paidSpark: crypto.randomUUID(),
+      cancelledSpark: crypto.randomUUID(),
+      pendingLn: crypto.randomUUID(),
+      expiredLn: crypto.randomUUID(),
+      unknownLn: crypto.randomUUID(),
+    };
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migrateWalletSchema(client);
+      await migratePosSchema(client);
+      const auth = new PostgresAuthStore(client);
+      for (const accountId of [shopId, otherId]) {
+        await auth.createAccount({
+          id: accountId,
+          linkingKey: null,
+          role: 'verified',
+          name: null,
+          username: `tr_${accountId.replaceAll('-', '').slice(0, 12)}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+      await client.execute(
+        `UPDATE account SET spark_pubkey = $2, spark_pubkey_verified_at = now() WHERE id = $1`,
+        [shopId, shopKey],
+      );
+      await client.execute(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, $4)`,
+        [shopId, previousKey, `spark1${'q'.repeat(62)}`, at(60 * 48)],
+      );
+      const charge = async (
+        chargeId: string,
+        status: string,
+        sparkInvoice: string | null,
+        paidAt: Date | null,
+        hashes: Array<[string, Date]>,
+      ): Promise<void> => {
+        await client.execute(
+          `INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice)
+           VALUES ($1, $2, 21, $3, $4, $5, $6, $7)`,
+          [chargeId, shopId, status, at(60), at(55), paidAt, sparkInvoice],
+        );
+        for (const [hash, createdAt] of hashes) {
+          await client.execute(
+            `INSERT INTO pos_charge_invoice (payment_hash, charge_id, created_at) VALUES ($1, $2, $3)`,
+            [hash, chargeId, createdAt],
+          );
+        }
+      };
+      const sparkPaid = `spark1${prefix.replaceAll('-', '')}paid`;
+      const sparkCancelled = `spark1${prefix.replaceAll('-', '')}cancelled`;
+      await charge(chargeIds.paidSpark, 'paid', sparkPaid, at(9), []);
+      await charge(chargeIds.cancelledSpark, 'cancelled', sparkCancelled, null, []);
+      await charge(chargeIds.pendingLn, 'pending', null, null, [[hashA, at(200)]]);
+      await charge(chargeIds.expiredLn, 'expired', null, null, [[hashB, at(16)]]);
+      // Paid over Lightning, settling payment not reported: lifetime 45..25 minutes ago with the allowance.
+      await charge(chargeIds.unknownLn, 'paid', null, at(30), [[hashC, at(40)]]);
+
+      const time = new Date(now);
+      const wallet = new PostgresWalletStore(client);
+      const report = (name: string, paymentHash: string, direction: 'in' | 'out' = 'in') => ({
+        accountId: shopId,
+        paymentId: id(name),
+        direction,
+        status: 'completed' as const,
+        amountSats: 21,
+        feeSats: 0,
+        paidAt: time,
+        method: 'lightning',
+        paymentHash,
+        invoice: null,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'unknown' as const,
+        counterpartyAccountId: null,
+        firstSeenAt: time,
+        updatedAt: time,
+      });
+      await wallet.upsertPayments([
+        report('ln-pending', hashA.toUpperCase()),
+        report('ln-expired', hashB),
+        report('ln-out-report', hashA, 'out'),
+      ]);
+
+      const transfers = new PostgresWalletTransferStore(client);
+      const receipt = (
+        name: string,
+        minutes: number,
+        extra: Partial<WalletTransferRecord> = {},
+      ): WalletTransferRecord => ({
+        accountId: shopId,
+        walletPubkey: shopKey,
+        transferId: id(name),
+        direction: 'in',
+        type: 'preimage_swap',
+        status: 'completed',
+        amountSats: 21,
+        counterpartyPubkey: payerKey,
+        counterpartyPubkeys: [payerKey],
+        sparkInvoice: null,
+        transferCreatedAt: at(minutes),
+        transferUpdatedAt: null,
+        seenAt: time,
+        ...extra,
+      });
+      for (const row of [
+        receipt('ln', 10, { amountSats: 2100 }),
+        receipt('spark', 20, { type: 'transfer' }),
+        receipt('both', 21, { amountSats: 10 }),
+        receipt('both', 22, { walletPubkey: previousKey, amountSats: 11 }),
+        receipt('old', 24 * 60 + 1),
+        receipt('other-account', 5, { accountId: otherId }),
+        receipt('sent', 5, { direction: 'out' }),
+        receipt('pending', 5, { status: 'pending' }),
+        receipt('exit', 5, { type: 'cooperative_exit' }),
+        receipt('deposit', 5, { type: 'utxo_swap' }),
+        receipt('from-previous', 5, { type: 'transfer', counterpartyPubkeys: [previousKey] }),
+        receipt('self', 5, { type: 'transfer', counterpartyPubkeys: [shopKey] }),
+        receipt('spark-paid', 8, {
+          type: 'transfer',
+          sparkInvoice: ` ${sparkPaid.toUpperCase()} `,
+        }),
+        receipt('spark-cancelled', 11, { type: 'transfer', sparkInvoice: sparkCancelled }),
+        receipt('ln-pending', 13),
+        receipt('ln-expired', 14),
+        receipt('ln-out-report', 15),
+        receipt('before', 46),
+        receipt('first-edge', 45),
+        receipt('inside', 33),
+        receipt('last-edge', 25),
+        receipt('spark-inside', 34, { type: 'transfer' }),
+      ]) {
+        await transfers.upsertTransfer(row);
+      }
+      const read = async (limit = 20): Promise<string[]> =>
+        (
+          await transfers.listTillReceipts({
+            accountId: shopId,
+            sinceMs: now - 24 * 60 * 60_000,
+            nowMs: now,
+            clockAllowanceMs: 300_000,
+            limit,
+          })
+        ).map((entry) => entry.id.slice(prefix.length + 1));
+      // `first-edge`, `inside`, and `last-edge` are unreported Lightning receipts inside the
+      // lifetime of the paid charge whose settling payment is not known yet: withheld.
+      expect(await read()).toEqual([
+        'ln',
+        'spark-cancelled',
+        'ln-expired',
+        'ln-out-report',
+        'spark',
+        'both',
+        'spark-inside',
+        'before',
+      ]);
+      expect(await read(2)).toEqual(['ln', 'spark-cancelled']);
+      const both = (
+        await transfers.listTillReceipts({
+          accountId: shopId,
+          sinceMs: now - 24 * 60 * 60_000,
+          nowMs: now,
+          clockAllowanceMs: 300_000,
+          limit: 20,
+        })
+      ).find((entry) => entry.id === id('both'));
+      expect(both).toEqual({
+        id: id('both'),
+        amountSats: 21,
+        receivedAt: at(22),
+        kind: 'lightning',
+      });
+
+      // Once the shop's wallet reports the settling payment of the unknown charge, nothing is withheld.
+      await wallet.upsertPayments([report('settling', hashC)]);
+      await transfers.upsertTransfer(receipt('settling', 32));
+      expect(await read()).toEqual([
+        'ln',
+        'spark-cancelled',
+        'ln-expired',
+        'ln-out-report',
+        'spark',
+        'both',
+        'last-edge',
+        'inside',
+        'spark-inside',
+        'first-edge',
+        'before',
+      ]);
+    } finally {
+      await client.execute('DELETE FROM wallet_transfer WHERE account_id IN ($1, $2)', [
+        shopId,
+        otherId,
+      ]);
+      await client.execute('DELETE FROM wallet_payment WHERE account_id = $1', [shopId]);
+      await client.execute(
+        'DELETE FROM pos_charge_invoice WHERE charge_id IN (SELECT id FROM pos_charge WHERE account_id = $1)',
+        [shopId],
+      );
+      await client.execute('DELETE FROM pos_charge WHERE account_id = $1', [shopId]);
+      await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [shopId]);
+      await client.execute('DELETE FROM account WHERE id IN ($1, $2)', [shopId, otherId]);
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresWalletStore', () => {
   test('migrate twice, balance, guarded upsert, order, db_change, and secrets', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);

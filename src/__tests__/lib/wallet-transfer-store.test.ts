@@ -4,6 +4,9 @@ import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import {
   InMemoryWalletTransferStore,
   PostgresWalletTransferStore,
+  type TillReceiptCharge,
+  type TillReceiptContext,
+  type TillReceiptQuery,
   type WalletTransferRecord,
   type WalletTokenTransactionRecord,
 } from '@/lib/wallet-transfer-store';
@@ -780,5 +783,286 @@ describe('PostgresWalletTransferStore.findObservedCounterparties', () => {
     expect(text).toContain('spark_pubkey_verified_at IS NOT NULL');
     expect(text).toContain('ORDER BY replaced_at DESC, account_id');
     expect(text).toContain('resolved.account_id <> transfer.account_id');
+  });
+});
+
+describe('InMemoryWalletTransferStore.listTillReceipts', () => {
+  const NOW = Date.parse('2026-11-12T12:00:00.000Z');
+  const DAY = 24 * 60 * 60 * 1000;
+  const ALLOW = 300_000;
+  const PREVIOUS = `03${'e'.repeat(64)}`;
+  const PAYER = `02${'f'.repeat(64)}`;
+  const HASH_A = 'aa'.repeat(32);
+  const HASH_B = 'bb'.repeat(32);
+  const HASH_C = 'cc'.repeat(32);
+  const query = (partial: Partial<TillReceiptQuery> = {}): TillReceiptQuery => ({
+    accountId: 'account',
+    sinceMs: NOW - DAY,
+    nowMs: NOW,
+    clockAllowanceMs: ALLOW,
+    limit: 20,
+    ...partial,
+  });
+  const at = (minutesBeforeNow: number): Date => new Date(NOW - minutesBeforeNow * 60_000);
+  const receipt = (
+    transferId: string,
+    minutesBeforeNow: number,
+    partial: Partial<WalletTransferRecord> = {},
+  ): WalletTransferRecord =>
+    row({
+      transferId,
+      direction: 'in',
+      type: 'preimage_swap',
+      status: 'completed',
+      counterpartyPubkey: PAYER,
+      counterpartyPubkeys: [PAYER],
+      transferCreatedAt: at(minutesBeforeNow),
+      ...partial,
+    });
+
+  async function storeWith(
+    rows: WalletTransferRecord[],
+    context: Partial<TillReceiptContext> = {},
+  ): Promise<InMemoryWalletTransferStore> {
+    const contexts: string[] = [];
+    const store = new InMemoryWalletTransferStore({
+      tillContext: async (accountId) => {
+        contexts.push(accountId);
+        return { ownWalletKeys: [], charges: [], reports: [], ...context };
+      },
+    });
+    for (const entry of rows) await store.upsertTransfer(entry);
+    return store;
+  }
+
+  it('lists completed incoming Lightning and Spark receipts of the account, newest first', async () => {
+    const store = await storeWith(
+      [
+        receipt('ln', 10, { amountSats: 2100 }),
+        receipt('spark', 20, { type: 'transfer', amountSats: 21 }),
+        receipt('old', 24 * 60 + 1),
+        receipt('undated', 5, { transferCreatedAt: null }),
+        receipt('other-account', 5, { accountId: 'other' }),
+        receipt('sent', 5, { direction: 'out' }),
+        receipt('pending', 5, { status: 'pending' }),
+        receipt('exit', 5, { type: 'cooperative_exit' }),
+        receipt('deposit', 5, { type: 'utxo_swap' }),
+        receipt('leaf-swap', 5, { type: 'swap' }),
+        receipt('from-previous', 5, { type: 'transfer', counterpartyPubkeys: [PREVIOUS] }),
+        receipt('self', 5, { type: 'transfer', counterpartyPubkeys: [OWNER] }),
+      ],
+      { ownWalletKeys: [PREVIOUS] },
+    );
+    await expect(store.listTillReceipts(query())).resolves.toEqual([
+      { id: 'ln', amountSats: 2100, receivedAt: at(10), kind: 'lightning' },
+      { id: 'spark', amountSats: 21, receivedAt: at(20), kind: 'spark' },
+    ]);
+    await expect(store.listTillReceipts(query({ limit: 1 }))).resolves.toHaveLength(1);
+  });
+
+  it('defaults to an empty context and merges one transfer seen in two wallets', async () => {
+    const store = new InMemoryWalletTransferStore();
+    await store.upsertTransfer(receipt('both', 10, { amountSats: 10 }));
+    await store.upsertTransfer(receipt('both', 12, { walletPubkey: PREVIOUS, amountSats: 11 }));
+    await store.upsertTransfer(receipt('a-tie', 30));
+    await store.upsertTransfer(receipt('b-tie', 30));
+    await store.upsertTransfer(receipt('c-tie', 30));
+    await expect(store.listTillReceipts(query())).resolves.toEqual([
+      { id: 'both', amountSats: 21, receivedAt: at(12), kind: 'lightning' },
+      { id: 'c-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
+      { id: 'b-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
+      { id: 'a-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
+    ]);
+  });
+
+  it('shows a payment that settled an open or paid charge only as that charge', async () => {
+    const store = await storeWith(
+      [
+        receipt('spark-paid', 10, { type: 'transfer', sparkInvoice: ' SPARK1PAID ' }),
+        receipt('spark-cancelled', 11, { type: 'transfer', sparkInvoice: 'spark1cancelled' }),
+        receipt('spark-old-paid', 12, { type: 'transfer', sparkInvoice: 'spark1old' }),
+        receipt('ln-pending', 13),
+        receipt('ln-expired', 14),
+        receipt('ln-out-report', 15),
+      ],
+      {
+        charges: [
+          { status: 'paid', sparkInvoice: 'spark1paid', paidAt: at(9), invoices: [] },
+          { status: 'cancelled', sparkInvoice: 'spark1cancelled', paidAt: null, invoices: [] },
+          { status: 'paid', sparkInvoice: 'spark1old', paidAt: at(24 * 60 + 6), invoices: [] },
+          { status: 'paid', sparkInvoice: null, paidAt: null, invoices: [] },
+          {
+            status: 'pending',
+            sparkInvoice: null,
+            paidAt: null,
+            invoices: [{ paymentHash: HASH_A, createdAt: at(16) }],
+          },
+          {
+            status: 'expired',
+            sparkInvoice: null,
+            paidAt: null,
+            invoices: [{ paymentHash: HASH_B, createdAt: at(16) }],
+          },
+        ],
+        reports: [
+          { paymentId: 'ln-pending', direction: 'in', paymentHash: HASH_A.toUpperCase() },
+          { paymentId: 'ln-expired', direction: 'in', paymentHash: HASH_B },
+          { paymentId: 'ln-out-report', direction: 'out', paymentHash: HASH_A },
+          { paymentId: 'ln-out-report', direction: 'in', paymentHash: HASH_C },
+          { paymentId: 'no-hash', direction: 'in', paymentHash: null },
+        ],
+      },
+    );
+    await expect(store.listTillReceipts(query())).resolves.toEqual([
+      { id: 'spark-cancelled', amountSats: 21, receivedAt: at(11), kind: 'spark' },
+      { id: 'spark-old-paid', amountSats: 21, receivedAt: at(12), kind: 'spark' },
+      { id: 'ln-expired', amountSats: 21, receivedAt: at(14), kind: 'lightning' },
+      { id: 'ln-out-report', amountSats: 21, receivedAt: at(15), kind: 'lightning' },
+    ]);
+  });
+
+  it('withholds an unreported Lightning receipt inside the lifetime of a charge whose payment is not known', async () => {
+    const charge = (partial: Partial<TillReceiptCharge>): TillReceiptCharge => ({
+      status: 'paid',
+      sparkInvoice: null,
+      paidAt: at(30),
+      invoices: [
+        { paymentHash: HASH_A, createdAt: at(40) },
+        { paymentHash: HASH_B, createdAt: at(35) },
+      ],
+      ...partial,
+    });
+    const rows = [
+      receipt('before', 46),
+      receipt('first-edge', 45),
+      receipt('inside', 33),
+      receipt('last-edge', 25),
+      receipt('after', 24),
+      receipt('spark-inside', 33, { type: 'transfer' }),
+      receipt('reported-inside', 34),
+    ];
+    const reports = [
+      { paymentId: 'reported-inside', direction: 'in' as const, paymentHash: HASH_C },
+    ];
+    const unknown = await storeWith(rows, { charges: [charge({})], reports });
+    expect((await unknown.listTillReceipts(query())).map((entry) => entry.id)).toEqual([
+      'after',
+      'spark-inside',
+      'reported-inside',
+      'before',
+    ]);
+
+    const open = await storeWith([receipt('open', 1)], {
+      charges: [charge({ status: 'pending', paidAt: null })],
+    });
+    await expect(open.listTillReceipts(query())).resolves.toEqual([]);
+
+    const noInvoices = await storeWith([receipt('inside', 33)], {
+      charges: [charge({ invoices: [] })],
+    });
+    await expect(noInvoices.listTillReceipts(query())).resolves.toHaveLength(1);
+
+    const linkedByReport = await storeWith([...rows, receipt('settling', 32)], {
+      charges: [charge({})],
+      reports: [...reports, { paymentId: 'settling', direction: 'in', paymentHash: HASH_B }],
+    });
+    expect((await linkedByReport.listTillReceipts(query())).map((entry) => entry.id)).toEqual([
+      'after',
+      'last-edge',
+      'spark-inside',
+      'inside',
+      'reported-inside',
+      'first-edge',
+      'before',
+    ]);
+
+    const linkedBySpark = await storeWith(
+      [
+        receipt('inside', 33),
+        receipt('spark-settling', 31, {
+          type: 'transfer',
+          sparkInvoice: 'SPARK1CHARGE',
+        }),
+        receipt('other-account-settling', 31, {
+          accountId: 'other',
+          type: 'transfer',
+          sparkInvoice: 'spark1other',
+        }),
+      ],
+      {
+        charges: [charge({ sparkInvoice: 'spark1charge' })],
+      },
+    );
+    expect((await linkedBySpark.listTillReceipts(query())).map((entry) => entry.id)).toEqual([
+      'inside',
+    ]);
+
+    const otherAccountOnly = await storeWith(
+      [
+        receipt('inside', 33),
+        receipt('foreign', 31, {
+          accountId: 'other',
+          type: 'transfer',
+          sparkInvoice: 'spark1charge',
+        }),
+        receipt('sent', 31, { direction: 'out', type: 'transfer', sparkInvoice: 'spark1charge' }),
+        receipt('pending', 31, {
+          status: 'pending',
+          type: 'transfer',
+          sparkInvoice: 'spark1charge',
+        }),
+      ],
+      { charges: [charge({ sparkInvoice: 'spark1charge' })] },
+    );
+    await expect(otherAccountOnly.listTillReceipts(query())).resolves.toEqual([]);
+  });
+});
+
+describe('PostgresWalletTransferStore.listTillReceipts', () => {
+  it('runs one bound query and maps rows', async () => {
+    const query = vi.fn(async (): Promise<unknown[]> => [
+      {
+        id: 'b',
+        type: 'preimage_swap',
+        amount_sats: '2100',
+        received_at: '2026-11-12T10:00:00.000Z',
+      },
+      {
+        id: 'a',
+        type: 'transfer',
+        amount_sats: 21,
+        received_at: new Date('2026-11-12T09:00:00.000Z'),
+      },
+    ]);
+    const sql = { query, execute: vi.fn(async () => undefined) } as unknown as SqlClient;
+    const found = await new PostgresWalletTransferStore(sql).listTillReceipts({
+      accountId: 'me',
+      sinceMs: Date.parse('2026-11-11T12:00:00.000Z'),
+      nowMs: Date.parse('2026-11-12T12:00:00.000Z'),
+      clockAllowanceMs: 300_000,
+      limit: 20,
+    });
+    expect(found).toEqual([
+      {
+        id: 'b',
+        amountSats: 2100,
+        receivedAt: new Date('2026-11-12T10:00:00.000Z'),
+        kind: 'lightning',
+      },
+      { id: 'a', amountSats: 21, receivedAt: new Date('2026-11-12T09:00:00.000Z'), kind: 'spark' },
+    ]);
+    expect(query).toHaveBeenCalledTimes(1);
+    const [text, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual([
+      'me',
+      new Date('2026-11-11T12:00:00.000Z'),
+      new Date('2026-11-12T12:00:00.000Z'),
+      300_000,
+      20,
+    ]);
+    expect(text).toContain("t.direction = 'in'");
+    expect(text).toContain("t.status = 'completed'");
+    expect(text).toContain("t.type IN ('preimage_swap', 'transfer')");
+    expect(text).toContain('LIMIT $5');
   });
 });

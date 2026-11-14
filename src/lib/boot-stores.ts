@@ -125,6 +125,7 @@ import { ensureSparkViewer, migrateSparkViewerSchema, type SparkViewer } from '@
 import {
   PostgresWalletTransferStore,
   type ObservedCounterpartyStore,
+  type TillReceiptStore,
   type WalletTransferStore,
 } from '@/lib/wallet-transfer-store';
 import {
@@ -258,7 +259,8 @@ export interface BootStores {
    */
   walletStore: WalletStore | undefined;
   /** Durable server-verified Spark transfer store, or undefined on memory boots. */
-  walletTransferStore: (WalletTransferStore & ObservedCounterpartyStore) | undefined;
+  walletTransferStore:
+    (WalletTransferStore & ObservedCounterpartyStore & TillReceiptStore) | undefined;
   /** Durable atomic welcome-invoice entitlement reservations, or undefined on memory boots. */
   welcomeInvoiceReservationStore: WelcomeInvoiceReservationStore | undefined;
   /** Read-only Spark viewer, ephemeral on memory boots. */

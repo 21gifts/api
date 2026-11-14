@@ -1839,3 +1839,11 @@ test('POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async 
   const res = await request.post('/fond/payouts/:id/invoice');
   expect(res.status()).toBe(404);
 });
+
+test('GET /pos lists payments received without a till charge as received', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.get('/pos', { headers: auth });
+  expect(res.status()).toBe(200);
+  // The default boot reads no wallet (no Spark viewer), so nothing was observed.
+  expect(await res.json()).toEqual({ charge: null, history: [], received: [] });
+});

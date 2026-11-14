@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import { isUniqueViolation } from '@/lib/auth/sql';
 import type { Account, AuthStore } from '@/lib/auth/store';
+import { CLIENT_INSTANT_FUTURE_SKEW_MS } from '@/lib/client-instant';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
@@ -12,6 +13,8 @@ import type { FxSpotStore } from '@/lib/fx-spot-store';
 import {
   POS_CHARGE_TTL_MS,
   POS_PAID_SHOW_MS,
+  TILL_RECEIVED_LIMIT,
+  TILL_RECEIVED_WINDOW_MS,
   freezePosFiatCrosses,
   isPosFiatCode,
   parseTypedFiatAmount,
@@ -23,13 +26,17 @@ import {
 import type { PosStore } from '@/lib/pos-store';
 import { WALLET_REQUIRED, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import type { ShopPayments } from '@/lib/shop-payment';
+import type { TillReceiptStore } from '@/lib/wallet-transfer-store';
 import { bearerToken } from '@/routes/me';
 
 /**
  * `/pos` — signed-in member point-of-sale amount in whole sats.
  * Settlement goes to the member's receiving address (their verified wallet;
  * without one a charge is refused). The paid watcher marks a charge `paid`;
- * `GET /pos` keeps returning it as `charge` for {@link POS_PAID_SHOW_MS}.
+ * `GET /pos` keeps returning it as `charge` for {@link POS_PAID_SHOW_MS}, and
+ * lists as `received` the server-observed payments of the member's own
+ * wallets that settled no till charge ({@link TILL_RECEIVED_WINDOW_MS},
+ * at most {@link TILL_RECEIVED_LIMIT}).
  * Shares the {@link AuthStore} with `/auth` and `/me`.
  */
 
@@ -63,6 +70,11 @@ export interface PosRouteDeps {
    * typed string is still stored and the other three currencies stay null.
    */
   spot?: FxSpotStore;
+  /**
+   * Server-observed payments the account's wallets received without a till
+   * charge. Omitted → `GET /pos` returns `received: []`.
+   */
+  received?: TillReceiptStore;
 }
 
 /** Resolve the account behind a request's bearer session, or `null`. */
@@ -116,10 +128,26 @@ export function posRoutes(deps: PosRouteDeps): Hono {
                 ? {}
                 : { shopPayment: await deps.shopPayments.shopPaymentOfCharge(charge.id) }),
             };
+      const received =
+        deps.received === undefined
+          ? []
+          : await deps.received.listTillReceipts({
+              accountId: account.id,
+              sinceMs: nowMs - TILL_RECEIVED_WINDOW_MS,
+              nowMs,
+              clockAllowanceMs: CLIENT_INSTANT_FUTURE_SKEW_MS,
+              limit: TILL_RECEIVED_LIMIT,
+            });
       return c.json(
         {
           charge: shown,
           history: history.map((row) => serializePosCharge(row)),
+          received: received.map((row) => ({
+            id: row.id,
+            amountSats: row.amountSats,
+            receivedAt: row.receivedAt.toISOString(),
+            kind: row.kind,
+          })),
         },
         200,
       );

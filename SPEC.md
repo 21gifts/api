@@ -251,7 +251,7 @@ Public base URLs used in examples:
 | POST   | `/messages/:id/repayment`                            | Bearer                                                            | Author pays the next giver share from their own wallet. A repeat for that unpaid share returns the outstanding invoice. Includes `sparkInvoice` (or `null`).                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/messages/:id/repayment/due`                        | Bearer                                                            | Author gets every payable repayment bill of the loan at once (at most 60), plus the due shares that wait for a giver who cannot receive                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST   | `/contact`                                           | Bearer                                                            | Send private in-app contact `{ text }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| GET    | `/pos`                                               | Bearer                                                            | Open till charge or null, plus up to 20 history rows; `charge.shopPayment` when the LNURL server resolves                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/pos`                                               | Bearer                                                            | Open till charge or null, plus up to 20 history rows and up to 20 `received` payments without a till charge (last 24 h); `charge.shopPayment` when the LNURL server resolves                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/pos`                                               | Bearer                                                            | Pin one whole-sat amount for five minutes; ends the account's open shop payment                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | DELETE | `/pos`                                               | Bearer                                                            | Cancel every unexpired pending till charge and its open shop payment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/conversations`                                     | Bearer                                                            | List visible private threads (per-row `unreadMessageCount`; envelope `unreadCount` is thread count)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -1875,15 +1875,80 @@ not replace it. A body that carries only `amountSats` is valid. It stores
 `amountCurrency`, `amount`, `amountUsd`, `amountChf`, `amountEur`, and
 `amountPhp` as null. It does not price those sats from a spot or a daily close.
 
+**Payments received without a till charge.** A customer can also pay the
+shop's address (for example its static sticker QR) with no open charge and
+type the amount in their own wallet. `received` lists those payments, so the
+till shows money that arrived without a charge. Only the signed-in account's
+own data is read: the completed incoming `wallet_transfer` rows the server
+observed in the account's current and previous wallets through the Spark
+viewer key, of type `preimage_swap` (Lightning) or `transfer` (a plain Spark
+transfer), created in the last 24 hours, newest first, at most 20. Deposits,
+exits, leaf swaps, `unrecognized` rows, and pending, cancelled, expired, or
+returned transfers are not listed. Amount and time come only from that
+server-observed record.
+
+- **Not a payment from someone else.** A transfer whose sender key is one of
+  the account's own current or previous wallet keys (a move between the
+  member's own wallets) is not listed. Payments from anyone else are listed,
+  including the platform account and other members, because they are
+  payments the wallet received.
+- **No payment twice.** A payment that settled one of the account's open
+  (`pending`) or `paid` till charges is shown only as that charge. A Spark
+  payment settled a charge when its observed Spark invoice is the charge's
+  Spark invoice (compared trimmed and case-insensitively). The observed record
+  of a Lightning receipt carries no payment hash, so a Lightning receipt settled
+  a charge when the account's own wallet report (`wallet_payment`, see
+  `POST /me/wallet/report`) of that transfer id as payment id carries a payment
+  hash recorded for the charge (`pos_charge_invoice`). While that report is
+  missing (or has no payment hash), a Lightning receipt is withheld when it was
+  created inside the lifetime of an open or paid charge that has BOLT11
+  invoices and whose settling payment is not known yet (neither an observed
+  Spark transfer with its Spark invoice nor a reported payment hash of one of
+  its BOLT11s): from its first BOLT11 issue time to its `paidAt` (now for an
+  open charge), widened by the 5-minute clock allowance
+  (`CLIENT_INSTANT_FUTURE_SKEW_MS`) between the Spark operator clock and this
+  server's clock. A payment of an invoice of a `cancelled` or `expired` charge
+  is listed, since the till does not show it as paid. Amount and time are
+  never used to match a payment to a charge.
+- **Entry.** `{ "id", "amountSats", "receivedAt", "kind" }`: `id` is the Spark
+  transfer id (the payment id the shop's own wallet shows), `amountSats` the
+  received whole sats (summed when one transfer reached two of the account's
+  wallets), `receivedAt` the operator creation time (ISO-8601), and `kind` is
+  `lightning` or `spark`. No counterparty, invoice, payment hash, Spark
+  address, or key is returned.
+
 **Response** `200`:
 
 ```json
-{ "charge": null, "history": [] }
+{ "charge": null, "history": [], "received": [] }
 ```
 
 Every charge object carries `id`, `amountSats`, `status`, `createdAt`,
 `expiresAt`, `paidAt`, and the six fiat fields `amountCurrency`, `amount`,
 `amountUsd`, `amountChf`, `amountEur`, and `amountPhp`.
+
+**Response** `200` (two payments received without a charge):
+
+```json
+{
+  "charge": null,
+  "history": [],
+  "received": [
+    {
+      "id": "0a1b2c3d-0000-4000-8000-000000000002",
+      "amountSats": 2100,
+      "receivedAt": "2026-10-04T12:03:10.000Z",
+      "kind": "lightning"
+    },
+    {
+      "id": "0a1b2c3d-0000-4000-8000-000000000001",
+      "amountSats": 500,
+      "receivedAt": "2026-10-04T11:40:02.000Z",
+      "kind": "spark"
+    }
+  ]
+}
+```
 
 **Response** `200` (paid 10 s ago, sats-only):
 
@@ -1918,7 +1983,8 @@ Every charge object carries `id`, `amountSats`, `status`, `createdAt`,
       "amountEur": null,
       "amountPhp": null
     }
-  ]
+  ],
+  "received": []
 }
 ```
 
@@ -6369,6 +6435,18 @@ granted the viewer simply return no transfers. Changed wallets log only
 `wallet_transfer.synced { accountId, inserted, updated }`; errors log only
 `wallet_transfer.failed { accountId, reason }`. No address, wallet key,
 invoice, mnemonic, or amount is logged.
+
+**Read on a paid notice.** A signed, usable `spark_payment_received` notice on
+`POST /webhooks/lnurl` asks the worker to read the receiving wallet
+(`data.user_pubkey`) at once, so `GET /pos` shows a payment without waiting
+for the next pass. Only a key that is a listed current or previous wallet is
+read. At most one extra read runs per wallet; a notice while it runs queues
+one more read after it, and further notices add nothing. At most four extra
+reads run at once; a notice beyond that is dropped and the wallet is read on
+the next pass. The read is the same sync as a pass and logs the same events;
+it never changes the webhook's answer, authentication, or push. The notice is
+not a source of payment data: paid status and amounts come only from the
+observed record.
 
 `eligibleToday` additionally requires, from deployment and with no start-day
 configuration, a `wallet_transfer` for that member with direction `out`, type

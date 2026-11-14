@@ -114,6 +114,180 @@ export interface ObservedCounterpartyStore {
   ): Promise<Map<string, string[]>>;
 }
 
+/** How a till receipt reached the wallet: over Lightning through the SSP, or as a plain Spark transfer. */
+export type TillReceiptKind = 'lightning' | 'spark';
+
+/** One completed incoming payment of a till's wallet that settled none of its till charges. */
+export interface TillReceipt {
+  /** Spark transfer id, the payment id the shop's own wallet shows. */
+  id: string;
+  /** Received amount in whole sats, as the server observed it. */
+  amountSats: number;
+  /** Operator creation time of the transfer. */
+  receivedAt: Date;
+  /** `lightning` for a `preimage_swap`, `spark` for a `transfer`. */
+  kind: TillReceiptKind;
+}
+
+/** Bounds of one till receipt read. */
+export interface TillReceiptQuery {
+  /** Signed-in account; only its own wallets are read. */
+  accountId: string;
+  /** Oldest transfer creation time listed (epoch ms). */
+  sinceMs: number;
+  /** Clock (epoch ms); the end of an open charge's lifetime. */
+  nowMs: number;
+  /** Allowed difference between the Spark operator clock and this server's clock (ms). */
+  clockAllowanceMs: number;
+  /** Most receipts returned, newest first. */
+  limit: number;
+}
+
+/** A till charge as the in-memory till receipt read sees it. */
+export interface TillReceiptCharge {
+  status: 'pending' | 'paid' | 'cancelled' | 'expired';
+  sparkInvoice: string | null;
+  paidAt: Date | null;
+  /** BOLT11 payment hashes handed out for the charge, with their issue time. */
+  invoices: readonly { paymentHash: string; createdAt: Date }[];
+}
+
+/** Collaborator data of the in-memory till receipt read (the SQL adapter joins the tables). */
+export interface TillReceiptContext {
+  /** Current and previous wallet keys of the account. */
+  ownWalletKeys: readonly string[];
+  /** The account's till charges. */
+  charges: readonly TillReceiptCharge[];
+  /** The account's own wallet report rows (`wallet_payment`). */
+  reports: readonly {
+    paymentId: string;
+    direction: WalletTransferDirection;
+    paymentHash: string | null;
+  }[];
+}
+
+/** Read port of the till: payments a shop received without a till charge. */
+export interface TillReceiptStore {
+  /**
+   * List the account's completed incoming Lightning receipts and plain Spark
+   * transfers that settled none of its open or paid till charges, newest first.
+   * Moves between the account's own current and previous wallets are left out.
+   * A Spark payment settled a charge when its Spark invoice is the charge's. A
+   * Lightning receipt settled a charge when the account's own wallet report of
+   * that transfer id carries a payment hash recorded for the charge; while that
+   * report is missing, a Lightning receipt is withheld when it falls inside the
+   * lifetime of an open or paid charge with BOLT11 invoices whose settling
+   * payment is not known yet.
+   *
+   * @param query - Account, window, clock, clock allowance, and limit.
+   * @returns At most `query.limit` receipts.
+   * @throws Propagates storage failures.
+   */
+  listTillReceipts(query: TillReceiptQuery): Promise<TillReceipt[]>;
+}
+
+const NO_TILL_CONTEXT: TillReceiptContext = { ownWalletKeys: [], charges: [], reports: [] };
+
+function lowerOrNull(value: string | null): string | null {
+  return value === null ? null : value.trim().toLowerCase();
+}
+
+/**
+ * The till receipt rule over plain data; the SQL adapter states the same rule in one query.
+ *
+ * @param rows - The account's stored transfer rows.
+ * @param context - Own wallet keys, till charges, and wallet report rows.
+ * @param query - Window, clock, clock allowance, and limit.
+ * @returns Receipts newest first, one per transfer id.
+ */
+function selectTillReceipts(
+  rows: readonly WalletTransferRecord[],
+  context: TillReceiptContext,
+  query: TillReceiptQuery,
+): TillReceipt[] {
+  const live = context.charges.filter(
+    (charge) =>
+      charge.status === 'pending' ||
+      (charge.status === 'paid' &&
+        charge.paidAt !== null &&
+        charge.paidAt.getTime() >= query.sinceMs - query.clockAllowanceMs),
+  );
+  const reported = new Map<string, string>();
+  for (const report of context.reports) {
+    const hash = lowerOrNull(report.paymentHash);
+    if (report.direction === 'in' && hash !== null) reported.set(report.paymentId, hash);
+  }
+  const reportedHashes = new Set(reported.values());
+  const observedInvoices = new Set(
+    rows
+      .filter(
+        (row) =>
+          row.accountId === query.accountId && row.direction === 'in' && row.status === 'completed',
+      )
+      .map((row) => lowerOrNull(row.sparkInvoice))
+      .filter((invoice): invoice is string => invoice !== null),
+  );
+  const settles = (row: WalletTransferRecord, charge: TillReceiptCharge): boolean => {
+    const invoice = lowerOrNull(row.sparkInvoice);
+    const hash = reported.get(row.transferId);
+    return (
+      (invoice !== null && invoice === lowerOrNull(charge.sparkInvoice)) ||
+      (hash !== undefined && charge.invoices.some((entry) => entry.paymentHash === hash))
+    );
+  };
+  const unsettled = live.filter((charge) => {
+    const invoice = lowerOrNull(charge.sparkInvoice);
+    return (
+      charge.invoices.length > 0 &&
+      !(invoice !== null && observedInvoices.has(invoice)) &&
+      !charge.invoices.some((entry) => reportedHashes.has(entry.paymentHash))
+    );
+  });
+  const byId = new Map<string, TillReceipt>();
+  for (const row of rows) {
+    const created = row.transferCreatedAt?.getTime();
+    if (
+      row.accountId !== query.accountId ||
+      row.direction !== 'in' ||
+      row.status !== 'completed' ||
+      (row.type !== 'preimage_swap' && row.type !== 'transfer') ||
+      created === undefined ||
+      created < query.sinceMs ||
+      row.counterpartyPubkeys.some(
+        (key) => key === row.walletPubkey || context.ownWalletKeys.includes(key),
+      ) ||
+      live.some((charge) => settles(row, charge))
+    ) {
+      continue;
+    }
+    if (
+      row.type === 'preimage_swap' &&
+      !reported.has(row.transferId) &&
+      unsettled.some((charge) => {
+        const first = Math.min(...charge.invoices.map((entry) => entry.createdAt.getTime()));
+        const end = charge.paidAt?.getTime() ?? query.nowMs;
+        return created >= first - query.clockAllowanceMs && created <= end + query.clockAllowanceMs;
+      })
+    ) {
+      continue;
+    }
+    const seen = byId.get(row.transferId);
+    byId.set(row.transferId, {
+      id: row.transferId,
+      amountSats: (seen?.amountSats ?? 0) + row.amountSats,
+      receivedAt: new Date(Math.min(created, seen?.receivedAt.getTime() ?? created)),
+      kind: row.type === 'preimage_swap' ? 'lightning' : 'spark',
+    });
+  }
+  return [...byId.values()]
+    .sort(
+      (left, right) =>
+        right.receivedAt.getTime() - left.receivedAt.getTime() ||
+        Number(left.id < right.id) - Number(left.id > right.id),
+    )
+    .slice(0, query.limit);
+}
+
 function dateCopy(value: Date | null): Date | null {
   return value === null ? null : new Date(value.getTime());
 }
@@ -161,7 +335,9 @@ function transferObservationIsOlder(
 }
 
 /** Process-local adapter used by database-free boots and tests. */
-export class InMemoryWalletTransferStore implements WalletTransferStore, ObservedCounterpartyStore {
+export class InMemoryWalletTransferStore
+  implements WalletTransferStore, ObservedCounterpartyStore, TillReceiptStore
+{
   readonly #rows = new Map<string, WalletTransferRecord>();
   readonly #tokens = new Map<string, WalletTokenTransactionRecord>();
   readonly #fullSyncAt = new Map<string, Date>();
@@ -169,12 +345,13 @@ export class InMemoryWalletTransferStore implements WalletTransferStore, Observe
   readonly #verifiedAccountForPubkey: (pubkey: string) => Promise<string | null>;
   readonly #previousAccountForPubkey: (pubkey: string) => Promise<string | null>;
   readonly #isShop: (accountId: string) => Promise<boolean>;
+  readonly #tillContext: (accountId: string) => Promise<TillReceiptContext>;
 
   /**
    * Create an in-memory transfer store.
    *
    * @param options - Optional wallets, verified-current and previous-key resolvers,
-   *   and shop predicate.
+   *   shop predicate, and till receipt context (default: no own keys, charges, or reports).
    */
   constructor(
     options: {
@@ -182,6 +359,7 @@ export class InMemoryWalletTransferStore implements WalletTransferStore, Observe
       verifiedAccountForPubkey?: (pubkey: string) => Promise<string | null>;
       previousAccountForPubkey?: (pubkey: string) => Promise<string | null>;
       isShop?: (accountId: string) => Promise<boolean>;
+      tillContext?: (accountId: string) => Promise<TillReceiptContext>;
     } = {},
   ) {
     this.#wallets = (options.wallets ?? []).map((wallet) => ({ ...wallet }));
@@ -190,6 +368,7 @@ export class InMemoryWalletTransferStore implements WalletTransferStore, Observe
     this.#previousAccountForPubkey =
       options.previousAccountForPubkey ?? (() => Promise.resolve(null));
     this.#isShop = options.isShop ?? (() => Promise.resolve(false));
+    this.#tillContext = options.tillContext ?? (() => Promise.resolve(NO_TILL_CONTEXT));
   }
 
   listWallets(): Promise<WalletTransferWallet[]> {
@@ -371,6 +550,11 @@ export class InMemoryWalletTransferStore implements WalletTransferStore, Observe
     return result;
   }
 
+  async listTillReceipts(query: TillReceiptQuery): Promise<TillReceipt[]> {
+    const context = await this.#tillContext(query.accountId);
+    return selectTillReceipts([...this.#rows.values()], context, query);
+  }
+
   async #accountForPubkey(pubkey: string): Promise<string | null> {
     return (
       (await this.#verifiedAccountForPubkey(pubkey)) ??
@@ -472,7 +656,9 @@ function recordFromSql(
 }
 
 /** Durable Postgres adapter for viewer-sourced wallet transfers. */
-export class PostgresWalletTransferStore implements WalletTransferStore, ObservedCounterpartyStore {
+export class PostgresWalletTransferStore
+  implements WalletTransferStore, ObservedCounterpartyStore, TillReceiptStore
+{
   /**
    * Create a durable transfer store.
    *
@@ -793,5 +979,97 @@ export class PostgresWalletTransferStore implements WalletTransferStore, Observe
       result.set(row.id, [...(result.get(row.id) ?? []), row.account_id]);
     }
     return result;
+  }
+  async listTillReceipts(query: TillReceiptQuery): Promise<TillReceipt[]> {
+    const rows = await this.sql.query<{
+      id: string;
+      amount_sats: number | string | bigint;
+      received_at: Date | string;
+      type: 'preimage_swap' | 'transfer';
+    }>(
+      `WITH own_key AS (
+         SELECT spark_pubkey AS pubkey FROM account WHERE id = $1 AND spark_pubkey IS NOT NULL
+         UNION
+         SELECT spark_pubkey FROM previous_wallet WHERE account_id = $1
+       ),
+       till_charge AS (
+         SELECT id, lower(btrim(spark_invoice)) AS spark_invoice, paid_at
+         FROM pos_charge
+         WHERE account_id = $1
+           AND (status = 'pending'
+                OR (status = 'paid' AND paid_at >= $2::timestamptz - $4 * interval '1 millisecond'))
+       ),
+       received AS (
+         SELECT t.transfer_id, t.type, t.amount_sats, t.transfer_created_at
+         FROM wallet_transfer AS t
+         WHERE t.account_id = $1
+           AND t.direction = 'in'
+           AND t.status = 'completed'
+           AND t.type IN ('preimage_swap', 'transfer')
+           AND t.transfer_created_at >= $2
+           AND NOT (t.counterparty_pubkeys && (ARRAY(SELECT pubkey FROM own_key) || t.wallet_pubkey))
+           AND NOT EXISTS (
+             SELECT 1 FROM till_charge AS c
+             WHERE t.spark_invoice IS NOT NULL AND c.spark_invoice = lower(btrim(t.spark_invoice))
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM wallet_payment AS p
+             JOIN pos_charge_invoice AS i ON i.payment_hash = lower(btrim(p.payment_hash))
+             JOIN till_charge AS c ON c.id = i.charge_id
+             WHERE p.account_id = $1 AND p.payment_id = t.transfer_id AND p.direction = 'in'
+           )
+           AND NOT (
+             t.type = 'preimage_swap'
+             AND NOT EXISTS (
+               SELECT 1 FROM wallet_payment AS p
+               WHERE p.account_id = $1 AND p.payment_id = t.transfer_id AND p.direction = 'in'
+                 AND p.payment_hash IS NOT NULL
+             )
+             AND EXISTS (
+               SELECT 1
+               FROM till_charge AS c
+               CROSS JOIN LATERAL (
+                 SELECT min(created_at) AS first_at FROM pos_charge_invoice WHERE charge_id = c.id
+               ) AS issued
+               WHERE issued.first_at IS NOT NULL
+                 AND t.transfer_created_at >= issued.first_at - $4 * interval '1 millisecond'
+                 AND t.transfer_created_at
+                     <= COALESCE(c.paid_at, $3::timestamptz) + $4 * interval '1 millisecond'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM wallet_transfer AS s
+                   WHERE s.account_id = $1 AND s.direction = 'in' AND s.status = 'completed'
+                     AND c.spark_invoice IS NOT NULL
+                     AND lower(btrim(s.spark_invoice)) = c.spark_invoice
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM wallet_payment AS p
+                   JOIN pos_charge_invoice AS i ON i.payment_hash = lower(btrim(p.payment_hash))
+                   WHERE p.account_id = $1 AND p.direction = 'in' AND i.charge_id = c.id
+                 )
+             )
+           )
+       )
+       SELECT transfer_id AS id, type, sum(amount_sats) AS amount_sats,
+              min(transfer_created_at) AS received_at
+       FROM received
+       GROUP BY transfer_id, type
+       ORDER BY received_at DESC, id DESC
+       LIMIT $5`,
+      [
+        query.accountId,
+        new Date(query.sinceMs),
+        new Date(query.nowMs),
+        query.clockAllowanceMs,
+        query.limit,
+      ],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      amountSats: Number(row.amount_sats),
+      receivedAt: row.received_at instanceof Date ? row.received_at : new Date(row.received_at),
+      kind: row.type === 'preimage_swap' ? 'lightning' : 'spark',
+    }));
   }
 }

@@ -93,6 +93,7 @@ import { InMemoryWalletStore, type WalletStore } from '@/lib/wallet-store';
 import {
   InMemoryWalletTransferStore,
   type ObservedCounterpartyStore,
+  type TillReceiptStore,
   type WalletTransferStore,
 } from '@/lib/wallet-transfer-store';
 import { InMemoryMemberEventStore, type MemberEventStore } from '@/lib/member-event-store';
@@ -244,6 +245,18 @@ export interface AppDeps {
    * boot passes the same `PostgresWalletTransferStore` as `walletTransferStore`).
    */
   walletCounterparties?: ObservedCounterpartyStore;
+  /**
+   * Server-observed payments received without a till charge, listed by `GET /pos` as
+   * `received` (default: the in-memory transfer store created when `walletTransferStore` is
+   * omitted; SQL boot passes the same `PostgresWalletTransferStore`).
+   */
+  tillReceipts?: TillReceiptStore;
+  /**
+   * Ask the wallet transfer worker to read one wallet now. `POST /webhooks/lnurl` calls it
+   * with the receiving wallet key of a signed payment notice. Omitted → the notice reads
+   * nothing and the wallet is read on the worker's next pass.
+   */
+  walletReadNow?: (walletPubkey: string) => void;
   /** Spark viewer identity key returned in owner JSON, or null when unavailable. */
   walletViewerPublicKey?: string | null;
   /**
@@ -667,6 +680,7 @@ export function createApp(deps: AppDeps = {}): Hono {
   const memoryTransfers = new InMemoryWalletTransferStore();
   const walletTransferStore = deps.walletTransferStore ?? memoryTransfers;
   const walletCounterparties = deps.walletCounterparties ?? memoryTransfers;
+  const tillReceipts = deps.tillReceipts ?? memoryTransfers;
   const memberEventStore = deps.memberEventStore ?? new InMemoryMemberEventStore();
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -799,6 +813,7 @@ export function createApp(deps: AppDeps = {}): Hono {
         notifications: notificationStore,
         inboxUnreadCount: inboxUnreadCountFor(conversationStore, store),
         now,
+        ...(deps.walletReadNow === undefined ? {} : { readWallet: deps.walletReadNow }),
       }),
     );
   }
@@ -1233,6 +1248,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fetchImpl,
       spot: fxSpotStore,
       messageStore,
+      received: tillReceipts,
       ...(activity === undefined ? {} : { activity }),
       ...receivingDeps,
       ...shopDeps,

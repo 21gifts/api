@@ -286,6 +286,8 @@ if (import.meta.main) {
           now: Date.now,
         });
   const welcomeSweep: WelcomeSweepSwitch = { enabled: false };
+  // Bound once the wallet transfer worker runs; until then (or without it) a notice reads nothing.
+  let readWalletNow: (walletPubkey: string) => void = () => undefined;
   const app = createApp({
     welcomeSweep,
     ...(shopPayments === undefined ? {} : { shopPayments }),
@@ -325,7 +327,13 @@ if (import.meta.main) {
     ...(walletStore === undefined ? {} : { walletStore }),
     ...(walletTransferStore === undefined
       ? {}
-      : { walletTransferStore, walletCounterparties: walletTransferStore }),
+      : {
+          walletTransferStore,
+          walletCounterparties: walletTransferStore,
+          tillReceipts: walletTransferStore,
+          // A signed payment notice reads the receiving wallet now; the worker starts below.
+          walletReadNow: (walletPubkey: string) => readWalletNow(walletPubkey),
+        }),
     walletViewerPublicKey,
     ...(memberEventStore === undefined ? {} : { memberEventStore }),
     conversationStore,
@@ -393,6 +401,7 @@ if (import.meta.main) {
           },
           now: Date.now,
         });
+  if (walletTransferWorker !== undefined) readWalletNow = walletTransferWorker.readNow;
   // Always started: ticks send nothing without VAPID, but the hourly sweep
   // still drops subscriptions whose session ended and old outbox rows.
   startPushWorker({ store: pushStore, sender, now: Date.now, authStore }, PUSH_WORKER_INTERVAL_MS);

@@ -7,7 +7,15 @@ import type { MapFetch } from '@/lib/ocp-place';
 import type { FxSpotQuote } from '@/lib/fx-spot';
 import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
-import { POS_CHARGE_TTL_MS, POS_PAID_SHOW_MS, type PosCharge } from '@/lib/pos-charge';
+import {
+  POS_CHARGE_TTL_MS,
+  POS_PAID_SHOW_MS,
+  TILL_RECEIVED_LIMIT,
+  TILL_RECEIVED_WINDOW_MS,
+  type PosCharge,
+} from '@/lib/pos-charge';
+import { CLIENT_INSTANT_FUTURE_SKEW_MS } from '@/lib/client-instant';
+import { InMemoryWalletTransferStore, type TillReceiptQuery } from '@/lib/wallet-transfer-store';
 import { ShopPayments } from '@/lib/shop-payment';
 import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
@@ -219,7 +227,7 @@ describe('POS routes', () => {
     });
     const empty = await app.request('/pos', { headers: AUTH });
     expect(empty.status).toBe(200);
-    expect(await empty.json()).toEqual({ charge: null, history: [] });
+    expect(await empty.json()).toEqual({ charge: null, history: [], received: [] });
     const created = await app.request('/pos', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -743,11 +751,11 @@ describe('GET /pos paid confirmation', () => {
     };
     clock = nowMs + 10_000 + POS_PAID_SHOW_MS - 1;
     const shown = await read(app);
-    expect(shown).toEqual({ charge: paidJson, history: [paidJson] });
+    expect(shown).toEqual({ charge: paidJson, history: [paidJson], received: [] });
     // Without the LNURL server (no shop payment service) the key is absent.
     expect(shown.charge).not.toHaveProperty('shopPayment');
     clock = nowMs + 10_000 + POS_PAID_SHOW_MS;
-    expect(await read(app)).toEqual({ charge: null, history: [paidJson] });
+    expect(await read(app)).toEqual({ charge: null, history: [paidJson], received: [] });
   });
 
   it('prefers the pending charge over an older paid one', async () => {
@@ -770,6 +778,7 @@ describe('GET /pos paid confirmation', () => {
     expect(await read(await tillApp(new InMemoryPosStore()))).toEqual({
       charge: null,
       history: [],
+      received: [],
     });
   });
 });
@@ -838,6 +847,7 @@ describe('POS with shop payments', () => {
     expect(await (await app.request('/pos', { headers: AUTH })).json()).toEqual({
       charge: null,
       history: [],
+      received: [],
     });
     const created = await app.request('/pos', {
       method: 'POST',
@@ -1087,5 +1097,96 @@ describe('POST /pos typed fiat', () => {
     );
     expect((await store.listLatest(1))[0]?.amountSats).toBe(21);
     expect((await store.listLatest(1))[0]?.amountText).toBe('12.00');
+  });
+});
+
+describe('GET /pos received without a till charge', () => {
+  it('lists only the signed-in account receipts with id, amount, time, and kind', async () => {
+    const queries: TillReceiptQuery[] = [];
+    const app = new Hono().route(
+      '/pos',
+      posRoutes({
+        store: new InMemoryPosStore(),
+        authStore: await readyStore(),
+        now,
+        fetchImpl: lnurlFetch(),
+        received: {
+          listTillReceipts: async (query) => {
+            queries.push(query);
+            return [
+              {
+                id: 'transfer-2',
+                amountSats: 2100,
+                receivedAt: new Date(nowMs - 1_000),
+                kind: 'lightning',
+              },
+              {
+                id: 'transfer-1',
+                amountSats: 21,
+                receivedAt: new Date(nowMs - 2_000),
+                kind: 'spark',
+              },
+            ];
+          },
+        },
+      }),
+    );
+    const res = await app.request('/pos', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      charge: null,
+      history: [],
+      received: [
+        {
+          id: 'transfer-2',
+          amountSats: 2100,
+          receivedAt: new Date(nowMs - 1_000).toISOString(),
+          kind: 'lightning',
+        },
+        {
+          id: 'transfer-1',
+          amountSats: 21,
+          receivedAt: new Date(nowMs - 2_000).toISOString(),
+          kind: 'spark',
+        },
+      ],
+    });
+    expect(queries).toEqual([
+      {
+        accountId: 'acc',
+        sinceMs: nowMs - TILL_RECEIVED_WINDOW_MS,
+        nowMs,
+        clockAllowanceMs: CLIENT_INSTANT_FUTURE_SKEW_MS,
+        limit: TILL_RECEIVED_LIMIT,
+      },
+    ]);
+    expect(TILL_RECEIVED_WINDOW_MS).toBe(24 * 60 * 60 * 1000);
+    expect(TILL_RECEIVED_LIMIT).toBe(20);
+  });
+
+  it('reads the injected till receipt store through createApp and never for a 401', async () => {
+    const listTillReceipts = vi.fn(async () => []);
+    const app = createApp({
+      authStore: await readyStore(),
+      now,
+      fetchImpl: lnurlFetch(),
+      tillReceipts: { listTillReceipts },
+    });
+    expect((await app.request('/pos')).status).toBe(401);
+    expect(listTillReceipts).not.toHaveBeenCalled();
+    const res = await app.request('/pos', { headers: AUTH });
+    expect(await res.json()).toEqual({ charge: null, history: [], received: [] });
+    expect(listTillReceipts).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults to the in-memory transfer store of createApp', async () => {
+    const app = createApp({
+      authStore: await readyStore(),
+      now,
+      fetchImpl: lnurlFetch(),
+      walletTransferStore: new InMemoryWalletTransferStore(),
+    });
+    const res = await app.request('/pos', { headers: AUTH });
+    expect(await res.json()).toEqual({ charge: null, history: [], received: [] });
   });
 });
