@@ -80,8 +80,11 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gifts.record_failed` and still returns **200**. When the issued invoice stored a **top-level** `messageId`, proof inserts a
 gift-reply first, then `addSats` (idempotent). The author is the platform
 account for a `/invoices` payment and the configured Fond account
-(`FOND_USERNAME`) for a Fond-queue payout; an unknown Fond account skips the
-attachment instead of posting as the platform. That path does
+(`FOND_USERNAME`, and only when that account passes the Fond role check
+`canSignFondPayouts`: at least `fond`, not the platform account) for a
+Fond-queue payout; an unknown Fond account, a lower-role account holding the
+handle, or the platform account holding it skips the attachment instead of
+posting as the platform. That path does
 not notify (no in-app rows, no Web Push). When that
 `messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
 under the reply, then `addSats` the reply (a live existing marker is hidden
@@ -7182,26 +7185,28 @@ When the invoice has `messageId`, the api inserts a gift-reply first
 `messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
 on that post. The reply author is the platform account for a `/invoices`
 payment; a Fond-queue payout (`runFondPaidTick`) authors it as the configured
-Fond account (`FOND_USERNAME`, display-name fallback that username, its id and
+Fond account (`FOND_USERNAME`, only when it passes `canSignFondPayouts`:
+display-name fallback that username, its id and
 Nostr key). That path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply,
 attach persists a deterministic `spendGiftReplyId` marker under that reply,
 `markDeleted` so live `listReplies` omits it, then `addSats`s the reply (a live
 existing marker is `markDeleted` only and does not `addSats`; no nested
 gift-reply and no `notifyForumReply`). Repeat proof with the same preimage is
 idempotent. Parent missing/deleted, platform missing, or a supplied Fond
-account missing: skip attach, log `invoice.gift_reply.failed`, still **200** +
-gift persist.
+account missing or failing `canSignFondPayouts`: skip attach, log
+`invoice.gift_reply.failed`, still **200** + gift persist.
 
 When the invoice has `groupMessageId`, the api then inserts one
 conversation message in that closed `moderator_group` thread (name trimmed
 or `21.gifts` on the platform, `sats` = `floor(msat/1000)`, text = comment ·
 recipient name, `giftForMessageId` set to the triggering message's id). The
 sender is the platform account for a `/invoices` payment and the configured
-Fond account for a Fond-queue payout. Repeat proof
-with the same preimage is idempotent on the deterministic id. Triggering
-row missing, thread missing or not `moderator_group`, platform missing, a
-supplied Fond account missing, or store throw: skip attach, log
-`invoice.group_gift.failed`, still **200** + gift persist.
+Fond account (only when it passes `canSignFondPayouts`) for a Fond-queue
+payout. Repeat proof with the same preimage is idempotent on the deterministic
+id. Triggering row missing, thread missing or not `moderator_group`, platform
+missing, a supplied Fond account missing or failing `canSignFondPayouts`, or
+store throw: skip attach, log `invoice.group_gift.failed`, still **200** +
+gift persist.
 
 Success → **Response** `200`:
 

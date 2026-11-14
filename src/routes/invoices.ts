@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { earnsModeratorGroupPay, isModeratorGroupMember } from '@/lib/auth/roles';
+import {
+  canSignFondPayouts,
+  earnsModeratorGroupPay,
+  isModeratorGroupMember,
+} from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
@@ -587,8 +591,10 @@ interface SpendReplyAuthor {
 /**
  * Resolve the author of a spend payout's gift reply and group stipend. Without
  * `replyAuthorUsername` this is the platform account, as before. With one, it
- * is that account only; an unknown account or a failed lookup is `undefined`
- * so the caller skips the attachment rather than posting as the platform.
+ * is that account only, and only when it passes {@link canSignFondPayouts}
+ * (at least `fond`, not the platform account); an unknown account, a failed
+ * role check, or a failed lookup is `undefined` so the caller skips the
+ * attachment rather than posting as the platform.
  *
  * @param deps - Action collaborators (account listing and lookup).
  * @param replyAuthorUsername - Configured Fond username, or `undefined` for the platform.
@@ -606,7 +612,9 @@ async function resolveSpendReplyAuthor(
   const username = replyAuthorUsername.trim().toLowerCase();
   try {
     const account = await deps.authStore.getAccountByUsername(username);
-    return account === undefined ? undefined : { account, fallbackName: username };
+    return account === undefined || !canSignFondPayouts(account, replyAuthorUsername)
+      ? undefined
+      : { account, fallbackName: username };
   } catch {
     return undefined;
   }
