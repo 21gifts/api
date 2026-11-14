@@ -323,7 +323,9 @@ if (import.meta.main) {
     ...(apiLogStore === undefined ? {} : { apiLogStore }),
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
     ...(walletStore === undefined ? {} : { walletStore }),
-    ...(walletTransferStore === undefined ? {} : { walletTransferStore }),
+    ...(walletTransferStore === undefined
+      ? {}
+      : { walletTransferStore, walletCounterparties: walletTransferStore }),
     walletViewerPublicKey,
     ...(memberEventStore === undefined ? {} : { memberEventStore }),
     conversationStore,

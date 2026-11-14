@@ -141,6 +141,7 @@ function extractEndpoints() {
     'member-events.ts': '',
     'wallet-report.ts': '',
     'wallet-hearts.ts': '',
+    'wallet-counterparties.ts': '',
     'repayment.ts': '',
     'debug.ts': '/debug/accounts',
     'debug-contacts.ts': '/debug/contacts',

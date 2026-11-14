@@ -453,6 +453,65 @@ describe('InMemoryWalletTransferStore', () => {
   });
 });
 
+describe('InMemoryWalletTransferStore.findObservedCounterparties', () => {
+  it('names only the resolved other account of the caller’s completed observed transfers', async () => {
+    const PREVIOUS = `03${'e'.repeat(64)}`;
+    const SECOND_WALLET = `02${'f'.repeat(64)}`;
+    const store = new InMemoryWalletTransferStore({
+      verifiedAccountForPubkey: async (pubkey) =>
+        pubkey === MEMBER
+          ? 'member-account'
+          : pubkey === SHOP
+            ? 'shop-account'
+            : pubkey === OWNER
+              ? 'me'
+              : null,
+      previousAccountForPubkey: async (pubkey) => (pubkey === PREVIOUS ? 'previous-account' : null),
+    });
+    const completed = (partial: Partial<WalletTransferRecord>): WalletTransferRecord =>
+      row({ accountId: 'me', status: 'completed', counterpartyPubkey: MEMBER, ...partial });
+    for (const record of [
+      completed({ transferId: 'out' }),
+      completed({ transferId: 'in', direction: 'in', counterpartyPubkey: PREVIOUS }),
+      completed({ transferId: 'pending', status: 'pending' }),
+      completed({ transferId: 'lightning', type: 'preimage_swap' }),
+      completed({ transferId: 'self', counterpartyPubkey: OWNER }),
+      completed({ transferId: 'unresolved', counterpartyPubkey: UNKNOWN }),
+      completed({ transferId: 'multi', counterpartyPubkeys: [MEMBER, SHOP] }),
+      completed({ transferId: 'two-wallets' }),
+      completed({
+        transferId: 'two-wallets',
+        walletPubkey: SECOND_WALLET,
+        counterpartyPubkey: SHOP,
+      }),
+      completed({ transferId: 'foreign', accountId: 'other' }),
+    ]) {
+      await store.upsertTransfer(record);
+    }
+    const found = await store.findObservedCounterparties('me', [
+      { id: 'out', direction: 'out' },
+      { id: 'in', direction: 'in' },
+      { id: 'pending', direction: 'out' },
+      { id: 'lightning', direction: 'out' },
+      { id: 'self', direction: 'out' },
+      { id: 'unresolved', direction: 'out' },
+      { id: 'multi', direction: 'out' },
+      { id: 'two-wallets', direction: 'out' },
+      { id: 'foreign', direction: 'out' },
+      { id: 'out-as-in', direction: 'in' },
+      { id: 'missing', direction: 'out' },
+    ]);
+    expect([...found]).toEqual([
+      ['out', ['member-account']],
+      ['in', ['previous-account']],
+      ['two-wallets', ['member-account', 'shop-account']],
+    ]);
+    expect([
+      ...(await store.findObservedCounterparties('me', [{ id: 'out', direction: 'in' }])),
+    ]).toEqual([]);
+  });
+});
+
 describe('PostgresWalletTransferStore', () => {
   it('lists wallets, maps sync state, and runs the one-statement shop query', async () => {
     const query = vi.fn(async (text: string) => {
@@ -688,5 +747,38 @@ describe('PostgresWalletTransferStore', () => {
       updated: true,
       shopPaymentBecameCompleted: false,
     });
+  });
+});
+
+describe('PostgresWalletTransferStore.findObservedCounterparties', () => {
+  it('resolves verified or previous owners in one bound query and groups them by id', async () => {
+    const query = vi.fn(async (): Promise<unknown[]> => [
+      { id: 'a', account_id: 'x' },
+      { id: 'a', account_id: 'y' },
+      { id: 'b', account_id: 'z' },
+    ]);
+    const sql = { query, execute: vi.fn(async () => undefined) } as unknown as SqlClient;
+    const found = await new PostgresWalletTransferStore(sql).findObservedCounterparties('me', [
+      { id: 'a', direction: 'out' },
+      { id: 'b', direction: 'in' },
+      { id: 'bad\u0000id', direction: 'in' },
+    ]);
+    expect([...found]).toEqual([
+      ['a', ['x', 'y']],
+      ['b', ['z']],
+    ]);
+    expect(query).toHaveBeenCalledTimes(1);
+    const [text, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual([
+      'me',
+      postgresTextArrayLiteral(['a', 'b']),
+      postgresTextArrayLiteral(['out', 'in']),
+    ]);
+    expect(text).toContain("transfer.type = 'transfer'");
+    expect(text).toContain("transfer.status = 'completed'");
+    expect(text).toContain('transfer.counterparty_pubkeys <@ ARRAY[transfer.counterparty_pubkey]');
+    expect(text).toContain('spark_pubkey_verified_at IS NOT NULL');
+    expect(text).toContain('ORDER BY replaced_at DESC, account_id');
+    expect(text).toContain('resolved.account_id <> transfer.account_id');
   });
 });
