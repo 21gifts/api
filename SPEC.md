@@ -3818,7 +3818,10 @@ not create a BOLT11 invoice. A store throw → **503**
 Staff only: a bearer session of at least `moderator` (`requireStaff`, the
 rule of the funding staff routes). A missing or invalid bearer is **401**
 `{ "error": "Unauthorized" }`, a lower role **403** `{ "error": "Forbidden" }`,
-both before any store read. The public `GET /shops/activity` body is
+both before the shop, charge, pin, identity, and account reads. A
+throw while resolving the session is not mapped to 503 and is not
+logged as `shops.activity.list.failed`, as on the funding staff routes.
+The public `GET /shops/activity` body is
 unchanged. The list holds exactly the notes that series counts (live,
 top-level, the `21GiftsShop` hashtag token, a set `shop_account_id`), each
 note id once, including a shop whose account never created a charge. JSON:
@@ -3843,8 +3846,9 @@ note id once, including a shop whose account never created a charge. JSON:
 
 `activeDays` counts the UTC days of the same 30-day window ending on
 `today` (inclusive) on which the currently assigned account created at
-least one `pos_charge`, any status. Summing the rows per day gives
-`shopCount` of `GET /shops/activity` for every day. `lastChargeDay` is
+least one `pos_charge`, any status: the days on which that note counts
+in `shopCount` of `GET /shops/activity`. Over the window, the
+`activeDays` of all rows add up to the `shopCount` of all days. `lastChargeDay` is
 the UTC day of that account's latest `pos_charge` of any status over all
 time, not limited to the window, or null when it never created one.
 `name` is the public shop name ([docs/shop-identity.md](docs/shop-identity.md):
@@ -3852,7 +3856,7 @@ the pin label when non-blank, else the first non-blank description line
 cut at 80 characters, else `Shop`). `npub` is the shop identity's npub, or
 null when the note has no identity. `username` is the till account's
 username, or null. Order: `lastChargeDay` ascending with null first, then
-`name`, then `noteId`. A store throw → **503**
+`name`, then `noteId`. A throw of one of those reads → **503**
 `{ "error": "Shop activity is unavailable" }` and log
 `shops.activity.list.failed` with no account, note, or charge ids.
 

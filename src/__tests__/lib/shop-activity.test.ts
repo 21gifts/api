@@ -155,7 +155,7 @@ describe('activeShopList', () => {
     expect(row?.activeDays).toBe(2);
   });
 
-  it('sums per day to the activeShopDays counts', () => {
+  it('adds up activeDays over all rows to the activeShopDays total', () => {
     const notes: ShopNoteRef[] = [
       shop({ id: 'n1', accountId: 'a' }),
       shop({ id: 'n2', accountId: 'a' }),

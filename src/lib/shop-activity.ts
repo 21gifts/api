@@ -148,7 +148,8 @@ export function activeShopDays(
  * The shops {@link activeShopDays} counts, one row each.
  *
  * `activeDays` is the number of window days on which the note counts in
- * {@link activeShopDays}, so the rows summed per day give `shopCount`.
+ * {@link activeShopDays}, so over the window the `activeDays` of all rows
+ * add up to the `shopCount` of all days.
  * `lastChargeDay` is the UTC day of the assigned account's latest charge
  * (the later of `lookups.lastChargeMs` and the window charges), or null.
  * `name` follows {@link publicShopName}. Order: `lastChargeDay` ascending
