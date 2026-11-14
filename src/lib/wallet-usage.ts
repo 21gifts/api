@@ -144,7 +144,11 @@ export interface WalletUsage {
   releasedAt: string;
   /** ISO instant of the newest counted payment, or null when none. */
   asOf: string | null;
-  /** Totals from release through the current UTC day. */
+  /**
+   * Payment totals and `heartCount` start at release. `paidShopChargeCount` is
+   * the sum of the published daily `shopCharges[].paid` cells over the whole
+   * shop window, from `2026-10-26 11:17 UTC`.
+   */
   totals: {
     /** Counted payments. */
     paymentCount: number;
@@ -175,8 +179,8 @@ export interface WalletUsage {
     /** Hearts with `createdAt` on or after release. */
     heartCount: number;
     /**
-     * Sum of `paid` in the published `shopCharges` days. Counts every paid
-     * charge in the whole shop window, including days before release.
+     * Sum of the published daily `shopCharges[].paid` cells over the whole
+     * shop window, from `2026-10-26 11:17 UTC`, including days before release.
      */
     paidShopChargeCount: number;
   };
@@ -421,10 +425,12 @@ interface FlowAcc {
  * Days are UTC. A payment whose `paidAt` is before release or whose UTC day is
  * after `nowMs` is ignored entirely: it does not enter totals, flows, amount
  * buckets, hours, wallet counts, or `asOf`. Forum and shop rows use their own
- * windows: a row whose UTC day is after `nowMs` is ignored, a heart or paid
- * shop charge in the release total needs its instant on or after release, and
- * every paid shop charge in the published shop series is counted.
- * `paidShopChargeCount` is the sum of those published daily `paid` values.
+ * windows: a row whose UTC day is after `nowMs` is ignored, a heart in the
+ * release total needs its instant on or after release, and every paid shop
+ * charge in the published shop series is counted. `paidShopChargeCount` is the
+ * sum of the published daily `shopCharges[].paid` cells over the whole shop
+ * window, from `2026-10-26 11:17 UTC`, while the payment totals and
+ * `heartCount` start at release.
  * Sat sums that are not safe integers throw. Active, sending, and receiving
  * wallet counts use member and fund accounts only, both in the totals and per
  * day. `topFiveSenderShare` ranks those sending wallets by their counted sats

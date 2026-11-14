@@ -121,7 +121,9 @@ test('Function: buildWalletUsage — the booted usage body is aggregate only', a
   expect(JSON.stringify(body)).not.toContain('accountId');
 });
 
-test('Function: walletUsagePurpose — every purpose key is present on a usage day', async ({
+// The default boot uses an empty in-memory usage store, so no payment reaches
+// walletUsagePurpose and every classified list is empty. Unit tests cover the classifier.
+test('Function: walletUsagePurpose — default boot has empty classified lists', async ({
   request,
 }) => {
   const body = await readUsage(request);
