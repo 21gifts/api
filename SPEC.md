@@ -4701,10 +4701,19 @@ values can differ, so `GET /debug/db` returns two rows for one payment. When the
 apps reported it, the two rows share `payment_hash` (Lightning) or `invoice`
 (Spark invoice). A total over all members must keep one row per payment, for
 example by deduplicating on `payment_hash` or `invoice`; summing every row counts
-such a payment twice. An internal Spark transfer has the same `payment_id` on both
-rows; pairing fills a side reported without details with a category and the
-other account as counterparty, leaves the other row as stored, and both rows still
-count when summing.
+such a payment twice. In `GET /wallets/usage`, a completed `out` row and a
+completed `in` row on two different accounts form one payment when they share
+the same `payment_id`, the same `lower(payment_hash)` with both hashes non-null,
+or the same `invoice` with both invoices non-null and non-empty. Each row must
+have exactly one such partner among completed rows; an ambiguous match stays
+unpaired. The pair's key is
+`'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every other
+completed row keeps `'row:' || account_id::text || ':' || payment_id`. An
+internal Spark transfer has the same `payment_id` on both rows; pairing fills a
+side reported without details with a category and the other account as
+counterparty and leaves the other row as stored. `GET /debug/db` still returns
+both rows, but `GET /wallets/usage` counts the pair once under the pairing rule
+above.
 
 ### `GET /debug/accounts`
 
@@ -7547,7 +7556,10 @@ under it. The worker always includes that profile note’s `event_id` in the rel
 query, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes a reply on that live
 top-level parent; a missing, hidden, or nested parent falls back to a
 top-level post with the remaining body. An empty comment does not create a
-blank living-room post.
+blank living-room post. The 1-sat compose fee is a platform payment, not a
+forum gift: `GET /wallets/usage` omits a non-heart invoice on a note authored
+by the platform account from its paid forum gifts and forum series. A heart on
+such a note keeps the heart rule.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -8551,9 +8563,16 @@ The store reads `wallet_payment`, `account`, `spark_invoice`, `fond_payout`,
 `message_invoice`, `message`, `nostr_zap_payment`, `nostr_zap_receipt`, and
 `pos_charge`; it does not write.
 
-A payment id counts once only when it has exactly two rows overall, both
-completed, of opposite direction on two accounts; every other completed row
-counts on its own. A counted payment enters the totals only when its earliest
+A completed `out` row and a completed `in` row on two different accounts form
+one payment when they share the same `payment_id`, the same
+`lower(payment_hash)` with both hashes non-null, or the same `invoice` with both
+invoices non-null and non-empty. Each of the two rows must have exactly one such
+partner among completed rows; an ambiguous match never merges. A pair's group
+key is `'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every
+other completed row keeps `'row:' || account_id::text || ':' || payment_id`.
+The pair key is deterministic and injective because the outgoing `(account_id,
+payment_id)` is the `wallet_payment` primary key, and it is disjoint from the
+`row:` namespace. A counted payment enters the totals only when its earliest
 `paid_at` is on or after the release. The
 amount is the greatest `amount_sats` and the fee is the sum of `fee_sats`. The
 payer is the outgoing account, or outside when there is no outgoing row. The
@@ -8582,8 +8601,12 @@ or unrelated; a conversation or repayment invoice that owns a candidate hash
 still excludes the zap-receipt branch. A `gift` or `platform` category alone
 does not make a forum gift, and the counterparty does not decide it: a payment
 that matches a claimed forum gift or heart invoice on a note not hidden by
-staff is a forum gift, whoever the counterparty is. Conversation invoices and
-credit repayments are not forum gifts.
+staff is a forum gift, whoever the counterparty is, except for the compose fee
+below. Conversation invoices and credit repayments are not forum gifts. A
+non-heart invoice on a note authored by the official platform account is the
+1-sat compose fee, a platform payment, not a forum gift; the same exclusion
+applies when its hash is claimed as a zap receipt. A heart on such a note keeps
+the heart rule.
 
 `days` has every UTC day from the release day through today, and every purpose
 key. `flows` keeps only directions that occurred and is sorted by day, from,
@@ -8596,7 +8619,9 @@ decimal places and 0 when the volume is 0. `forum` starts 28 days before
 release (`gifts` are hearts that are false). The forum series and
 `totals.heartCount` include only paid forum gifts and hearts on living notes:
 no conversation invoices, no credit repayments, no hidden notes, and no unpaid
-invoices. `shopCharges` starts 14 days before release. A heart increments the
+invoices. A non-heart invoice on a note authored by the platform account is the
+compose fee and is excluded; a heart on that note remains in the series.
+`shopCharges` starts 14 days before release. A heart increments the
 release total only when its own timestamp is on or after the release instant.
 `totals.paidShopChargeCount` is the sum of the published daily
 `shopCharges[].paid` cells over the whole shop window, from
