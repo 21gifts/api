@@ -114,8 +114,9 @@ export type ConversationThreadPageQuery = {
 
 /**
  * `app_setting.key` that records the one-time removal of `member_damus`
- * threads without a member message
- * ({@link ConversationStore.removeDamusThreadsWithoutMemberMessage}).
+ * threads whose counterpart the inbound direct-message admission rule would
+ * not admit (no member message, counterpart not an entitled external zapper;
+ * {@link ConversationStore.removeDamusThreadsWithoutMemberMessage}).
  */
 export const DAMUS_THREAD_CLEANUP_KEY = 'member_damus_cleanup';
 
