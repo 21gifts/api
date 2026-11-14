@@ -290,7 +290,7 @@ type RosterReply =
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
-  deps: FundingRouteDeps,
+  deps: Pick<FundingRouteDeps, 'authStore' | 'now'>,
   header: string | undefined,
 ): Promise<Account | null> {
   const token = bearerToken(header);
@@ -372,9 +372,17 @@ async function dropMissingVideoRow(
   return null;
 }
 
-/** Staff session or a 401/403 JSON response. */
-async function requireStaff(
-  deps: FundingRouteDeps,
+/**
+ * Staff session (`isStaffRole`) or a 401/403 JSON response.
+ *
+ * @param deps - Auth store and clock.
+ * @param header - Raw `Authorization` header.
+ * @returns The staff caller, or 401 `Unauthorized` without a valid session
+ *   and 403 `Forbidden` below moderator.
+ * @throws Whatever the auth store throws while resolving the session; not caught here.
+ */
+export async function requireStaff(
+  deps: Pick<FundingRouteDeps, 'authStore' | 'now'>,
   header: string | undefined,
 ): Promise<{ caller: Account } | { error: string; status: 401 | 403 }> {
   const caller = await authedAccount(deps, header);
