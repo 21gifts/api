@@ -144,6 +144,7 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `fillRatesForGiftRange`, `fillFiatRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
 `resolveCandlesUrl`, `fetchFiatRates`, `parseFrankfurterRates`,
 `resolveFrankfurterUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
+`walletUsagePurpose`, whose default-boot usage store is an empty in-memory store, so the Playwright needle never classifies a payment and sees empty lists (unit tests cover the classifier);
 `verifiedExternalZapRequest`, `externalDisplayName`, `resolveExternalProfileName`,
 `resolveExternalProfileFields`, `ExternalIngestLimiter`, and
 `notifyExternalForumReply`, which have no direct default-boot HTTP trigger;
