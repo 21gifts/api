@@ -211,6 +211,8 @@ function quoteIdentifier(identifier: string): string {
  * charge that can still be paid. A daily
  * roster row of the merged account in a bucket where the surviving account
  * is listed too is deleted; the catalog update moves its other roster rows.
+ * The merged account's `fond_deposit_address` row is deleted when the
+ * surviving account has one; otherwise the catalog update moves it.
  * Before the passkey challenges and the catalog-listed rows move, it deletes
  * the merged account's `recovery_share`, `pending_recovery`, and
  * `previous_wallet` rows and its `recovery` passkey challenges: they belong
@@ -1009,6 +1011,13 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       `DELETE FROM account_image AS src
        USING account_image AS dst
        WHERE src.account_id = $1 AND dst.account_id = $2 AND dst.slot = src.slot`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM fond_deposit_address
+       WHERE account_id = $1 AND EXISTS (
+         SELECT 1 FROM fond_deposit_address WHERE account_id = $2
+       )`,
       accountParams,
     );
     await tx.query(

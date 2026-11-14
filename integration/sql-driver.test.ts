@@ -4065,6 +4065,105 @@ describe('PostgresFondPayoutStore', () => {
       await closeIfPossible(sql);
     }
   });
+
+  async function depositAccounts(client: SqlClient, count: number): Promise<string[]> {
+    const ids = Array.from({ length: count }, () => crypto.randomUUID());
+    for (const id of ids) {
+      await client.execute(
+        `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at, view_key)
+VALUES ($1, 'fond', false, false, now(), $2)`,
+        [id, crypto.randomUUID().replaceAll('-', '').repeat(2)],
+      );
+    }
+    return ids;
+  }
+
+  test('stores, keeps, and replaces the deposit address with a db_change row per change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    let ids: string[] = [];
+    try {
+      await migrateAuthSchema(client);
+      await migrateFondPayoutSchema(client);
+      await migrateDbChangeSchema(client);
+      ids = await depositAccounts(client, 2);
+      const [fond = '', other = ''] = ids;
+      const store = new PostgresFondPayoutStore(client);
+      const [marker] = await client.query<{ id: string }>(
+        'SELECT coalesce(max(id), 0)::text AS id FROM db_change',
+      );
+
+      expect(await store.depositAddress(fond)).toBeNull();
+      expect(await store.setDepositAddress(fond, 'bc1qfirst')).toBe(true);
+      expect(await store.setDepositAddress(fond, 'bc1qfirst')).toBe(false);
+      expect(await store.setDepositAddress(other, 'bc1qother')).toBe(true);
+      expect(await store.setDepositAddress(fond, 'bc1qsecond')).toBe(true);
+      expect(await store.depositAddress(fond)).toBe('bc1qsecond');
+      expect(await store.depositAddress(other)).toBe('bc1qother');
+
+      const changes = await client.query<{
+        op: string;
+        before: { address: string } | null;
+        after: { address: string } | null;
+      }>(
+        `SELECT op, before, after FROM db_change
+         WHERE id > $1::bigint AND table_name = 'fond_deposit_address'
+           AND coalesce(after, before)->>'account_id' = $2
+         ORDER BY id`,
+        [marker?.id ?? '0', fond],
+      );
+      expect(
+        changes.map((row) => [row.op, row.before?.address ?? null, row.after?.address ?? null]),
+      ).toEqual([
+        ['INSERT', null, 'bc1qfirst'],
+        ['UPDATE', 'bc1qfirst', 'bc1qsecond'],
+      ]);
+    } finally {
+      await client.execute('DELETE FROM fond_deposit_address WHERE account_id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a merge moves the merged deposit address unless the survivor has one', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    let ids: string[] = [];
+    try {
+      await migrateMergeTables(client);
+      ids = await depositAccounts(client, 4);
+      const [movedFrom = '', movedInto = '', keptFrom = '', keptInto = ''] = ids;
+      const store = new PostgresFondPayoutStore(client);
+      await store.setDepositAddress(movedFrom, 'bc1qmoved');
+      await store.setDepositAddress(keptFrom, 'bc1qdropped');
+      await store.setDepositAddress(keptInto, 'bc1qkept');
+
+      expect(
+        (await mergeAccounts(mergeDb, { from: movedFrom, into: movedInto, verify: 'into' })).ok,
+      ).toBe(true);
+      expect(
+        (await mergeAccounts(mergeDb, { from: keptFrom, into: keptInto, verify: 'into' })).ok,
+      ).toBe(true);
+
+      expect(await store.depositAddress(movedInto)).toBe('bc1qmoved');
+      expect(await store.depositAddress(keptInto)).toBe('bc1qkept');
+      const left = await client.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM fond_deposit_address WHERE account_id = ANY($1::uuid[])',
+        [postgresTextArrayLiteral([movedFrom, keptFrom])],
+      );
+      expect(left[0]?.n).toBe(0);
+    } finally {
+      await client.execute('DELETE FROM fond_deposit_address WHERE account_id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 describe('PostgresWalletStore pairing by payment id', () => {
@@ -5044,6 +5143,7 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateWalletSchema(client);
   await migrateDailyRosterSchema(client);
   await migrateWelcomeInvoiceReservationSchema(client);
+  await migrateFondPayoutSchema(client);
 }
 
 describe('Postgres wallet-transfer account merge reconciliation', () => {

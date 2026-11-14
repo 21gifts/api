@@ -109,6 +109,7 @@ Public base URLs used in examples:
 | PUT    | `/me/recovery-share`                                 | Bearer                                                            | Store the encrypted 21.gifts share of social recovery for the verified wallet; 200 owner JSON with `socialRecoverySetUp: true`; 503 without `RECOVERY_SHARE_KEK` (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/me/previous-wallets`                               | Bearer                                                            | Wallets the account had before a social recovery commit, each with its explorer soft balance or `null` (information only) (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                            |
 | DELETE | `/me/previous-wallets/:sparkPubkey`                  | Bearer                                                            | Drop one previous wallet together with its 21.gifts share; 204 (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| PUT    | `/fond/deposit-address`                              | Bearer (Fond account)                                             | Register the on-chain deposit address of the Fond wallet that `GET /fond/summary` publishes as `onchainAddress`; Bitcoin mainnet only (checksum verified), 400 otherwise; when `PAYOUT_SIGNER=fond`, otherwise 404                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/me/held-shares`                                    | Bearer                                                            | The caller's own held-share boxes (opaque ciphertext encrypted in the holder's browser), oldest first; always mounted                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | PUT    | `/me/held-shares/:id`                                | Bearer                                                            | Create (201) or replace (200) one of the caller's held-share boxes; 400 bad id or ciphertext; 409 `Box id in use` or `Too many held shares`; always mounted                                                                                                                                                                                                                                                                                                                                                                                               |
 | DELETE | `/me/held-shares/:id`                                | Bearer                                                            | Delete one of the caller's held-share boxes; 204, idempotent; always mounted                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
@@ -833,6 +834,56 @@ Success → **Response** `204` with no body. Logs
 that key (`docs/schema/recovery_share.sql`) in one statement. Migrated with
 the auth schema when `DATABASE_URL` is set and covered by `db_change`; in
 memory otherwise.
+
+### `PUT /fond/deposit-address`
+
+Bearer session of the Fond account. The Fond wallet is the in-app wallet of
+the Fond account, so only its signed-in app can read the wallet's Bitcoin
+deposit address; this route lets that app register it. `GET /fond/summary`
+publishes it as `onchainAddress`, so a payer can deposit to the Fond on-chain
+next to its Lightning address `<FOND_USERNAME>@<host>`. Routed only when
+`PAYOUT_SIGNER=fond`.
+
+**Request**
+
+```json
+{ "address": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4" }
+```
+
+`PAYOUT_SIGNER` is not `fond` → **Response** `404` `{ "error": "Not found" }`.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+`canSignFondPayouts` rejects the account (another account, below `fond`, the
+platform account) → **Response** `403` `{ "error": "Fond only" }`. The gate is
+the one of `GET /fond/payouts`.
+
+`address` missing, not a string, or not a Bitcoin mainnet address with a
+verified checksum → **Response** `400`
+`{ "error": "Expected a JSON body with an \"address\" that is a Bitcoin mainnet address" }`.
+Accepted are Base58Check P2PKH (`1…`) and P2SH (`3…`), bech32 segwit v0
+(`bc1q…`, 20- or 32-byte program), and bech32m taproot (`bc1p…`, 32-byte
+program). Testnet, signet, and regtest addresses are refused. An upper-case
+segwit address is stored lower-cased.
+
+Account lookup or store throw → **Response** `503`
+`{ "error": "Deposit address is unavailable" }` and
+`fond.deposit_address.failed`.
+
+Success → **Response** `200` `{ "address": "<stored address>" }`. The address
+replaces a previous one. The same address again is a `200` without a write.
+A changed address logs `fond.deposit_address.changed`, never the address.
+
+`GET /fond/summary` gains `"onchainAddress": "<address>" | null`: the stored
+address of the Fond account, `null` when none is registered and on the zero
+summary (no Fond account, or an account that may not sign Fond payouts).
+Every other summary field is unchanged.
+
+**Storage.** One `fond_deposit_address` row per account
+(`docs/schema/fond_payout.sql`), migrated with `fond_payout` when
+`DATABASE_URL` is set and covered by `db_change`; in memory otherwise. This
+route is its only writer. An account merge keeps the survivor's row and
+moves the merged account's row only when the survivor has none.
 
 ### `GET /me/held-shares`
 

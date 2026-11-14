@@ -1822,3 +1822,11 @@ test('POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async 
   const res = await request.post('/fond/payouts/:id/invoice');
   expect(res.status()).toBe(404);
 });
+
+test('PUT /fond/deposit-address is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
+  const res = await request.put('/fond/deposit-address', {
+    data: { address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4' },
+  });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+});

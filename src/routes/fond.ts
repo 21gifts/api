@@ -19,6 +19,9 @@ import { canSignFondPayouts } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { LnurlServerConfig, PayoutSigner } from '@/lib/config';
+import { createHash } from 'node:crypto';
+import { base58, bech32, bech32m } from '@scure/base';
+import { z } from 'zod';
 import {
   FOND_CLAIM_LEASE_MS,
   FOND_OVERDUE_MS,
@@ -132,6 +135,67 @@ function listRow(row: FondPayoutRow): FondPayoutListRow {
 /** UTC day key `YYYY-MM-DD`. */
 function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
+}
+
+/** `PUT /fond/deposit-address` body. */
+const depositAddressBody = z.object({ address: z.string() });
+
+/** `400` body when the deposit address is missing or not a Bitcoin mainnet address. */
+const DEPOSIT_ADDRESS_INVALID =
+  'Expected a JSON body with an "address" that is a Bitcoin mainnet address';
+
+/** `503` body when the deposit address store throws. */
+const DEPOSIT_ADDRESS_UNAVAILABLE = 'Deposit address is unavailable';
+
+/** True for a Base58Check P2PKH (version `0x00`) or P2SH (`0x05`) mainnet address. */
+function isBase58MainnetAddress(address: string): boolean {
+  let bytes: Uint8Array;
+  try {
+    bytes = base58.decode(address);
+  } catch {
+    return false;
+  }
+  if (bytes.length !== 25 || (bytes[0] !== 0x00 && bytes[0] !== 0x05)) {
+    return false;
+  }
+  const payload = bytes.subarray(0, 21);
+  const check = createHash('sha256').update(createHash('sha256').update(payload).digest()).digest();
+  return check.subarray(0, 4).equals(bytes.subarray(21));
+}
+
+/**
+ * True for a segwit mainnet address: `bc1q` v0 in bech32 with a 20- or
+ * 32-byte program, or `bc1p` v1 (taproot) in bech32m with a 32-byte program.
+ */
+function isSegwitMainnetAddress(address: string): boolean {
+  const lower = address.toLowerCase();
+  const version = lower.startsWith('bc1q') ? 0 : lower.startsWith('bc1p') ? 1 : null;
+  if (version === null) {
+    return false;
+  }
+  const decoded = (version === 0 ? bech32 : bech32m).decodeUnsafe(address);
+  if (decoded === undefined || decoded.prefix !== 'bc') {
+    return false;
+  }
+  const program = bech32.fromWordsUnsafe(decoded.words.slice(1));
+  if (program === undefined) {
+    return false;
+  }
+  return version === 0 ? program.length === 20 || program.length === 32 : program.length === 32;
+}
+
+/**
+ * Canonical form of a Bitcoin mainnet address with a verified checksum.
+ *
+ * @param address - Address as sent by the client.
+ * @returns The address (a segwit address lower-cased), or `null` when it is
+ *   not a valid mainnet P2PKH, P2SH, P2WPKH, P2WSH, or P2TR address.
+ */
+function mainnetAddress(address: string): string | null {
+  if (isSegwitMainnetAddress(address)) {
+    return address.toLowerCase();
+  }
+  return isBase58MainnetAddress(address) ? address : null;
 }
 
 /**
@@ -308,18 +372,20 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
               balanceSyncedAt: null,
               payoutsPaid: 0,
               payoutsPaidUsd: '0.00',
+              onchainAddress: null,
             },
             200,
             FOND_NO_STORE,
           );
         }
-        const [payments, balance, payouts] = await Promise.all([
+        const [payments, balance, payouts, onchainAddress] = await Promise.all([
           deps.walletStore.paymentTotals(account.id),
           deps.walletStore.latestBalance(
             account.id,
             typeof account.sparkPubkeyVerifiedAt === 'number' ? account.sparkPubkey! : null,
           ),
           deps.fondPayoutStore.paidTotals(),
+          deps.fondPayoutStore.depositAddress(account.id),
         ]);
         return c.json(
           {
@@ -331,6 +397,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
             balanceSyncedAt: balance === undefined ? null : balance.syncedAt.toISOString(),
             payoutsPaid: payouts.payoutsPaid,
             payoutsPaidUsd: payouts.payoutsPaidUsd,
+            onchainAddress,
           },
           200,
           FOND_NO_STORE,
@@ -536,5 +603,32 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         },
         200,
       );
+    })
+    .put('/deposit-address', async (c) => {
+      if (deps.payoutSigner !== 'fond') {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const denied = await authGate(c.req.header('authorization'));
+      if (denied !== null) {
+        return c.json({ error: denied.error }, denied.status);
+      }
+      const parsed = depositAddressBody.safeParse(await c.req.json().catch(() => null));
+      const address = parsed.success ? mainnetAddress(parsed.data.address) : null;
+      if (address === null) {
+        return c.json({ error: DEPOSIT_ADDRESS_INVALID }, 400);
+      }
+      try {
+        const account = await deps.authStore.getAccountByUsername(deps.fondUsername);
+        if (account === undefined) {
+          return c.json({ error: FOND_ONLY }, 403);
+        }
+        if (await deps.fondPayoutStore.setDepositAddress(account.id, address)) {
+          logEvent('fond.deposit_address.changed');
+        }
+      } catch {
+        logEvent('fond.deposit_address.failed');
+        return c.json({ error: DEPOSIT_ADDRESS_UNAVAILABLE }, 503);
+      }
+      return c.json({ address }, 200);
     });
 }
