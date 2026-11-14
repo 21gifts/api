@@ -17,8 +17,12 @@ export interface WalletUsageStore {
   /**
    * Completed payments whose earliest `paid_at` is on or after `sinceMs`.
    *
-   * A transfer pair is already merged. Unrelated completed rows that share a
-   * `payment_id` but do not form a pair stay separate.
+   * A transfer pair is already merged. A completed `out` row and a completed
+   * `in` row on different accounts pair when they share the same `payment_id`,
+   * the same `lower(payment_hash)` (both non-null), or the same `invoice` (both
+   * non-null and non-empty), and each row has exactly one such partner.
+   * Unrelated completed rows that share a `payment_id` but do not form a pair
+   * stay separate.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns Merged payments. Order is not significant.
@@ -26,6 +30,8 @@ export interface WalletUsageStore {
   payments(sinceMs: number): Promise<WalletUsagePaymentRow[]>;
   /**
    * Successful forum invoices (`result = 'ok'`) created on or after `sinceMs`.
+   * A non-heart invoice on a note authored by the platform account is the
+   * compose fee and is omitted.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns Invoice rows. A null `heart` is false. Order is not significant.
@@ -72,6 +78,26 @@ interface MemoryForumInvoice {
   hidden: boolean;
   /** True when `nostr_zap_payment` has claimed `paymentHash`. */
   claimed: boolean;
+  /**
+   * True when the invoice is a heart (`message_invoice.heart = true`). Default
+   * false. A heart on a platform-authored note remains eligible.
+   */
+  heart?: boolean;
+  /**
+   * True when the invoice's note author is the platform account. Default false.
+   * A non-heart invoice on such a note is the 1-sat compose fee: it cannot make
+   * a forum gift and it excludes a zap receipt with the same hash.
+   */
+  platformNote?: boolean;
+}
+
+/**
+ * A seeded forum-series row with the note-author detail needed to apply the
+ * compose-fee exclusion in memory.
+ */
+interface MemoryForumRow extends WalletUsageForumRow {
+  /** True when the invoice's note author is the platform account. Default false. */
+  platformNote?: boolean;
 }
 
 /**
@@ -89,8 +115,11 @@ interface MemoryZapGift {
 interface WalletUsageSeed {
   /** Completed payments. */
   payments: readonly MemoryPaymentRow[];
-  /** Successful forum invoices. */
-  forumInvoices: readonly WalletUsageForumRow[];
+  /**
+   * Successful forum invoices. A row with `platformNote: true` is omitted from
+   * {@link InMemoryWalletUsageStore.forumInvoices} unless `heart` is true.
+   */
+  forumInvoices: readonly MemoryForumRow[];
   /** Point-of-sale charges. */
   shopCharges: readonly WalletUsageChargeRow[];
   /** Seeded forum invoices that can mark or exclude a payment. Default none. */
@@ -105,7 +134,8 @@ interface WalletUsageSeed {
  * Process-local usage reads for a boot without `DATABASE_URL`, and for tests.
  * The default seed is empty. `isForumGift` is derived from the seed's claimed
  * forum invoices, zap gifts, and `sparkInvoiceHashes` with the same rule as the
- * Postgres statement.
+ * Postgres statement. Seeded forum-series rows with `platformNote: true` are
+ * omitted unless they are hearts, matching the Postgres forum series.
  */
 export class InMemoryWalletUsageStore implements WalletUsageStore {
   readonly #payments: WalletUsagePaymentRow[];
@@ -131,7 +161,7 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
         isForumGift: row.isForumGift ?? memoryIsForumGift(row, invoices, gifts, sparkInvoiceHashes),
       }),
     );
-    this.#forumInvoices = seed.forumInvoices.map(copyForum);
+    this.#forumInvoices = seed.forumInvoices.filter(memoryIsForumInvoice).map(copyForum);
     this.#shopCharges = seed.shopCharges.map(copyCharge);
   }
 
@@ -149,6 +179,8 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
 
   /**
    * Forum invoices with `createdAt` on or after `sinceMs`, as copies.
+   * Non-heart invoices seeded on a platform-authored note are the compose fee
+   * and are not returned; hearts on that note are returned.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns A new array. Mutating a returned `Date` does not change the store.
@@ -199,17 +231,26 @@ interface ChargeSqlRow {
 /**
  * One grouped read of completed `wallet_payment` rows.
  *
- * A row filter on `paid_at` would split a payment whose sides fall on either
- * side of the bound, so the bound is `min(paid_at)` of the whole group.
- * A completed group uses `'pair:' || payment_id` only when that id has exactly
- * two completed rows, the id has exactly two rows overall, and the directions
- * and accounts differ, matching `pairFillSql` in `wallet-store.ts`. Every other
- * completed row is keyed by
+ * Filtering rows at `$1` would split a payment whose sides fall on either side
+ * of the bound, so `completed_rows` reads from one day before `$1` and the
+ * final bound is `min(paid_at)` of the whole group. The slack lets two sides
+ * recorded just on either side of the window start pair. `bounds` still keeps
+ * only groups whose earliest `paid_at` is on or after `$1`, so that slack never
+ * counts a payment from before the window.
+ * A completed `out` row and a completed `in` row on two different accounts form
+ * one payment when they share the same `payment_id`, the same
+ * `lower(payment_hash)` (both non-null), or the same `invoice` (both non-null
+ * and non-empty). Each of the two rows must have exactly one such partner among
+ * completed rows; an ambiguous match stays unpaired. A pair's key is
+ * `'pair:' || <out row account_id> || ':' || <out row payment_id>`, which is
+ * deterministic and injective because the outgoing `(account_id, payment_id)`
+ * is the `wallet_payment` primary key, and it is disjoint from the `row:`
+ * namespace. Every other completed row is keyed by
  * `'row:' || account_id::text || ':' || payment_id`, so unrelated rows do not
- * merge just because they share an id. The `pair:` and `row:` prefixes keep the
- * two namespaces apart, and the unpaired key includes the account's UUID, so a
- * paired id that begins with `row:` cannot collide with an unpaired row. The
- * key stays inside this statement and never reaches the response.
+ * merge just because they share an id. The unpaired key includes the account's
+ * UUID, so a payment id that begins with `row:` cannot collide with another
+ * account's unpaired row. The key stays inside this statement and never reaches
+ * the response.
  *
  * `spark_invoice` maps a Spark invoice text to the zap payment hash it settles.
  * A row's candidate hashes are its own `payment_hash` plus every
@@ -220,44 +261,111 @@ interface ChargeSqlRow {
  * invoice with no conversation and no `repay:` / `repayp:` description, on a
  * note whose `deleted_at` is null, matching a candidate hash or any row's
  * `invoice`; or a claimed zap receipt gift or paid heart on such a note,
- * unless a conversation or repayment invoice owns a candidate hash.
- * `wallet_payment.category` alone is not enough, because it also covers
- * conversation invoices and credit repayments. A `gift` or `platform` category
- * does not decide the flag, and the counterparty may be any account: the
- * claimed living-note invoice or zap receipt decides it.
+ * unless a conversation or repayment invoice owns a candidate hash or a
+ * non-heart invoice on a platform-authored note owns it. A non-heart invoice
+ * on a note authored by the official platform account is never a forum gift;
+ * that is the 1-sat compose fee, a platform payment. A heart invoice on that
+ * note still qualifies. `wallet_payment.category` alone is not enough, because
+ * it also covers conversation invoices and credit repayments. A `gift` or
+ * `platform` category does not decide the flag, and the counterparty may be
+ * any account: the claimed living-note invoice or zap receipt decides it.
  */
-const PAYMENTS_SQL = `WITH id_totals AS (
-  SELECT payment_id,
-         count(*) AS row_count,
-         count(*) FILTER (WHERE status = 'completed') AS completed_count,
-         count(DISTINCT account_id) FILTER (WHERE status = 'completed') AS completed_account_count,
-         count(DISTINCT direction) FILTER (WHERE status = 'completed') AS completed_direction_count
-  FROM wallet_payment
-  GROUP BY payment_id
-),
-completed AS (
-  SELECT wallet_payment.payment_id,
-         wallet_payment.account_id,
+const PAYMENTS_SQL = `WITH completed_rows AS (
+  SELECT wallet_payment.account_id,
+         wallet_payment.payment_id,
          wallet_payment.direction,
          wallet_payment.amount_sats,
          wallet_payment.fee_sats,
          wallet_payment.paid_at,
-         category,
-         counterparty_account_id,
-         payment_hash,
-         invoice,
-         destination,
-         CASE
-           WHEN id_totals.row_count = 2
-             AND id_totals.completed_count = 2
-             AND id_totals.completed_account_count = 2
-             AND id_totals.completed_direction_count = 2
-             THEN 'pair:' || wallet_payment.payment_id
-           ELSE 'row:' || wallet_payment.account_id::text || ':' || wallet_payment.payment_id
-         END AS group_key
+         wallet_payment.category,
+         wallet_payment.counterparty_account_id,
+         wallet_payment.payment_hash,
+         wallet_payment.invoice,
+         wallet_payment.destination
   FROM wallet_payment
-  JOIN id_totals ON id_totals.payment_id = wallet_payment.payment_id
   WHERE wallet_payment.status = 'completed'
+    AND wallet_payment.paid_at >= $1::timestamptz - interval '1 day'
+),
+pair_matches AS (
+  SELECT out_row.account_id AS out_account_id,
+         out_row.payment_id AS out_payment_id,
+         in_row.account_id AS in_account_id,
+         in_row.payment_id AS in_payment_id
+  FROM completed_rows out_row
+  JOIN completed_rows in_row
+    ON out_row.direction = 'out'
+   AND in_row.direction = 'in'
+   AND out_row.account_id <> in_row.account_id
+   AND out_row.payment_id = in_row.payment_id
+  UNION
+  SELECT out_row.account_id AS out_account_id,
+         out_row.payment_id AS out_payment_id,
+         in_row.account_id AS in_account_id,
+         in_row.payment_id AS in_payment_id
+  FROM completed_rows out_row
+  JOIN completed_rows in_row
+    ON out_row.direction = 'out'
+   AND in_row.direction = 'in'
+   AND out_row.account_id <> in_row.account_id
+   AND out_row.payment_hash IS NOT NULL
+   AND in_row.payment_hash IS NOT NULL
+   AND lower(out_row.payment_hash) = lower(in_row.payment_hash)
+  UNION
+  SELECT out_row.account_id AS out_account_id,
+         out_row.payment_id AS out_payment_id,
+         in_row.account_id AS in_account_id,
+         in_row.payment_id AS in_payment_id
+  FROM completed_rows out_row
+  JOIN completed_rows in_row
+    ON out_row.direction = 'out'
+   AND in_row.direction = 'in'
+   AND out_row.account_id <> in_row.account_id
+   AND out_row.invoice IS NOT NULL
+   AND out_row.invoice <> ''
+   AND in_row.invoice IS NOT NULL
+   AND in_row.invoice <> ''
+   AND out_row.invoice = in_row.invoice
+),
+unique_pairs AS (
+  SELECT out_account_id,
+         out_payment_id,
+         in_account_id,
+         in_payment_id
+  FROM (
+    SELECT pair_matches.*,
+           count(*) OVER (PARTITION BY out_account_id, out_payment_id) AS out_match_count,
+           count(*) OVER (PARTITION BY in_account_id, in_payment_id) AS in_match_count
+    FROM pair_matches
+  ) counted
+  WHERE out_match_count = 1
+    AND in_match_count = 1
+),
+completed AS (
+  SELECT completed_rows.account_id,
+         completed_rows.payment_id,
+         completed_rows.direction,
+         completed_rows.amount_sats,
+         completed_rows.fee_sats,
+         completed_rows.paid_at,
+         completed_rows.category,
+         completed_rows.counterparty_account_id,
+         completed_rows.payment_hash,
+         completed_rows.invoice,
+         completed_rows.destination,
+         CASE
+           WHEN out_pair.out_account_id IS NOT NULL
+             THEN 'pair:' || out_pair.out_account_id::text || ':' || out_pair.out_payment_id
+           WHEN in_pair.out_account_id IS NOT NULL
+             THEN 'pair:' || in_pair.out_account_id::text || ':' || in_pair.out_payment_id
+           ELSE 'row:' || completed_rows.account_id::text || ':' || completed_rows.payment_id
+         END AS group_key
+  FROM completed_rows
+  LEFT JOIN unique_pairs out_pair
+    ON out_pair.out_account_id = completed_rows.account_id
+   AND out_pair.out_payment_id = completed_rows.payment_id
+  LEFT JOIN unique_pairs in_pair
+    ON in_pair.in_account_id = completed_rows.account_id
+   AND in_pair.in_payment_id = completed_rows.payment_id
 ),
 candidate_hashes AS (
   SELECT group_key, lower(payment_hash) AS payment_hash
@@ -330,12 +438,14 @@ forum_gifts AS (
      OR (completed.invoice IS NOT NULL
          AND invoice.pr IS NOT NULL
          AND invoice.pr = completed.invoice)
-   )
+  )
   JOIN message note ON note.id = invoice.message_id AND note.deleted_at IS NULL
+  LEFT JOIN account author ON author.id = note.account_id
   WHERE EXISTS (
     SELECT 1 FROM nostr_zap_payment z
     WHERE z.payment_hash = lower(invoice.payment_hash)
   )
+  AND (invoice.heart IS TRUE OR coalesce(author.is_platform, false) = false)
   UNION
   SELECT DISTINCT completed.group_key
   FROM completed
@@ -345,6 +455,17 @@ forum_gifts AS (
   JOIN nostr_zap_receipt receipt ON receipt.event_id = z.receipt_event_id
   JOIN message note ON note.id = receipt.message_id AND note.deleted_at IS NULL
   WHERE NOT EXISTS (
+    SELECT 1
+    FROM message_invoice platform_fee
+    JOIN message platform_note ON platform_note.id = platform_fee.message_id
+    LEFT JOIN account platform_author ON platform_author.id = platform_note.account_id
+    WHERE platform_fee.result = 'ok'
+      AND platform_fee.heart IS NOT TRUE
+      AND platform_fee.payment_hash IS NOT NULL
+      AND lower(platform_fee.payment_hash) = candidate_hashes.payment_hash
+      AND platform_author.is_platform = true
+  )
+  AND NOT EXISTS (
     SELECT 1
     FROM message_invoice other_invoice
     WHERE other_invoice.result = 'ok'
@@ -405,14 +526,19 @@ LEFT JOIN account payee
  * living (`message.deleted_at IS NULL`), joined through
  * `message_invoice.message_id = message.id`; a gift or heart on a note hidden
  * by staff is not public application data.
+ * A non-heart invoice whose note is authored by the platform account is the
+ * 1-sat compose fee, not a forum gift; a heart on that note still follows the
+ * heart rule.
  */
 const FORUM_SQL = `SELECT invoice.created_at, invoice.amount_sats, COALESCE(invoice.heart, false) AS heart
 FROM message_invoice invoice
 JOIN message note ON note.id = invoice.message_id AND note.deleted_at IS NULL
+LEFT JOIN account author ON author.id = note.account_id
 WHERE invoice.result = 'ok'
   AND invoice.conversation_id IS NULL
   AND coalesce(invoice.description, '') NOT LIKE 'repay:%'
   AND coalesce(invoice.description, '') NOT LIKE 'repayp:%'
+  AND (invoice.heart IS TRUE OR coalesce(author.is_platform, false) = false)
   AND invoice.created_at >= $1
   AND EXISTS (
     SELECT 1 FROM nostr_zap_payment z
@@ -441,6 +567,11 @@ export class PostgresWalletUsageStore implements WalletUsageStore {
    * Merge completed payments and keep groups whose earliest `paid_at` is on
    * or after `sinceMs`.
    *
+   * Rows from one day before `sinceMs` are read only so that a pair whose two
+   * sides straddle the bound can be recognised. A group with a side before
+   * `sinceMs` is still omitted, because its earliest `paid_at` is before the
+   * bound.
+   *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds (`$1`).
    * @returns Mapped rows. Query failures, bad parties, and unsafe amounts throw.
    */
@@ -452,7 +583,9 @@ export class PostgresWalletUsageStore implements WalletUsageStore {
   /**
    * Read paid forum gifts and hearts created on or after `sinceMs`.
    *
-   * Conversation invoices, credit repayments, and unpaid mints are omitted.
+   * Conversation invoices, credit repayments, unpaid mints, and non-heart
+   * invoices on notes authored by the platform account are omitted. Such a
+   * non-heart invoice is the compose fee; a heart on that note still counts.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds (`$1`).
    * @returns Mapped rows. A null heart is false. Query failures throw.
@@ -494,12 +627,14 @@ function copyPayment(row: MemoryPaymentRow): WalletUsagePaymentRow {
  *
  * A payment is a forum gift when a claimed, successful, non-conversation,
  * non-repayment invoice on a living note matches one of its candidate hashes
- * or its invoice; or when a claimed zap receipt gift or paid heart on a living
- * note matches one of its candidate hashes and no seeded conversation or
- * repayment invoice owns that gift's hash, compared case-insensitively. A
- * candidate hash is the row's own `payment_hash`, plus every
- * `sparkInvoiceHashes` value for a Spark invoice equal to the row's `invoice`
- * or `destination`.
+ * or its invoice; a non-heart invoice on a note authored by the platform
+ * account is the compose fee and does not qualify. A heart on such a note
+ * still does. The rule also accepts a claimed zap receipt gift or paid heart
+ * on a living note matching a candidate hash, unless a seeded conversation or
+ * repayment invoice owns that hash, or a non-heart invoice on a
+ * platform-authored note owns it, compared case-insensitively. A candidate
+ * hash is the row's own `payment_hash`, plus every `sparkInvoiceHashes` value
+ * for a Spark invoice equal to the row's `invoice` or `destination`.
  *
  * @param row - Merged payment with its optional `paymentHash`, `invoice`, and
  *   `destination` details.
@@ -534,7 +669,7 @@ function memoryIsForumGift(
     if (candidate.conversation || candidate.repayment || candidate.hidden) {
       return false;
     }
-    if (!candidate.claimed) {
+    if (!candidate.claimed || (candidate.platformNote === true && candidate.heart !== true)) {
       return false;
     }
     const hash = candidate.paymentHash === null ? null : candidate.paymentHash.toLowerCase();
@@ -551,6 +686,17 @@ function memoryIsForumGift(
     if (gift.hidden || !hashes.has(hash)) {
       return false;
     }
+    if (
+      invoices.some(
+        (candidate) =>
+          candidate.paymentHash !== null &&
+          candidate.platformNote === true &&
+          candidate.heart !== true &&
+          candidate.paymentHash.toLowerCase() === hash,
+      )
+    ) {
+      return false;
+    }
     return !invoices.some(
       (candidate) =>
         candidate.paymentHash !== null &&
@@ -560,8 +706,31 @@ function memoryIsForumGift(
   });
 }
 
-function copyForum(row: WalletUsageForumRow): WalletUsageForumRow {
-  return { ...row, createdAt: new Date(row.createdAt.getTime()) };
+/**
+ * Whether a seeded forum-series row belongs in the public forum series.
+ *
+ * A non-heart invoice on a platform-authored note is the compose fee. A heart
+ * on that note stays eligible, matching `FORUM_SQL`.
+ *
+ * @param row - Seeded successful forum invoice.
+ * @returns `false` only for a non-heart platform-note invoice.
+ */
+function memoryIsForumInvoice(row: MemoryForumRow): boolean {
+  return row.platformNote !== true || row.heart === true;
+}
+
+/**
+ * Copy a seeded forum row without its internal note-author flag.
+ *
+ * @param row - Seeded forum row.
+ * @returns Public forum row with a fresh date.
+ */
+function copyForum(row: MemoryForumRow): WalletUsageForumRow {
+  return {
+    createdAt: new Date(row.createdAt.getTime()),
+    amountSats: row.amountSats,
+    heart: row.heart === true,
+  };
 }
 
 function copyCharge(row: WalletUsageChargeRow): WalletUsageChargeRow {
