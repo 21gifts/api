@@ -1223,7 +1223,13 @@ export function createApp(deps: AppDeps = {}): Hono {
   }
   app.route(
     '/shops/activity',
-    shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
+    shopActivityRoutes({
+      authStore: store,
+      now,
+      messages: messageStore,
+      pos: posStore,
+      identities: shopIdentityStore,
+    }),
   );
   app.route(
     '/shops',
