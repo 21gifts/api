@@ -167,6 +167,7 @@ describe('debugDbRoutes', () => {
           { name: 'wallet_payment', rowCount: 3 },
           { name: 'wallet_transfer', rowCount: 4 },
           { name: 'wallet_token_transaction', rowCount: 5 },
+          { name: 'fond_deposit_address', rowCount: 1 },
         ].filter((table) => allowlist === undefined || allowlist.includes(table.name)),
       ),
     );
@@ -190,6 +191,7 @@ describe('debugDbRoutes', () => {
         { name: 'wallet_payment', rowCount: 3 },
         { name: 'wallet_transfer', rowCount: 4 },
         { name: 'wallet_token_transaction', rowCount: 5 },
+        { name: 'fond_deposit_address', rowCount: 1 },
       ],
     });
     expect(listTables).toHaveBeenCalledWith([
@@ -197,6 +199,7 @@ describe('debugDbRoutes', () => {
       'wallet_payment',
       'wallet_transfer',
       'wallet_token_transaction',
+      'fond_deposit_address',
     ]);
     const refused = await client.request('/debug/db?table=account', {
       headers: { authorization: 'Bearer member-session' },
@@ -211,6 +214,7 @@ describe('debugDbRoutes', () => {
       'wallet_payment',
       'wallet_transfer',
       'wallet_token_transaction',
+      'fond_deposit_address',
     ]);
   });
 
