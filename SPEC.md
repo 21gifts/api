@@ -4593,8 +4593,11 @@ Configuration (read once at boot; the api boots without it):
 Only `ssh-ed25519` lines are loaded; every other line is dropped and logged
 (`debug.auth.signers.line_dropped`). Accepted options are `namespaces` and
 `valid-before` (`YYYYMMDD`, `YYYYMMDDHHMM`, or `YYYYMMDDHHMMSS`, optional
-`Z`, read as UTC). A key listed in more than one file gets the highest
-level. Example line:
+`Z`, read as UTC). A line whose `namespaces` pattern list (OpenSSH syntax,
+`*`, `?`, and `!` negation) does not match this api's namespace belongs to
+another environment: it grants nothing here and is not handed to
+`ssh-keygen`. A key listed in more than one file gets the highest level among
+the lines that apply to this namespace. Example line:
 
 ```
 daniel-mac-agent namespaces="21gifts-debug-prd" ssh-ed25519 AAAA…

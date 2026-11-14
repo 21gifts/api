@@ -178,6 +178,34 @@ describe('loadOperatorSigners', () => {
     ]);
   });
 
+  it('leaves out lines whose namespaces belong to another environment', () => {
+    const dir = ring.signersDir({
+      read: [signerLine('alice', alice)],
+      write: [signerLine('alice', alice, 'namespaces="21gifts-debug-*,!21gifts-debug-dev"')],
+      admin: [
+        signerLine('alice', alice, 'namespaces="21gifts-debug-prd"'),
+        signerLine('bob', bob, 'namespaces="21gifts-debug-d?v"'),
+      ],
+    });
+    const signers = load(dir);
+    expect(signers?.levelFor('alice', alice.fingerprint, 0)).toBe('read');
+    expect(signers?.levelFor('bob', bob.fingerprint, 0)).toBe('admin');
+    expect(signers?.allowedSignersText()).toBe(
+      `${signerLine('alice', alice)}\n${signerLine('bob', bob, 'namespaces="21gifts-debug-d?v"')}\n`,
+    );
+    expect(events().at(-1)).toEqual(
+      expect.objectContaining({
+        event: 'debug.auth.signers.loaded',
+        read: 1,
+        write: 0,
+        admin: 1,
+        otherNamespace: 2,
+      }),
+    );
+    expect(load(dir, '21gifts-debug-prd')?.levelFor('alice', alice.fingerprint, 0)).toBe('admin');
+    expect(load(dir, '21gifts-debug-stg')?.levelFor('alice', alice.fingerprint, 0)).toBe('write');
+  });
+
   it('reads the files through the injected reader with their fixed names', () => {
     const read: string[] = [];
     const signers = loadOperatorSigners(

@@ -202,14 +202,40 @@ function ed25519Blob(base64: string): Uint8Array | null {
   return blob;
 }
 
+/**
+ * Whether `namespace` matches an OpenSSH pattern list (`namespaces="…"`).
+ * Comma-separated patterns with `*` and `?`; a matching `!pattern` refuses.
+ */
+function namespaceListMatches(list: string, namespace: string): boolean {
+  let matched = false;
+  for (const raw of list.split(',')) {
+    const negated = raw.startsWith('!');
+    const pattern = negated ? raw.slice(1) : raw;
+    const regex = new RegExp(
+      `^${pattern
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '.*')
+        .replace(/\?/g, '.')}$`,
+    );
+    if (regex.test(namespace)) {
+      if (negated) {
+        return false;
+      }
+      matched = true;
+    }
+  }
+  return matched;
+}
+
 /** Outcome of reading one line. */
 type LineOutcome =
   | { kind: 'skip' }
+  | { kind: 'other_namespace' }
   | { kind: 'drop'; reason: string; keyType?: string }
   | { kind: 'keep'; signer: OperatorSigner };
 
-/** Parse one allowed-signers line of `level`. */
-function parseLine(raw: string, level: OperatorLevel): LineOutcome {
+/** Parse one allowed-signers line of `level` for this api's `namespace`. */
+function parseLine(raw: string, level: OperatorLevel, namespace: string): LineOutcome {
   const line = raw.trim();
   if (line === '' || line.startsWith('#')) {
     return { kind: 'skip' };
@@ -230,9 +256,11 @@ function parseLine(raw: string, level: OperatorLevel): LineOutcome {
     return { kind: 'drop', reason: 'principal' };
   }
   let validBefore: number | null = null;
+  let namespaces: string | null = null;
   for (const option of hasOptions ? splitOptions(second) : []) {
     const [, name, value] = OPTION_PATTERN.exec(option) ?? [];
     if (name === 'namespaces' && value !== undefined) {
+      namespaces = value;
       continue;
     }
     if (name === 'valid-before' && value !== undefined) {
@@ -247,6 +275,9 @@ function parseLine(raw: string, level: OperatorLevel): LineOutcome {
   const blob = ed25519Blob(keyBase64);
   if (blob === null) {
     return { kind: 'drop', reason: 'key' };
+  }
+  if (namespaces !== null && !namespaceListMatches(namespaces, namespace)) {
+    return { kind: 'other_namespace' };
   }
   return {
     kind: 'keep',
@@ -265,7 +296,10 @@ function parseLine(raw: string, level: OperatorLevel): LineOutcome {
  * is not `ssh-ed25519`, whose principal is not one plain name, whose options
  * are not `namespaces` or `valid-before`, or whose key does not decode are
  * dropped and logged as `debug.auth.signers.line_dropped` with the level, the
- * line number, and the reason. A loaded set logs `debug.auth.signers.loaded`.
+ * line number, and the reason. A line whose `namespaces` option does not
+ * match this api's namespace belongs to another environment: it is left out
+ * of the level lookup and of the lines handed to `ssh-keygen`, and counted
+ * as `otherNamespace`. A loaded set logs `debug.auth.signers.loaded`.
  *
  * @param env - Environment to read the two settings from.
  * @param readText - File reader (default: UTF-8 `readFileSync`).
@@ -290,6 +324,7 @@ export function loadOperatorSigners(
   }
   const signers: OperatorSigner[] = [];
   const counts: Record<OperatorLevel, number> = { read: 0, write: 0, admin: 0 };
+  let otherNamespace = 0;
   for (const level of OPERATOR_LEVELS) {
     let text: string;
     try {
@@ -299,10 +334,12 @@ export function loadOperatorSigners(
       return null;
     }
     text.split('\n').forEach((raw, index) => {
-      const outcome = parseLine(raw, level);
+      const outcome = parseLine(raw, level, namespace);
       if (outcome.kind === 'keep') {
         signers.push(outcome.signer);
         counts[level] += 1;
+      } else if (outcome.kind === 'other_namespace') {
+        otherNamespace += 1;
       } else if (outcome.kind === 'drop') {
         logEvent('debug.auth.signers.line_dropped', {
           level,
@@ -313,6 +350,6 @@ export function loadOperatorSigners(
       }
     });
   }
-  logEvent('debug.auth.signers.loaded', { namespace, ...counts });
+  logEvent('debug.auth.signers.loaded', { namespace, ...counts, otherNamespace });
   return new OperatorSigners(namespace, signers);
 }

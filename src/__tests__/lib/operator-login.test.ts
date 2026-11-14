@@ -245,6 +245,22 @@ describe('OperatorLogin', () => {
     expect(result.ok && result.grant.level).toBe('admin');
   });
 
+  it('grants only the level of lines whose namespaces include this api', async () => {
+    const split = ring.signersDir({
+      read: [signerLine('alice', alice)],
+      write: [],
+      admin: [signerLine('alice', alice, 'namespaces="21gifts-debug-prd"')],
+    });
+    const store = new InMemoryOperatorLoginStore();
+    const login = makeLogin({ store, signers: signers(split) });
+    const result = await signIn(login, alice);
+    expect(result.ok && result.grant.level).toBe('read');
+    if (!result.ok) {
+      return;
+    }
+    expect((await login.resolveBearer(`Bearer ${result.token}`))?.level).toBe('read');
+  });
+
   it('refuses a key past valid-before at login and on later requests', async () => {
     expect(await signIn(makeLogin(), carol)).toEqual({ ok: false, reason: 'unknown_key' });
     const login = makeLogin();
