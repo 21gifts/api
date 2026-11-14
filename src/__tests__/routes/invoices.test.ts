@@ -4562,7 +4562,7 @@ describe('settleProvenGift reply author', () => {
     const marker = await messageStore.getById(spendGiftReplyId(target.id));
     expect(marker).toMatchObject({ accountId: 'fond', deletedBy: 'fond' });
     expect(marker?.deletedAt).not.toBeNull();
-    expect((await messageStore.getById(REPLY_ID))?.sats).toBe(1);
+    expect((await messageStore.getById(REPLY_ID))?.receivedSats).toBe(1);
   });
 
   it('authors the moderator stipend as the Fond account', async () => {
