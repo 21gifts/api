@@ -10586,7 +10586,7 @@ describe('PostgresWalletUsageStore', () => {
       const store = new PostgresWalletUsageStore(client);
       // The exclusive bound sits after the one-day straddle row and before the
       // future-dated row that shares `futureHash` with the current row.
-      const payments = await store.payments(since.getTime(), at(1441));
+      const payments = await store.payments(since.getTime(), at(1441).getTime());
       const ours = payments.filter((row) => {
         const payer = row.payerAccountId;
         const payee = row.payeeAccountId;
