@@ -136,6 +136,19 @@ test('Function: walletUsagePurpose — default boot has empty classified lists',
   }
 });
 
+// The default boot uses an empty in-memory usage store, so no shop charges
+// reach PostgresWalletUsageStore.shopCharges or assignedShopAccountIds.
+// Unit tests cover the live assigned shop-note filter.
+test('Function: assignedShopAccountIds — default boot has no shop charges to filter', async ({
+  request,
+}) => {
+  const body = await readUsage(request);
+  expect(body.shopCharges.map((row) => row.day)).toEqual(
+    daysFrom(RELEASE_MS - 14 * DAY_MS, Date.now()),
+  );
+  expect(body.shopCharges.every((row) => row.created === 0 && row.paid === 0)).toBe(true);
+});
+
 test('Function: walletUsageReadSince — releasedAt is the wallet release instant', async ({
   request,
 }) => {
