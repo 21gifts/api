@@ -5,7 +5,7 @@ import {
   type ApiLogPageQuery,
   type ApiLogStore,
 } from '@/lib/api-log';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 
 /**
@@ -30,14 +30,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * @returns A Hono app exposing `GET /`.
  */
 export function debugApiLogRoutes(deps: DebugApiLogRouteDeps): Hono {
-  return new Hono().get('/', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().get('/', requireOperator('read', deps), async (c) => {
     const query: ApiLogPageQuery = {};
     const accountIdRaw = c.req.query('accountId');
     if (accountIdRaw !== undefined) {

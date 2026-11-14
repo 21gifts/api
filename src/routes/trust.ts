@@ -7,7 +7,7 @@ import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { GiftStore } from '@/lib/gift-store';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { isOperatorBearer } from '@/lib/debug-token';
+import { checkOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { notifyModeratorAppointed, notifyModeratorProposed } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -160,7 +160,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
     .get('/proposals', async (c) => {
       try {
         const header = c.req.header('authorization');
-        if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+        if (checkOperator('read', deps, header) !== true) {
           const caller = await authedAccount(deps, header);
           if (caller === null) {
             return c.json({ error: 'Unauthorized' }, 401);

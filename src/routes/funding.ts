@@ -19,7 +19,7 @@ import { pingTodayMedia } from '@/lib/funding-ping';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
-import { isOperatorBearer } from '@/lib/debug-token';
+import { checkOperator } from '@/lib/operator';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, messagePay, serializeMessage, type MessageRow } from '@/lib/message';
@@ -399,7 +399,7 @@ async function staffOrOperatorRead(
   deps: FundingRouteDeps,
   header: string | undefined,
 ): Promise<{ viewerAccountId: string | null } | { error: string; status: 401 | 403 }> {
-  if (isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+  if (checkOperator('read', deps, header) === true) {
     return { viewerAccountId: null };
   }
   const staff = await requireStaff(deps, header);
@@ -727,7 +727,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/withdrawals', async (c) => {
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+      if (checkOperator('read', deps, c.req.header('authorization')) !== true) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       try {
@@ -1062,7 +1062,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
     })
     .get('/daily-roster', async (c) => {
       const header = c.req.header('authorization');
-      if (isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+      if (checkOperator('read', deps, header) === true) {
         return answerRoster(c, await callRoster(deps, null, 'read', () => rosterStore.get()));
       }
       const opened = await openDailyRoster(deps, header);
@@ -1073,7 +1073,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       return answerRoster(c, result);
     })
     .get('/daily-roster/links', async (c) => {
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+      if (checkOperator('read', deps, c.req.header('authorization')) !== true) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       try {

@@ -10,7 +10,7 @@
  */
 
 import { Hono } from 'hono';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import {
   MESSAGE_LIST_LIMIT,
@@ -43,20 +43,6 @@ export interface DebugMessagesRouteDeps {
   shopKek?: Uint8Array;
 }
 
-/** Shared 503/401 gate matching other `/debug/*` routes. */
-function gateDebugToken(
-  debugToken: string | undefined,
-  authorization: string | undefined,
-): { ok: true } | { ok: false; status: 503 | 401; body: { error: string } } {
-  if (debugToken === undefined || debugToken.trim() === '') {
-    return { ok: false, status: 503, body: { error: 'Debug is not configured' } };
-  }
-  if (!bearerMatchesDebugToken(debugToken, authorization)) {
-    return { ok: false, status: 401, body: { error: 'Unauthorized' } };
-  }
-  return { ok: true };
-}
-
 async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMessagePhotoMeta> {
   const photo0 = await store.getPhoto(id);
   const extras = await store.listExtraPhotos(id);
@@ -87,11 +73,7 @@ async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMes
  */
 export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
   return new Hono()
-    .get('/', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/', requireOperator('read', deps), async (c) => {
       try {
         const rows = await deps.store.listDebug(MESSAGE_LIST_LIMIT);
         const messages = [];
@@ -105,11 +87,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .get('/:id/photo/:file', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/:id/photo/:file', requireOperator('read', deps), async (c) => {
       const id = c.req.param('id');
       const match = /^([1-9])\.(jpg|jpeg|png|webp)$/.exec(c.req.param('file'));
       if (!MESSAGE_ID_RE.test(id) || match === null) {
@@ -145,11 +123,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .get('/:id', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/:id', requireOperator('read', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
@@ -166,11 +140,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .get('/:id/photo', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/:id/photo', requireOperator('read', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Photo not found' }, 404);
@@ -205,12 +175,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .put('/:id/video', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
-
+    .put('/:id/video', requireOperator('write', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
@@ -252,11 +217,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .post('/:id/restore', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .post('/:id/restore', requireOperator('write', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);

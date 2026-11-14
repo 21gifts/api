@@ -28,7 +28,7 @@ async function staffSession(
   return { id: account.id, authorization: `Bearer ${token}` };
 }
 
-test('Function: isOperatorBearer — DEBUG_TOKEN reads the staff GETs without a session', async ({
+test('Function: checkOperator — DEBUG_TOKEN reads the staff GETs without a session', async ({
   request,
 }) => {
   for (const path of [
@@ -52,7 +52,7 @@ test('Function: isOperatorBearer — DEBUG_TOKEN reads the staff GETs without a 
   }
 });
 
-test('Function: isOperatorBearer — a wrong bearer still gets 401 on the staff GETs', async ({
+test('Function: checkOperator — a wrong bearer still gets 401 on the staff GETs', async ({
   request,
 }) => {
   for (const path of [

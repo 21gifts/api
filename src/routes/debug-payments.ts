@@ -5,7 +5,7 @@ import { parseClientInstant } from '@/lib/client-instant';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { replayPayoutWindow } from '@/lib/cutover-replay';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -100,20 +100,6 @@ function parseReplayWindow(
 }
 const welcomeSweepBody = z.object({ enabled: z.boolean() }).strict();
 
-/** Shared 503/401 gate matching `/debug/accounts`. */
-function gateDebugToken(
-  debugToken: string | undefined,
-  authorization: string | undefined,
-): { ok: true } | { ok: false; status: 503 | 401; body: { error: string } } {
-  if (debugToken === undefined || debugToken.trim() === '') {
-    return { ok: false, status: 503, body: { error: 'Debug is not configured' } };
-  }
-  if (!bearerMatchesDebugToken(debugToken, authorization)) {
-    return { ok: false, status: 401, body: { error: 'Unauthorized' } };
-  }
-  return { ok: true };
-}
-
 /** Public JSON for one invoice attempt (ISO dates; no secrets). */
 function serializeInvoice(row: MessageInvoiceAttempt): Record<string, unknown> {
   return {
@@ -180,11 +166,7 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
   return new Hono()
-    .get('/invoices', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/invoices', requireOperator('read', deps), async (c) => {
       try {
         const invoices = await deps.store.listInvoiceAttempts(DEBUG_LIST_LIMIT);
         logEvent('debug.invoices.listed', { count: invoices.length });
@@ -194,11 +176,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .post('/invoices/settle', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .post('/invoices/settle', requireOperator('admin', deps), async (c) => {
       const body: unknown = await c.req.json().catch(() => null);
       if (body === null || typeof body !== 'object' || Array.isArray(body)) {
         return c.json({ error: 'Invalid body' }, 400);
@@ -269,11 +247,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .post('/spend-ping', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .post('/spend-ping', requireOperator('write', deps), async (c) => {
       if (deps.spendPing === undefined) {
         return c.json({ error: 'Spend ping is not configured' }, 503);
       }
@@ -423,11 +397,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .get('/welcome-sweep', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/welcome-sweep', requireOperator('read', deps), async (c) => {
       try {
         const candidates = await welcomeSweepCandidates({
           auth: deps.auth,
@@ -453,11 +423,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .put('/welcome-sweep', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .put('/welcome-sweep', requireOperator('write', deps), async (c) => {
       const parsed = welcomeSweepBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with an "enabled" boolean' }, 400);
@@ -466,11 +432,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       logEvent('debug.welcome_sweep.set', { enabled: parsed.data.enabled });
       return c.json({ enabled: deps.welcomeSweep.enabled }, 200);
     })
-    .get('/zap-ingests', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/zap-ingests', requireOperator('read', deps), async (c) => {
       try {
         const ingests = await deps.store.listZapIngests(DEBUG_LIST_LIMIT);
         logEvent('debug.zap_ingests.listed', { count: ingests.length });

@@ -5,10 +5,9 @@
  */
 
 import { Hono } from 'hono';
-import type { MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import type { Account, AuthStore } from '@/lib/auth/store';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { parseNotificationLevel } from '@/lib/notification';
 import type { PushStore } from '@/lib/push-store';
@@ -46,20 +45,6 @@ export interface DebugPushBroadcastRouteDeps {
   debugToken: string | undefined;
   /** Public VAPID key when configured; missing/blank → 503 on a send that is not a dry run. */
   vapidPublicKey: string | undefined;
-}
-
-/** Shared 503/401 gate for every `/debug/push-broadcast` method (before JSON). */
-function requireDebugToken(deps: DebugPushBroadcastRouteDeps): MiddlewareHandler {
-  return async (c, next) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    await next();
-  };
 }
 
 /** Whether `text` has a C0 control or DEL character other than the allowed ones. */
@@ -150,8 +135,8 @@ function splitTargets(
  */
 export function debugPushBroadcastRoutes(deps: DebugPushBroadcastRouteDeps): Hono {
   return new Hono()
-    .use('*', requireDebugToken(deps))
-    .post('/', async (c) => {
+    .use('*', requireOperator('read', deps))
+    .post('/', requireOperator('admin', deps), async (c) => {
       const parsed = broadcastBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: BODY_ERROR }, 400);
@@ -221,7 +206,7 @@ export function debugPushBroadcastRoutes(deps: DebugPushBroadcastRouteDeps): Hon
         202,
       );
     })
-    .get('/:id', async (c) => {
+    .get('/:id', requireOperator('read', deps), async (c) => {
       const id = normalizeUuid(c.req.param('id'));
       if (id === null) {
         return c.json({ error: 'Not found' }, 404);
