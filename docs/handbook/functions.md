@@ -11,15 +11,29 @@
 ## Function: activeShopDays
 
 - **Purpose:** Count how many qualifying shop notes were used on each of the last 30 UTC days ending on `today`. A shop note is a live top-level forum note whose text has the `#21GiftsShop` token (via `textHasHashtagToken`) and whose current `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` `created_at` on that day (any status). Current assignment, not assignment history.
-- **Inputs:** `notes` (`ShopNoteRef[]`), `charges` (`PosChargeRef[]`), and `today` (`YYYY-MM-DD`). Duplicate note ids count once. Charges before the window or on the next UTC day are ignored.
+- **Inputs:** `notes` (`ShopNoteRef[]`), `charges` (`PosChargeRef[]`), and `today` (`YYYY-MM-DD`). The shop set is `activeShops(notes)`, so duplicate note ids count once. Charges before the window or on the next UTC day are ignored.
 - **Returns / side effects:** Exactly 30 `{ day, shopCount }` rows, oldest first. Missing days are `shopCount: 0`. No I/O.
 - **Used by:** `shopActivityRoutes` (`GET /shops/activity`).
 
+## Function: activeShops
+
+- **Purpose:** The shop notes the staff shop-activity series counts: a note whose text has the `#21GiftsShop` token (via `textHasHashtagToken`) and whose assigned account id is non-empty. Each note id is kept once; the first ref of an id wins. Both `activeShopDays` and `activeShopList` start from this set, so the chart and the per-shop list always count the same notes.
+- **Inputs:** `notes` (`ShopNoteRef[]`), the live top-level notes with a `shop_account_id` from `listLiveAssignedShops`.
+- **Returns / side effects:** The qualifying `ShopNoteRef[]` in input order. No I/O.
+- **Used by:** `activeShopDays`, `activeShopList`, and `shopActivityRoutes` (`GET /shops/activity/shops`, which reads the pins, accounts, and latest charges of exactly these notes).
+
+## Function: activeShopList
+
+- **Purpose:** One row per shop of `activeShops(notes)`, including a shop whose till account never created a charge. `activeDays` is the number of UTC days in the same 30-day window as `activeShopDays` (ending on `today`, inclusive) on which the currently assigned account created at least one POS charge, any status; summing the rows per day gives each day's `shopCount`. `lastChargeDay` is the UTC day of that account's latest charge over all time: the later of `lookups.lastChargeMs` and the passed window charges, or null when there is neither. `name` is `publicShopName(note text, pin)`, the public shop name rule of `docs/shop-identity.md`.
+- **Inputs:** `notes` (`ShopNoteRef[]`), `charges` (`PosChargeRef[]` in the window; others are ignored for `activeDays`), `lookups` (`ShopActivityLookups`: `places` and `npubs` by note id, `usernames` and `lastChargeMs` by account id; a missing key means no pin, no npub, no username, or no stored charge), and `today` (`YYYY-MM-DD`).
+- **Returns / side effects:** `ShopActivityShop[]` (`{ noteId, name, npub, accountId, username, activeDays, lastChargeDay }`), ordered by `lastChargeDay` ascending with null first, then `name`, then `noteId` (code-unit order, independent of the host locale). No I/O.
+- **Used by:** `shopActivityRoutes` (`GET /shops/activity/shops`).
+
 ## Function: shopActivityRoutes
 
-- **Purpose:** Hono sub-app for `GET /shops/activity`. No bearer. Any caller, including no session, gets `{ days }`. Loads live assigned shop notes and POS charges in the 30-UTC-day window, then returns `{ days }` from `activeShopDays`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
-- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`.
-- **Returns / side effects:** Hono app mounted at `/shops/activity`. 200 `{ days }`. Store throw → 503 `{ error: 'Shop activity is unavailable' }` and `shops.activity.failed`.
+- **Purpose:** Hono sub-app for `GET /shops/activity` and `GET /shops/activity/shops`. `GET /` takes no bearer. Any caller, including no session, gets `{ days }`. It loads live assigned shop notes and POS charges in the 30-UTC-day window, then returns `{ days }` from `activeShopDays`. `GET /shops` is staff only through `requireStaff` (401 `Unauthorized`, 403 `Forbidden`) and checks the session before any store read. It loads the same notes, keeps `activeShops`, then reads in parallel the window charges (`listCreatedBetween`), each till account's latest charge (`listLatestCreatedByAccount`), the notes' pins (`getByIds`), the shop identities (`listAll`, npub via `shopNpub`), and the till accounts (`getAccounts`, `username`), and returns `{ windowDays, today, shops }` from `activeShopList`. Neither GET logs account ids, note ids, or charge rows. No Sunday-rest gate.
+- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops, getByIds }, pos: { listCreatedBetween, listLatestCreatedByAccount }, identities: { listAll } }`.
+- **Returns / side effects:** Hono app mounted at `/shops/activity`. `GET /`: 200 `{ days }`; store throw → 503 `{ error: 'Shop activity is unavailable' }` and `shops.activity.failed`. `GET /shops`: 200 `{ windowDays: 30, today, shops }`; store throw → 503 `{ error: 'Shop activity is unavailable' }` and `shops.activity.list.failed` (keys `event` and `ts` only).
 - **Used by:** `createApp`.
 
 ## Function: measureGrantContinuation
@@ -91,6 +105,7 @@
 - **Inputs:** None.
 - **Returns / side effects:** Pending, cancel, expire, list, and paid-tracking methods. Mutates its private arrays. `create` throws `A payment is already open` when one is already open.
 - **Payment lookup:** `findChargeForPayment({ paymentHash })` returns the charge whose recorded BOLT11 hash matches, and `findChargeForPayment({ chargeId })` the charge with that id; `undefined` otherwise. Used by `walletPaymentClassifier` for the `shop` category.
+- **Latest charge:** `listLatestCreatedByAccount(accountIds)` returns `{ accountId, createdAtMs }` with the latest `createdAt` of each listed account that has a charge, any status, over all time; an account without one is left out. Used by `shopActivityRoutes` (`GET /shops/activity/shops`).
 - **deleteInvoice:** `deleteInvoice(paymentHash)` removes the recorded BOLT11 payment hash, if present, and releases the charge side of its entry in `paymentHashClaims`; an unknown hash is a no-op and the charge itself is unchanged. `InMemoryShopPaymentStore` delegates `ShopTx.deleteChargeInvoice` to it.
 - **Payment hash claim:** The public `paymentHashClaims` (`PaymentHashClaims`) is the payment hash claim of a memory boot. An `InMemoryShopPaymentStore` built on this store uses the same map, so a charge's invoice row and a shop payment never hold one hash for two payments.
 - **Used by:** `createApp` default and unit tests.
@@ -101,6 +116,7 @@
 - **Inputs:** A `SqlClient` (migrated, with `shop_payment`, which every SQL boot migrates) and the optional `MergeDb` transaction port for `recordInvoice` (without it `recordInvoice` throws `pos transactions are not configured`).
 - **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. A concurrent second pending insert raises unique violation `23505` for the route to map to 409. `markPaid` logs `pos.paid` only when it changed the row. Every write lands in `db_change` through `trg_db_change`.
 - **Payment lookup:** `findChargeForPayment({ paymentHash })` joins `pos_charge_invoice` to `pos_charge` on the recorded hash; `findChargeForPayment({ chargeId })` reads one charge by id, and a non-UUID id answers `undefined` without a query (no uuid cast error). Used by `walletPaymentClassifier` for the `shop` category.
+- **Latest charge:** `listLatestCreatedByAccount(accountIds)` runs one `SELECT account_id, MAX(created_at) … WHERE account_id = ANY($1::uuid[]) GROUP BY account_id` (the distinct ids bound as one array literal via `postgresTextArrayLiteral`, served by `pos_charge_account_created_idx`), every status, over all time. An empty list returns `[]` without a query. Used by `shopActivityRoutes` (`GET /shops/activity/shops`).
 - **deleteInvoice:** `deleteInvoice(paymentHash)` runs `DELETE FROM pos_charge_invoice WHERE payment_hash = $1`; a hash that is not recorded deletes nothing. The delete lands in `db_change`. `PostgresShopPaymentStore` calls it on the transaction connection (`ShopTx.deleteChargeInvoice`). The `UUID` shape check is `UUID_PATTERN` from `src/lib/uuid.ts`.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set (with the boot's transaction port).
 
@@ -3932,7 +3948,14 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** True when `account.role` may run staff trust routes. Delegates to `roleAtLeast(role, 'moderator')`. `basis` and `verified` return false; `moderator`, `software_developer`, `fond`, `initiator`, and `founder` return true. Used before `GET /trust/proposals`, `POST /trust/verify`, `POST /trust/propose-moderator`, `POST /trust/confirm-moderator`, and `POST /trust/reject-moderator` (appoint requires founder separately via `roleAtLeast(..., 'founder')`).
 - **Inputs:** `AccountRole` (`basis` \| `verified` \| `moderator` \| `fond` \| `software_developer` \| `initiator` \| `founder`).
 - **Returns / side effects:** boolean. No I/O.
-- **Used by:** `trustRoutes`.
+- **Used by:** `trustRoutes`, `requireStaff`.
+
+## Function: requireStaff
+
+- **Purpose:** The staff session gate of the funding staff routes, exported so other staff-only routes use the same rule. Resolves the bearer session (`bearerToken`, `resolveSession` at `deps.now()`), then `isStaffRole` (at least `moderator`). No operator token: `staffOrOperatorRead` adds `DEBUG_TOKEN` / `DEBUG_READ_TOKEN` on top of it for the staff reads that operators also use.
+- **Inputs:** `deps` with `authStore` and `now`, and the raw `Authorization` header (or undefined).
+- **Returns / side effects:** `{ caller }` for a staff session; `{ error: 'Unauthorized', status: 401 }` for a missing or malformed bearer and for a session that is unknown, expired, or refused; `{ error: 'Forbidden', status: 403 }` for `basis` and `verified`. Reads the session and its account; writes nothing.
+- **Used by:** `fundingRoutes` (`POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`, and through `staffOrOperatorRead` `GET /funding/applications`, `GET /funding/applications/:accountId`, `GET /funding/payout-days`), `shopActivityRoutes` (`GET /shops/activity/shops`).
 
 ## Function: isChainAccount
 
@@ -5326,7 +5349,7 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Purpose:** Public name of a shop note. A non-blank pin label is kept. Otherwise the first non-blank line of `shopDescription`, cut at 80 characters, or `Shop` when that line is empty.
 - **Inputs:** Note text and the pin, or null.
 - **Returns / side effects:** A non-empty name. No I/O.
-- **Used by:** `publicShop`.
+- **Used by:** `publicShop`, `activeShopList`.
 
 ## Function: publicShop
 

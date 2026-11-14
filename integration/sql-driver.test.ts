@@ -2444,6 +2444,81 @@ describe('PostgresPosStore paid tracking', () => {
   });
 });
 
+describe('PostgresPosStore listLatestCreatedByAccount', () => {
+  test('binds the ids as one uuid[] literal and returns the latest charge per account', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migratePosSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+      const first = crypto.randomUUID();
+      const second = crypto.randomUUID();
+      const idle = crypto.randomUUID();
+      for (const [id, suffix] of [
+        [first, 'a'],
+        [second, 'b'],
+        [idle, 'c'],
+      ] as const) {
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username: `latest_${suffix}_${stamp}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+
+      const store = new PostgresPosStore(client, mergeDb);
+      const old = Date.parse('2025-01-02T03:00:00.000Z');
+      const newer = Date.parse('2026-09-01T00:00:00.000Z');
+      for (const [accountId, status, createdAtMs] of [
+        [first, 'expired', newer],
+        [first, 'cancelled', old],
+        [second, 'cancelled', old],
+      ] as const) {
+        await store.create({
+          id: crypto.randomUUID(),
+          accountId,
+          amountSats: 21,
+          status,
+          createdAt: new Date(createdAtMs),
+          expiresAt: new Date(createdAtMs + POS_CHARGE_TTL_MS),
+          paidAt: null,
+          sparkInvoice: null,
+          amountCurrency: null,
+          amountText: null,
+          fiatUsd: null,
+          fiatChf: null,
+          fiatEur: null,
+          fiatPhp: null,
+        });
+      }
+
+      const latest = await store.listLatestCreatedByAccount([first, second, idle, first]);
+      expect(latest).toHaveLength(2);
+      expect(new Map(latest.map((ref) => [ref.accountId, ref.createdAtMs]))).toEqual(
+        new Map([
+          [first, newer],
+          [second, old],
+        ]),
+      );
+      expect(await store.listLatestCreatedByAccount([])).toEqual([]);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore stored external address', () => {
   test('new rows leave it unset and writes keep existing data', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);

@@ -1284,6 +1284,13 @@ close timestamp is set and omits the key otherwise.
 - **Used by:** The statistics shop chart for every visitor.
 - **Auth:** none.
 
+## Endpoint: GET /shops/activity/shops
+
+- **Purpose:** Staff-only per-shop activity list beside `GET /shops/activity`. It lists exactly the shops that series counts (`activeShops`: live top-level notes with the `#21GiftsShop` token and a non-empty `shop_account_id`, each note id once), including shops whose till account never created a charge. Each row is `{ noteId, name, npub, accountId, username, activeDays, lastChargeDay }`. `activeDays` counts the UTC days of the same 30-day window (ending today, inclusive) on which the currently assigned account created at least one `pos_charge`, any status, so summing the rows per day reproduces `shopCount` of `GET /shops/activity`. `lastChargeDay` is the UTC day of that account's latest `pos_charge` of any status over all time, or null. `name` is the public shop name (`publicShopName`), `npub` the shop identity's npub or null, `username` the till account's username or null. Order: `lastChargeDay` ascending with null first, then `name`, then `noteId`. JSON `{ windowDays: 30, today, shops }`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a valid bearer session. 403 `{ error: 'Forbidden' }` below moderator. 503 `{ error: 'Shop activity is unavailable' }` (`shops.activity.list.failed`, keys `event` and `ts` only).
+- **Used by:** Staff clients; the public `GET /shops/activity` body is unchanged.
+- **Auth:** `Authorization: Bearer` staff session via `requireStaff` (`isStaffRole`, at least `moderator`), the same rule as the funding staff routes. No operator token.
+
 ## Endpoint: GET /funding/goal
 
 - **Purpose:** Bearer session, any role including `basis`, or the operator `DEBUG_TOKEN` / `DEBUG_READ_TOKEN`. How many shops had at least one till charge on each of the last 7 UTC days ending today (oldest first, zeros included), and how many of those shops had a charge on at least 5 of those days. A shop is a live top-level forum note whose text contains `#21GiftsShop` (case-insensitive token; the next character must not be a letter, digit, or underscore) and whose `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` with `created_at` on that UTC day. Any status (`pending`, `cancelled`, `expired`) counts; creating the charge is the till use. There is no paid status. One account assigned to two qualifying notes counts as two shops. The 5 days need not be consecutive. This is not `GET /shops/activity`. JSON `{ days: [{ day, shopCount }], qualifyingShops }`.
