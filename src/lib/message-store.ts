@@ -57,6 +57,16 @@ import {
 export type ShopNoteRef = { id: string; accountId: string; text: string };
 
 /**
+ * Live top-level notes with a current shop account.
+ *
+ * Does not filter the shop hashtag; callers apply
+ * {@link textHasHashtagToken}. Shared so other stores read the same note set.
+ */
+export const LIVE_ASSIGNED_SHOPS_SQL = `SELECT id, shop_account_id, text
+FROM message
+WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL`;
+
+/**
  * One grant or repayment movement for an account's outstanding loan ledger.
  *
  * `sats` is always positive; the caller applies the sign. Omit a row when both
@@ -6866,11 +6876,7 @@ export class PostgresMessageStore implements MessageStore {
       id: string;
       shop_account_id: string;
       text: string;
-    }>(
-      `SELECT id, shop_account_id, text
-       FROM message
-       WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL`,
-    );
+    }>(LIVE_ASSIGNED_SHOPS_SQL);
     return rows.map((row) => ({
       id: row.id,
       accountId: row.shop_account_id,
