@@ -251,8 +251,8 @@ export interface AppDeps {
   memberEventStore?: MemberEventStore;
   /**
    * Outbound gifts for public statistics; the same store tells the welcome
-   * check (invoices, trust, me, messages) that a welcome gift was already paid
-   * (default: empty {@link InMemoryGiftStore}).
+   * check (the `/fond` gift actions, trust, me, messages) that a welcome gift
+   * was already paid (default: empty {@link InMemoryGiftStore}).
    */
   giftStore?: GiftStore;
   /**
