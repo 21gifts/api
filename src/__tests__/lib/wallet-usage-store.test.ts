@@ -440,6 +440,50 @@ describe('PostgresWalletUsageStore', () => {
     ]);
   });
 
+  it('correlates zap gift exclusions to the hashes that own them', async () => {
+    const basePayment = paymentFields(AT, 1);
+    const rawConversationHash = 'aa11'.repeat(16);
+    const validZapGiftHash = 'bb22'.repeat(16);
+    const ownedZapGiftHash = 'cc33'.repeat(16);
+    const store = new InMemoryWalletUsageStore({
+      payments: [
+        {
+          ...basePayment,
+          paymentHash: rawConversationHash.toUpperCase(),
+          invoice: 'spark-gift',
+          destination: null,
+        },
+        { ...basePayment, paymentHash: ownedZapGiftHash, invoice: null, destination: null },
+      ],
+      forumInvoices: [],
+      shopCharges: [],
+      forumGiftInvoices: [
+        {
+          paymentHash: rawConversationHash,
+          pr: null,
+          conversation: true,
+          repayment: false,
+          hidden: false,
+          claimed: false,
+        },
+        {
+          paymentHash: ownedZapGiftHash,
+          pr: null,
+          conversation: true,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+      ],
+      zapGifts: [
+        { paymentHash: validZapGiftHash.toUpperCase(), hidden: false },
+        { paymentHash: ownedZapGiftHash, hidden: false },
+      ],
+      sparkInvoiceHashes: new Map([['spark-gift', validZapGiftHash]]),
+    });
+    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([true, false]);
+  });
+
   it('matches a forum gift paid by Spark invoice through invoice or destination', async () => {
     const basePayment = paymentFields(AT, 1);
     const invoiceHash = 'aa11'.repeat(16);

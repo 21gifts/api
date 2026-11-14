@@ -496,9 +496,10 @@ function copyPayment(row: MemoryPaymentRow): WalletUsagePaymentRow {
  * non-repayment invoice on a living note matches one of its candidate hashes
  * or its invoice; or when a claimed zap receipt gift or paid heart on a living
  * note matches one of its candidate hashes and no seeded conversation or
- * repayment invoice owns that hash, compared case-insensitively. A candidate
- * hash is the row's own `payment_hash`, plus every `sparkInvoiceHashes` value
- * for a Spark invoice equal to the row's `invoice` or `destination`.
+ * repayment invoice owns that gift's hash, compared case-insensitively. A
+ * candidate hash is the row's own `payment_hash`, plus every
+ * `sparkInvoiceHashes` value for a Spark invoice equal to the row's `invoice`
+ * or `destination`.
  *
  * @param row - Merged payment with its optional `paymentHash`, `invoice`, and
  *   `destination` details.
@@ -545,16 +546,18 @@ function memoryIsForumGift(
   if (giftInvoice) {
     return true;
   }
-  const ownedByConversationOrRepayment = invoices.some(
-    (candidate) =>
-      candidate.paymentHash !== null &&
-      (candidate.conversation || candidate.repayment) &&
-      hashes.has(candidate.paymentHash.toLowerCase()),
-  );
-  return (
-    !ownedByConversationOrRepayment &&
-    gifts.some((gift) => !gift.hidden && hashes.has(gift.paymentHash.toLowerCase()))
-  );
+  return gifts.some((gift) => {
+    const hash = gift.paymentHash.toLowerCase();
+    if (gift.hidden || !hashes.has(hash)) {
+      return false;
+    }
+    return !invoices.some(
+      (candidate) =>
+        candidate.paymentHash !== null &&
+        (candidate.conversation || candidate.repayment) &&
+        candidate.paymentHash.toLowerCase() === hash,
+    );
+  });
 }
 
 function copyForum(row: WalletUsageForumRow): WalletUsageForumRow {
