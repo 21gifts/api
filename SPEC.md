@@ -4704,8 +4704,10 @@ such a payment twice. In `GET /wallets/usage`, a completed `out` row and a
 completed `in` row on two different accounts form one payment when they share
 the same `payment_id`, the same `lower(payment_hash)` with both hashes non-null,
 or the same `invoice` with both invoices non-null and non-empty. Each row must
-have exactly one such partner among completed rows; an ambiguous match stays
-unpaired. The pair's key is
+have exactly one such partner among completed rows paid at most one day before
+the read window start; an ambiguous match stays unpaired. A row whose matching
+side is older than that candidate window counts on its own, and a payment is
+counted only when its earliest row is in the window. The pair's key is
 `'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every other
 completed row keeps `'row:' || account_id::text || ':' || payment_id`. An
 internal Spark transfer has the same `payment_id` on both rows; pairing fills a
@@ -8554,8 +8556,11 @@ A completed `out` row and a completed `in` row on two different accounts form
 one payment when they share the same `payment_id`, the same
 `lower(payment_hash)` with both hashes non-null, or the same `invoice` with both
 invoices non-null and non-empty. Each of the two rows must have exactly one such
-partner among completed rows; an ambiguous match never merges. A pair's group
-key is `'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every
+partner among completed rows paid at most one day before the read window start;
+an ambiguous match never merges. A row whose matching side is older than that
+candidate window counts on its own, and a payment is counted only when its
+earliest `paid_at` is in the window. A pair's group key is
+`'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every
 other completed row keeps `'row:' || account_id::text || ':' || payment_id`.
 The pair key is deterministic and injective because the outgoing `(account_id,
 payment_id)` is the `wallet_payment` primary key, and it is disjoint from the
@@ -8610,6 +8615,10 @@ invoices. A non-heart invoice on a note authored by the platform account is the
 compose fee and is excluded; a heart on that note remains in the series.
 `shopCharges` starts 14 days before release. A heart increments the
 release total only when its own timestamp is on or after the release instant.
+Shop charges count only when `pos_charge.account_id` is the current
+`shop_account_id` of a live top-level note whose text has the `#21GiftsShop`
+token, the same rule as `GET /shops/activity`; a charge by any other account is
+not a shop charge.
 `totals.paidShopChargeCount` is the sum of the published daily
 `shopCharges[].paid` cells over the whole shop window, from
 `2026-10-26 11:17 UTC`, and is derivable from those daily cells. A payment
