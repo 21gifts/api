@@ -1975,6 +1975,16 @@ describe('GET /funding/daily-roster/links', () => {
     }
   });
 
+  it('answers 503 when no operator key login is configured', async () => {
+    const res = await get(
+      mount(await seeded(), fakeStore()),
+      '/funding/daily-roster/links',
+      OP_READ,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
+  });
+
   it('returns 502 and logs the operator when the store throws', async () => {
     const store = fakeStore({ linkReport: () => Promise.reject(new Error('down')) });
     const res = await get(

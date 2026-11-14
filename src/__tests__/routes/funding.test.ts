@@ -2160,14 +2160,15 @@ describe('GET /funding/withdrawals', () => {
     },
   );
 
-  it('answers 401 to a key token when no operator key login is configured', async () => {
+  it('answers 503 when no operator key login is configured', async () => {
     const { authStore, fundingStore } = await staffed();
     const res = await get(
       withdrawalsApp(authStore, fundingStore, now, {}),
       '/funding/withdrawals',
       OP_READ,
     );
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
   it('lists every withdrawal newest first with a read key token, also after a new application', async () => {

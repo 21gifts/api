@@ -127,19 +127,25 @@ const TOKEN_RENEW_BEFORE_MS = 5 * 60_000;
 /** Base URLs of request contexts made outside the project's `baseURL`. */
 const contextBaseURLs = new WeakMap<APIRequestContext, string>();
 
+const tokenCache = new Map<string, Promise<{ headers: E2eOperatorHeaders; expiresAt: number }>>();
+
 /**
  * Record the base URL of a request context that targets another api than
  * the project's `baseURL` (e.g. a server a test boots itself), so
- * {@link operatorHeaders} logs in there.
+ * {@link operatorHeaders} logs in there. The server is new, so tokens kept
+ * for that base URL (an earlier server on the same port) are dropped.
  *
  * @param request - Request context of that api.
  * @param baseURL - Its base URL.
  */
 export function registerOperatorBaseURL(request: APIRequestContext, baseURL: string): void {
   contextBaseURLs.set(request, baseURL);
+  for (const key of [...tokenCache.keys()]) {
+    if (key.endsWith(` ${baseURL}`)) {
+      tokenCache.delete(key);
+    }
+  }
 }
-
-const tokenCache = new Map<string, Promise<{ headers: E2eOperatorHeaders; expiresAt: number }>>();
 
 async function logIn(
   request: APIRequestContext,

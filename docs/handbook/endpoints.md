@@ -1373,9 +1373,9 @@ close timestamp is set and omits the key otherwise.
 ## Endpoint: GET /funding/withdrawals
 
 - **Purpose:** Operator only. Every withdrawal from the grant program, newest first (then `accountId`), also after the member applied again and the row was overwritten. JSON `{ withdrawals: [{ accountId, name, withdrawnAt, from, admittedAt, reapplied }] }`. With `DATABASE_URL` read from the append-only `db_change` log (`funding_grant` UPDATE rows whose after status is `withdrawn` and before status `pending`, `trial`, or `admitted`); without a database the in-memory store records those writes itself. `withdrawnAt` is the withdrawn row's `decidedAt` (epoch ms), `from` the stored status before, `admittedAt` the admission time before or null, `name` the live display name or null, `reapplied` true when the current grant exists and is not `withdrawn`. Logs `funding.withdrawals.listed` `{ count }`.
-- **Errors:** 401 `{ error: 'Unauthorized' }` for no bearer, any non-operator bearer, and every session (moderator and above included), as on `GET /funding/daily-roster/links`; 503 `{ error: 'Funding is unavailable' }` (`funding.list.failed`).
+- **Errors:** 401 `{ error: 'Unauthorized' }` for no bearer, any non-operator bearer, and every session (moderator and above included), as on `GET /funding/daily-roster/links`; 503 `{ error: 'Debug is not configured' }` while the SSH key login is not loaded; 503 `{ error: 'Funding is unavailable' }` (`funding.list.failed`).
 - **Used by:** Operators (operator key tokens) who need to see who left the program and when.
-- **Auth:** `Authorization: Bearer` with an operator key token (`checkOperator`) only.
+- **Auth:** `Authorization: Bearer` with an operator key token of level `read` or higher (`requireOperator`) only.
 
 ## Endpoint: GET /funding/daily-roster
 
@@ -1450,9 +1450,9 @@ close timestamp is set and omits the key otherwise.
 ## Endpoint: GET /funding/daily-roster/links
 
 - **Purpose:** Operator check of the roster account link. Reads every stored `daily_roster_entry` row, linked to an account or not (`DailyRosterStore.linkReport`), and returns `{ rows, linked, unlinked: [{ bucket, address, amountUsd }], buckets: { daily, moderator } }`; each bucket is `{ rows, linked, totalUsd, linkedUsd }`. `unlinked` lists the rows without an account in `id` order (stored order on a memory boot) by legacy address and amount; they are never paid. With the old row count and amounts the operator confirms that `linked` is the old count minus those rows and `linkedUsd` is `totalUsd` minus their amounts. Logs `funding.daily_roster` with `{ operator: true, action: 'links' }`; never logs an address.
-- **Errors:** 401 `{ error: 'Unauthorized' }` without an operator token (a member session is 401 too); 502 `{ error: 'Daily roster is unavailable' }` on a store throw (`funding.daily_roster.failed`).
+- **Errors:** 401 `{ error: 'Unauthorized' }` without an operator token (a member session is 401 too); 503 `{ error: 'Debug is not configured' }` while the SSH key login is not loaded; 502 `{ error: 'Daily roster is unavailable' }` on a store throw (`funding.daily_roster.failed`).
 - **Used by:** Operators (`gifts-debug daily-roster-links`).
-- **Auth:** `Authorization: Bearer` with an operator key token (`checkOperator`).
+- **Auth:** `Authorization: Bearer` with an operator key token of level `read` or higher (`requireOperator`).
 
 ## Endpoint: GET /funding/daily-roster/document
 
