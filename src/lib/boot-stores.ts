@@ -117,7 +117,11 @@ import {
   type ShopIdentityStore,
 } from '@/lib/shop-identity';
 import { ensureSparkViewer, migrateSparkViewerSchema, type SparkViewer } from '@/lib/spark-viewer';
-import { PostgresWalletTransferStore, type WalletTransferStore } from '@/lib/wallet-transfer-store';
+import {
+  PostgresWalletTransferStore,
+  type ObservedCounterpartyStore,
+  type WalletTransferStore,
+} from '@/lib/wallet-transfer-store';
 import {
   PostgresWelcomeInvoiceReservationStore,
   type WelcomeInvoiceReservationStore,
@@ -249,7 +253,7 @@ export interface BootStores {
    */
   walletStore: WalletStore | undefined;
   /** Durable server-verified Spark transfer store, or undefined on memory boots. */
-  walletTransferStore: WalletTransferStore | undefined;
+  walletTransferStore: (WalletTransferStore & ObservedCounterpartyStore) | undefined;
   /** Durable atomic welcome-invoice entitlement reservations, or undefined on memory boots. */
   welcomeInvoiceReservationStore: WelcomeInvoiceReservationStore | undefined;
   /** Read-only Spark viewer, ephemeral on memory boots. */

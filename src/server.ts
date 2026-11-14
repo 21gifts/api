@@ -87,7 +87,11 @@ import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
 import { walletAccountKind } from '@/lib/wallet-category';
 import { InMemoryWalletStore, type WalletStore } from '@/lib/wallet-store';
-import { InMemoryWalletTransferStore, type WalletTransferStore } from '@/lib/wallet-transfer-store';
+import {
+  InMemoryWalletTransferStore,
+  type ObservedCounterpartyStore,
+  type WalletTransferStore,
+} from '@/lib/wallet-transfer-store';
 import { InMemoryMemberEventStore, type MemberEventStore } from '@/lib/member-event-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
@@ -227,6 +231,12 @@ export interface AppDeps {
   walletStore?: WalletStore;
   /** Server-verified Spark transfers (default: empty in-memory store). */
   walletTransferStore?: WalletTransferStore;
+  /**
+   * Server-observed transfers that `POST /me/wallet/counterparties` names counterparties from
+   * (default: the in-memory transfer store created when `walletTransferStore` is omitted; SQL
+   * boot passes the same `PostgresWalletTransferStore` as `walletTransferStore`).
+   */
+  walletCounterparties?: ObservedCounterpartyStore;
   /** Spark viewer identity key returned in owner JSON, or null when unavailable. */
   walletViewerPublicKey?: string | null;
   /**
@@ -645,7 +655,9 @@ export function createApp(deps: AppDeps = {}): Hono {
     new InMemoryWalletStore((accountId) =>
       walletAccountKind({ authStore: store, messages: messageStore }, accountId),
     );
-  const walletTransferStore = deps.walletTransferStore ?? new InMemoryWalletTransferStore();
+  const memoryTransfers = new InMemoryWalletTransferStore();
+  const walletTransferStore = deps.walletTransferStore ?? memoryTransfers;
+  const walletCounterparties = deps.walletCounterparties ?? memoryTransfers;
   const memberEventStore = deps.memberEventStore ?? new InMemoryMemberEventStore();
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -795,8 +807,8 @@ export function createApp(deps: AppDeps = {}): Hono {
     walletCounterpartyRoutes({
       authStore: store,
       walletStore,
+      walletTransfers: walletCounterparties,
       now,
-      ...(sparkInvoices === undefined ? {} : { memberInvoices: sparkInvoices }),
     }),
   );
   app.route('/', memberEventRoutes({ authStore: store, store: memberEventStore, now }));

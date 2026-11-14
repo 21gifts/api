@@ -111,12 +111,6 @@ export interface SparkInvoiceStore {
    */
   issueMember(row: MemberSparkInvoiceIssue): Promise<void>;
   /**
-   * Find the account for an exact member invoice, regardless of status.
-   * @param invoice - Issued invoice string.
-   * @returns Account id, or undefined if the invoice is absent.
-   */
-  memberInvoiceAccountId(invoice: string): Promise<string | undefined>;
-  /**
    * Open member invoices that expire after `now`, oldest first.
    *
    * @param now - Current time.
@@ -220,15 +214,6 @@ function byCreatedAt(a: MemberSparkInvoiceRow, b: MemberSparkInvoiceRow): number
 export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
   readonly #rows = new Map<string, SparkInvoiceRow>();
   readonly #members = new Map<string, MemberSparkInvoiceRow>();
-
-  /**
-   * Find the account for an exact member invoice, regardless of status.
-   * @param invoice - Issued invoice string.
-   * @returns Account id, or undefined if the invoice is absent.
-   */
-  async memberInvoiceAccountId(invoice: string): Promise<string | undefined> {
-    return this.#members.get(invoice)?.accountId;
-  }
 
   /**
    * Store a new invoice, or return the existing one for that payment hash and
@@ -439,20 +424,6 @@ function mapMemberRow(row: MemberSparkInvoiceSqlRow): MemberSparkInvoiceRow {
 
 /** {@link SparkInvoiceStore} against the `spark_invoice` and `member_spark_invoice` tables. */
 export class PostgresSparkInvoiceStore implements SparkInvoiceStore {
-  /**
-   * Find the account for an exact member invoice, regardless of status.
-   * @param invoice - Issued invoice string.
-   * @returns Account id, or undefined if the invoice is absent.
-   * @throws Propagates SQL failures.
-   */
-  async memberInvoiceAccountId(invoice: string): Promise<string | undefined> {
-    const rows = await this.#sql.query<{ account_id: string }>(
-      'SELECT account_id FROM member_spark_invoice WHERE invoice = $1',
-      [invoice],
-    );
-    return rows[0]?.account_id;
-  }
-
   readonly #sql: SqlClient;
 
   /**

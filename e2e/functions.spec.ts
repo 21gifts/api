@@ -4424,6 +4424,25 @@ test('Function: walletCounterpartyRoutes — unreported payment has no counterpa
   expect(await res.json()).toEqual({ counterparties: [] });
 });
 
+test('Function: walletCounterpartyRoutes — a completed report without an observed transfer names nobody', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const report = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({ id: 'reported-not-observed', method: 'spark', status: 'completed' }),
+    ]),
+  });
+  expect(report.status()).toBe(200);
+  const res = await request.post('/me/wallet/counterparties', {
+    headers: auth,
+    data: { payments: [{ id: 'reported-not-observed', direction: 'out' }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ counterparties: [] });
+});
+
 test('Function: InMemoryWalletStore — pending then completed same id both 200', async ({
   request,
 }) => {

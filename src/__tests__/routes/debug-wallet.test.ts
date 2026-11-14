@@ -82,13 +82,13 @@ class FailingWalletStore implements WalletStore {
     return Promise.reject(new Error('sql failed'));
   }
 
-  findPaymentCounterparties(
-    _receiverAccountId: string,
+  findCompletedPayments(
+    _accountId: string,
     _keys: readonly {
       id: string;
       direction: 'in' | 'out';
     }[],
-  ): Promise<Map<string, string[]>> {
+  ): Promise<Set<string>> {
     return Promise.reject(new Error('sql failed'));
   }
 }

@@ -67,7 +67,10 @@ import {
   repairWalletPaymentPairs,
   type WalletPaymentRecord,
 } from '@/lib/wallet-store';
-import { PostgresWalletTransferStore } from '@/lib/wallet-transfer-store';
+import {
+  PostgresWalletTransferStore,
+  type WalletTransferRecord,
+} from '@/lib/wallet-transfer-store';
 import {
   migrateWelcomeInvoiceReservationSchema,
   PostgresWelcomeInvoiceReservationStore,
@@ -2248,13 +2251,10 @@ describe('PostgresSparkInvoiceStore member invoices', () => {
         (row) => row.invoice === invoiceAt(1),
       );
       expect(first).toMatchObject({ kind: 'pay', amountSats: 21, status: 'open', expiresAt });
-      expect(await store.memberInvoiceAccountId(invoiceAt(1))).toBe(accountId);
-      expect(await store.memberInvoiceAccountId(`${stamp}-unknown`)).toBeUndefined();
 
       expect(await store.claimMemberNotified(invoiceAt(2), expiresAt)).toBe(false);
       expect(await store.claimMemberNotified(invoiceAt(0), issuedAt)).toBe(false);
       expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(true);
-      expect(await store.memberInvoiceAccountId(invoiceAt(1))).toBe(accountId);
       expect(await store.claimMemberNotified(invoiceAt(1), issuedAt)).toBe(false);
       expect(await store.releaseMemberNotified(invoiceAt(1))).toBe(true);
       expect(await store.releaseMemberNotified(invoiceAt(1))).toBe(false);
@@ -2264,7 +2264,6 @@ describe('PostgresSparkInvoiceStore member invoices', () => {
       expect(await mine(expiresAt)).toEqual([]);
 
       expect(await store.pruneMember(expiresAt)).toBeGreaterThanOrEqual(MEMBER_SPARK_INVOICE_CAP);
-      expect(await store.memberInvoiceAccountId(invoiceAt(1))).toBeUndefined();
       const left = await client.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM member_spark_invoice WHERE account_id = $1`,
         [accountId],
@@ -3458,40 +3457,68 @@ describe('PostgresWalletTransferStore verified counterparty ownership', () => {
   });
 });
 
-describe('PostgresWalletStore', () => {
-  test('findPaymentCounterparties requires completed own payments and matches senders by id', async () => {
-    const { client, sql } = createBunSqlClient(databaseUrl);
+describe('POST /me/wallet/counterparties sources in Postgres', () => {
+  test('own completed reports and the counterparty of completed observed transfers', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl, { max: 1 });
+    const hex64 = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    const receiverId = crypto.randomUUID();
+    const senderId = crypto.randomUUID();
+    const previousOwnerId = crypto.randomUUID();
+    const claimantId = crypto.randomUUID();
+    const receiverKey = `02${hex64()}`;
+    const senderKey = `03${hex64()}`;
+    const previousKey = `02${hex64()}`;
+    const claimKey = `03${hex64()}`;
+    const prefix = crypto.randomUUID();
+    const id = (name: string): string => `${prefix}-${name}`;
     try {
       await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
       await migrateWalletSchema(client);
       const auth = new PostgresAuthStore(client);
-      const receiver = crypto.randomUUID();
-      const senderA = crypto.randomUUID();
-      const senderB = crypto.randomUUID();
-      for (const id of [receiver, senderA, senderB]) {
+      for (const accountId of [receiverId, senderId, previousOwnerId, claimantId]) {
         await auth.createAccount({
-          id,
+          id: accountId,
           linkingKey: null,
-          role: 'basis',
+          role: 'verified',
           name: null,
-          username: `sender_${id.replaceAll('-', '')}`,
+          username: `cp_${accountId.replaceAll('-', '').slice(0, 12)}`,
           location: null,
           forumLawsDismissed: false,
-          viewKey: `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`,
+          viewKey: hex64(),
           createdAt: Date.now(),
           rulesAgreedAt: null,
           walletRequired: true,
         });
       }
-      const store = new PostgresWalletStore(client);
-      const time = new Date();
-      const prefix = crypto.randomUUID();
-      const row: WalletPaymentRecord = {
-        accountId: senderA,
-        paymentId: `${prefix}-shared`,
+      await client.execute(
+        `UPDATE account
+         SET spark_pubkey = CASE WHEN id = $1 THEN $2 WHEN id = $3 THEN $4 ELSE $5 END,
+             spark_pubkey_verified_at = CASE WHEN id = $6 THEN NULL ELSE now() END
+         WHERE id IN ($1, $3, $6)`,
+        [receiverId, receiverKey, senderId, senderKey, claimKey, claimantId],
+      );
+      await client.execute(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          previousOwnerId,
+          previousKey,
+          `spark1${'q'.repeat(62)}`,
+          new Date('2026-11-11T00:00:00.000Z'),
+        ],
+      );
+      const time = new Date('2026-11-12T13:00:00.000Z');
+      const report = (
+        name: string,
+        extra: Partial<WalletPaymentRecord> = {},
+      ): WalletPaymentRecord => ({
+        accountId: receiverId,
+        paymentId: id(name),
         direction: 'out',
         status: 'completed',
-        amountSats: 1,
+        amountSats: 21,
         feeSats: 0,
         paidAt: time,
         method: 'spark',
@@ -3504,215 +3531,105 @@ describe('PostgresWalletStore', () => {
         counterpartyAccountId: null,
         firstSeenAt: time,
         updatedAt: time,
-      };
-      await store.upsertPayments([
-        row,
-        { ...row, accountId: receiver, direction: 'in' },
-        { ...row, accountId: senderB, direction: 'in' },
-        { ...row, paymentId: `${prefix}-ambiguous` },
-        { ...row, paymentId: `${prefix}-ambiguous`, accountId: senderB },
-        { ...row, paymentId: `${prefix}-ambiguous`, accountId: receiver, direction: 'in' },
-        { ...row, paymentId: `${prefix}-pending-own` },
-        {
-          ...row,
-          paymentId: `${prefix}-pending-own`,
-          accountId: receiver,
-          direction: 'in',
-          status: 'pending',
-        },
-        { ...row, paymentId: `${prefix}-wrong-direction` },
-        { ...row, paymentId: `${prefix}-wrong-direction`, accountId: receiver },
-        { ...row, paymentId: `${prefix}-pending-sender`, status: 'pending' },
-        { ...row, paymentId: `${prefix}-pending-sender`, accountId: receiver, direction: 'in' },
-        { ...row, paymentId: `${prefix}-self-only`, accountId: receiver, direction: 'in' },
-        { ...row, paymentId: `${prefix}-no-own` },
-        { ...row, paymentId: `${prefix}-out`, accountId: receiver, counterpartyAccountId: senderA },
-        { ...row, paymentId: `${prefix}-out`, accountId: senderB },
-        { ...row, paymentId: `${prefix}-out`, accountId: senderA, direction: 'in' },
-        ...[
-          'fake',
-          'pending-confirm',
-          'failed-confirm',
-          'third-confirm',
-          'wrong-confirm-direction',
-          'other-lightning',
-          'own-lightning',
-          'invoice',
-          'wrong-invoice',
-          'unknown-invoice',
-          'confirmed-invoice',
-        ].map((id): WalletPaymentRecord => ({
-          ...row,
-          paymentId: `${prefix}-${id}`,
-          accountId: receiver,
-          counterpartyAccountId: senderA,
-          method: id === 'own-lightning' ? 'lightning' : 'spark',
-          invoice:
-            id === 'invoice'
-              ? 'valid'
-              : id === 'wrong-invoice'
-                ? 'wrong'
-                : id === 'unknown-invoice'
-                  ? 'unknown'
-                  : id === 'confirmed-invoice'
-                    ? 'skip'
-                    : null,
-        })),
-        ...[
-          'pending-confirm',
-          'failed-confirm',
-          'third-confirm',
-          'wrong-confirm-direction',
-          'other-lightning',
-          'own-lightning',
-          'confirmed-invoice',
-        ].map((id): WalletPaymentRecord => ({
-          ...row,
-          paymentId: `${prefix}-${id}`,
-          accountId: id === 'third-confirm' ? senderB : senderA,
-          direction: id === 'wrong-confirm-direction' ? 'out' : 'in',
-          status:
-            id === 'pending-confirm' ? 'pending' : id === 'failed-confirm' ? 'failed' : 'completed',
-          method: id === 'other-lightning' ? 'lightning' : 'spark',
-        })),
-        {
-          ...row,
-          paymentId: `${prefix}-in-own-lightning`,
-          accountId: receiver,
-          direction: 'in',
-          method: 'lightning',
-        },
-        { ...row, paymentId: `${prefix}-in-own-lightning` },
-        { ...row, paymentId: `${prefix}-in-other-lightning`, accountId: receiver, direction: 'in' },
-        { ...row, paymentId: `${prefix}-in-other-lightning`, method: 'lightning' },
-        { ...row, paymentId: `${prefix}-null`, accountId: receiver },
-        {
-          ...row,
-          paymentId: `${prefix}-self`,
-          accountId: receiver,
-          counterpartyAccountId: receiver,
-        },
-        {
-          ...row,
-          paymentId: `${prefix}-out-pending`,
-          accountId: receiver,
-          status: 'pending',
-          counterpartyAccountId: senderA,
-        },
-        // M3: failed outgoing senderB is not a sender; completed senderA on the same id is.
-        // Three `member` rows, so pairing (exactly two rows, one of them unresolved) does not run.
-        { ...row, paymentId: `${prefix}-failed-sender`, accountId: senderA },
-        {
-          ...row,
-          paymentId: `${prefix}-failed-sender`,
-          accountId: senderB,
-          status: 'failed',
-        },
-        {
-          ...row,
-          paymentId: `${prefix}-failed-sender`,
-          accountId: receiver,
-          direction: 'in',
-        },
-        // M4: own failed `in` yields no counterparty, even beside a completed sender.
-        // Two `member` rows, so pairing does not fill a counterparty or change status.
-        { ...row, paymentId: `${prefix}-failed-own`, accountId: senderA },
-        {
-          ...row,
-          paymentId: `${prefix}-failed-own`,
-          accountId: receiver,
-          direction: 'in',
-          status: 'failed',
-        },
-        // M5: the caller's own failed outgoing row yields no counterparty.
-        // One row, so pairing cannot replace the stored counterparty.
-        {
-          ...row,
-          paymentId: `${prefix}-out-failed`,
-          accountId: receiver,
-          status: 'failed',
-          counterpartyAccountId: senderA,
-        },
-        // M6: own `in` counterparty senderB is not a sender; only completed out senderA is.
-        // Two `member` rows, so pairing does not replace the stored counterparty.
-        { ...row, paymentId: `${prefix}-in-counterparty`, accountId: senderA },
-        {
-          ...row,
-          paymentId: `${prefix}-in-counterparty`,
-          accountId: receiver,
-          direction: 'in',
-          counterpartyAccountId: senderB,
-        },
+        ...extra,
+      });
+      const wallet = new PostgresWalletStore(client);
+      await wallet.upsertPayments([
+        report('out'),
+        report('in', { direction: 'in' }),
+        report('pending', { status: 'pending' }),
+        report('failed', { status: 'failed' }),
+        report('sender-only', { accountId: senderId }),
       ]);
-      const found = await store.findPaymentCounterparties(receiver, [
-        ...[
-          'shared',
-          'ambiguous',
-          'pending-own',
-          'wrong-direction',
-          'pending-sender',
-          'self-only',
-          'no-own',
-          'failed-sender',
-          'failed-own',
-          'in-counterparty',
-        ].map((id) => ({ id: `${prefix}-${id}`, direction: 'in' as const })),
-        ...['out', 'null', 'self', 'out-pending', 'out-failed'].map((id) => ({
-          id: `${prefix}-${id}`,
-          direction: 'out' as const,
-        })),
-        { id: 'invalid\u0000text', direction: 'in' },
-      ]);
-      expect(found.size).toBe(5);
-      expect(found.get(`${prefix}-shared`)).toEqual([senderA]);
-      expect(found.get(`${prefix}-ambiguous`)).toEqual([senderA, senderB].sort());
-      expect(found.get(`${prefix}-out`)).toEqual([senderA]);
-      expect(found.get(`${prefix}-failed-sender`)).toEqual([senderA]);
-      expect(found.get(`${prefix}-failed-own`)).toBeUndefined();
-      expect(found.get(`${prefix}-out-failed`)).toBeUndefined();
-      expect(found.get(`${prefix}-in-counterparty`)).toEqual([senderA]);
-      const cases = [
-        'fake',
-        'pending-confirm',
-        'failed-confirm',
-        'third-confirm',
-        'wrong-confirm-direction',
-        'other-lightning',
-        'own-lightning',
-        'invoice',
-        'wrong-invoice',
-        'unknown-invoice',
-        'confirmed-invoice',
-      ].map((id) => ({ id: `${prefix}-${id}`, direction: 'out' as const }));
-      const withoutInvoice = await store.findPaymentCounterparties(receiver, cases);
-      expect([...withoutInvoice.keys()]).toEqual([`${prefix}-confirmed-invoice`]);
-      const seen: string[] = [];
-      const withInvoice = await store.findPaymentCounterparties(
-        receiver,
-        cases,
-        async (invoice) => {
-          seen.push(invoice);
-          return invoice === 'valid' ? senderA : invoice === 'wrong' ? senderB : undefined;
-        },
-      );
-      expect([...withInvoice.keys()].sort()).toEqual([
-        `${prefix}-confirmed-invoice`,
-        `${prefix}-invoice`,
-      ]);
-      expect(seen.sort()).toEqual(['unknown', 'valid', 'wrong']);
       expect(
-        (
-          await store.findPaymentCounterparties(receiver, [
-            { id: `${prefix}-in-own-lightning`, direction: 'in' },
-            { id: `${prefix}-in-other-lightning`, direction: 'in' },
-          ])
-        ).size,
-      ).toBe(0);
+        [
+          ...(await wallet.findCompletedPayments(receiverId, [
+            { id: id('out'), direction: 'out' },
+            { id: id('in'), direction: 'in' },
+            { id: id('in'), direction: 'out' },
+            { id: id('pending'), direction: 'out' },
+            { id: id('failed'), direction: 'out' },
+            { id: id('sender-only'), direction: 'out' },
+            { id: 'bad\u0000id', direction: 'out' },
+          ])),
+        ].sort(),
+      ).toEqual([id('in'), id('out')].sort());
+
+      const transfers = new PostgresWalletTransferStore(client);
+      const transfer = (
+        name: string,
+        counterpartyPubkey: string,
+        extra: Partial<WalletTransferRecord> = {},
+      ): WalletTransferRecord => ({
+        accountId: receiverId,
+        walletPubkey: receiverKey,
+        transferId: id(name),
+        direction: 'out',
+        type: 'transfer',
+        status: 'completed',
+        amountSats: 21,
+        counterpartyPubkey,
+        counterpartyPubkeys: [counterpartyPubkey],
+        sparkInvoice: null,
+        transferCreatedAt: time,
+        transferUpdatedAt: null,
+        seenAt: time,
+        ...extra,
+      });
+      for (const row of [
+        transfer('out', senderKey),
+        transfer('in', senderKey, { direction: 'in' }),
+        transfer('previous', previousKey),
+        transfer('unverified', claimKey),
+        transfer('self', receiverKey),
+        transfer('pending', senderKey, { status: 'pending' }),
+        transfer('multi', senderKey, { counterpartyPubkeys: [senderKey, previousKey] }),
+        transfer('sender-side', receiverKey, { accountId: senderId, walletPubkey: senderKey }),
+      ]) {
+        await transfers.upsertTransfer(row);
+      }
+      const found = await transfers.findObservedCounterparties(receiverId, [
+        { id: id('out'), direction: 'out' },
+        { id: id('in'), direction: 'in' },
+        { id: id('previous'), direction: 'out' },
+        { id: id('unverified'), direction: 'out' },
+        { id: id('self'), direction: 'out' },
+        { id: id('pending'), direction: 'out' },
+        { id: id('multi'), direction: 'out' },
+        { id: id('sender-side'), direction: 'in' },
+        { id: id('sender-side'), direction: 'out' },
+        { id: id('out'), direction: 'in' },
+        { id: 'bad\u0000id', direction: 'out' },
+      ]);
+      expect(found).toEqual(
+        new Map([
+          [id('in'), [senderId]],
+          [id('out'), [senderId]],
+          [id('previous'), [previousOwnerId]],
+        ]),
+      );
     } finally {
+      await client.execute('DELETE FROM wallet_transfer WHERE account_id IN ($1, $2)', [
+        receiverId,
+        senderId,
+      ]);
+      await client.execute('DELETE FROM wallet_payment WHERE account_id IN ($1, $2)', [
+        receiverId,
+        senderId,
+      ]);
+      await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [previousOwnerId]);
+      await client.execute('DELETE FROM account WHERE id IN ($1, $2, $3, $4)', [
+        receiverId,
+        senderId,
+        previousOwnerId,
+        claimantId,
+      ]);
       await closeIfPossible(sql);
     }
   });
+});
 
+describe('PostgresWalletStore', () => {
   test('migrate twice, balance, guarded upsert, order, db_change, and secrets', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {

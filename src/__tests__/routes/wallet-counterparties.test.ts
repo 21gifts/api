@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FREE_PAYMENTS_ENV } from '@/__tests__/helpers/wallet-lnurl';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
-import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryWalletStore, type WalletPaymentRecord } from '@/lib/wallet-store';
+import {
+  InMemoryWalletTransferStore,
+  type WalletTransferRecord,
+} from '@/lib/wallet-transfer-store';
 import { walletCounterpartyRoutes } from '@/routes/wallet-counterparties';
 import { createApp } from '@/server';
 
@@ -11,8 +13,16 @@ const receiver = '11111111-1111-4111-8111-111111111111';
 const sender = '22222222-2222-4222-8222-222222222222';
 const now = Date.parse('2026-10-01T12:00:00Z');
 const headers = { authorization: 'Bearer token', 'content-type': 'application/json' };
+const receiverKey = `02${'a'.repeat(64)}`;
+const senderKey = `03${'b'.repeat(64)}`;
 
-async function setup(): Promise<{ auth: InMemoryAuthStore; wallet: InMemoryWalletStore }> {
+interface Fixture {
+  auth: InMemoryAuthStore;
+  wallet: InMemoryWalletStore;
+  transfers: InMemoryWalletTransferStore;
+}
+
+async function setup(): Promise<Fixture> {
   const auth = new InMemoryAuthStore();
   for (const [id, username] of [
     [receiver, 'receiver'],
@@ -33,7 +43,74 @@ async function setup(): Promise<{ auth: InMemoryAuthStore; wallet: InMemoryWalle
     });
   }
   await auth.createSession({ token: 'token', accountId: receiver, createdAt: now });
-  return { auth, wallet: new InMemoryWalletStore() };
+  return {
+    auth,
+    wallet: new InMemoryWalletStore(),
+    transfers: new InMemoryWalletTransferStore({
+      verifiedAccountForPubkey: async (pubkey) =>
+        pubkey === senderKey ? sender : pubkey === receiverKey ? receiver : null,
+    }),
+  };
+}
+
+function routes(fixture: Fixture, limiter?: IpRateLimiter) {
+  return walletCounterpartyRoutes({
+    authStore: fixture.auth,
+    walletStore: fixture.wallet,
+    walletTransfers: fixture.transfers,
+    now: () => now,
+    ...(limiter === undefined ? {} : { limiter }),
+  });
+}
+
+function reported(
+  paymentId: string,
+  extra: Partial<WalletPaymentRecord> = {},
+): WalletPaymentRecord {
+  const time = new Date(now);
+  return {
+    accountId: receiver,
+    paymentId,
+    direction: 'out',
+    status: 'completed',
+    amountSats: 1,
+    feeSats: 0,
+    paidAt: time,
+    method: 'spark',
+    paymentHash: null,
+    invoice: null,
+    destination: null,
+    description: null,
+    lnurlComment: null,
+    category: 'member',
+    counterpartyAccountId: null,
+    firstSeenAt: time,
+    updatedAt: time,
+    ...extra,
+  };
+}
+
+function observed(
+  transferId: string,
+  extra: Partial<WalletTransferRecord> = {},
+): WalletTransferRecord {
+  const time = new Date(now);
+  return {
+    accountId: receiver,
+    walletPubkey: receiverKey,
+    transferId,
+    direction: 'out',
+    type: 'transfer',
+    status: 'completed',
+    amountSats: 1,
+    counterpartyPubkey: senderKey,
+    counterpartyPubkeys: [extra.counterpartyPubkey ?? senderKey],
+    sparkInvoice: null,
+    transferCreatedAt: time,
+    transferUpdatedAt: time,
+    seenAt: time,
+    ...extra,
+  };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -61,8 +138,8 @@ describe('POST /me/wallet/counterparties', () => {
       { payments: [{ id: ` ${'a'.repeat(257)} `, direction: 'in', invoice: 'x' }] },
     ],
   ])('rejects invalid input when %s', async (_name, body) => {
-    const { auth, wallet } = await setup();
-    const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
+    const fixture = await setup();
+    const app = routes(fixture);
     const response = await app.request('/me/wallet/counterparties', {
       method: 'POST',
       headers,
@@ -73,19 +150,15 @@ describe('POST /me/wallet/counterparties', () => {
   });
 
   it('rejects an actual 16385-byte body and the 61st lookup', async () => {
-    const { auth, wallet } = await setup();
-    const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
+    const fixture = await setup();
+    const app = routes(fixture);
     const oversized = await app.request('/me/wallet/counterparties', {
       method: 'POST',
       headers,
       body: 'x'.repeat(16385),
     });
     expect(oversized.status).toBe(413);
-    const limited = walletCounterpartyRoutes({
-      authStore: auth,
-      walletStore: wallet,
-      now: () => now,
-    });
+    const limited = routes(fixture);
     const request = {
       method: 'POST',
       headers,
@@ -100,10 +173,12 @@ describe('POST /me/wallet/counterparties', () => {
   it('finds one trimmed id of 256 characters and drops the duplicate', async () => {
     const { auth } = await setup();
     const id = 'p'.repeat(256);
+    const owned = vi.fn().mockResolvedValue(new Set([id]));
     const lookup = vi.fn().mockResolvedValue(new Map([[id, [sender]]]));
     const app = walletCounterpartyRoutes({
       authStore: auth,
-      walletStore: { findPaymentCounterparties: lookup },
+      walletStore: { findCompletedPayments: owned },
+      walletTransfers: { findObservedCounterparties: lookup },
       now: () => now,
     });
     const response = await app.request('/me/wallet/counterparties', {
@@ -121,12 +196,13 @@ describe('POST /me/wallet/counterparties', () => {
     expect(await response.json()).toEqual({
       counterparties: [{ id, accountId: sender, username: 'sender' }],
     });
-    expect(lookup.mock.calls[0]?.[1]).toEqual([{ id, direction: 'in' }]);
+    expect(owned.mock.calls[0]).toEqual([receiver, [{ id, direction: 'in' }]]);
+    expect(lookup.mock.calls[0]).toEqual([receiver, [{ id, direction: 'in' }]]);
   });
 
   it('accepts 32 ids of 256 characters within 16384 bytes', async () => {
-    const { auth, wallet } = await setup();
-    const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
+    const fixture = await setup();
+    const app = routes(fixture);
     const payments = Array.from({ length: 32 }, (_, index) => ({
       id: `${index}`.padStart(256, 'a'),
       direction: 'in' as const,
@@ -143,8 +219,8 @@ describe('POST /me/wallet/counterparties', () => {
   });
 
   it('authenticates, validates input, caps the body and rate limits', async () => {
-    const { auth, wallet } = await setup();
-    const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
+    const fixture = await setup();
+    const app = routes(fixture);
     expect((await app.request('/me/wallet/counterparties', { method: 'POST' })).status).toBe(401);
     for (const body of [
       '{',
@@ -174,12 +250,7 @@ describe('POST /me/wallet/counterparties', () => {
         })
       ).status,
     ).toBe(413);
-    const limited = walletCounterpartyRoutes({
-      authStore: auth,
-      walletStore: wallet,
-      now: () => now,
-      limiter: new IpRateLimiter(1),
-    });
+    const limited = routes(fixture, new IpRateLimiter(1));
     const request = {
       method: 'POST',
       headers,
@@ -202,7 +273,10 @@ describe('POST /me/wallet/counterparties', () => {
       );
       const app = walletCounterpartyRoutes({
         authStore: auth,
-        walletStore: { findPaymentCounterparties: lookup },
+        walletStore: {
+          findCompletedPayments: async (_accountId, keys) => new Set(keys.map((key) => key.id)),
+        },
+        walletTransfers: { findObservedCounterparties: lookup },
         now: () => now,
       });
       const response = await app.request('/me/wallet/counterparties', {
@@ -229,83 +303,107 @@ describe('POST /me/wallet/counterparties', () => {
     },
   );
 
-  it('matches completed payments by id and uses the caller’s outgoing counterparty', async () => {
-    const { auth, wallet } = await setup();
-    const time = new Date(now);
-    const row: WalletPaymentRecord = {
-      accountId: sender,
-      paymentId: 'shared',
-      direction: 'out',
-      status: 'completed',
-      amountSats: 1,
-      feeSats: 0,
-      paidAt: time,
-      method: 'spark',
-      paymentHash: null,
-      invoice: null,
-      destination: null,
-      description: null,
-      lnurlComment: null,
-      category: 'member',
-      counterpartyAccountId: null,
-      firstSeenAt: time,
-      updatedAt: time,
-    };
-    await wallet.upsertPayments([
-      row,
-      { ...row, accountId: receiver, direction: 'in' },
-      { ...row, paymentId: 'out', accountId: receiver, counterpartyAccountId: sender },
-      { ...row, paymentId: 'out', accountId: sender, direction: 'in' },
-      { ...row, paymentId: 'null', accountId: receiver },
-      { ...row, paymentId: 'self', accountId: receiver, counterpartyAccountId: receiver },
-      { ...row, paymentId: 'pending-own' },
-      { ...row, paymentId: 'pending-own', accountId: receiver, direction: 'in', status: 'pending' },
-      { ...row, paymentId: 'wrong-direction' },
-      { ...row, paymentId: 'wrong-direction', accountId: receiver },
-      { ...row, paymentId: 'pending-sender', status: 'pending' },
-      { ...row, paymentId: 'pending-sender', accountId: receiver, direction: 'in' },
-      { ...row, paymentId: 'ambiguous' },
-      { ...row, paymentId: 'ambiguous', accountId: '33333333-3333-4333-8333-333333333333' },
-      { ...row, paymentId: 'ambiguous', accountId: receiver, direction: 'in' },
+  it('names only the other side of the caller’s own completed, server-observed transfer', async () => {
+    const fixture = await setup();
+    await fixture.wallet.upsertPayments([
+      reported('observed-in', { direction: 'in' }),
+      reported('observed-out'),
+      reported('unobserved'),
+      reported('pending-own', { status: 'pending' }),
+      reported('pending-transfer'),
+      reported('self'),
+      reported('unresolved'),
+      reported('reported-only', { direction: 'in' }),
+      reported('reported-only', { accountId: sender, counterpartyAccountId: receiver }),
+      reported('sender-transfer', { direction: 'in' }),
     ]);
-    const app = walletCounterpartyRoutes({ authStore: auth, walletStore: wallet, now: () => now });
-    const response = await app.request('/me/wallet/counterparties', {
+    for (const row of [
+      observed('observed-in', { direction: 'in' }),
+      observed('observed-out'),
+      observed('pending-own'),
+      observed('pending-transfer', { status: 'pending' }),
+      observed('self', { counterpartyPubkey: receiverKey }),
+      observed('unresolved', { counterpartyPubkey: `02${'c'.repeat(64)}` }),
+      observed('not-reported'),
+      observed('sender-transfer', {
+        accountId: sender,
+        walletPubkey: senderKey,
+        counterpartyPubkey: receiverKey,
+      }),
+    ]) {
+      await fixture.transfers.upsertTransfer(row);
+    }
+    const response = await routes(fixture).request('/me/wallet/counterparties', {
       method: 'POST',
       headers,
       body: JSON.stringify({
         payments: [
-          { id: 'shared', direction: 'in', invoice: 42, paymentHash: 'invalid' },
-          { id: 'out', direction: 'out' },
-          { id: 'null', direction: 'out' },
+          { id: 'observed-in', direction: 'in' },
+          { id: 'observed-out', direction: 'out' },
+          { id: 'observed-out', direction: 'in' },
+          { id: 'unobserved', direction: 'out' },
+          { id: 'pending-own', direction: 'out' },
+          { id: 'pending-transfer', direction: 'out' },
           { id: 'self', direction: 'out' },
-          { id: 'pending-own', direction: 'in' },
-          { id: 'wrong-direction', direction: 'in' },
-          { id: 'pending-sender', direction: 'in' },
-          { id: 'ambiguous', direction: 'in' },
-          { id: 'missing', direction: 'in' },
+          { id: 'unresolved', direction: 'out' },
+          { id: 'not-reported', direction: 'out' },
+          { id: 'reported-only', direction: 'in' },
+          { id: 'sender-transfer', direction: 'in' },
         ],
       }),
     });
     expect(await response.json()).toEqual({
       counterparties: [
-        { id: 'shared', accountId: sender, username: 'sender' },
-        { id: 'out', accountId: sender, username: 'sender' },
+        { id: 'observed-in', accountId: sender, username: 'sender' },
+        { id: 'observed-out', accountId: sender, username: 'sender' },
       ],
     });
   });
 
-  it('logs and returns 503 on lookup failure', async () => {
+  it('does not read observed transfers when the caller owns none of the payments', async () => {
     const { auth } = await setup();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const lookup = vi.fn();
     const app = walletCounterpartyRoutes({
       authStore: auth,
-      walletStore: { findPaymentCounterparties: () => Promise.reject(new Error('secret')) },
+      walletStore: { findCompletedPayments: async () => new Set<string>() },
+      walletTransfers: { findObservedCounterparties: lookup },
       now: () => now,
     });
     const response = await app.request('/me/wallet/counterparties', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ payments: [{ id: 'x', direction: 'in', invoice: 'x' }] }),
+      body: JSON.stringify({ payments: [{ id: 'x', direction: 'in' }] }),
+    });
+    expect(await response.json()).toEqual({ counterparties: [] });
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'the payment report store',
+      {
+        findCompletedPayments: () => Promise.reject(new Error('secret')),
+      },
+      { findObservedCounterparties: async () => new Map<string, string[]>() },
+    ],
+    [
+      'the observed transfer store',
+      { findCompletedPayments: async () => new Set(['x']) },
+      { findObservedCounterparties: () => Promise.reject(new Error('secret')) },
+    ],
+  ])('logs and returns 503 when %s fails', async (_name, walletStore, walletTransfers) => {
+    const { auth } = await setup();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const app = walletCounterpartyRoutes({
+      authStore: auth,
+      walletStore,
+      walletTransfers,
+      now: () => now,
+    });
+    const response = await app.request('/me/wallet/counterparties', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ payments: [{ id: 'x', direction: 'in' }] }),
     });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: 'Counterparty lookup is unavailable' });
@@ -313,84 +411,33 @@ describe('POST /me/wallet/counterparties', () => {
     expect(String(warn.mock.calls[0]?.[0])).not.toContain('secret');
   });
 
-  it('uses issued invoices through the route and createApp, and returns 503 on lookup failure', async () => {
-    const { auth, wallet } = await setup();
-    const time = new Date(now);
-    await wallet.upsertPayments([
-      {
-        accountId: receiver,
-        paymentId: 'invoice',
-        direction: 'out',
-        status: 'completed',
-        amountSats: 1,
-        feeSats: 0,
-        paidAt: time,
-        method: 'spark',
-        paymentHash: null,
-        invoice: 'spark1invoice',
-        destination: null,
-        description: null,
-        lnurlComment: null,
-        category: 'member',
-        counterpartyAccountId: sender,
-        firstSeenAt: time,
-        updatedAt: time,
-      },
-    ]);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const app = walletCounterpartyRoutes({
-      authStore: auth,
-      walletStore: wallet,
-      now: () => now,
-      memberInvoices: { memberInvoiceAccountId: () => Promise.reject(new Error('secret')) },
-    });
-    const response = await app.request('/me/wallet/counterparties', {
+  it('is mounted by createApp on the observed transfer store it is given', async () => {
+    const fixture = await setup();
+    await fixture.wallet.upsertPayments([reported('observed-out')]);
+    await fixture.transfers.upsertTransfer(observed('observed-out'));
+    const request = {
       method: 'POST',
       headers,
-      body: JSON.stringify({ payments: [{ id: 'invoice', direction: 'out' }] }),
-    });
-    expect(response.status).toBe(503);
-    expect(String(warn.mock.calls[0]?.[0])).toContain('wallet_counterparties.lookup.failed');
-    expect(await response.json()).toEqual({ error: 'Counterparty lookup is unavailable' });
-    const withInvoices = walletCounterpartyRoutes({
-      authStore: auth,
-      walletStore: wallet,
-      now: () => now,
-      memberInvoices: { memberInvoiceAccountId: async () => sender },
-    });
-    const success = await withInvoices.request('/me/wallet/counterparties', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ payments: [{ id: 'invoice', direction: 'out' }] }),
-    });
-    expect(await success.json()).toEqual({
-      counterparties: [{ id: 'invoice', accountId: sender, username: 'sender' }],
-    });
-    const invoices = new InMemorySparkInvoiceStore();
-    await invoices.issueMember({
-      invoice: 'spark1invoice',
-      kind: 'pay',
-      accountId: sender,
-      receiverPubkey: `02${'a'.repeat(64)}`,
-      amountSats: 1,
-      createdAt: time,
-      expiresAt: new Date(now + 60 * 60_000),
-    });
+      body: JSON.stringify({ payments: [{ id: 'observed-out', direction: 'out' }] }),
+    };
     const mounted = createApp({
-      env: FREE_PAYMENTS_ENV,
-      authStore: auth,
-      walletStore: wallet,
-      sparkInvoiceStore: invoices,
+      authStore: fixture.auth,
+      walletStore: fixture.wallet,
+      walletTransferStore: fixture.transfers,
+      walletCounterparties: fixture.transfers,
       now: () => now,
     });
-    const mountedResponse = await mounted.request('/me/wallet/counterparties', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ payments: [{ id: 'invoice', direction: 'out' }] }),
+    expect(await (await mounted.request('/me/wallet/counterparties', request)).json()).toEqual({
+      counterparties: [{ id: 'observed-out', accountId: sender, username: 'sender' }],
     });
-    expect(await mountedResponse.json()).toEqual({
-      counterparties: [{ id: 'invoice', accountId: sender, username: 'sender' }],
+    const withoutObserved = createApp({
+      authStore: fixture.auth,
+      walletStore: fixture.wallet,
+      now: () => now,
     });
+    expect(
+      await (await withoutObserved.request('/me/wallet/counterparties', request)).json(),
+    ).toEqual({ counterparties: [] });
   });
 
   it.each(['in', 'out'] as const)(
@@ -400,8 +447,9 @@ describe('POST /me/wallet/counterparties', () => {
       const original = auth.getAccount.bind(auth);
       const app = walletCounterpartyRoutes({
         authStore: auth,
-        walletStore: {
-          findPaymentCounterparties: () => Promise.resolve(new Map([['a', [sender]]])),
+        walletStore: { findCompletedPayments: async () => new Set(['a']) },
+        walletTransfers: {
+          findObservedCounterparties: () => Promise.resolve(new Map([['a', [sender]]])),
         },
         now: () => now,
       });

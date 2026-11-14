@@ -97,6 +97,22 @@ export interface WalletTransferStore {
   hasShopPayment(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<boolean>;
 }
 
+/** Read port of the counterparty lookup over server-observed transfers. */
+export interface ObservedCounterpartyStore {
+  /**
+   * Name the other account of the caller's completed, server-observed transfers.
+   *
+   * @param accountId - Caller account id.
+   * @param keys - Transfer ids (the reported payment ids) and directions.
+   * @returns Sorted distinct counterparty account ids keyed by transfer id; absent ids have none.
+   * @throws Propagates storage failures.
+   */
+  findObservedCounterparties(
+    accountId: string,
+    keys: readonly { id: string; direction: WalletTransferDirection }[],
+  ): Promise<Map<string, string[]>>;
+}
+
 function dateCopy(value: Date | null): Date | null {
   return value === null ? null : new Date(value.getTime());
 }
@@ -144,7 +160,7 @@ function transferObservationIsOlder(
 }
 
 /** Process-local adapter used by database-free boots and tests. */
-export class InMemoryWalletTransferStore implements WalletTransferStore {
+export class InMemoryWalletTransferStore implements WalletTransferStore, ObservedCounterpartyStore {
   readonly #rows = new Map<string, WalletTransferRecord>();
   readonly #tokens = new Map<string, WalletTokenTransactionRecord>();
   readonly #fullSyncAt = new Map<string, Date>();
@@ -337,12 +353,43 @@ export class InMemoryWalletTransferStore implements WalletTransferStore {
     return false;
   }
 
+  async findObservedCounterparties(
+    accountId: string,
+    keys: readonly { id: string; direction: WalletTransferDirection }[],
+  ): Promise<Map<string, string[]>> {
+    const result = new Map<string, string[]>();
+    for (const key of keys) {
+      const accounts = new Set<string>();
+      for (const row of this.#rows.values()) {
+        if (!isObservedCounterpartyRow(row, accountId, key)) continue;
+        const counterparty = await this.#accountForPubkey(row.counterpartyPubkey);
+        if (counterparty !== null && counterparty !== accountId) accounts.add(counterparty);
+      }
+      if (accounts.size > 0) result.set(key.id, [...accounts].sort());
+    }
+    return result;
+  }
+
   async #accountForPubkey(pubkey: string): Promise<string | null> {
     return (
       (await this.#verifiedAccountForPubkey(pubkey)) ??
       (await this.#previousAccountForPubkey(pubkey))
     );
   }
+}
+
+function isObservedCounterpartyRow(
+  row: WalletTransferRecord,
+  accountId: string,
+  key: { id: string; direction: WalletTransferDirection },
+): boolean {
+  return (
+    row.accountId === accountId &&
+    row.transferId === key.id &&
+    row.direction === key.direction &&
+    row.status === 'completed' &&
+    row.counterpartyPubkeys.every((pubkey) => pubkey === row.counterpartyPubkey)
+  );
 }
 
 async function hasExternalShop(
@@ -423,7 +470,7 @@ function recordFromSql(
 }
 
 /** Durable Postgres adapter for viewer-sourced wallet transfers. */
-export class PostgresWalletTransferStore implements WalletTransferStore {
+export class PostgresWalletTransferStore implements WalletTransferStore, ObservedCounterpartyStore {
   /**
    * Create a durable transfer store.
    *
@@ -703,5 +750,45 @@ export class PostgresWalletTransferStore implements WalletTransferStore {
       [accountId, fromUtcDay, toUtcDay],
     );
     return rows[0]?.present === true;
+  }
+  async findObservedCounterparties(
+    accountId: string,
+    keys: readonly { id: string; direction: WalletTransferDirection }[],
+  ): Promise<Map<string, string[]>> {
+    // PostgreSQL text cannot contain NUL, so such ids cannot have stored rows.
+    const searchableKeys = keys.filter((key) => !key.id.includes('\u0000'));
+    const rows = await this.sql.query<{ id: string; account_id: string }>(
+      `SELECT DISTINCT transfer.transfer_id AS id, resolved.account_id::text AS account_id
+       FROM unnest($2::text[], $3::text[]) AS k(id, direction)
+       JOIN wallet_transfer AS transfer
+         ON transfer.account_id = $1 AND transfer.transfer_id = k.id
+        AND transfer.direction = k.direction
+       CROSS JOIN LATERAL (
+         SELECT COALESCE(
+           (SELECT id FROM account
+            WHERE spark_pubkey = transfer.counterparty_pubkey
+              AND spark_pubkey_verified_at IS NOT NULL
+            ORDER BY id LIMIT 1),
+           (SELECT account_id FROM previous_wallet
+            WHERE spark_pubkey = transfer.counterparty_pubkey
+            ORDER BY replaced_at DESC, account_id LIMIT 1)
+         ) AS account_id
+       ) AS resolved
+       WHERE transfer.status = 'completed'
+         AND transfer.counterparty_pubkeys <@ ARRAY[transfer.counterparty_pubkey]
+         AND resolved.account_id IS NOT NULL
+         AND resolved.account_id <> transfer.account_id
+       ORDER BY id, account_id`,
+      [
+        accountId,
+        postgresTextArrayLiteral(searchableKeys.map((key) => key.id)),
+        postgresTextArrayLiteral(searchableKeys.map((key) => key.direction)),
+      ],
+    );
+    const result = new Map<string, string[]>();
+    for (const row of rows) {
+      result.set(row.id, [...(result.get(row.id) ?? []), row.account_id]);
+    }
+    return result;
   }
 }

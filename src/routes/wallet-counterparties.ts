@@ -5,18 +5,18 @@ import type { AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import { logEvent } from '@/lib/log';
-import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import type { WalletStore } from '@/lib/wallet-store';
+import type { ObservedCounterpartyStore } from '@/lib/wallet-transfer-store';
 import { bearerToken } from '@/routes/me';
 
 /** Dependencies of the counterparty lookup route. */
 export interface WalletCounterpartyRouteDeps {
   /** Session and counterparty accounts. */
   authStore: AuthStore;
-  /** Payment lookup. */
-  walletStore: Pick<WalletStore, 'findPaymentCounterparties'>;
-  /** Issued member invoices, when free payments are enabled. */
-  memberInvoices?: Pick<SparkInvoiceStore, 'memberInvoiceAccountId'>;
+  /** The caller's own completed payment reports. */
+  walletStore: Pick<WalletStore, 'findCompletedPayments'>;
+  /** Server-observed transfers read through the Spark viewer key. */
+  walletTransfers: ObservedCounterpartyStore;
   /** Epoch millisecond clock. */
   now: () => number;
   /** Optional per-account limiter. */
@@ -52,8 +52,9 @@ function parsePayments(body: unknown): Key[] | null {
 }
 
 /**
- * Build the authenticated counterparty lookup route for completed reported payments.
- * @param deps - Auth, wallet store, clock, optional member invoices and limiter.
+ * Build the authenticated counterparty lookup route: names the other account of a payment
+ * the caller reported as completed only from the caller's completed, server-observed transfer.
+ * @param deps - Auth, wallet report store, observed transfer store, clock and optional limiter.
  * @returns A Hono app serving `POST /me/wallet/counterparties`.
  */
 export function walletCounterpartyRoutes(deps: WalletCounterpartyRouteDeps): Hono {
@@ -75,14 +76,12 @@ export function walletCounterpartyRoutes(deps: WalletCounterpartyRouteDeps): Hon
     const keys = parsePayments(body);
     if (keys === null) return c.json({ error: 'Invalid counterparty lookup' }, 400);
     try {
-      const memberInvoices = deps.memberInvoices;
-      const matches = await deps.walletStore.findPaymentCounterparties(
-        account.id,
-        keys,
-        memberInvoices === undefined
-          ? undefined
-          : (invoice) => memberInvoices.memberInvoiceAccountId(invoice),
-      );
+      const owned = await deps.walletStore.findCompletedPayments(account.id, keys);
+      const ownedKeys = keys.filter((key) => owned.has(key.id));
+      const matches =
+        ownedKeys.length === 0
+          ? new Map<string, string[]>()
+          : await deps.walletTransfers.findObservedCounterparties(account.id, ownedKeys);
       const counterparties: Array<{ id: string; accountId: string; username: string }> = [];
       for (const key of keys) {
         const ids = matches.get(key.id);

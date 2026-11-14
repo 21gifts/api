@@ -171,7 +171,6 @@ describe('issueSparkInvoice', () => {
       listOpen: () => Promise.resolve([]),
       markSettled: () => Promise.resolve(false),
       issueMember: () => Promise.resolve(),
-      memberInvoiceAccountId: () => Promise.resolve(undefined),
       listOpenMember: () => Promise.resolve([]),
       claimMemberNotified: () => Promise.resolve(false),
       releaseMemberNotified: () => Promise.resolve(false),
