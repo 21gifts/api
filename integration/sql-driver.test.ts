@@ -3658,6 +3658,7 @@ describe('POST /me/wallet/counterparties sources in Postgres', () => {
         transfer('unverified', claimKey),
         transfer('self', receiverKey),
         transfer('pending', senderKey, { status: 'pending' }),
+        transfer('lightning', senderKey, { type: 'preimage_swap' }),
         transfer('multi', senderKey, { counterpartyPubkeys: [senderKey, previousKey] }),
         transfer('sender-side', receiverKey, { accountId: senderId, walletPubkey: senderKey }),
       ]) {
@@ -3670,6 +3671,7 @@ describe('POST /me/wallet/counterparties sources in Postgres', () => {
         { id: id('unverified'), direction: 'out' },
         { id: id('self'), direction: 'out' },
         { id: id('pending'), direction: 'out' },
+        { id: id('lightning'), direction: 'out' },
         { id: id('multi'), direction: 'out' },
         { id: id('sender-side'), direction: 'in' },
         { id: id('sender-side'), direction: 'out' },

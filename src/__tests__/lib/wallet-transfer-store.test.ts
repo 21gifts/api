@@ -474,6 +474,7 @@ describe('InMemoryWalletTransferStore.findObservedCounterparties', () => {
       completed({ transferId: 'out' }),
       completed({ transferId: 'in', direction: 'in', counterpartyPubkey: PREVIOUS }),
       completed({ transferId: 'pending', status: 'pending' }),
+      completed({ transferId: 'lightning', type: 'preimage_swap' }),
       completed({ transferId: 'self', counterpartyPubkey: OWNER }),
       completed({ transferId: 'unresolved', counterpartyPubkey: UNKNOWN }),
       completed({ transferId: 'multi', counterpartyPubkeys: [MEMBER, SHOP] }),
@@ -491,6 +492,7 @@ describe('InMemoryWalletTransferStore.findObservedCounterparties', () => {
       { id: 'out', direction: 'out' },
       { id: 'in', direction: 'in' },
       { id: 'pending', direction: 'out' },
+      { id: 'lightning', direction: 'out' },
       { id: 'self', direction: 'out' },
       { id: 'unresolved', direction: 'out' },
       { id: 'multi', direction: 'out' },
@@ -772,6 +774,7 @@ describe('PostgresWalletTransferStore.findObservedCounterparties', () => {
       postgresTextArrayLiteral(['a', 'b']),
       postgresTextArrayLiteral(['out', 'in']),
     ]);
+    expect(text).toContain("transfer.type = 'transfer'");
     expect(text).toContain("transfer.status = 'completed'");
     expect(text).toContain('transfer.counterparty_pubkeys <@ ARRAY[transfer.counterparty_pubkey]');
     expect(text).toContain('spark_pubkey_verified_at IS NOT NULL');

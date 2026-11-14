@@ -100,7 +100,8 @@ export interface WalletTransferStore {
 /** Read port of the counterparty lookup over server-observed transfers. */
 export interface ObservedCounterpartyStore {
   /**
-   * Name the other account of the caller's completed, server-observed transfers.
+   * Name the other account of the caller's completed, server-observed transfers of type
+   * `transfer`; other Spark operator types never name anyone.
    *
    * @param accountId - Caller account id.
    * @param keys - Transfer ids (the reported payment ids) and directions.
@@ -387,6 +388,7 @@ function isObservedCounterpartyRow(
     row.accountId === accountId &&
     row.transferId === key.id &&
     row.direction === key.direction &&
+    row.type === 'transfer' &&
     row.status === 'completed' &&
     row.counterpartyPubkeys.every((pubkey) => pubkey === row.counterpartyPubkey)
   );
@@ -774,7 +776,8 @@ export class PostgresWalletTransferStore implements WalletTransferStore, Observe
             ORDER BY replaced_at DESC, account_id LIMIT 1)
          ) AS account_id
        ) AS resolved
-       WHERE transfer.status = 'completed'
+       WHERE transfer.type = 'transfer'
+         AND transfer.status = 'completed'
          AND transfer.counterparty_pubkeys <@ ARRAY[transfer.counterparty_pubkey]
          AND resolved.account_id IS NOT NULL
          AND resolved.account_id <> transfer.account_id

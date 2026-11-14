@@ -1730,7 +1730,7 @@ Operator inspection of external Nostr identities that have earned visibility or 
 
 ## Endpoint: POST /me/wallet/counterparties
 
-The caller must have reported the payment as completed with the requested direction. The name comes only from the caller's own `completed` `wallet_transfer` row for that id and direction (the server-observed record read through the Spark viewer key): its single counterparty key resolved to the account with that verified `spark_pubkey`, otherwise to the newest `previous_wallet` owner. Reports of other accounts are never read; a transfer the viewer has not observed yet returns no name.
+The caller must have reported the payment as completed with the requested direction. The name comes only from the caller's own `completed` `wallet_transfer` row of type `transfer` for that id and direction (the server-observed record read through the Spark viewer key): its single counterparty key resolved to the account with that verified `spark_pubkey`, otherwise to the newest `previous_wallet` owner. Reports of other accounts are never read; a transfer the viewer has not observed yet returns no name.
 
 - **Purpose:** Find the member who sent an incoming payment or received an outgoing payment, from the server-observed transfer of the caller's wallet.
 - **Request:** `payments`, an array of 1–32 objects with required `direction` (`in` or `out`) and an `id`. The id is trimmed, as in the wallet report, and must then be 1–256 characters. Extra fields are ignored. Duplicate ids are compared after that trim and the first entry is kept.
@@ -1738,7 +1738,7 @@ The caller must have reported the payment as completed with the requested direct
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 429 `{ error: 'Too many requests' }` after 60 requests per account per minute; 413 `{ error: 'Request body is too large' }` above 16384 bytes; 400 `{ error: 'Invalid counterparty lookup' }`; 503 `{ error: 'Counterparty lookup is unavailable' }` on lookup failure, logging `wallet_counterparties.lookup.failed` with only `accountId`.
 - **Auth:** Bearer session. Not the debug token.
 
-The id is the reported payment id after trim, which is the Spark transfer id. A transfer with more than one counterparty key, a key that resolves to no account or to the caller, and an id that resolves to more than one account (for example through two of the caller's wallets) have no returned name.
+The id is the reported payment id after trim, which is the Spark transfer id. A row of another Spark operator type (Lightning swap, cooperative exit, deposit, leaf swap, unrecognized), a transfer with more than one counterparty key, a key that resolves to no account or to the caller, and an id that resolves to more than one account (for example through two of the caller's wallets) have no returned name.
 
 ## Endpoint: POST /me/wallet/hearts
 
