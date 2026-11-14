@@ -9664,6 +9664,37 @@ describe('PostgresWalletUsageStore', () => {
         paymentHash: null,
         invoice: null,
       });
+      // One side is just before the bound and the other just after it. The
+      // one-day read slack lets the two rows pair, and `bounds` then drops the
+      // whole pair because its earliest `paid_at` is before the bound. Without
+      // the slack, the in-window side would count as a separate payment.
+      const nearBoundaryId = `${run}-near-boundary`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: nearBoundaryId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 223,
+        feeSats: 0,
+        paidAt: at(-12 * 60),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: nearBoundaryId,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 223,
+        feeSats: 0,
+        paidAt: at(12 * 60),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
       await insertPayment({
         accountId: memberA,
         paymentId: `${run}-straddle`,
@@ -9862,6 +9893,34 @@ describe('PostgresWalletUsageStore', () => {
         paymentHash: null,
         invoice: `${run}-spark-conversation`,
       });
+      const platformFeeHash = hex64();
+      const platformHeartHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-platform-fee`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 50,
+        feeSats: 0,
+        paidAt: at(910),
+        category: 'platform',
+        counterpartyAccountId: platformId,
+        paymentHash: platformFeeHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-platform-heart`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 51,
+        feeSats: 0,
+        paidAt: at(911),
+        category: 'gift',
+        counterpartyAccountId: platformId,
+        paymentHash: platformHeartHash,
+        invoice: null,
+      });
 
       const forumHeartAt = at(30);
       const forumGiftAt = at(40);
@@ -9873,6 +9932,8 @@ describe('PostgresWalletUsageStore', () => {
       const forumUnpaidAt = at(90);
       const forumHiddenAt = at(100);
       const forumInvoiceOnlyAt = at(110);
+      const forumPlatformFeeAt = at(120);
+      const forumPlatformHeartAt = at(130);
       const insertForum = async (row: {
         createdAt: Date;
         amountSats: number;
@@ -9883,9 +9944,11 @@ describe('PostgresWalletUsageStore', () => {
         description: string | null;
         conversationId: string | null;
         hiddenNote: boolean;
+        noteAuthorId?: string;
         paid: boolean;
       }): Promise<void> => {
-        const messageId = await insertNote(memberB, row.hiddenNote);
+        const noteAuthorId = row.noteAuthorId ?? memberB;
+        const messageId = await insertNote(noteAuthorId, row.hiddenNote);
         await client.execute(
           `INSERT INTO message_invoice (
              id, created_at, message_id, payer_account_id, author_account_id,
@@ -9897,7 +9960,7 @@ describe('PostgresWalletUsageStore', () => {
             row.createdAt,
             messageId,
             memberA,
-            memberB,
+            noteAuthorId,
             row.amountSats,
             row.result,
             row.heart,
@@ -10084,6 +10147,32 @@ describe('PostgresWalletUsageStore', () => {
         hiddenNote: false,
         paid: true,
       });
+      await insertForum({
+        createdAt: forumPlatformFeeAt,
+        amountSats: 1,
+        result: 'ok',
+        heart: false,
+        paymentHash: platformFeeHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        noteAuthorId: platformId,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumPlatformHeartAt,
+        amountSats: 2,
+        result: 'ok',
+        heart: true,
+        paymentHash: platformHeartHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        noteAuthorId: platformId,
+        paid: true,
+      });
       // A zap receipt gift: claimed hash, living note, no heart invoice.
       const zapReceiptId = `${run}-zap-receipt`;
       receiptIds.push(zapReceiptId);
@@ -10200,6 +10289,150 @@ describe('PostgresWalletUsageStore', () => {
         paymentHash: null,
         invoice: null,
       });
+      // Payment hashes pair member-to-member rows even when their payment ids
+      // differ. Hash comparison is case-insensitive.
+      const sharedHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-hash-out`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 66,
+        feeSats: 1,
+        paidAt: at(907),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: sharedHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-hash-in`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 66,
+        feeSats: 0,
+        paidAt: at(908),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: sharedHash.toUpperCase(),
+        invoice: null,
+      });
+      // Spark invoices pair through the same non-empty invoice text.
+      const sharedInvoice = `${run}-shared-invoice`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-invoice-out`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 67,
+        feeSats: 1,
+        paidAt: at(909),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: sharedInvoice,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-invoice-in`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 67,
+        feeSats: 0,
+        paidAt: at(910),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: sharedInvoice,
+      });
+      // One outgoing row matched by two incoming rows is ambiguous and keeps
+      // all three rows as separate payments.
+      const ambiguousHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-ambiguous-out`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 68,
+        feeSats: 0,
+        paidAt: at(911),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: ambiguousHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-ambiguous-in-1`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 70,
+        feeSats: 0,
+        paidAt: at(912),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: ambiguousHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: `${run}-ambiguous-in-2`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 71,
+        feeSats: 0,
+        paidAt: at(913),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: ambiguousHash,
+        invoice: null,
+      });
+      // A same-id pair still merges when a third, non-completed row shares the
+      // id: only completed rows take part in the one-partner rule. The two
+      // completed rows also share a hash, so the id and hash joins find the
+      // same pair and `UNION` must still count it once.
+      const sharedIdWithFailedRow = `${run}-shared-id-failed`;
+      const sharedIdHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: sharedIdWithFailedRow,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 72,
+        feeSats: 1,
+        paidAt: at(920),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: sharedIdHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: sharedIdWithFailedRow,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 72,
+        feeSats: 0,
+        paidAt: at(921),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: sharedIdHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: sharedIdWithFailedRow,
+        direction: 'in',
+        status: 'failed',
+        amountSats: 73,
+        feeSats: 0,
+        paidAt: at(922),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: null,
+      });
 
       const shopPaidAt = at(15);
       const shopPendingAt = at(25);
@@ -10236,8 +10469,8 @@ describe('PostgresWalletUsageStore', () => {
       expect(
         ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
       ).toEqual([
-        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 61, 62, 63, 64, 65, 150, 500, 1000,
-        12321, 69089, 293955,
+        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 61, 62, 63, 64, 65, 66, 67, 68,
+        70, 71, 72, 150, 500, 1000, 12321, 69089, 293955,
       ]);
       const pair = ours.filter((row) => row.amountSats === 63);
       expect(pair).toHaveLength(1);
@@ -10379,6 +10612,67 @@ describe('PostgresWalletUsageStore', () => {
       expect(byAmount(47).isForumGift).toBe(true);
       expect(byAmount(48).isForumGift).toBe(true);
       expect(byAmount(49).isForumGift).toBe(false);
+      expect(byAmount(50)).toMatchObject({
+        category: 'platform',
+        payerAccountId: memberA,
+        payeeAccountId: platformId,
+        payerParty: 'members',
+        payeeParty: 'platform',
+        isForumGift: false,
+      });
+      expect(byAmount(51)).toMatchObject({
+        category: 'gift',
+        payerAccountId: memberA,
+        payeeAccountId: platformId,
+        payerParty: 'members',
+        payeeParty: 'platform',
+        isForumGift: true,
+      });
+      expect(byAmount(66)).toMatchObject({
+        feeSats: 1,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(byAmount(66).paidAt.toISOString()).toBe(at(907).toISOString());
+      expect(ours.filter((row) => row.amountSats === 66)).toHaveLength(1);
+      expect(byAmount(67)).toMatchObject({
+        feeSats: 1,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(ours.filter((row) => row.amountSats === 67)).toHaveLength(1);
+      expect(byAmount(68)).toMatchObject({
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(ours.filter((row) => row.amountSats === 68)).toHaveLength(1);
+      expect(byAmount(70)).toMatchObject({
+        payeeAccountId: memberB,
+      });
+      expect(ours.filter((row) => row.amountSats === 70)).toHaveLength(1);
+      expect(byAmount(71)).toMatchObject({
+        payeeAccountId: shop,
+      });
+      expect(ours.filter((row) => row.amountSats === 71)).toHaveLength(1);
+      expect(
+        ours.filter(
+          (row) => row.amountSats === 68 || row.amountSats === 70 || row.amountSats === 71,
+        ),
+      ).toHaveLength(3);
+      expect(byAmount(72)).toMatchObject({
+        feeSats: 1,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(byAmount(72).paidAt.toISOString()).toBe(at(920).toISOString());
+      expect(ours.filter((row) => row.amountSats === 72)).toHaveLength(1);
+      expect(ours.some((row) => row.amountSats === 73)).toBe(false);
+      expect(ours.some((row) => row.payerAccountId === memberA && row.amountSats === 223)).toBe(
+        false,
+      );
+      expect(ours.some((row) => row.payeeAccountId === memberB && row.amountSats === 223)).toBe(
+        false,
+      );
 
       const forum = await store.forumInvoices(since.getTime());
       const forumAt = (createdAt: Date) =>
@@ -10405,9 +10699,15 @@ describe('PostgresWalletUsageStore', () => {
       expect(forumAt(forumRepayPartAt)).toBeUndefined();
       expect(forumAt(forumUnpaidAt)).toBeUndefined();
       expect(forumAt(forumHiddenAt)).toBeUndefined();
+      expect(forumAt(forumPlatformFeeAt)).toBeUndefined();
+      expect(forumAt(forumPlatformHeartAt)).toEqual({
+        createdAt: forumPlatformHeartAt,
+        amountSats: 2,
+        heart: true,
+      });
       expect(forum.every((row) => row.createdAt.getTime() >= since.getTime())).toBe(true);
       expect(forum.map((row) => row.amountSats).sort((left, right) => left - right)).toEqual([
-        5, 21, 45, 47, 48,
+        2, 5, 21, 45, 47, 48,
       ]);
 
       const charges = await store.shopCharges(since.getTime());

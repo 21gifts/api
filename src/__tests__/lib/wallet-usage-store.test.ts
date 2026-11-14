@@ -105,6 +105,24 @@ describe('InMemoryWalletUsageStore', () => {
       AT.toISOString(),
     );
   });
+
+  it('omits a platform-note compose fee from the forum series but keeps its heart', async () => {
+    const store = new InMemoryWalletUsageStore({
+      payments: [],
+      forumInvoices: [
+        { createdAt: AT, amountSats: 1, heart: false, platformNote: true },
+        { createdAt: AFTER, amountSats: 2, heart: true, platformNote: true },
+        { createdAt: BEFORE, amountSats: 5, heart: false },
+      ],
+      shopCharges: [],
+    });
+    const rows = await store.forumInvoices(0);
+    expect(rows).toEqual([
+      { createdAt: AFTER, amountSats: 2, heart: true },
+      { createdAt: BEFORE, amountSats: 5, heart: false },
+    ]);
+    expect(rows.some((row) => 'platformNote' in row)).toBe(false);
+  });
 });
 
 describe('PostgresWalletUsageStore', () => {
@@ -132,6 +150,7 @@ describe('PostgresWalletUsageStore', () => {
     expect(forum.params).toEqual([AT]);
     expect(charges.params).toEqual([AT]);
     expect(payments.text).toContain("status = 'completed'");
+    expect(payments.text).toContain("paid_at >= $1::timestamptz - interval '1 day'");
     expect(payments.text).toContain('min(paid_at)');
     expect(payments.text).toContain('max(amount_sats)');
     expect(payments.text).toContain('sum(coalesce(fee_sats, 0))');
@@ -150,13 +169,45 @@ describe('PostgresWalletUsageStore', () => {
     expect(payments.text).toContain('HAVING min(paid_at) >= $1');
     expect(payments.text).toContain('AS group_key');
     expect(payments.text).toContain('FROM wallet_payment');
-    expect(payments.text).toContain('id_totals.row_count = 2');
-    expect(payments.text).toContain('id_totals.completed_count = 2');
-    expect(payments.text).toContain('id_totals.completed_account_count = 2');
-    expect(payments.text).toContain('id_totals.completed_direction_count = 2');
-    expect(payments.text).toContain("THEN 'pair:' || wallet_payment.payment_id");
+    expect(payments.text).toContain('completed_rows');
+    expect(payments.text).toContain('pair_matches');
+    expect(payments.text).toContain('unique_pairs');
+    expect(payments.text).toContain("out_row.direction = 'out'");
+    expect(payments.text).toContain("in_row.direction = 'in'");
+    expect(payments.text).toContain('out_row.account_id <> in_row.account_id');
+    expect(payments.text).toContain('out_row.payment_id = in_row.payment_id');
+    expect(payments.text).toContain('out_row.payment_hash IS NOT NULL');
+    expect(payments.text).toContain('in_row.payment_hash IS NOT NULL');
+    expect(payments.text).toContain('lower(out_row.payment_hash) = lower(in_row.payment_hash)');
+    expect(payments.text).toContain("out_row.invoice <> ''");
+    expect(payments.text).toContain('in_row.invoice IS NOT NULL');
+    expect(payments.text).toContain("in_row.invoice <> ''");
+    expect(payments.text).toContain('out_row.invoice = in_row.invoice');
+    expect(payments.text.match(/SELECT out_row\.account_id AS out_account_id/g)).toHaveLength(3);
+    expect(
+      payments.text.match(/UNION\n {2}SELECT out_row\.account_id AS out_account_id/g),
+    ).toHaveLength(2);
+    expect(payments.text).not.toContain('SELECT DISTINCT out_row');
+    expect(payments.text).toContain('count(*) OVER (PARTITION BY out_account_id, out_payment_id)');
+    expect(payments.text).toContain('count(*) OVER (PARTITION BY in_account_id, in_payment_id)');
+    expect(payments.text).toContain('WHERE out_match_count = 1');
+    expect(payments.text).toContain('AND in_match_count = 1');
+    expect(payments.text).not.toContain('FROM pair_matches outgoing');
+    expect(payments.text).not.toContain('FROM pair_matches incoming');
+    expect(payments.text).toContain('platform_fee.heart IS NOT TRUE');
+    expect(payments.text).toContain('platform_author.is_platform = true');
     expect(payments.text).toContain(
-      "'row:' || wallet_payment.account_id::text || ':' || wallet_payment.payment_id",
+      'lower(platform_fee.payment_hash) = candidate_hashes.payment_hash',
+    );
+    expect(payments.text).not.toContain('platform_note.deleted_at IS NULL');
+    expect(payments.text).toContain(
+      "THEN 'pair:' || out_pair.out_account_id::text || ':' || out_pair.out_payment_id",
+    );
+    expect(payments.text).toContain(
+      "THEN 'pair:' || in_pair.out_account_id::text || ':' || in_pair.out_payment_id",
+    );
+    expect(payments.text).toContain(
+      "'row:' || completed_rows.account_id::text || ':' || completed_rows.payment_id",
     );
     expect(payments.text).toContain('GROUP BY group_key');
     expect(payments.text).toContain('ORDER BY group_key, account_id');
@@ -205,6 +256,10 @@ describe('PostgresWalletUsageStore', () => {
     expect(forum.text).not.toContain('$2');
     expect(forum.text).toContain('JOIN message note ON note.id = invoice.message_id');
     expect(forum.text).toContain('note.deleted_at IS NULL');
+    expect(forum.text).toContain('LEFT JOIN account author');
+    expect(forum.text).toContain(
+      'AND (invoice.heart IS TRUE OR coalesce(author.is_platform, false) = false)',
+    );
     expect(charges.text).toContain('pos_charge');
     expect(charges.text).toContain('created_at');
     expect(charges.text).toContain('status');
@@ -438,6 +493,110 @@ describe('PostgresWalletUsageStore', () => {
       true,
       false,
     ]);
+  });
+
+  it('does not count a non-heart invoice on a platform-authored note as a forum gift', async () => {
+    const basePayment = paymentFields(AT, 1);
+    const seed = (paymentHash: string | null, invoice: string | null) => ({
+      ...basePayment,
+      paymentHash,
+      invoice,
+    });
+    const store = new InMemoryWalletUsageStore({
+      payments: [seed('AA11', null), seed('bb22', null), seed(null, 'compose-bolt')],
+      forumInvoices: [],
+      shopCharges: [],
+      forumGiftInvoices: [
+        {
+          paymentHash: null,
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: false,
+          heart: false,
+          platformNote: true,
+        },
+        {
+          paymentHash: 'cc33',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: false,
+          heart: false,
+          platformNote: false,
+        },
+        {
+          paymentHash: 'aa11',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+          heart: false,
+          platformNote: true,
+        },
+        {
+          paymentHash: 'bb22',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+          heart: true,
+          platformNote: true,
+        },
+        {
+          paymentHash: null,
+          pr: 'compose-bolt',
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+          heart: false,
+          platformNote: true,
+        },
+      ],
+    });
+    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([false, true, false]);
+  });
+
+  it('rejects a compose fee claimed as a zap receipt but keeps a platform heart', async () => {
+    const basePayment = paymentFields(AT, 1);
+    const seed = (paymentHash: string) => ({ ...basePayment, paymentHash, invoice: null });
+    const store = new InMemoryWalletUsageStore({
+      payments: [seed('aa11'), seed('bb22')],
+      forumInvoices: [],
+      shopCharges: [],
+      forumGiftInvoices: [
+        {
+          paymentHash: 'aa11',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: false,
+          heart: false,
+          platformNote: true,
+        },
+        {
+          paymentHash: 'bb22',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: false,
+          heart: true,
+          platformNote: true,
+        },
+      ],
+      zapGifts: [
+        { paymentHash: 'AA11', hidden: false },
+        { paymentHash: 'bb22', hidden: false },
+      ],
+    });
+    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([false, true]);
   });
 
   it('correlates zap gift exclusions to the hashes that own them', async () => {
