@@ -27,7 +27,7 @@ export interface GiftRecord {
 /**
  * Persistence for a newly proven outbound gift.
  *
- * Failures must not fail `POST /invoices/proof` — the Lightning pay already
+ * Failures must not fail the payout settlement — the Lightning pay already
  * happened. Callers log and continue.
  */
 export interface GiftRecorder {

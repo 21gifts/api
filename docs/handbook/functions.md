@@ -237,7 +237,7 @@
 - **Purpose:** Convert positive USD decimal text to millisatoshis at a positive BTC-USD spot with the Fond payout path's whole-satoshi, half-up BigInt calculation.
 - **Inputs:** USD amount text and USD-per-BTC spot text. Both use plain positive decimal notation.
 - **Returns / side effects:** The safe integer millisatoshi amount, or `null` for an unusable/non-positive input or overflow. No I/O.
-- **Used by:** `fondRoutes` invoice issue and the spend invoice's one-time USD 1.00 welcome-limit check.
+- **Used by:** `fondRoutes` invoice issue and the one-time USD 1.00 welcome-limit check of `issueGiftInvoice`.
 
 ## Function: parseUsdPerBtc
 
@@ -269,10 +269,10 @@
 
 ## Function: normalizeAmountUsd
 
-- **Purpose:** Normalize a spend-worker USD amount to a two-decimal string without IEEE float.
+- **Purpose:** Normalize a decided payout USD amount to a two-decimal string without IEEE float.
 - **Inputs:** Caller text such as `"5"`, `"5.1"`, or `"5.00"`. Value must be `> 0` and `<= 100000`, integer cents only.
 - **Returns / side effects:** `"5.00"`-style string, or `null` when the value is unusable. No I/O.
-- **Used by:** `invoiceRoutes`.
+- **Used by:** `issueGiftInvoice`.
 
 ## Function: shownFiatFromBody
 
@@ -286,21 +286,21 @@
 - **Purpose:** Freeze CHF/EUR/PHP from an already-normalized USD amount. The USD string is the amount stored at payment time, not a later UTC-day close.
 - **Inputs:** `amountUsd` (`"5.00"`) and optional CHF/EUR/PHP per 1 USD. A missing cross stays null.
 - **Returns / side effects:** `FiatAmounts` whose `usd` is `amountUsd`. Throws `amountUsd must be normalized` on a bad USD string. No I/O.
-- **Used by:** `invoiceRoutes`.
+- **Used by:** No production caller (the removed proof route was the only one); kept as a tested helper.
 
 ## Function: paymentRateDays
 
 - **Purpose:** UTC days to load when freezing a payment, newest first. The first day is the payment day. Each following day is the previous UTC date.
 - **Inputs:** `day` (`YYYY-MM-DD`) and optional `count` (default 10, clamped to 1..10).
 - **Returns / side effects:** That many days, or an empty list when `day` is not a real calendar date. No I/O.
-- **Used by:** `invoiceRoutes`.
+- **Used by:** No production caller; kept as a tested helper.
 
 ## Function: crossForPaymentDay
 
 - **Purpose:** Fill CHF, EUR, and PHP independently from the nearest loaded day on or before the payment day. A quote missing on the payment day comes from an earlier day. A later day is ignored. A quote that is not a positive decimal is skipped.
 - **Inputs:** A map of UTC day to optional CHF/EUR/PHP per 1 USD, and the payment `day`.
 - **Returns / side effects:** The crosses that could be filled. Missing quotes are omitted. No I/O.
-- **Used by:** `invoiceRoutes`.
+- **Used by:** No production caller; kept as a tested helper.
 
 ## Function: quoteFromLargestSibling
 
@@ -314,14 +314,14 @@
 - **Purpose:** Freeze USD/CHF/EUR/PHP from whole sats at one Coinbase spot. The USD is that spot, not a later UTC-day close.
 - **Inputs:** Positive whole `sats`, Coinbase `data.amount` text, and optional CHF/EUR/PHP per 1 USD. A missing cross stays null.
 - **Returns / side effects:** `FiatAmounts` at this spot. Throws on a bad rate. No I/O.
-- **Used by:** `invoiceRoutes`, message create, zap indexing.
+- **Used by:** goal rates (`src/lib/goal-rate.ts`) and zap indexing.
 
 ## Function: fetchBtcUsdSpot
 
 - **Purpose:** Fetch the current positive BTC-USD spot used to freeze fiat at payment time, without ever throwing.
 - **Inputs:** Optional fetch implementation and optional URL (blank falls through to `BTC_USD_SPOT_URL`, then the Coinbase default).
 - **Returns / side effects:** Coinbase decimal text, or `null` for every transport, shape, or value failure, including a fetch that aborts after 10 seconds (`BTC_USD_SPOT_TIMEOUT_MS`). Does not throw.
-- **Used by:** `invoiceRoutes`, message create, zap indexing, conversation message append (`InMemoryConversationStore` / `PostgresConversationStore` `appendMessage`), and `fondRoutes` `POST /payouts/:id/invoice`.
+- **Used by:** `issueGiftInvoice` (welcome spot check), the `/fond` invoice route, message create, zap indexing, conversation message append (`InMemoryConversationStore` / `PostgresConversationStore` `appendMessage`), and `fondRoutes` `POST /payouts/:id/invoice`.
 
 ## Function: fetchSparkAddressBalance
 
@@ -571,7 +571,7 @@
 - **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated). Operator dump: `listExtraPhotoMeta(limit)`, `listZapReceipts(limit)`, and `listZapPayments(limit)` newest-first (cap 200). `countAttributedReplies(parentId)` is that uncapped count of live direct children with an account or a recorded zapper pubkey (0 when the id is unknown).
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to `MessageRow` / `ForumPhoto` / invoice and ingest rows. Claim uses `FOR UPDATE SKIP LOCKED`. Errors propagate to the route (503) except invoice/ingest persist failures which are caught by callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set; the api entry point (`src/index.ts`) for the Fond paid worker actions.
-- **Welcome gift:** `accountHasWelcomeGift(accountId, platformAccountId)` is true when a platform reply whose trimmed text is `Welcome` exists under one of the account's notes, live or soft-hidden. One `SELECT … FROM message reply JOIN message parent` query (`reply.account_id = $2`, `parent.account_id = $1`, `trim(reply.text) = 'Welcome'`, no `deleted_at` filter). Used by the welcome ping and the spend invoice routes so the welcome gift is paid once per account.
+- **Welcome gift:** `accountHasWelcomeGift(accountId, platformAccountId)` is true when a platform reply whose trimmed text is `Welcome` exists under one of the account's notes, live or soft-hidden. One `SELECT … FROM message reply JOIN message parent` query (`reply.account_id = $2`, `parent.account_id = $1`, `trim(reply.text) = 'Welcome'`, no `deleted_at` filter). Used by the welcome ping and `issueGiftInvoice` so the welcome gift is paid once per account.
 - **Shop identity:** Row reads select `shop_identity.nostr_pubkey` as `shopNpub` (npub-encoded); `listPlaces` returns it only for a listed shop (`isListedShop` in code). `create` writes the note, its mentions and its extra photos in one data-modifying CTE (photo rows insert from the note insert's `RETURNING`), so a failed statement leaves nothing a concurrent key backfill could see. With `SqlClient.transaction`, `deleteById` locks the note, checks the credit rule and then `shop_identity` in their own statements and deletes nothing when a key exists; without it, one CTE with the same checks runs.
 
 ## Function: PostgresContactStore
@@ -1319,7 +1319,7 @@
 - **Returns / side effects:** Promise of row/photo copies; mutating results does not change the store. Listed objects never expose bytes or `contentFp`. When `id` is new, `video` is set, and no live fingerprint match exists, `create` awaits `writeForumVideo` (disk under `MEDIA_DIR`); if that write throws, the row is never pushed (no unlink).
 - **Used by:** `createApp` default `messageStore`; the api entry point (`src/index.ts`) for the Fond paid worker actions.
 - **Free first post:** `accountHasTopLevelPost(accountId, excludeId)` is true when the account has a top-level row other than `excludeId` (the profile note), live or soft-hidden; replies do not count. `createFirstPost(row, excludeId)` stores a text-only top-level row through `create` only when that check is false, and returns `undefined` otherwise. A process-local claim set per account makes a second concurrent call return `undefined` while the first is still storing. A reply or a row without `accountId` throws `first post must be a top-level note of an account`.
-- **Welcome gift:** `accountHasWelcomeGift(accountId, platformAccountId)` is true when a platform reply whose trimmed text is `Welcome` exists under one of the account's notes, live or soft-hidden. Used by the welcome ping and the spend invoice routes so the welcome gift is paid once per account.
+- **Welcome gift:** `accountHasWelcomeGift(accountId, platformAccountId)` is true when a platform reply whose trimmed text is `Welcome` exists under one of the account's notes, live or soft-hidden. Used by the welcome ping and `issueGiftInvoice` so the welcome gift is paid once per account.
 - **Photo revision:** `photoRevision(id)` returns a per-note counter, `0` until a write changes the stills `getPhotoSet` returns (photo 0 or an extra: stored index, content type or bytes), then raised by one per such write (`create`, `updatePhoto`, `replacePhotos`, `deleteById`; unknown ids are `0`). A write that stores the same stills (an unrecognized type is not part of the set) leaves it unchanged; the comparison runs once per write, and the read copies and hashes no bytes. The counter is never removed, so it never goes back. `InMemoryShopIdentityStore` uses it as its photo fingerprint.
 - **Shop identity:** `setShopNpub(id, npub)` attaches the npub of a shop key to the row (called by `InMemoryShopIdentityStore`); `deleteById` returns `false` for a row with one, so the identity never dangles. `listPlaces` rows carry `shopNpub` only while `isListedShop` holds, otherwise `null`.
 
@@ -1328,14 +1328,14 @@
 - **Purpose:** Whether `accountId` has at least one live top-level forum row that is not `excludeId` and has media (photo 0, extra stills, or video). Same live / top-level / exclude / Damus-null-account rules as `accountHasLiveTopLevelPost`. InMemory: `#photos.has(id)` or extras length > 0 or `row.hasVideo === true` (seed `hasPhoto: true` alone is not media). Postgres: `photo IS NOT NULL` or non-empty `video_content_type` or `EXISTS` extra still. Replies do not count.
 - **Inputs:** `accountId` (author account id), `excludeId` (auto profile note id, or `null` to exclude nothing extra).
 - **Returns / side effects:** `Promise<boolean>`. InMemory scans rows; Postgres `SELECT 1 … LIMIT 1` with params `[$1 accountId, $2 excludeId]`.
-- **Used by:** `invoiceRoutes` (`GET /posted` `hasMedia`).
+- **Used by:** `issueGiftInvoice`.
 
 ## Function: latestLiveTopLevelMediaId
 
 - **Purpose:** Newest live top-level photo or video id for one account, including the About-me note. Not capped by the public list size. Replies, soft-hidden rows, and other accounts do not count. InMemory matches a stored photo, extra stills, or `hasVideo` (seed `hasPhoto: true` alone is not media) and sorts `createdAt` then `id` descending. Postgres selects `photo IS NOT NULL`, a non-empty `video_content_type`, or an extra still, `ORDER BY created_at DESC, id DESC LIMIT 1`.
 - **Inputs:** `accountId` (author account id).
 - **Returns / side effects:** `Promise<string | null>`. Empty or missing id is `null`. No writes.
-- **Used by:** `syncWelcomePing`, `invoiceRoutes` (`GET /posted` `welcomeHasMedia` / `welcomeMessageId`), and `fundingRoutes` (`POST /funding/trial` and `POST /funding/admit` from effective pending).
+- **Used by:** `syncWelcomePing`, `issueGiftInvoice`, and `fundingRoutes` (`POST /funding/trial` and `POST /funding/admit` from effective pending).
 
 ## Function: InMemoryContactStore
 
@@ -1384,7 +1384,7 @@
 - **Purpose:** Apply the one shared welcome-recipient rule used by invoice eligibility, live and sweep welcome pings, and payout-window replay: the account is non-platform and its role is exactly `verified`.
 - **Inputs:** An account's `role` and optional `isPlatform` flag.
 - **Returns / side effects:** `true` only for an exactly `verified` non-platform account; `false` for every other role and the platform account. No I/O.
-- **Used by:** `invoiceRoutes`, `syncWelcomePing`, `welcomeSweepCandidates`, `replayPayoutWindow`, and `loadFundingPayoutToday`.
+- **Used by:** `issueGiftInvoice`, `syncWelcomePing`, `welcomeSweepCandidates`, `replayPayoutWindow`, and `loadFundingPayoutToday`.
 
 ## Function: syncWelcomePing
 
@@ -1398,7 +1398,7 @@
 - **Purpose:** The one welcome-once check: whether an account already received the one-time welcome gift, whichever address it went to. True for a platform `Welcome` reply under one of its notes (`accountHasWelcomeGift`, live or hidden), a `welcome` gift whose trimmed, case-insensitive recipient handle equals the local part of its legacy external address `account.lightning_address` (`listLegacyWelcomeAccountIds`; no time bound), or a `welcome` gift with description `21gifts welcome` recorded under its username at or after its wallet verification. A username record from before the verification does not count, because the username may have belonged to another account then.
 - **Inputs:** `{ auth, messages, gifts?, account }`: `auth.listAccounts` (platform account), `messages.accountHasWelcomeGift`, optional gift store (`listOutbound`, optional `listLegacyWelcomeAccountIds`; omitted → only the reply counts), and the account's `id`, `username`, and `sparkPubkeyVerifiedAt`.
 - **Returns / side effects:** `Promise<boolean>`. Reads only. Store errors reject.
-- **Used by:** `POST /invoices` (409 `Welcome gift already paid`), `GET /invoices/posted` (`welcomeHasMedia`), `syncWelcomePing`, and `welcomeSweepCandidates` through the same ledger.
+- **Used by:** `issueGiftInvoice` (409 `Welcome gift already paid`), `syncWelcomePing`, and `welcomeSweepCandidates` through the same ledger.
 
 ## Function: welcomeSweepCandidates
 
@@ -1426,7 +1426,7 @@
 - **Purpose:** Whether outbound gifts already record a welcome gift for this handle on a UTC day. Matches `kind === 'welcome'` only. The handle is the trimmed local part before the first `@`, or the whole trimmed string when there is no `@`, compared case-insensitively. Empty handles and an invalid `paidAt` do not match. `utcDay` is the caller's `YYYY-MM-DD` and is not recomputed.
 - **Inputs:** `gifts` (outbound gift rows), `address` (Lightning Address or handle), `utcDay` (`YYYY-MM-DD`).
 - **Returns / side effects:** `true` when at least one gift matches kind, handle, and day. No I/O.
-- **Used by:** `HttpSpendPing`, `POST /invoices`, and `spendInstructionRoutes`.
+- **Used by:** `HttpSpendPing` and `issueGiftInvoice`.
 
 ## Function: HttpSpendPing
 
@@ -1447,7 +1447,7 @@
 - **Purpose:** Thrown by `DailyRosterStore` when a change is rejected (400) or by routes when the roster cannot be read (502). `error` is the client-facing string. It is never the token, the comment text, or a Lightning address.
 - **Inputs:** `status` (`400` or `502`) and `error` (the JSON `error` string).
 - **Returns / side effects:** `Error` with `status` and `error`. No I/O.
-- **Used by:** `InMemoryDailyRosterStore`, `PostgresDailyRosterStore`, `fundingRoutes`, `spendInstructionRoutes`.
+- **Used by:** `InMemoryDailyRosterStore`, `PostgresDailyRosterStore`, `fundingRoutes`.
 
 ## Function: normalizeDailyRosterComment
 
@@ -1461,7 +1461,7 @@
 - **Purpose:** Process-local `DailyRosterStore`. Rows are keyed by account id (trimmed; blank is `Invalid address or amount`). A never-written store is `{ comment: '', paymentsEnabled: true, moderatorPaymentsEnabled: true, recipients: [], moderators: [] }` with `defaultAmountUsd` always 1 on read; each listed row is `{ accountId, amountUsd }`. `hasBeenWritten` is false only before the first write. A constructor seed and a saved empty roster are written. The five 400 texts stay `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed` (account already in the bucket), and `Unknown address` (account not in the bucket). `importDocument` writes only while the store is still that empty start; a second call returns the stored document unchanged. It has no accounts, so imported `{ address, amountUsd }` rows stay without an account: they are kept for `linkReport` and left out of every document.
 - **Inputs:** Optional seed document. Methods `get`, `hasBeenWritten`, `setComment`, `setPaymentsEnabled`, `setModeratorPaymentsEnabled`, `addRecipient`, `updateRecipient`, `deleteRecipient`, `addModerator`, `updateModerator`, `deleteModerator` (each by account id), `linkReport`, `importDocument`.
 - **Returns / side effects:** Caller-owned copies. Throws `DailyRosterRequestError` 400. `linkReport` returns `{ rows, linked, unlinked, buckets }` (`DailyRosterLinkReport`). No HTTP.
-- **Used by:** `openBootStores` memory boots, `createApp` default, `fundingRoutes`, `spendInstructionRoutes`.
+- **Used by:** `openBootStores` memory boots, `createApp` default, `fundingRoutes`.
 
 ## Function: PostgresDailyRosterStore
 
@@ -1496,14 +1496,14 @@
 - **Purpose:** Read payment hash and millisat amount from a BOLT11 string via `light-bolt11-decoder`.
 - **Inputs:** `pr` string; optional test decoder.
 - **Returns / side effects:** `{ paymentHash, amountMsat }` or `null` on any decode failure (malformed, zero-amount, or an amount that is not a safe integer).
-- **Used by:** `invoiceRoutes` after LNURL-pay returns `pr`.
+- **Used by:** `issueGiftInvoice` after LNURL-pay returns `pr`, `POST /pay/:username/invoice`, the shop payment, wallet categorisation, account activity, and zap indexing.
 
 ## Function: InMemoryInvoiceStore
 
-- **Purpose:** Process-local store of gift invoices issued for the spend worker. `GiftInvoice` may include optional `messageId`, `groupMessageId`, and `comment`; `markPaid` preserves them.
+- **Purpose:** Process-local store of gift invoices issued for Fond payouts. `GiftInvoice` may include optional `messageId`, `groupMessageId`, and `comment`; `markPaid` preserves them.
 - **Inputs:** `put`, `get(id)`, `markPaid(id, preimage, now)`, `sweep(now)`.
 - **Returns / side effects:** Lookups return the row or `undefined`. `sweep` drops unpaid rows after expiry plus one extra TTL (409 tombstone window); paid rows stay for proof idempotency. Restart clears the map.
-- **Used by:** Default `createApp` `invoiceStore`; `invoiceRoutes`; the api entry point (`src/index.ts`) as the invoice store of the Fond paid worker actions.
+- **Used by:** Default `createApp` `invoiceStore` (the `/fond` gift actions); the api entry point (`src/index.ts`) as the invoice store of the Fond paid worker actions.
 
 ## Function: NoopGiftRecorder
 
@@ -1524,14 +1524,14 @@
 - **Purpose:** Stats handle from a receiving address (the member's wallet address, so the username): local-part before `@`, or the whole string if there is no `@`.
 - **Inputs:** Normalised `local@domain` (or a bare handle).
 - **Returns / side effects:** `recipient_wos_user` string. No I/O.
-- **Used by:** `invoiceRoutes` when recording a proven gift.
+- **Used by:** `persistProvenGift` when recording a proven gift.
 
 ## Function: newInvoiceId
 
 - **Purpose:** 16 random bytes as 32 lowercase hex characters.
 - **Inputs:** None (uses `crypto.getRandomValues`).
 - **Returns / side effects:** Unguessable invoice id string.
-- **Used by:** `POST /invoices`.
+- **Used by:** `issueGiftInvoice`.
 
 ## Function: normalizeHex32
 
@@ -1545,14 +1545,14 @@
 - **Purpose:** Lightning proof-of-payment: `sha256(preimage)` equals the invoice payment hash.
 - **Inputs:** Preimage hex and payment-hash hex.
 - **Returns / side effects:** `true` only on a 32-byte match.
-- **Used by:** `POST /invoices/proof`.
+- **Used by:** the zap receipt ingest (`src/lib/nostr/zap-index.ts`).
 
 ## Function: requestGiftInvoice
 
 - **Purpose:** LNURL-pay fetch for gift amounts: comment optional, amount not raised to minSendable.
 - **Inputs:** Normalised address, amountMsat, optional comment, fetchImpl, optional `deadlineMs` (absolute epoch ms for both calls, the pay-request resolve and the callback; each call is aborted at the time left, and a call at or after it fails like an unreachable provider) and optional `now` (default `Date.now`).
 - **Returns / side effects:** `{ ok: true, pr }` or `{ ok: false, reason: 'unreachable' }`.
-- **Used by:** `POST /invoices`, `POST /pay/:username/invoice`, and the shop payment mint (`ShopPayments`, 4 s deadline).
+- **Used by:** `issueGiftInvoice`, `POST /pay/:username/invoice`, and the shop payment mint (`ShopPayments`, 4 s deadline).
 
 ## Function: authRoutes
 
@@ -2664,7 +2664,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: accountByReceivingAddress
 
-- **Purpose:** Lookup of the member behind a receiving address, for spend-worker routes and the Fond invoice route's Spark invoice. The address must be `<username>@<host of PUBLIC_BASE_URL>` (trimmed, case-insensitive). The username is looked up and the account must resolve to that same address through `receivingAddress`, so a member without a verified wallet is not found.
+- **Purpose:** Lookup of the member behind a receiving address, for `issueGiftInvoice`, the spend ping, and the Fond invoice route's Spark invoice. The address must be `<username>@<host of PUBLIC_BASE_URL>` (trimmed, case-insensitive). The username is looked up and the account must resolve to that same address through `receivingAddress`, so a member without a verified wallet is not found.
 - **Inputs:** An auth store with `getAccountByUsername`, the address as sent, and the `LnurlServerConfig` or `undefined`.
 - **Returns / side effects:** `{ account, receiving }`, or `undefined` for another domain, a blank local part, an unknown username, no verified wallet, or the LNURL server off. Reads the auth store only.
 - **Used by:** `issueGiftInvoice`, the moderator-group gift recipient name in `settleProvenGift`, and `fondRoutes` `POST /payouts/:id/invoice` through `payoutSparkInvoice`.
@@ -3948,14 +3948,14 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Whether an account belongs to the closed Moderators group: at least a moderator on the role hierarchy and not the platform account. The platform account is a house identity, not a person in the staff room, whatever role it carries.
 - **Inputs:** `{ role: AccountRole, isPlatform?: boolean }`.
 - **Returns / side effects:** boolean (`isPlatform !== true && roleAtLeast(role, 'moderator')`). No I/O.
-- **Used by:** `conversationRoutes` (`canAccess` on `moderator_group`, `GET /conversations/moderator-group`), `inboxUnreadCountFor` (group pin in the badge count), `notifyConversationMessage` (group push recipients), `earnsModeratorGroupPay`, and `issueGiftInvoice` (`POST /invoices` groupMessageId gate).
+- **Used by:** `conversationRoutes` (`canAccess` on `moderator_group`, `GET /conversations/moderator-group`), `inboxUnreadCountFor` (group pin in the badge count), `notifyConversationMessage` (group push recipients), `earnsModeratorGroupPay`, and `issueGiftInvoice` (groupMessageId gate).
 
 ## Function: earnsModeratorGroupPay
 
 - **Purpose:** Whether an account earns the moderator-group payout. It gates both the moderator-group spend ping and the `issueGiftInvoice` stipend for a group message. True for a non-platform account that is at least moderator, except `software_developer`. The software developer is in the closed Moderators group with every moderator permission but is not paid for group messages (user decision 2026-11-09). This is the one named exception: no moderator-group payout for `software_developer`.
 - **Inputs:** `{ role: AccountRole, isPlatform?: boolean }`.
 - **Returns / side effects:** boolean (`isModeratorGroupMember(account) && account.role !== 'software_developer'`). No I/O.
-- **Used by:** `conversationRoutes` (moderator-group message ping), `replayPayoutWindow` (`payout === 'moderator'`), `issueGiftInvoice` (`POST /invoices` groupMessageId gate).
+- **Used by:** `conversationRoutes` (moderator-group message ping), `replayPayoutWindow` (`payout === 'moderator'`), `issueGiftInvoice` (groupMessageId gate).
 
 ## Function: isStaffRole
 
@@ -4184,10 +4184,10 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: ownerFundingStatus
 
-- **Purpose:** The effective grant status as the member and the spend worker see it: `effectiveStatus`, with a withdrawn grant read as `'none'`. A member who left the program looks exactly like a member who never applied, and the owner wire keeps its five values (`none`, `pending`, `trial`, `admitted`, `rejected`). Staff views keep `effectiveStatus` and see `'withdrawn'`.
+- **Purpose:** The effective grant status as the member sees it: `effectiveStatus`, with a withdrawn grant read as `'none'`. A member who left the program looks exactly like a member who never applied, and the owner wire keeps its five values (`none`, `pending`, `trial`, `admitted`, `rejected`). Staff views keep `effectiveStatus` and see `'withdrawn'`.
 - **Inputs:** `grant` (`FundingGrant | undefined`) and `nowMs` epoch milliseconds.
 - **Returns / side effects:** `OwnerFundingStatus`. No I/O.
-- **Used by:** `serializeOwnerFunding` (owner `funding.status` on `GET /me`, passkey finish, `POST /funding/apply`, `POST /funding/withdraw`) and `invoiceRoutes` `GET /eligible` (`status`).
+- **Used by:** `serializeOwnerFunding` (owner `funding.status` on `GET /me`, passkey finish, `POST /funding/apply`, `POST /funding/withdraw`).
 
 ## Function: fundingGrantRequired
 
@@ -4248,7 +4248,7 @@ Builds the operator-only external-pubkey inspection route.
 ## Function: eligibleToday
 
 - **Shop-payment rule:** From `FUNDING_REQUIRED_FROM_UTC`, a non-`basis` account in the grant program also needs the `shopPaymentRecent` boolean; there is no separate start day. This pure function does not inspect comments, message ids, amounts, spots, or stores. Callers decide which server-verified boolean to pass.
-- **Purpose:** Whether the account may receive a spend ping / spend invoice today. Only a non-`basis` role can be eligible; `basis` is always false. Before UTC `2026-10-01` (`FUNDING_REQUIRED_FROM_UTC`), every non-`basis` role is true (passkey and living-room post still gate issue). From that UTC day, true iff `inGrantProgramToday` (admitted, or a trial whose `trialUtcDate` equals today's UTC key) **and**, once `recoveryShareRequired`, `recoveryShareStored`, and the caller's `shopPaymentRecent` fact is true. Expired, future, pending, rejected, withdrawn, and missing grants are then false, and so is a grant without a required 21.gifts recovery share or recent shop payment. Before the share's start day (`RECOVERY_SHARE_REQUIRED_FROM`), or while it is unset, the share does not matter; the grant gate, shop-payment rule, and the `basis` refusal stay.
+- **Purpose:** Whether the account may receive a spend ping / payout invoice today. Only a non-`basis` role can be eligible; `basis` is always false. Before UTC `2026-10-01` (`FUNDING_REQUIRED_FROM_UTC`), every non-`basis` role is true (passkey and living-room post still gate issue). From that UTC day, true iff `inGrantProgramToday` (admitted, or a trial whose `trialUtcDate` equals today's UTC key) **and**, once `recoveryShareRequired`, `recoveryShareStored`, and the caller's `shopPaymentRecent` fact is true. Expired, future, pending, rejected, withdrawn, and missing grants are then false, and so is a grant without a required 21.gifts recovery share or recent shop payment. Before the share's start day (`RECOVERY_SHARE_REQUIRED_FROM`), or while it is unset, the share does not matter; the grant gate, shop-payment rule, and the `basis` refusal stay.
 - **Inputs:** `role` (`AccountRole`), `grant` (`FundingGrant | undefined`), `nowMs`, `recoveryShareStored` (required boolean: whether a 21.gifts recovery share is stored for the account's current verified wallet, `AuthStore.hasRecoveryShareForVerifiedWallet`), `recoveryShareRequiredFrom` (required: result of `resolveRecoveryShareRequiredFrom`), and `shopPaymentRecent` (default true for compatibility). `issueGiftInvoice` deliberately passes true by omitting the transfer store only for its fail-closed welcome exception; all other listed callers pass the server-verified fact.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `loadPayoutEligibility` (which serves `messagesRoutes` spend ping, `conversationRoutes` moderator ping, `issueGiftInvoice`, `debugPaymentsRoutes` `POST /spend-ping`, `replayPayoutWindow`, and the zap compose ping of `settleInvoiceManually` and the Nostr worker), `replayPayoutWindow` (with the share assumed, to tell `no_recovery_share` from `grant`; before the start day a refusal is never about the share), and the first-share ping of `PUT /me/recovery-share` (`meRoutes`, with the share just stored). Domain tests cover the matrix.
@@ -4259,7 +4259,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** The payout gate as one read, so every payout path decides the same way, except two pings that follow a write: the staff trial and admit ping checks the share inside `pingTodayMedia` (`requireShare: true`), and the first-share ping of `PUT /me/recovery-share` calls `eligibleToday` directly with the share just stored. Reads the grant with `getByAccountId` (no lazy trial persist) and then the 21.gifts recovery share (`hasRecoveryShareForVerifiedWallet`) only when it can change the answer: on a day the share is required (`recoveryShareRequired`), for a non-`basis` account that is in the grant program today. Returns `eligibleToday` with that share fact.
 - **Inputs:** `fundingStore` (`Pick<FundingStore, 'getByAccountId'>`), `auth` (`Pick<AuthStore, 'hasRecoveryShareForVerifiedWallet'>`), `account` (`id`, live `role`), `nowMs`, `recoveryShareRequiredFrom` (`string | null`), optional `walletTransfers` (`hasShopPayment`), and optional `shopPaymentUtcDay`. The one production omission is `issueGiftInvoice`, only when its welcome-exception predicate finds an unwelcomed, exactly `verified` non-platform account plus a usable current spot and the exact comment/id/USD/amount facts.
 - **Returns / side effects:** `{ grant, eligible, reason? }`; `grant` is the stored grant for `effectiveStatus`, and `reason` is `no_shop_payment` only when that fact made the answer false. At most three lazy reads, no writes. A store throw propagates into each caller's existing error handling.
-- **Used by:** `invoiceRoutes` (`GET /eligible`, `POST /`), `spendInstructionRoutes`, `messagesRoutes` and `conversationRoutes` spend pings, `debugPaymentsRoutes` `POST /spend-ping` (message and window body, through `replayPayoutWindow`), and the zap compose ping (`settleInvoiceManually`, Nostr worker).
+- **Used by:** `issueGiftInvoice`, `messagesRoutes` and `conversationRoutes` spend pings, `debugPaymentsRoutes` `POST /spend-ping` (message and window body, through `replayPayoutWindow`), and the zap compose ping (`settleInvoiceManually`, Nostr worker).
 
 ## Function: pingTodayMedia
 
@@ -4274,7 +4274,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Shared media-post fact for the real payout trigger and the owner payout explanation. Reads the newest live top-level photo or video (About me included) and accepts it only when its `createdAt` UTC day equals `utcDayKey(nowMs)`.
 - **Inputs:** A message store with `latestLiveTopLevelMediaId` and `getById`, the author account id, and epoch milliseconds.
 - **Returns / side effects:** The qualifying message id, or `null`; no writes or logging. It does not read the row when the id lookup is null.
-- **Used by:** `pingTodayMedia`, `loadFundingPayoutToday`, and `spendInstructionRoutes`.
+- **Used by:** `pingTodayMedia` and `loadFundingPayoutToday`.
 
 ## Function: loadFundingPayoutToday
 
@@ -5633,7 +5633,7 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 
 - **Purpose:** Durable atomic welcome-entitlement lease used before issuing a canonical welcome invoice without a shop payment.
 - **Returns / side effects:** A conditional `INSERT ... ON CONFLICT` grants at most one active reservation per account and replaces only an expired lease. `release` deletes only the matching account/id row. Inserts, replacements, and deletes are covered by `db_change`.
-- **Used by:** `openBootStores`, `issueGiftInvoice`, and expired `proveGiftInvoice` calls.
+- **Used by:** `openBootStores` and `issueGiftInvoice`.
 
 ## Function: InMemoryWalletTransferStore
 

@@ -2160,7 +2160,7 @@ describe('PUT /fond/deposit-address', () => {
   }
 
   it('returns 404 unless PAYOUT_SIGNER is fond, without reading the body', async () => {
-    const { app, payouts } = await makeApp({ signer: 'spend' });
+    const { app, payouts } = await makeApp({ signer: 'none' });
     const set = vi.spyOn(payouts, 'setDepositAddress');
     const res = await put(app, { address: P2WPKH });
     expect(res.status).toBe(404);

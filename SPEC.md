@@ -2084,7 +2084,7 @@ window or that same 400 is returned and the callback is not called.
 Settlement calls the member's receiving address: their verified wallet
 through the LNURL server (internally, never over the public URL). `comment`
 is never sent to the invoice callback; it only becomes the memo of a Spark
-invoice without a charge (below). No spend token.
+invoice without a charge (below). No bearer token.
 
 **Response** `200`:
 
@@ -2140,7 +2140,7 @@ is missing, not a safe integer amount, or not the requested amount →
 
 Opens a shop payment for an amount the payer entered on the payment page
 ([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)). No auth,
-no spend token. CORS is the allow-list of the other `/pay` routes. The
+no bearer token. CORS is the allow-list of the other `/pay` routes. The
 route group is always mounted; it opens a payment only when
 `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Body
 `{ "amountSats": <integer> }` (a `comment` key is accepted and ignored).

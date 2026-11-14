@@ -5027,9 +5027,11 @@ test('Function: settleProvenGift — POST /fond/payouts/:id/invoice is 404 when 
   expect(res.status()).toBe(404);
 });
 
-test('Function: persistProvenGift — default boot serves HTTP', async ({ request }) => {
-  const res = await request.get('/healthz');
-  expect(res.status()).toBe(200);
+test('Function: persistProvenGift — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
+  request,
+}) => {
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: FondQueueSink — GET /fond/payouts is 404 when PAYOUT_SIGNER is unset', async ({

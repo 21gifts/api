@@ -183,7 +183,7 @@ New passkey accounts are **Basis**.
 confirmed the stored name. A **funding-program grant** is
 independent of that role: moderators review living-room posts against the
 three convictions (human decision). `basis` cannot apply. Spend pings and
-spend invoices require an admitted grant or a trial on today's UTC day, and,
+payout invoices require an admitted grant or a trial on today's UTC day, and,
 from the UTC day `RECOVERY_SHARE_REQUIRED_FROM`,
 a stored 21.gifts recovery share for the account's current verified wallet
 (social recovery, below). A member may leave the program on their own
