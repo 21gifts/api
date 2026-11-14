@@ -6510,9 +6510,10 @@ read. At most one extra read runs per wallet; a notice while it runs queues
 one more read after it, and further notices add nothing. At most four extra
 reads run at once; a notice beyond that is dropped and the wallet is read on
 the next pass. The read is the same sync as a pass and logs the same events;
-it never changes the webhook's answer, authentication, or push. The notice is
-not a source of payment data: paid status and amounts come only from the
-observed record.
+it never changes the webhook's answer, authentication, or push. The SQL boot
+starts the worker before it builds the app and serves, so every notice can ask
+for the read. The notice is not a source of payment data: paid status and
+amounts come only from the observed record.
 
 `eligibleToday` additionally requires, from deployment and with no start-day
 configuration, a `wallet_transfer` for that member with direction `out`, type
