@@ -410,11 +410,10 @@ The wallet rule in detail:
     signed-in member sends, `POST /me/wallet/counterparties` returns that id,
     the account id, and the username of the other member, and nothing else. It
     answers only for a payment the member reported as completed, and only when
-    the other member reported the same Spark payment id as completed or the
-    member's report carries a member invoice the server issued for the other
-    member (public under the payer exception above). It never returns an
-    amount, a fee, a time, an invoice, a payment hash, a Spark address, or the
-    platform account.
+    the server itself observed that Spark transfer as completed in the member's
+    own wallet, with a single counterparty key that resolves to the other
+    member's verified or previous wallet. It never returns an amount, a fee, a
+    time, an invoice, a payment hash, a Spark address, or the platform account.
 - **Completely visible to 21.gifts.** Every wallet event the api observes
   **must** be stored in this api's database: every observed payment in either
   direction and of every method (Spark, Lightning, on-chain, token), every
