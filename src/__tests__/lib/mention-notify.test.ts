@@ -73,4 +73,45 @@ describe('notifyForumMentions', () => {
       'forum_mention',
     ]);
   });
+
+  it('notifies the mentioned person at level active on an inactive thread', async () => {
+    const mark = created([{ accountId: 'bob', username: 'bob' }]);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'bob',
+      linkingKey: `02${'b'.repeat(64)}`,
+      role: 'basis',
+      name: 'Bob',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+      username: 'bob',
+      notificationLevel: 'active',
+    });
+    const notes = new InMemoryNotificationStore();
+    const pushStore = new InMemoryPushStore();
+    await pushStore.upsertSubscription({
+      endpoint: 'https://push.example/bob',
+      accountId: 'bob',
+      p256dh: 'p',
+      auth: 'a',
+      createdAt: new Date(0),
+      sessionToken: null,
+    });
+    await notifyForumMentions({
+      account: { id: 'ada' },
+      created: mark,
+      parentId: mark.id,
+      isActive: false,
+      auth,
+      notifications: notes,
+      pushStore,
+    });
+    expect((await notes.listByRecipient('bob', 10)).map((row) => row.type)).toEqual([
+      'forum_mention',
+    ]);
+    expect((await pushStore.listAllOutbox(10)).map((row) => row.accountId)).toEqual(['bob']);
+  });
 });

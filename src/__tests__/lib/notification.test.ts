@@ -103,6 +103,7 @@ describe('serializeNotification', () => {
         createdAt: NOW,
         readAt,
       }),
+      true,
     );
     expect(publicRow).toEqual({
       id: 'n-1',
@@ -113,26 +114,29 @@ describe('serializeNotification', () => {
       text: 'child',
       createdAt: NOW.toISOString(),
       readAt: readAt.toISOString(),
+      personal: true,
     });
     expect(publicRow).not.toHaveProperty('recipientAccountId');
     expect(publicRow).not.toHaveProperty('actorAccountId');
   });
 
   it('keeps null readAt as null', () => {
-    expect(serializeNotification(notification({ readAt: null })).readAt).toBeNull();
+    expect(serializeNotification(notification({ readAt: null }), false).readAt).toBeNull();
   });
 
   it('accepts type forum_post', () => {
     const publicRow = serializeNotification(
       notification({ type: 'forum_post', parentId: 'post-1', replyId: 'post-1' }),
+      false,
     );
     expect(publicRow.type).toBe('forum_post');
+    expect(publicRow.personal).toBe(false);
   });
 
   it('accepts type zap', () => {
-    expect(serializeNotification(notification({ type: 'zap', replyId: ZAP_REPLY_ID })).type).toBe(
-      'zap',
-    );
+    expect(
+      serializeNotification(notification({ type: 'zap', replyId: ZAP_REPLY_ID }), false).type,
+    ).toBe('zap');
   });
 
   it('accepts type moderator_appointed', () => {
@@ -143,6 +147,7 @@ describe('serializeNotification', () => {
           parentId: 'subject',
           replyId: 'subject',
         }),
+        true,
       ).type,
     ).toBe('moderator_appointed');
   });
@@ -2392,7 +2397,13 @@ describe('wantsNotification', () => {
       name: 'reply-to-me',
       isActive: false,
       mentionedAccountId: recipientAccountId,
-      expected: { all: true, active: false, mentions: true },
+      expected: { all: true, active: true, mentions: true },
+    },
+    {
+      name: 'reply-to-me on an active thread',
+      isActive: true,
+      mentionedAccountId: recipientAccountId,
+      expected: { all: true, active: true, mentions: true },
     },
     {
       name: 'reply-to-other',
@@ -2481,7 +2492,7 @@ describe('notificationsMatchingLevel', () => {
     expect(matched.map((row) => row.id)).toEqual(['n-reply']);
   });
 
-  it('keeps a forum_mention for the recipient at mentions and only when active at active', () => {
+  it('keeps a forum_mention for the recipient at mentions and at active on any thread', () => {
     const row = notification({
       id: 'n-mark',
       recipientAccountId: 'me',
@@ -2512,8 +2523,8 @@ describe('notificationsMatchingLevel', () => {
         recipientAccountId: 'me',
         accounts,
         parentById,
-      }),
-    ).toEqual([]);
+      }).map((item) => item.id),
+    ).toEqual(['n-mark']);
     const paid = new Map<string, MessageRow>([
       [
         'post-1',
@@ -2957,6 +2968,172 @@ describe('notificationsMatchingLevel', () => {
         parentById,
       }).map((row) => row.id),
     ).toEqual(['n-heart']);
+  });
+});
+
+describe('level active keeps personal events', () => {
+  const accounts =
+    (level: 'active' | 'mentions') => async (): ReturnType<AuthStore['listAccounts']> =>
+      [
+        { id: 'author', role: 'basis', notificationLevel: level },
+        { id: 'bystander', role: 'basis', notificationLevel: level },
+        { id: 'actor', role: 'basis' },
+      ] as Awaited<ReturnType<AuthStore['listAccounts']>>;
+
+  for (const sats of [0, 21]) {
+    const thread = sats > 0 ? 'active' : 'inactive';
+
+    it(`fans a reply on the recipient's own note out at active on an ${thread} thread`, async () => {
+      const messages = new InMemoryMessageStore();
+      await messages.create(
+        message({ id: 'parent-note', accountId: 'author', parentId: null, sats }),
+      );
+      const created = await messages.create(
+        message({ id: 'reply-1', accountId: 'actor', parentId: 'parent-note' }),
+      );
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribe(pushStore, 'author');
+      await subscribe(pushStore, 'bystander');
+      await notifyForumReply({
+        messages,
+        notifications,
+        pushStore,
+        auth: { listAccounts: accounts('active') },
+        account: { id: 'actor' },
+        created,
+        parentId: 'parent-note',
+      });
+      expect(await notifications.listByRecipient('author', 10)).toHaveLength(1);
+      expect(await notifications.listByRecipient('bystander', 10)).toHaveLength(sats > 0 ? 1 : 0);
+      const outboxAccounts = (await pushStore.listAllOutbox(10)).map((row) => row.accountId);
+      expect(outboxAccounts.filter((id) => id === 'author')).toHaveLength(1);
+      expect(outboxAccounts.filter((id) => id === 'bystander')).toHaveLength(sats > 0 ? 1 : 0);
+    });
+
+    it(`fans a zero-amount zap on the recipient's own note out at active on an ${thread} thread`, async () => {
+      const notifications = new InMemoryNotificationStore();
+      const pushStore = new InMemoryPushStore();
+      await subscribe(pushStore, 'author');
+      await subscribe(pushStore, 'bystander');
+      await notifyZap({
+        notifications,
+        pushStore,
+        auth: { listAccounts: accounts('active') },
+        note: message({ id: 'note-1', accountId: 'author', parentId: null, sats }),
+        receiptId: ZAP_RECEIPT_ID,
+        amountSats: 0,
+        payerAccountId: 'actor',
+        nowMs: NOW.getTime(),
+      });
+      expect(await notifications.listByRecipient('author', 10)).toHaveLength(1);
+      expect(await notifications.listByRecipient('bystander', 10)).toHaveLength(sats > 0 ? 1 : 0);
+      const outboxAccounts = (await pushStore.listAllOutbox(10)).map((row) => row.accountId);
+      expect(outboxAccounts.filter((id) => id === 'author')).toHaveLength(1);
+      expect(outboxAccounts.filter((id) => id === 'bystander')).toHaveLength(sats > 0 ? 1 : 0);
+    });
+
+    it(`keeps stored personal rows at active and non-personal rows only when active, ${thread} thread`, () => {
+      const parentById = new Map<string, MessageRow>([
+        ['mine', message({ id: 'mine', accountId: 'me', parentId: null, sats })],
+        ['theirs', message({ id: 'theirs', accountId: 'other', parentId: null, sats })],
+      ]);
+      const rows: NotificationRow[] = [
+        notification({ id: 'reply-mine', recipientAccountId: 'me', parentId: 'mine' }),
+        notification({ id: 'reply-theirs', recipientAccountId: 'me', parentId: 'theirs' }),
+        notification({
+          id: 'zap-mine',
+          recipientAccountId: 'me',
+          type: 'zap',
+          parentId: 'mine',
+          replyId: ZAP_REPLY_ID,
+          text: '0',
+        }),
+        notification({
+          id: 'zap-theirs',
+          recipientAccountId: 'me',
+          type: 'zap',
+          parentId: 'theirs',
+          replyId: ZAP_REPLY_ID,
+          text: '0',
+        }),
+        notification({
+          id: 'mention',
+          recipientAccountId: 'me',
+          type: 'forum_mention',
+          parentId: 'theirs',
+        }),
+        notification({
+          id: 'post',
+          recipientAccountId: 'me',
+          type: 'forum_post',
+          parentId: 'theirs',
+          replyId: 'theirs',
+        }),
+      ];
+      const kept = (level: 'active' | 'mentions'): string[] =>
+        notificationsMatchingLevel({
+          rows,
+          level,
+          recipientAccountId: 'me',
+          accounts: [{ id: 'actor', role: 'basis' }],
+          parentById,
+        }).map((row) => row.id);
+      expect(kept('mentions')).toEqual(['reply-mine', 'zap-mine', 'mention']);
+      expect(kept('active')).toEqual(
+        sats > 0
+          ? ['reply-mine', 'reply-theirs', 'zap-mine', 'zap-theirs', 'mention', 'post']
+          : ['reply-mine', 'zap-mine', 'mention'],
+      );
+    });
+  }
+
+  it('gives the stored-row filter the same answer as the fan-out for each level', async () => {
+    for (const level of ['active', 'mentions'] as const) {
+      const messages = new InMemoryMessageStore();
+      const parent = await messages.create(
+        message({ id: 'parent-note', accountId: 'author', parentId: null, sats: 0 }),
+      );
+      const created = await messages.create(
+        message({ id: 'reply-1', accountId: 'actor', parentId: 'parent-note' }),
+      );
+      const notifications = new InMemoryNotificationStore();
+      await notifyForumReply({
+        messages,
+        notifications,
+        auth: { listAccounts: accounts(level) },
+        account: { id: 'actor' },
+        created,
+        parentId: 'parent-note',
+      });
+      const authorRows = await notifications.listByRecipient('author', 10);
+      expect(authorRows).toHaveLength(1);
+      expect(await notifications.listByRecipient('bystander', 10)).toEqual([]);
+      const bystanderRow = notification({
+        id: 'bystander-row',
+        recipientAccountId: 'bystander',
+        parentId: 'parent-note',
+      });
+      const parentById = new Map([['parent-note', parent]]);
+      expect(
+        notificationsMatchingLevel({
+          rows: authorRows,
+          level,
+          recipientAccountId: 'author',
+          accounts: [],
+          parentById,
+        }),
+      ).toEqual(authorRows);
+      expect(
+        notificationsMatchingLevel({
+          rows: [bystanderRow],
+          level,
+          recipientAccountId: 'bystander',
+          accounts: [],
+          parentById,
+        }),
+      ).toEqual([]);
+    }
   });
 });
 

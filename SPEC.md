@@ -4317,6 +4317,14 @@ Set the owner fan-out filter. Bearer session required (same as
 
 `level` must be `all`, `active`, `mentions`, or `none`.
 
+`all` keeps every living-room event. `mentions` keeps only events personal
+to the owner: a reply or zap on the owner's own note, or an `@username`
+mark of the owner (`forum_mention`). `active` keeps everything `mentions`
+keeps, plus events whose related top-level note has sats (a zap also counts
+when it has an amount). `none` keeps none of the living-room stream,
+including the dedicated `@username` channel. Fan-out and
+`GET /notifications` apply the same rule.
+
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
 Body is missing, not JSON, or `level` is not one of those strings
@@ -9357,7 +9365,17 @@ the 1000, and not necessarily the page length). A generic row whose
 matching mention is outside the 1000-row scan stays. Member JSON never
 includes recipient or actor account ids. Each
 item `type` is `"forum_post"`, `"forum_reply"`, `"forum_mention"`, `"zap"`,
-`"moderator_appointed"`, or `"moderator_proposal"`.
+`"heart"`, `"moderator_appointed"`, or `"moderator_proposal"`.
+
+Each item carries a required boolean `personal`: true exactly when level
+`mentions` would keep that row (`notificationsMatchingLevel` at
+`mentions`, whatever the owner's own level is). `moderator_appointed`,
+`moderator_proposal`, `heart`, and `forum_mention` are always personal.
+`forum_reply` and `zap` are personal when the parent note's author is the
+recipient, so a `forum_reply` or `zap` whose parent is missing is not
+personal. `forum_post` is never
+personal. `personal` does not change which rows are listed, their order,
+the 200 cap, or `unreadCount`, and it exposes no account id.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -9384,7 +9402,8 @@ Success → **Response** `200`:
       "name": "Bob",
       "text": "bob reply",
       "createdAt": "2026-09-12T12:00:00.000Z",
-      "readAt": null
+      "readAt": null,
+      "personal": true
     }
   ],
   "unreadCount": 1
@@ -9477,7 +9496,10 @@ Success → **Response** `200`:
 ### `POST /notifications/:id/read`
 
 Bearer session required. `:id` is a UUID. Marks one notification read and
-returns that `PublicNotification` with `readAt` set. A `moderator_proposal`
+returns that `PublicNotification` with `readAt` set, including `personal`
+from the same rule as the list (the parent note is looked up; a `forum_reply`
+or `zap` whose parent is missing is not personal; a failed parent lookup still answers **200** with
+`personal: false` and logs `notifications.read.personal_failed`). A `moderator_proposal`
 row is **200** with `readAt` still `null` (mark-read does not dismiss it).
 Unknown id, another account's notification, or a non-uuid `:id` → **404**
 `{ "error": "Not found" }`. Same **401** / **503** as list.

@@ -33,7 +33,8 @@ export type AccountRole =
  * Owner fan-out filter. Omitted / unknown → `all`.
  *
  * - `all` — every living-room post, reply, and zap (default).
- * - `active` — related top-level post has `sats > 0` (zaps also when `amountSats > 0`).
+ * - `active` — everything `mentions` keeps, plus events whose related top-level post
+ *   has `sats > 0` (zaps also when `amountSats > 0`).
  * - `mentions` — a reply or a zap on the recipient's own note, or an `@username`
  *   mark for that recipient. A staff or platform actor is not enough.
  * - `none` — none of that living-room stream, including the dedicated `@username` channel.

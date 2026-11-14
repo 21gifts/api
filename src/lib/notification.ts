@@ -7,7 +7,10 @@
  * Living-room in-app recipients are the union of `auth.listAccounts()` (when
  * `auth` is set) and `push_subscription` account ids, except skip, then
  * filtered by each recipient's `notificationLevel` when `auth` is set.
- * `GET /notifications` applies the same filter to stored rows. Targeted
+ * Level `active` keeps active events and events personal to the recipient
+ * (the `mentions` set). `GET /notifications` applies the same filter to
+ * stored rows and marks each listed row `personal` when level `mentions`
+ * would keep it. Targeted
  * `moderator_appointed` and `heart` do not fan out. `moderator_proposal` fans out to
  * other staff and is not stamped by mark-read; rows drop on confirm, on
  * reject when pending is then empty, or on appoint.
@@ -94,15 +97,18 @@ export interface PublicNotification {
   createdAt: string;
   /** ISO-8601 read timestamp, or `null`. */
   readAt: string | null;
+  /** True when level `mentions` would keep this row (see {@link notificationsMatchingLevel}). */
+  personal: boolean;
 }
 
 /**
  * Project a store row to its public JSON shape.
  *
  * @param row - Persisted notification.
+ * @param personal - Whether level `mentions` keeps this row for its recipient.
  * @returns Public fields only (`recipientAccountId` / `actorAccountId` omitted).
  */
-export function serializeNotification(row: NotificationRow): PublicNotification {
+export function serializeNotification(row: NotificationRow, personal: boolean): PublicNotification {
   return {
     id: row.id,
     type: row.type,
@@ -112,6 +118,7 @@ export function serializeNotification(row: NotificationRow): PublicNotification 
     text: row.text,
     createdAt: row.createdAt.toISOString(),
     readAt: row.readAt === null ? null : row.readAt.toISOString(),
+    personal,
   };
 }
 
@@ -161,10 +168,10 @@ export function isStaffAccount(account: { role: string; isPlatform?: boolean }):
 /**
  * Whether a recipient at `level` should receive this living-room event.
  *
- * `none` is always false. `all` is always true. `active` is `isActive`.
- * `mentions` is only
- * `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`.
- * A staff or platform actor does not satisfy `mentions`.
+ * `none` is always false. `all` is always true. `mentions` is only a personal
+ * event: `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`.
+ * `active` is `isActive` or that same personal test, so it keeps everything
+ * `mentions` keeps. A staff or platform actor does not satisfy `mentions`.
  *
  * @param args - Recipient level, active flag, mention target, and recipient id.
  * @returns True when this recipient should get an in-app row and/or Web Push.
@@ -181,10 +188,9 @@ export function wantsNotification(args: {
   if (args.level === 'all') {
     return true;
   }
-  if (args.level === 'active') {
-    return args.isActive;
-  }
-  return args.mentionedAccountId !== null && args.mentionedAccountId === args.recipientAccountId;
+  const personal =
+    args.mentionedAccountId !== null && args.mentionedAccountId === args.recipientAccountId;
+  return args.level === 'active' ? args.isActive || personal : personal;
 }
 
 /**
@@ -193,7 +199,9 @@ export function wantsNotification(args: {
  * always stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
  * parent is unpaid and not personal. `forum_mention` uses the recipient as `mentionedAccountId` and is active only when the parent exists and `parent.sats > 0`. Zap `text` is the amount string.
- * A staff or platform actor does not satisfy `mentions`. Level `none` drops
+ * A staff or platform actor does not satisfy `mentions`. Level `active` keeps
+ * every row `mentions` keeps, so it keeps `forum_mention` and a reply or zap on
+ * the recipient's own note even when the parent has no sats. Level `none` drops
  * stream rows and `forum_mention` and still keeps heart and moderator rows.
  *
  * @param args - Stored rows, owner level, recipient id, accounts, parent notes.
@@ -603,9 +611,9 @@ export async function notifyForumReply(args: {
 /**
  * Notify each `@username` account once, except the author.
  *
- * Level `all` always. Level `active` only when `isActive` (the same flag the
- * sibling post or reply notifier uses). Level `mentions` because
- * `mentionedAccountId` is that recipient. Level `none` does not.
+ * Level `all` always. Level `mentions` because `mentionedAccountId` is that
+ * recipient. Level `active` for the same reason, whatever `isActive` is.
+ * Level `none` does not.
  * One fan-out per person so the push body can use that account's locale.
  *
  * @param args - Mentioned ids, author, note, active flag, optional stores.
@@ -620,7 +628,7 @@ export async function notifyForumMentions(args: {
   created: MessageRow;
   /** Top-level note id. The push opens `created.id`, which may be this note or a reply. */
   parentId: string;
-  /** True when the related top-level note would already notify at level `active`. */
+  /** True when the related top-level note is active; level `active` keeps the mark either way. */
   isActive: boolean;
   inboxUnreadCount?: (accountId: string) => Promise<number>;
 }): Promise<void> {
