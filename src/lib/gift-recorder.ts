@@ -14,7 +14,7 @@ export interface GiftRecord {
   recipientWosUser: string;
   /** Unique BOLT11 payment request (`pr`). */
   lightningInvoice: string;
-  /** Spend comment / description. */
+  /** Payout comment / description. */
   description: string;
   /** Daily funding, welcome gift, or moderator stipend. */
   kind: GiftKind;

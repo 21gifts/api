@@ -154,7 +154,7 @@ export interface MessageRow {
   /** PHP snapshot frozen when sats were credited. */
   amountPhp?: string | null;
   /**
-   * Later zap or spend-proof receipts on a reply, in whole sats. Omitted
+   * Later zap or settled payout receipts on a reply, in whole sats. Omitted
    * means none yet. Never negative.
    */
   receivedSats?: number;
