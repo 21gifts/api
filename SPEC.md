@@ -866,8 +866,8 @@ Accepted are Base58Check P2PKH (`1…`) and P2SH (`3…`), bech32 segwit v0
 program). Testnet, signet, and regtest addresses are refused. An upper-case
 segwit address is stored lower-cased.
 
-Account lookup or store throw → **Response** `503`
-`{ "error": "Deposit address is unavailable" }` and
+Store throw → **Response** `503`
+`{ "error": "Wallet data is unavailable" }` and
 `fond.deposit_address.failed`.
 
 Success → **Response** `200` `{ "address": "<stored address>" }`. The address
@@ -882,8 +882,9 @@ Every other summary field is unchanged.
 **Storage.** One `fond_deposit_address` row per account
 (`docs/schema/fond_payout.sql`), migrated with `fond_payout` when
 `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. This
-route is its only writer. An account merge keeps the survivor's row and
-moves the merged account's row only when the survivor has none.
+route is its only writer, for the session account that passed the gate.
+An account merge deletes the merged account's row: it names an address of
+that account's wallet, which the survivor does not take over.
 
 ### `GET /me/held-shares`
 

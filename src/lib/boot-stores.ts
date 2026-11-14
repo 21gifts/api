@@ -333,7 +333,7 @@ export interface BootFxOptions {
  * `message`, `shop_identity` (via `migrateShopIdentitySchema`), `contact`,
  * `member_habit` (via `migrateMemberHabitSchema`),
  * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `daily_roster`, `fond_payout`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
+ * `funding_grant`, `daily_roster`, `fond_payout` / `fond_deposit_address`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet, `member_event`, `app_setting`, and `login_allowlist` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
@@ -368,7 +368,7 @@ export interface BootFxOptions {
  * `migrateDailyRosterSchema` then `migrateFondPayoutSchema` run after
  * auth/`account` exists and before `migrateApiLogSchema` /
  * `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`,
- * `funding_grant`, `daily_roster`, `daily_roster_entry`, and `fond_payout`. `migrateShopIdentitySchema` runs right after
+ * `funding_grant`, `daily_roster`, `daily_roster_entry`, `fond_payout`, and `fond_deposit_address`. `migrateShopIdentitySchema` runs right after
  * `migrateMessageSchema` and before `migrateDbChangeSchema`, so
  * `trg_db_change` attaches to `shop_identity`.
  * The auth schema also owns `welcome_invoice_reservation`, which every account

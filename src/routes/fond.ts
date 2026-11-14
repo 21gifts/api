@@ -125,6 +125,28 @@ async function sessionAccount(
   return (await resolveSession(deps.authStore, deps.now(), token)) ?? undefined;
 }
 
+/**
+ * The Fond session rule: a session whose account `canSignFondPayouts` accepts
+ * for `FOND_USERNAME`.
+ *
+ * @param deps - Route collaborators.
+ * @param header - `Authorization` header.
+ * @returns The session account, or the 401/403 refusal.
+ */
+async function fondSessionAccount(
+  deps: FondRouteDeps,
+  header: string | undefined,
+): Promise<{ account: Account } | { status: 401 | 403; error: string }> {
+  const account = await sessionAccount(deps, header);
+  if (account === undefined) {
+    return { status: 401, error: 'Unauthorized' };
+  }
+  if (!canSignFondPayouts(account, deps.fondUsername)) {
+    return { status: 403, error: FOND_ONLY };
+  }
+  return { account };
+}
+
 /** Open row projection for `GET /fond/payouts`. */
 function listRow(row: FondPayoutRow): FondPayoutListRow {
   const paymentHash =
@@ -143,9 +165,6 @@ const depositAddressBody = z.object({ address: z.string() });
 /** `400` body when the deposit address is missing or not a Bitcoin mainnet address. */
 const DEPOSIT_ADDRESS_INVALID =
   'Expected a JSON body with an "address" that is a Bitcoin mainnet address';
-
-/** `503` body when the deposit address store throws. */
-const DEPOSIT_ADDRESS_UNAVAILABLE = 'Deposit address is unavailable';
 
 /** True for a Base58Check P2PKH (version `0x00`) or P2SH (`0x05`) mainnet address. */
 function isBase58MainnetAddress(address: string): boolean {
@@ -319,14 +338,8 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
   const authGate = async (
     header: string | undefined,
   ): Promise<{ status: 401 | 403; error: string } | null> => {
-    const account = await sessionAccount(deps, header);
-    if (account === undefined) {
-      return { status: 401, error: 'Unauthorized' };
-    }
-    if (!canSignFondPayouts(account, deps.fondUsername)) {
-      return { status: 403, error: FOND_ONLY };
-    }
-    return null;
+    const gate = await fondSessionAccount(deps, header);
+    return 'account' in gate ? null : gate;
   };
 
   return new Hono()
@@ -608,9 +621,9 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (deps.payoutSigner !== 'fond') {
         return c.json({ error: 'Not found' }, 404);
       }
-      const denied = await authGate(c.req.header('authorization'));
-      if (denied !== null) {
-        return c.json({ error: denied.error }, denied.status);
+      const gate = await fondSessionAccount(deps, c.req.header('authorization'));
+      if (!('account' in gate)) {
+        return c.json({ error: gate.error }, gate.status);
       }
       const parsed = depositAddressBody.safeParse(await c.req.json().catch(() => null));
       const address = parsed.success ? mainnetAddress(parsed.data.address) : null;
@@ -618,16 +631,12 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         return c.json({ error: DEPOSIT_ADDRESS_INVALID }, 400);
       }
       try {
-        const account = await deps.authStore.getAccountByUsername(deps.fondUsername);
-        if (account === undefined) {
-          return c.json({ error: FOND_ONLY }, 403);
-        }
-        if (await deps.fondPayoutStore.setDepositAddress(account.id, address)) {
+        if (await deps.fondPayoutStore.setDepositAddress(gate.account.id, address)) {
           logEvent('fond.deposit_address.changed');
         }
       } catch {
         logEvent('fond.deposit_address.failed');
-        return c.json({ error: DEPOSIT_ADDRESS_UNAVAILABLE }, 503);
+        return c.json({ error: 'Wallet data is unavailable' }, 503);
       }
       return c.json({ address }, 200);
     });

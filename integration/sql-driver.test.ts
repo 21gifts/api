@@ -4128,7 +4128,7 @@ VALUES ($1, 'fond', false, false, now(), $2)`,
     }
   });
 
-  test('a merge moves the merged deposit address unless the survivor has one', async () => {
+  test('a merge drops the merged deposit address and keeps the survivor one', async () => {
     const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
     let ids: string[] = [];
     try {
@@ -4147,7 +4147,7 @@ VALUES ($1, 'fond', false, false, now(), $2)`,
         (await mergeAccounts(mergeDb, { from: keptFrom, into: keptInto, verify: 'into' })).ok,
       ).toBe(true);
 
-      expect(await store.depositAddress(movedInto)).toBe('bc1qmoved');
+      expect(await store.depositAddress(movedInto)).toBeNull();
       expect(await store.depositAddress(keptInto)).toBe('bc1qkept');
       const left = await client.query<{ n: number }>(
         'SELECT count(*)::int AS n FROM fond_deposit_address WHERE account_id = ANY($1::uuid[])',

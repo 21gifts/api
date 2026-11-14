@@ -2293,27 +2293,16 @@ describe('PUT /fond/deposit-address', () => {
     vi.spyOn(payouts, 'setDepositAddress').mockRejectedValue(new Error('store down'));
     const res = await put(app, { address: P2WPKH });
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Deposit address is unavailable' });
+    expect(await res.json()).toEqual({ error: 'Wallet data is unavailable' });
     expect(events).toEqual(['fond.deposit_address.failed']);
   });
 
-  it('returns 503 when the Fond account lookup throws', async () => {
-    const events = captureEvents();
+  it('stores for the session account that passed the gate, without a username lookup', async () => {
     const { app, auth, payouts } = await makeApp();
-    vi.spyOn(auth, 'getAccountByUsername').mockRejectedValue(new Error('lookup down'));
+    const lookup = vi.spyOn(auth, 'getAccountByUsername');
     const res = await put(app, { address: P2WPKH });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Deposit address is unavailable' });
-    expect(events).toEqual(['fond.deposit_address.failed']);
-    expect(await payouts.depositAddress('fond-account')).toBeNull();
-  });
-
-  it('returns 403 when the Fond account is gone after the session check', async () => {
-    const { app, auth, payouts } = await makeApp();
-    vi.spyOn(auth, 'getAccountByUsername').mockResolvedValue(undefined);
-    const res = await put(app, { address: P2WPKH });
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Fond only' });
-    expect(await payouts.depositAddress('fond-account')).toBeNull();
+    expect(res.status).toBe(200);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(await payouts.depositAddress('fond-account')).toBe(P2WPKH);
   });
 });
