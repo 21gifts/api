@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { serializeDebugContact } from '@/lib/contact';
 import type { ContactStore } from '@/lib/contact-store';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT } from '@/lib/message';
 
@@ -25,14 +25,7 @@ export interface DebugContactsRouteDeps {
  * @returns A Hono app exposing `GET /`.
  */
 export function debugContactsRoutes(deps: DebugContactsRouteDeps): Hono {
-  return new Hono().get('/', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().get('/', requireOperator('read', deps), async (c) => {
     try {
       const rows = await deps.store.listLatest(MESSAGE_LIST_LIMIT);
       logEvent('debug.contacts.listed', { count: rows.length });

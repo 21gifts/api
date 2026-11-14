@@ -7,7 +7,7 @@ import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
-import { isOperatorBearer } from '@/lib/debug-token';
+import { checkOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { loadMemberProfileNote, memberPublicMessages } from '@/lib/member-public-feed';
 import type { MessageStore } from '@/lib/message-store';
@@ -139,7 +139,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
 
   return new Hono()
     .get('/:accountId/activity', async (c) => {
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+      if (checkOperator('read', deps, c.req.header('authorization')) !== true) {
         const auth = await requireForumRead(deps, c);
         if (!auth.ok) {
           return auth.response;

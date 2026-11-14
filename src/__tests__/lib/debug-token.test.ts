@@ -1,10 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  assertDistinctDebugTokens,
-  bearerMatchesDebugToken,
-  classifyDebugDbBearer,
-  isOperatorBearer,
-} from '@/lib/debug-token';
+import { assertDistinctDebugTokens, bearerMatchesDebugToken } from '@/lib/debug-token';
 import { setDiagnosticSink } from '@/lib/log';
 import { createApp } from '@/server';
 
@@ -66,30 +61,6 @@ describe('assertDistinctDebugTokens', () => {
   });
 });
 
-describe('classifyDebugDbBearer', () => {
-  it('returns unconfigured when both tokens are empty', () => {
-    expect(classifyDebugDbBearer(undefined, undefined, `Bearer ${WRITE}`)).toBe('unconfigured');
-    expect(classifyDebugDbBearer('  ', '  ', `Bearer ${WRITE}`)).toBe('unconfigured');
-  });
-
-  it('returns write when the bearer matches the write token', () => {
-    expect(classifyDebugDbBearer(WRITE, READ, `Bearer ${WRITE}`)).toBe('write');
-    expect(classifyDebugDbBearer(WRITE, undefined, `Bearer ${WRITE}`)).toBe('write');
-  });
-
-  it('returns read when the bearer matches the read token', () => {
-    expect(classifyDebugDbBearer(WRITE, READ, `Bearer ${READ}`)).toBe('read');
-    expect(classifyDebugDbBearer(undefined, READ, `Bearer ${READ}`)).toBe('read');
-  });
-
-  it('returns unauthorized when the bearer matches neither configured token', () => {
-    expect(classifyDebugDbBearer(WRITE, READ, 'Bearer other')).toBe('unauthorized');
-    expect(classifyDebugDbBearer(WRITE, undefined, 'Bearer other')).toBe('unauthorized');
-    expect(classifyDebugDbBearer(undefined, READ, 'Bearer other')).toBe('unauthorized');
-    expect(classifyDebugDbBearer(WRITE, READ, undefined)).toBe('unauthorized');
-  });
-});
-
 describe('createApp debug read token', () => {
   afterEach(() => {
     setDiagnosticSink(null);
@@ -108,18 +79,5 @@ describe('createApp debug read token', () => {
 
   it('boots when debugToken and debugReadToken differ', () => {
     expect(() => createApp({ debugToken: WRITE, debugReadToken: READ })).not.toThrow();
-  });
-});
-
-describe('isOperatorBearer', () => {
-  it('is true for the write or the read token', () => {
-    expect(isOperatorBearer(WRITE, READ, `Bearer ${WRITE}`)).toBe(true);
-    expect(isOperatorBearer(WRITE, READ, `Bearer ${READ}`)).toBe(true);
-  });
-
-  it('is false for a wrong bearer, a missing header, or no configured token', () => {
-    expect(isOperatorBearer(WRITE, READ, 'Bearer other')).toBe(false);
-    expect(isOperatorBearer(WRITE, READ, undefined)).toBe(false);
-    expect(isOperatorBearer(undefined, undefined, `Bearer ${WRITE}`)).toBe(false);
   });
 });

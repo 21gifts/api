@@ -14,7 +14,7 @@ import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
-import { isOperatorBearer } from '@/lib/debug-token';
+import { checkOperator } from '@/lib/operator';
 import type { GiftStore } from '@/lib/gift-store';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
@@ -3162,7 +3162,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     })
     .get('/:id/edits', async (c) => {
       const header = c.req.header('authorization');
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+      if (checkOperator('read', deps, header) !== true) {
         const account = await authedAccount(deps, header);
         if (account === null) {
           return c.json({ error: 'Unauthorized' }, 401);
@@ -3218,7 +3218,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     })
     .get('/hidden', async (c) => {
       const header = c.req.header('authorization');
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+      if (checkOperator('read', deps, header) !== true) {
         const account = await authedAccount(deps, header);
         if (account === null) {
           return c.json({ error: 'Unauthorized' }, 401);
