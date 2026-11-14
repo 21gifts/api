@@ -35,6 +35,7 @@ const MEMBER_WALLET_TABLE_NAMES = [
   'wallet_payment',
   'wallet_transfer',
   'wallet_token_transaction',
+  'fond_deposit_address',
 ] as const;
 const MEMBER_WALLET_TABLES = new Set<string>(MEMBER_WALLET_TABLE_NAMES);
 

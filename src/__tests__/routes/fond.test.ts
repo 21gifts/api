@@ -315,6 +315,12 @@ function payoutSparkInvoice(paymentHash: string): string {
 
 const ONES = (length: number): Uint8Array => new Uint8Array(length).fill(1);
 
+const P2PKH = '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2';
+const P2SH = '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy';
+const P2WPKH = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+const P2WSH = 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3';
+const P2TR = 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0';
+
 beforeEach(() => {
   mockedSpot.mockReset();
   mockedSpot.mockResolvedValue('100000');
@@ -830,15 +836,18 @@ describe('GET /fond/summary', () => {
       balanceSyncedAt: null,
       payoutsPaid: 0,
       payoutsPaidUsd: '0.00',
+      onchainAddress: null,
     });
   });
 
   it('returns zeros and does not read wallet or payouts for a basis account with the Fond username', async () => {
     const { app, auth, payouts, walletStore } = await makeApp({ seedFond: false });
     await fondAccount(auth, { role: 'basis' });
+    await payouts.setDepositAddress('fond-account', P2WPKH);
     const paymentTotals = vi.spyOn(walletStore, 'paymentTotals');
     const latestBalance = vi.spyOn(walletStore, 'latestBalance');
     const paidTotals = vi.spyOn(payouts, 'paidTotals');
+    const depositAddress = vi.spyOn(payouts, 'depositAddress');
 
     const res = await app.request('/fond/summary');
 
@@ -852,10 +861,12 @@ describe('GET /fond/summary', () => {
       balanceSyncedAt: null,
       payoutsPaid: 0,
       payoutsPaidUsd: '0.00',
+      onchainAddress: null,
     });
     expect(paymentTotals).not.toHaveBeenCalled();
     expect(latestBalance).not.toHaveBeenCalled();
     expect(paidTotals).not.toHaveBeenCalled();
+    expect(depositAddress).not.toHaveBeenCalled();
   });
 
   it('returns zeros and does not read wallet or payouts for the platform account with the Fond username', async () => {
@@ -877,6 +888,7 @@ describe('GET /fond/summary', () => {
       balanceSyncedAt: null,
       payoutsPaid: 0,
       payoutsPaidUsd: '0.00',
+      onchainAddress: null,
     });
     expect(paymentTotals).not.toHaveBeenCalled();
     expect(latestBalance).not.toHaveBeenCalled();
@@ -939,6 +951,7 @@ describe('GET /fond/summary', () => {
       balanceSyncedAt: '2026-11-10T10:00:00.000Z',
       payoutsPaid: 2,
       payoutsPaidUsd: '3.50',
+      onchainAddress: null,
     });
   });
 
@@ -980,6 +993,7 @@ describe('GET /fond/summary', () => {
       balanceSyncedAt: null,
       payoutsPaid: 0,
       payoutsPaidUsd: '0.00',
+      onchainAddress: null,
     });
   });
 
@@ -1046,6 +1060,25 @@ describe('GET /fond/summary', () => {
       paidOutSats: -1n,
       feesSats: 0n,
     });
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Fond summary is unavailable' });
+    expect(events).toEqual(['fond.summary.failed']);
+  });
+
+  it('publishes the registered on-chain deposit address of the Fond account', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.setDepositAddress('other-account', P2SH);
+    await payouts.setDepositAddress('fond-account', P2TR);
+    const res = await app.request('/fond/summary');
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ onchainAddress: P2TR });
+  });
+
+  it('returns 503 when the deposit address read throws', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    vi.spyOn(payouts, 'depositAddress').mockRejectedValue(new Error('address down'));
     const res = await app.request('/fond/summary');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Fond summary is unavailable' });
@@ -2109,5 +2142,167 @@ describe('POST /fond/payouts/:id/invoice', () => {
       headers: authHeader(),
     });
     expect(res.status).toBe(503);
+  });
+});
+
+describe('PUT /fond/deposit-address', () => {
+  function put(app: Hono, body: unknown, token: string | null = TOKEN): Promise<Response> {
+    return Promise.resolve(
+      app.request('/fond/deposit-address', {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/json',
+          ...(token === null ? {} : authHeader(token)),
+        },
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+      }),
+    );
+  }
+
+  it('returns 404 unless PAYOUT_SIGNER is fond, without reading the body', async () => {
+    const { app, payouts } = await makeApp({ signer: 'spend' });
+    const set = vi.spyOn(payouts, 'setDepositAddress');
+    const res = await put(app, { address: P2WPKH });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('returns 401 without a session or for an unknown session', async () => {
+    const { app, payouts } = await makeApp();
+    expect((await put(app, { address: P2WPKH }, null)).status).toBe(401);
+    const res = await put(app, { address: P2WPKH }, 'missing-session');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    expect(await payouts.depositAddress('fond-account')).toBeNull();
+  });
+
+  it('returns 403 Fond only for an account that may not sign Fond payouts', async () => {
+    const { app, auth, payouts } = await makeApp();
+    await fondAccount(auth, {
+      id: 'other',
+      role: 'founder',
+      username: 'other',
+      sessionToken: 'other-session',
+      viewKey: 'c'.repeat(64),
+    });
+    const res = await put(app, { address: P2WPKH }, 'other-session');
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Fond only' });
+    expect(await payouts.depositAddress('other')).toBeNull();
+    expect(await payouts.depositAddress('fond-account')).toBeNull();
+  });
+
+  it('returns 400 for a body that is not a Bitcoin mainnet address with a valid checksum', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    const set = vi.spyOn(payouts, 'setDepositAddress');
+    const invalid: unknown[] = [
+      'not json',
+      null,
+      {},
+      { address: 42 },
+      { address: '' },
+      { address: 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx' },
+      { address: 'tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c' },
+      { address: 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn' },
+      { address: '2MzQwSSnBHWHqSAqtTVQ6v47XtaisrJa1Vc' },
+      { address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5' },
+      { address: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3' },
+      { address: 'bc1Qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4' },
+      { address: ` ${P2WPKH}` },
+      { address: 'bc1zw508d6qejxtdg4y5r3zarvaryvg6kdaj' },
+      { address: '0BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2' },
+      // Base58 of 24 bytes: not the 25 bytes of an address.
+      { address: '6Jswqk47s9PUcyCc88MMVwzgvHN64KPN' },
+      // P2PKH with one checksum byte changed.
+      { address: '1eA9ctCNq41iLLnQErtTUVdxpRyZBBZ3r' },
+      // Testnet P2PKH (version 0x6f) with a valid checksum.
+      { address: 'mgA7SfyBBrVGVSpQ7oqGHPhxpp2gUZWtfc' },
+      // Segwit v0 in bech32m, v1 in bech32.
+      { address: 'bc1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrppgady' },
+      { address: 'bc1pqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpse2hjr3' },
+      // Taproot with a 20-byte program, v0 with a 21-byte program.
+      { address: 'bc1pqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcr2llkq0' },
+      { address: 'bc1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvru88er' },
+      // Valid bech32 with the human-readable part `bc1qq`.
+      { address: 'bc1qq1qqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcru83gw4' },
+      // Valid bech32 checksum over a program with non-zero padding.
+      { address: 'bc1qlllaacrv4' },
+    ];
+    for (const body of invalid) {
+      const res = await put(app, body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with an "address" that is a Bitcoin mainnet address',
+      });
+    }
+    expect(set).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+  });
+
+  it('stores every mainnet address type, lower-casing a segwit address', async () => {
+    const { app, payouts } = await makeApp();
+    const accepted: [string, string][] = [
+      [P2PKH, P2PKH],
+      [P2SH, P2SH],
+      [P2WPKH, P2WPKH],
+      [P2WSH, P2WSH],
+      [P2TR, P2TR],
+      [P2TR.toUpperCase(), P2TR],
+      ['1eA9ctCNq41iLLnQErtTUVdxpRyZ9hZmW', '1eA9ctCNq41iLLnQErtTUVdxpRyZ9hZmW'],
+      ['32LB5ANdvjNPoW3DXLXUt6ra7Lih9WeBJN', '32LB5ANdvjNPoW3DXLXUt6ra7Lih9WeBJN'],
+    ];
+    for (const [sent, stored] of accepted) {
+      const res = await put(app, { address: sent });
+      expect(res.status, sent).toBe(200);
+      expect(await res.json()).toEqual({ address: stored });
+      expect(await payouts.depositAddress('fond-account')).toBe(stored);
+    }
+  });
+
+  it('stores the first address, writes nothing for a repeat, and replaces a different one', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    const set = vi.spyOn(payouts, 'setDepositAddress');
+
+    const first = await put(app, { address: P2WPKH });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ address: P2WPKH });
+    expect(events).toEqual(['fond.deposit_address.changed']);
+
+    const repeat = await put(app, { address: P2WPKH.toUpperCase() });
+    expect(repeat.status).toBe(200);
+    expect(await repeat.json()).toEqual({ address: P2WPKH });
+    expect(await set.mock.results[1]!.value).toBe(false);
+    expect(events).toEqual(['fond.deposit_address.changed']);
+
+    const replaced = await put(app, { address: P2TR });
+    expect(replaced.status).toBe(200);
+    expect(await replaced.json()).toEqual({ address: P2TR });
+    expect(events).toEqual(['fond.deposit_address.changed', 'fond.deposit_address.changed']);
+    expect(await payouts.depositAddress('fond-account')).toBe(P2TR);
+
+    const summary = await app.request('/fond/summary');
+    await expect(summary.json()).resolves.toMatchObject({ onchainAddress: P2TR });
+  });
+
+  it('returns 503 when the store write throws', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    vi.spyOn(payouts, 'setDepositAddress').mockRejectedValue(new Error('store down'));
+    const res = await put(app, { address: P2WPKH });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Wallet data is unavailable' });
+    expect(events).toEqual(['fond.deposit_address.failed']);
+  });
+
+  it('stores for the session account that passed the gate, without a username lookup', async () => {
+    const { app, auth, payouts } = await makeApp();
+    const lookup = vi.spyOn(auth, 'getAccountByUsername');
+    const res = await put(app, { address: P2WPKH });
+    expect(res.status).toBe(200);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(await payouts.depositAddress('fond-account')).toBe(P2WPKH);
   });
 });
