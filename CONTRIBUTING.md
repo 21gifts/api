@@ -399,6 +399,17 @@ The wallet rule in detail:
     the stored `sparkPubkey`, `sparkAddress`, and `replacedAt`, plus the soft
     balance a public Spark explorer already shows (or `null`), only to the
     owner.
+  - In a member's own wallet history, the other side of a payment between two
+    21.gifts member wallets is shown by its 21.gifts username instead of a
+    Spark address or a Spark payment request. For each payment id the
+    signed-in member sends, `POST /me/wallet/counterparties` returns that id,
+    the account id, and the username of the other member, and nothing else. It
+    answers only for a payment the member reported as completed, and only when
+    the other member reported the same Spark payment id as completed or the
+    member's report carries a member invoice the server issued for the other
+    member (public under the payer exception above). It never returns an
+    amount, a fee, a time, an invoice, a payment hash, a Spark address, or the
+    platform account.
 - **Completely visible to 21.gifts.** Every wallet event the api observes
   **must** be stored in this api's database: every observed payment in either
   direction and of every method (Spark, Lightning, on-chain, token), every
