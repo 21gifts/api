@@ -156,7 +156,8 @@ export function activeShopDays(
  * with null first, then `name`, then `noteId`.
  *
  * @param notes - Live assigned shop-note refs (hashtag filtered here).
- * @param charges - POS charges (any status); outside the window ignored.
+ * @param charges - POS charges (any status); only `activeDays` ignores a
+ *   charge outside the window, `lastChargeDay` takes every charge passed.
  * @param lookups - Pins, npubs, usernames, and latest charge times.
  * @param today - UTC day `YYYY-MM-DD` (inclusive end of the window).
  * @returns One row per qualifying note id.

@@ -142,7 +142,7 @@ describe('activeShopList', () => {
     ]);
   });
 
-  it('counts distinct window days and ignores charges outside the window', () => {
+  it('counts only window days in activeDays and every passed charge in lastChargeDay', () => {
     const charges: PosChargeRef[] = [
       charge({ createdAtMs: START_MS - 1 }),
       charge({ createdAtMs: START_MS }),
@@ -153,6 +153,14 @@ describe('activeShopList', () => {
     ];
     const [row] = activeShopList([shop({ id: 'n1' })], charges, lookups(), TODAY);
     expect(row?.activeDays).toBe(2);
+    expect(row?.lastChargeDay).toBe('2026-03-16');
+    const [before] = activeShopList(
+      [shop({ id: 'n1' })],
+      [charge({ createdAtMs: START_MS - 1 })],
+      lookups(),
+      TODAY,
+    );
+    expect(before).toMatchObject({ activeDays: 0, lastChargeDay: '2026-02-13' });
   });
 
   it('adds up activeDays over all rows to the activeShopDays total', () => {

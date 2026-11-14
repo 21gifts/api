@@ -379,6 +379,7 @@ async function dropMissingVideoRow(
  * @param header - Raw `Authorization` header.
  * @returns The staff caller, or 401 `Unauthorized` without a valid session
  *   and 403 `Forbidden` below moderator.
+ * @throws Whatever the auth store throws while resolving the session; not caught here.
  */
 export async function requireStaff(
   deps: Pick<FundingRouteDeps, 'authStore' | 'now'>,
