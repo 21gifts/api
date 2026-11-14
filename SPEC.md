@@ -7016,7 +7016,7 @@ below 500 marks the row `failed` and answers **409** with its `error` (and
 is a fee-free Spark invoice (memo `fond:<paymentHash>`) only when free in-app
 payments are on and the recipient has a verified in-app wallet, else `null`.
 
-**Gift invoice issue.** In this order: an invalid `amountUsd` (positive, at
+**Gift invoice issue.** First, unpaid invoices whose sweep window has passed are dropped from the in-memory invoice store. Then, in this order: an invalid `amountUsd` (positive, at
 most two decimals, at most 100000), an invalid UUID, or both `messageId` and
 `groupMessageId` → **400** `Expected a JSON body with address and amountMsat`;
 an address that is not `local@domain.tld` → **400**
