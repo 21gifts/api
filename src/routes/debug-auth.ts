@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { readCappedText } from '@/lib/capped-body';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
+import { logEvent } from '@/lib/log';
 import { OPERATOR_SIGNATURE_MAX_BYTES, type OperatorLogin } from '@/lib/operator-login';
 import { readClientRequestMeta } from '@/lib/request-meta';
 
@@ -58,7 +59,16 @@ export function debugAuthRoutes(deps: DebugAuthRouteDeps): Hono {
     deps.challengeLimiter ?? new IpRateLimiter(DEBUG_AUTH_CHALLENGES_PER_MINUTE);
   const loginLimiter = deps.loginLimiter ?? new IpRateLimiter(DEBUG_AUTH_LOGINS_PER_MINUTE);
   const login = deps.operatorLogin;
+  // A login refused before the signature check: logged like the refusals of `OperatorLogin.login`.
+  const refused = (reason: string): void => {
+    logEvent('debug.auth.login.refused', { reason });
+  };
   return new Hono()
+    .use('*', async (c, next) => {
+      await next();
+      // Challenges are single use and tokens are credentials: no cache may keep or share them.
+      c.res.headers.set('Cache-Control', 'no-store');
+    })
     .get('/challenge', async (c) => {
       if (!login.configured) {
         return c.json({ error: 'Operator login is not configured' }, 503);
@@ -74,13 +84,16 @@ export function debugAuthRoutes(deps: DebugAuthRouteDeps): Hono {
     })
     .post('/', async (c) => {
       if (!login.configured) {
+        refused('not_configured');
         return c.json({ error: 'Operator login is not configured' }, 503);
       }
       if (!loginLimiter.allow(readClientRequestMeta(c.req.raw.headers).clientIp, deps.now())) {
+        refused('rate_limited');
         return c.json({ error: 'Too many requests' }, 429);
       }
       const text = await readCappedText(c.req.raw, DEBUG_AUTH_BODY_LIMIT_BYTES);
       if (text === null) {
+        refused('body_too_large');
         return c.json({ error: 'Request body is too large' }, 413);
       }
       let parsed: unknown;
@@ -91,6 +104,7 @@ export function debugAuthRoutes(deps: DebugAuthRouteDeps): Hono {
       }
       const body = loginBody(parsed);
       if (body === null) {
+        refused('invalid_body');
         return c.json({ error: 'Invalid login' }, 400);
       }
       const result = await login.login(body.challenge, body.signature);

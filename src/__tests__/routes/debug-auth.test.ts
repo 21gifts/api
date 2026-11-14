@@ -168,6 +168,68 @@ describe('debugAuthRoutes', () => {
 
   const ip = { 'cf-connecting-ip': '192.0.2.7' };
 
+  it('marks every answer of both routes no-store', async () => {
+    const app = routes();
+    for (const res of [
+      await app.request('/debug/auth/challenge'),
+      await app.request('/debug/auth', { method: 'POST', body: 'not json' }),
+      await app.request('/debug/auth', {
+        method: 'POST',
+        body: JSON.stringify({ challenge: 'a'.repeat(43), signature: 'nothing' }),
+      }),
+    ]) {
+      expect(res.headers.get('cache-control')).toBe('no-store');
+    }
+    const off = new Hono().route(
+      '/debug/auth',
+      debugAuthRoutes({
+        operatorLogin: new OperatorLogin({
+          signers: null,
+          store: new InMemoryOperatorLoginStore(),
+          now: Date.now,
+        }),
+        now: Date.now,
+      }),
+    );
+    expect((await off.request('/debug/auth/challenge')).headers.get('cache-control')).toBe(
+      'no-store',
+    );
+  });
+
+  it('logs every login refused before the signature check with its reason', async () => {
+    const reasons = (): unknown[] =>
+      warn.mock.calls
+        .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .filter((e) => e['event'] === 'debug.auth.login.refused')
+        .map((e) => e['reason']);
+    const app = routes({ loginLimiter: new IpRateLimiter(3) });
+    const post = async (body: string): Promise<Response> =>
+      app.request('/debug/auth', { method: 'POST', headers: ip, body });
+    await post('x'.repeat(DEBUG_AUTH_BODY_LIMIT_BYTES + 1));
+    await post('null');
+    await post('{}');
+    await post('{}');
+    const off = new Hono().route(
+      '/debug/auth',
+      debugAuthRoutes({
+        operatorLogin: new OperatorLogin({
+          signers: null,
+          store: new InMemoryOperatorLoginStore(),
+          now: Date.now,
+        }),
+        now: Date.now,
+      }),
+    );
+    await off.request('/debug/auth', { method: 'POST', body: '{}' });
+    expect(reasons()).toEqual([
+      'body_too_large',
+      'invalid_body',
+      'invalid_body',
+      'rate_limited',
+      'not_configured',
+    ]);
+  });
+
   it('rate limits each route per client address', async () => {
     const app = routes({
       challengeLimiter: new IpRateLimiter(1),

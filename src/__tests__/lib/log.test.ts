@@ -463,9 +463,13 @@ describe('requestLog', () => {
     expect(rows.map((row) => [row.authKind, row.operator])).toEqual([['debug', 'op-write']]);
   });
 
-  it('serves the request and stores a none row when the early key lookup fails', async () => {
+  it('serves the request, logs the failure, and does not look up again when the early key lookup fails', async () => {
+    let lookups = 0;
     const failing = {
-      resolveBearer: () => Promise.reject(new Error('db')),
+      resolveBearer: () => {
+        lookups += 1;
+        return Promise.reject(new Error('db'));
+      },
     } as unknown as OperatorLogin;
     const store = new InMemoryApiLogStore();
     const app = new Hono();
@@ -487,6 +491,8 @@ describe('requestLog', () => {
     expect(res.status).toBe(200);
     const rows = await store.listLatest(10);
     expect(rows.map((row) => [row.authKind, row.operator])).toEqual([['none', null]]);
+    expect(lookups).toBe(1);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'api_log.key_lookup.failed')).toBe(true);
   });
 
   it('still stores a none row when session lookup throws', async () => {

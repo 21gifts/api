@@ -212,8 +212,8 @@ interface RequestLogCapture {
   /** Clock reading when the request arrived; the bearer is classified at this instant. */
   requestAt: number;
   /**
-   * Key-token grant resolved when the request arrived (`null`: no key token),
-   * or `undefined` when there is no key login or that lookup failed.
+   * Key-token grant resolved when the request arrived (`null`: no key token,
+   * or that lookup failed), or `undefined` when there is no key login.
    */
   keyGrant: OperatorKeyGrant | null | undefined;
   /** Validated client metadata. */
@@ -286,7 +286,8 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
  * `api_log.write.failed` and does not replace the response. With
  * `operatorLogin`, the grant of a key token is resolved once before the
  * handler and carried to the audit write; a bearer that is no key token
- * costs no lookup there.
+ * costs no lookup there. A failed lookup logs `api_log.key_lookup.failed`
+ * and is not repeated: the row is then classified without a key token.
  *
  * @param deps - Audit store, auth store, tokens, and optional clock.
  * @returns Middleware that emits `http.request` with method, path, status, and ms.
@@ -306,8 +307,10 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
             c.req.header('authorization'),
             requestAt,
           );
-        } catch {
-          keyGrant = undefined;
+        } catch (error) {
+          // Not looked up again at write time: the row is classified without a key token.
+          keyGrant = null;
+          logEvent('api_log.key_lookup.failed', errorLogFields(error));
         }
       }
       await next();

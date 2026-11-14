@@ -132,6 +132,13 @@
 #
 set -euo pipefail
 
+# Bearer headers and login bodies go to curl through files in this private
+# directory or through stdin, never through the argument list, which other
+# local users can read.
+PRIVATE_DIR=$(mktemp -d)
+chmod 700 "$PRIVATE_DIR"
+trap 'rm -rf -- "${PRIVATE_DIR:?}"' EXIT
+
 ENV_FILE="${GIFTS_DEBUG_ENV:-$HOME/.config/21gifts/debug.env}"
 RAW=0
 
@@ -198,28 +205,35 @@ signing_namespace() {
 }
 
 # Token file of one key at one api. The name carries a hash of the
-# namespace, the API URL, the key path, and the public key (from <key>.pub when
-# present), so a change of any of them starts from a fresh login and an old
-# token is never sent. The directory is 0700; the file is written 0600.
+# namespace, the API URL, the key path, and the content of the private key
+# file, so a change of any of them, including a key replaced at the same path,
+# starts from a fresh login and an old token is never sent. The directory is
+# 0700; the file is written 0600.
 token_file() {
   local kind="$1" key="$2" dir ns id
   dir="${XDG_STATE_HOME:-$HOME/.local/state}/21gifts"
   (umask 077 && mkdir -p "$dir")
   chmod 700 "$dir"
   ns=$(signing_namespace)
+  [ -r "$key" ] || die "cannot read key file: $key"
   id=$(python3 -c '
 import hashlib, os, sys
 ns, url, key = sys.argv[1:4]
 path = os.path.abspath(key)
-try:
-    with open(path + ".pub", encoding="utf-8") as handle:
-        public = " ".join(handle.read().split()[:2])
-except OSError:
-    public = ""
-digest = hashlib.sha256("\n".join([ns, url, path, public]).encode("utf-8")).hexdigest()
+with open(path, "rb") as handle:
+    content = hashlib.sha256(handle.read()).hexdigest()
+digest = hashlib.sha256("\n".join([ns, url, path, content]).encode("utf-8")).hexdigest()
 print(digest[:16])
 ' "$ns" "$DEBUG_API_URL" "$key")
   printf '%s/debug-%s-%s-%s.token' "$dir" "$ns" "$kind" "$id"
+}
+
+# Path of a 0600 file holding `Authorization: Bearer <token>` for curl -H @file.
+auth_header() {
+  local file="$PRIVATE_DIR/auth-header"
+  (umask 077 && printf 'Authorization: Bearer %s\n' "$1" > "$file")
+  chmod 600 "$file"
+  printf '%s' "$file"
 }
 
 # Write the token so the file is mode 0600 whether or not it existed: a new
@@ -252,8 +266,13 @@ key_login() {
   signature=$(printf '%s' "$challenge" | ssh-keygen -Y sign -n "$ns" -f "$key") \
     || die "ssh-keygen could not sign with $key"
   tmp=$(mktemp)
-  status=$(python3 -c 'import json,sys; print(json.dumps({"challenge": sys.argv[1], "signature": sys.argv[2] + "\n"}))' \
-      "$challenge" "$signature" \
+  # The challenge and the signature reach python on stdin, not as arguments.
+  status=$(printf '%s\n%s\n' "$challenge" "$signature" \
+    | python3 -c '
+import json, sys
+challenge, signature = sys.stdin.read().split("\n", 1)
+print(json.dumps({"challenge": challenge, "signature": signature}))
+' \
     | curl -sS -o "$tmp" -w '%{http_code}' -X POST \
       -H "Content-Type: application/json" \
       --data-binary @- \
@@ -314,20 +333,20 @@ sys.exit(0 if body == {"error": "Forbidden"} else 1)
 op_curl() {
   local status token
   if [ -z "$DEBUG_SSH_KEY" ]; then
-    curl -sS -H "Authorization: Bearer ${DEBUG_TOKEN}" "$@"
+    curl -sS -H @"$(auth_header "$DEBUG_TOKEN")" "$@"
     return
   fi
   token=$(key_token operator "$DEBUG_SSH_KEY") || return 1
-  status=$(curl -sS -H "Authorization: Bearer ${token}" "$@") || return 1
+  status=$(curl -sS -H @"$(auth_header "$token")" "$@") || return 1
   if [ "$status" = "401" ]; then
     key_login "$DEBUG_SSH_KEY" operator || return 1
     token=$(key_token operator "$DEBUG_SSH_KEY") || return 1
-    status=$(curl -sS -H "Authorization: Bearer ${token}" "$@") || return 1
+    status=$(curl -sS -H @"$(auth_header "$token")" "$@") || return 1
   fi
   if [ "$status" = "403" ] && [ -n "$DEBUG_SSH_ADMIN_KEY" ] && level_refused "$@"; then
     key_login "$DEBUG_SSH_ADMIN_KEY" admin || return 1
     token=$(key_token admin "$DEBUG_SSH_ADMIN_KEY") || return 1
-    status=$(curl -sS -H "Authorization: Bearer ${token}" "$@") || return 1
+    status=$(curl -sS -H @"$(auth_header "$token")" "$@") || return 1
   fi
   printf '%s' "$status"
 }
@@ -780,7 +799,7 @@ pages = [json.loads(path.read_text()) for path in sorted(folder.glob("*.json"), 
 rows = []
 for item in pages:
     rows.extend(item.get("logs") or [])
-keys = ["id", "createdAt", "method", "path", "status", "ms", "accountId", "authKind"]
+keys = ["id", "createdAt", "method", "path", "status", "ms", "accountId", "authKind", "operator"]
 print("\t".join(keys))
 for row in rows:
     print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
@@ -978,7 +997,7 @@ fetch_recipients() {
   [ -n "$DEBUG_TOKEN" ] || die "DEBUG_TOKEN is not set in $ENV_FILE (the spend roster needs it)"
   tmp=$(mktemp)
   status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    -H @"$(auth_header "$DEBUG_TOKEN")" \
     "${DEBUG_SPEND_URL}/debug/recipients") || {
     rm -f "$tmp"
     die "request failed"

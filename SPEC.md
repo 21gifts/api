@@ -4614,8 +4614,10 @@ keeps working.
 
 No authentication. Deletes expired challenges and tokens, then stores and
 returns a new challenge (32 random bytes, base64url) valid **60 seconds** and
-single use. Challenges live in `operator_challenge`, so a restart or a second
-api instance does not break a login.
+single use. With `DATABASE_URL` set, challenges live in the Postgres table
+`operator_challenge`, so a restart or a second api instance does not break a
+login; a memory boot keeps them in process memory, where a restart drops them.
+Both login routes answer with `Cache-Control: no-store`.
 
 ```json
 { "challenge": "<43 base64url characters>", "expiresAt": "2026-11-14T12:01:00.000Z" }
@@ -4664,8 +4666,10 @@ Success → **200**:
 The token is valid **15 minutes**. Only its SHA-256 hex is stored
 (`operator_token`, with operator name, key fingerprint, level, and expiry).
 Every attempt logs `debug.auth.login.ok` or `debug.auth.login.refused` with
-the operator name when known and the key fingerprint; the token, the
-signature, and the challenge are never logged. Requests made with the token
+the reason, the operator name when known, and the key fingerprint; a request
+refused before the signature check logs `debug.auth.login.refused` with reason
+`not_configured`, `rate_limited`, `body_too_large`, or `invalid_body`. The
+token, the signature, and the challenge are never logged. Requests made with the token
 are stored in `api_log` with `authKind` `debug` and `operator` set.
 
 ### `GET /debug/db`
