@@ -1,12 +1,13 @@
 import { Hono } from 'hono';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { requireOperator } from '@/lib/operator';
 import type { ShopPayments } from '@/lib/shop-payment';
 import { retryStuckProof } from '@/lib/shop-proof';
 import { normalizeUuid } from '@/lib/uuid';
 
 /**
  * Operator debug surface for shop payment proofs. Authenticated by
- * `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  */
 
 /** Collaborators the debug shop proof routes need. */
@@ -15,6 +16,8 @@ export interface DebugShopProofsRouteDeps {
   shop: ShopPayments;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /**
@@ -28,14 +31,7 @@ export interface DebugShopProofsRouteDeps {
  * @returns A Hono app exposing `POST /:id/retry`.
  */
 export function debugShopProofsRoutes(deps: DebugShopProofsRouteDeps): Hono {
-  return new Hono().post('/:id/retry', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().post('/:id/retry', requireOperator('write', deps), async (c) => {
     const id = normalizeUuid(c.req.param('id'));
     const result = id === null ? 'not_found' : await retryStuckProof(deps.shop, id);
     if (result === 'not_found') {

@@ -4,6 +4,11 @@ import { InMemoryAuthStore, type Account, type AccountRole } from '@/lib/auth/st
 import type { ShopNoteRef } from '@/lib/message-store';
 import type { PosChargeRef } from '@/lib/pos-store';
 import { grantContinuationRoutes } from '@/routes/grant-continuation';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 const NOW_MS = Date.parse('2026-03-15T12:00:00.000Z');
 const TODAY = '2026-03-15';
@@ -49,7 +54,7 @@ function mount(
   messages: ShopNoteRef[] = [],
   charges: PosChargeRef[] = [],
   seen?: { window?: [number, number] },
-  tokens: { debugToken?: string; debugReadToken?: string } = {},
+  tokens: { debugToken?: string; operatorLogin?: OperatorLogin } = {},
 ): Hono {
   return new Hono().route(
     '/funding/goal',
@@ -57,7 +62,7 @@ function mount(
       authStore,
       now: () => NOW_MS,
       debugToken: tokens.debugToken,
-      ...(tokens.debugReadToken === undefined ? {} : { debugReadToken: tokens.debugReadToken }),
+      ...(tokens.operatorLogin === undefined ? {} : { operatorLogin: tokens.operatorLogin }),
       messages: { listLiveAssignedShops: () => Promise.resolve(messages) },
       pos: {
         listCreatedBetween: (startMs, endMs) => {
@@ -110,7 +115,7 @@ describe('GET /funding/goal', () => {
 
   it.each([
     ['write', 'operator-write'],
-    ['read', 'operator-read'],
+    ['read', OP_READ],
   ] as const)('returns 200 for the operator %s token without a session', async (_kind, token) => {
     const notes: ShopNoteRef[] = [{ id: 'n1', accountId: 'acc', text: 'A #21GiftsShop' }];
     const charges: PosChargeRef[] = [0, 1, 2, 3, 4].map((offset) => ({
@@ -120,7 +125,7 @@ describe('GET /funding/goal', () => {
     const seen: { window?: [number, number] } = {};
     const app = mount(new InMemoryAuthStore(), notes, charges, seen, {
       debugToken: 'operator-write',
-      debugReadToken: 'operator-read',
+      operatorLogin: OP_KEYS.operatorLogin,
     });
     const res = await get(app, token);
     expect(res.status).toBe(200);
@@ -132,7 +137,7 @@ describe('GET /funding/goal', () => {
   });
 
   it('still reads a member session and refuses a wrong bearer when operator tokens are set', async () => {
-    const tokens = { debugToken: 'operator-write', debugReadToken: 'operator-read' };
+    const tokens = { debugToken: 'operator-write', operatorLogin: OP_KEYS.operatorLogin };
     const member = await get(mount(await staffed(), [], [], undefined, tokens), 'basis');
     expect(member.status).toBe(200);
     const wrong = await get(mount(await staffed(), [], [], undefined, tokens), 'operator-other');

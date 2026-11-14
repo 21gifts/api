@@ -11,6 +11,7 @@ import { latestTodayMediaPostId } from '@/lib/funding-ping';
 import { addUtcDays } from '@/lib/member-habit';
 import type { MessageStore } from '@/lib/message-store';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
+import { isWelcomeRecipient } from '@/lib/welcome-media';
 
 /** Stable owner-facing reason codes for today's grant payout. */
 export type FundingPayoutTodayReason =
@@ -68,9 +69,12 @@ function paidKindToday(
  * Compute the first applicable explanation for today's daily grant payout.
  *
  * Reads are deliberately serialized in product order. A recorded daily gift
- * wins first, followed by a same-day welcome gift. Each later store is read
- * only when every preceding condition holds. Store errors propagate so the
- * owner route can return `null` without failing the rest of `GET /me`.
+ * wins first, followed by a same-day welcome gift. That welcome row has the
+ * `welcome` reason only for an eligible welcome recipient; for any other
+ * account it remains paid with no reason and still suppresses a daily payout.
+ * Each later store is read only when every preceding condition holds. Store
+ * errors propagate so the owner route can return `null` without failing the
+ * rest of `GET /me`.
  *
  * @param deps - Gift, grant, recovery, transfer, forum, and roster reads.
  * @param account - Current owner account.
@@ -79,7 +83,7 @@ function paidKindToday(
  */
 export async function loadFundingPayoutToday(
   deps: FundingPayoutTodayDeps,
-  account: Pick<Account, 'id' | 'role' | 'username' | 'sparkPubkeyVerifiedAt'>,
+  account: Pick<Account, 'id' | 'role' | 'username' | 'sparkPubkeyVerifiedAt' | 'isPlatform'>,
   nowMs: number,
 ): Promise<FundingPayoutToday> {
   const today = utcDayKey(nowMs);
@@ -88,7 +92,10 @@ export async function loadFundingPayoutToday(
     return { state: 'paid', reason: null };
   }
   if (paidKindToday(gifts, account.username, today, 'welcome')) {
-    return { state: 'paid', reason: 'welcome' };
+    return {
+      state: 'paid',
+      reason: isWelcomeRecipient(account) ? 'welcome' : null,
+    };
   }
   if (!roleAtLeast(account.role, 'verified')) {
     return { state: 'blocked', reason: 'verify' };

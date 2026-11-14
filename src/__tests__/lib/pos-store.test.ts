@@ -205,6 +205,25 @@ describe('InMemoryPosStore', () => {
     ]);
   });
 
+  it('listLatestCreatedByAccount returns the latest charge per asked account, any status', async () => {
+    const store = new InMemoryPosStore();
+    const old = Date.parse('2025-01-02T03:00:00.000Z');
+    const newer = Date.parse('2026-09-01T00:00:00.000Z');
+    await store.create(charge({ id: 'newer', status: 'expired', createdAt: new Date(newer) }));
+    await store.create(charge({ id: 'old', status: 'cancelled', createdAt: new Date(old) }));
+    await store.create(
+      charge({ id: 'b', accountId: 'b', status: 'paid', createdAt: new Date(old) }),
+    );
+    await store.create(
+      charge({ id: 'skip', accountId: 'skip', status: 'paid', createdAt: new Date(newer) }),
+    );
+    expect(await store.listLatestCreatedByAccount(['acc', 'b', 'acc', 'none'])).toEqual([
+      { accountId: 'acc', createdAtMs: newer },
+      { accountId: 'b', createdAtMs: old },
+    ]);
+    expect(await store.listLatestCreatedByAccount([])).toEqual([]);
+  });
+
   it('copies created and listed rows so callers cannot mutate store state', async () => {
     const store = new InMemoryPosStore();
     const input = charge({ id: 'a' });
@@ -696,6 +715,34 @@ describe('PostgresPosStore', () => {
       { accountId: 'acc', createdAtMs: start },
       { accountId: 'other', createdAtMs: Date.parse('2026-09-01T23:59:59.000Z') },
     ]);
+  });
+
+  it('listLatestCreatedByAccount groups by account over one uuid array literal', async () => {
+    const sql = new MockSql();
+    sql.listRows = [
+      { account_id: 'acc', created_at: new Date('2025-01-02T03:00:00.000Z') },
+      { account_id: 'other', created_at: '2026-09-01T23:59:59.000Z' },
+    ];
+    const listed = await new PostgresPosStore(sql).listLatestCreatedByAccount([
+      'acc',
+      'other',
+      'acc',
+    ]);
+    expect(sql.queries[0]?.text).toMatch(/SELECT account_id, MAX\(created_at\) AS created_at/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE account_id = ANY\(\$1::uuid\[\]\)/);
+    expect(sql.queries[0]?.text).toMatch(/GROUP BY account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/status/);
+    expect(sql.queries[0]?.params).toEqual(['{"acc","other"}']);
+    expect(listed).toEqual([
+      { accountId: 'acc', createdAtMs: Date.parse('2025-01-02T03:00:00.000Z') },
+      { accountId: 'other', createdAtMs: Date.parse('2026-09-01T23:59:59.000Z') },
+    ]);
+  });
+
+  it('listLatestCreatedByAccount sends no query for no accounts', async () => {
+    const sql = new MockSql();
+    expect(await new PostgresPosStore(sql).listLatestCreatedByAccount([])).toEqual([]);
+    expect(sql.queries).toEqual([]);
   });
 
   it('create binds ISO timestamps and a numeric amount_sats, then logs pos.create', async () => {

@@ -73,6 +73,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `conversation_message`        | `sender_account_id`       | `id`      |
 | `conversation_read`           | `account_id`              | `id`      |
 | `daily_roster_entry`          | `account_id`              | `id`      |
+| `fond_deposit_address`        | `account_id`              | `id`      |
 | `funding_grant`               | `account_id`              | `id`      |
 | `funding_grant`               | `decided_by`              | `id`      |
 | `held_share_box`              | `account_id`              | `id`      |
@@ -120,6 +121,7 @@ erDiagram
     "conversation_message" }o..o| "account" : "sender_account_id"
     "conversation_read" }o--|| "account" : "account_id"
     "daily_roster_entry" }o..o| "account" : "account_id"
+    "fond_deposit_address" |o--|| "account" : "account_id"
     "funding_grant" |o--|| "account" : "account_id"
     "funding_grant" }o..o| "account" : "decided_by"
     "held_share_box" }o..|| "account" : "account_id"

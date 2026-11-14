@@ -1,12 +1,13 @@
 /**
  * Operator insert of a live shop note that has a till and no pin.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  * `POST /messages` still refuses this shape. The pin is not accepted.
  */
 
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import type { AuthStore } from '@/lib/auth/store';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { normalizeForumText, unsignedNostrDefaults } from '@/lib/message';
 import { textHasHashtagToken, type MessageStore } from '@/lib/message-store';
@@ -26,6 +27,8 @@ export interface DebugShopNoteRouteDeps {
   kek: Uint8Array | undefined;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Clock for the note's `createdAt`. */
   now: () => number;
 }
@@ -39,14 +42,7 @@ export interface DebugShopNoteRouteDeps {
  * @returns A Hono app exposing `POST /`.
  */
 export function debugShopNoteRoutes(deps: DebugShopNoteRouteDeps): Hono {
-  return new Hono().post('/', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().post('/', requireOperator('write', deps), async (c) => {
     const kek = deps.kek;
     if (kek === undefined || kek.length !== 32) {
       return c.json({ error: 'Shop keys are not configured' }, 503);

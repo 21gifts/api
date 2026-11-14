@@ -27,6 +27,7 @@ import {
   walletLnurlFetch,
 } from '@/__tests__/helpers/wallet-lnurl';
 import { PINNED, seedPinnedAccount, stagePendingRecovery } from '@/__tests__/helpers/recovery';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
 
 function b64url(bytes: Uint8Array): string {
   return Buffer.from(bytes)
@@ -230,6 +231,7 @@ describe('createApp', () => {
   });
 
   it('mounts the read-only wallet route before the write-token debug group', async () => {
+    const keys = await seededOperatorLogin();
     const authStore = new InMemoryAuthStore();
     const accountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await authStore.createAccount({
@@ -255,10 +257,11 @@ describe('createApp', () => {
       authStore,
       walletStore,
       debugToken: 'write-token',
-      debugReadToken: 'read-token',
+      operatorSigners: keys.operatorSigners,
+      operatorLoginStore: keys.operatorLoginStore,
     });
     const res = await app.request(`/debug/accounts/${accountId}/wallet`, {
-      headers: { authorization: 'Bearer read-token' },
+      headers: { authorization: `Bearer ${keys.tokens.read}` },
     });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({
@@ -781,6 +784,7 @@ describe('createApp', () => {
     expect(wallet.status).toBe(401);
     expect(await wallet.json()).toEqual({ error: 'Unauthorized' });
     const hearts = await app.request('/me/wallet/hearts', { method: 'POST' });
+    expect((await app.request('/me/wallet/counterparties', { method: 'POST' })).status).toBe(401);
     expect(hearts.status).toBe(401);
     expect(await hearts.json()).toEqual({ error: 'Unauthorized' });
     const events = await app.request('/me/events', { method: 'POST' });

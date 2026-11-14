@@ -22,3 +22,4 @@ ALTER TABLE api_log ADD COLUMN IF NOT EXISTS user_agent text;
 ALTER TABLE api_log ADD COLUMN IF NOT EXISTS accept_language text;
 ALTER TABLE api_log ADD COLUMN IF NOT EXISTS origin text;
 CREATE INDEX IF NOT EXISTS api_log_account_created_at_idx ON api_log (account_id, created_at DESC, id DESC);
+ALTER TABLE api_log ADD COLUMN IF NOT EXISTS operator text;

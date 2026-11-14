@@ -1,11 +1,12 @@
 /**
  * Operator debug action that reopens the blocking passkey-renew dialog.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  */
 
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import type { AuthStore } from '@/lib/auth/store';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 
 /** Collaborators the debug passkey-renew routes need. */
@@ -14,6 +15,8 @@ export interface DebugPasskeyRenewRouteDeps {
   authStore: AuthStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -28,14 +31,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * @returns A Hono app exposing `POST /reopen`.
  */
 export function debugPasskeyRenewRoutes(deps: DebugPasskeyRenewRouteDeps): Hono {
-  return new Hono().post('/reopen', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().post('/reopen', requireOperator('write', deps), async (c) => {
     const body = (await c.req.json().catch(() => null)) as { accountId?: unknown } | null;
     const accountIdRaw = body?.accountId;
     if (typeof accountIdRaw !== 'string' || !UUID_RE.test(accountIdRaw.trim())) {

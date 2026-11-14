@@ -1944,6 +1944,8 @@ describe('FondQueueSink', () => {
       store: {
         enqueue: async () => 'failed',
         listOpen: async () => [],
+        depositAddress: async () => null,
+        setDepositAddress: async () => false,
         get: async () => undefined,
         claimForInvoice: async () => null,
         setInvoiced: async () => undefined,
@@ -2016,6 +2018,8 @@ describe('FondQueueSink', () => {
           throw new Error('down');
         },
         listOpen: async () => [],
+        depositAddress: async () => null,
+        setDepositAddress: async () => false,
         get: async () => undefined,
         claimForInvoice: async () => null,
         setInvoiced: async () => undefined,

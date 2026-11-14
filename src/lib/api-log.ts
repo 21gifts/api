@@ -31,6 +31,8 @@ export interface ApiLogRow {
   accountId: string | null;
   /** Bearer class. */
   authKind: ApiLogAuthKind;
+  /** Operator name for a key token of the SSH key login, or null. */
+  operator: string | null;
   /** Validated client IP address, or null. */
   clientIp: string | null;
   /** Validated client country code, or null. */
@@ -63,6 +65,8 @@ export interface DebugApiLog {
   accountId: string | null;
   /** Bearer class. */
   authKind: ApiLogAuthKind;
+  /** Operator name for a key token of the SSH key login, or null. */
+  operator: string | null;
   /** Validated client IP address, or null. */
   clientIp: string | null;
   /** Validated client country code, or null. */
@@ -93,6 +97,7 @@ export function serializeDebugApiLog(row: ApiLogRow): DebugApiLog {
     ms: row.ms,
     accountId: row.accountId,
     authKind: row.authKind,
+    operator: row.operator,
     clientIp: row.clientIp,
     clientCountry: row.clientCountry,
     cfRay: row.cfRay,
@@ -159,6 +164,7 @@ export const API_LOG_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS accept_language text`,
   `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS origin text`,
   `CREATE INDEX IF NOT EXISTS api_log_account_created_at_idx ON api_log (account_id, created_at DESC, id DESC)`,
+  `ALTER TABLE api_log ADD COLUMN IF NOT EXISTS operator text`,
 ];
 
 /**
@@ -252,6 +258,7 @@ interface ApiLogSqlRow {
   ms: number | string;
   account_id: string | null;
   auth_kind: string;
+  operator: string | null;
   client_ip: string | null;
   client_country: string | null;
   cf_ray: string | null;
@@ -280,8 +287,8 @@ export class PostgresApiLogStore implements ApiLogStore {
    */
   async append(row: ApiLogRow): Promise<void> {
     await this.#sql.execute(
-      `INSERT INTO api_log (id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      `INSERT INTO api_log (id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin, operator)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
       [
         row.id,
         row.createdAt,
@@ -297,6 +304,7 @@ export class PostgresApiLogStore implements ApiLogStore {
         row.userAgent,
         row.acceptLanguage,
         row.origin,
+        row.operator,
       ],
     );
   }
@@ -309,7 +317,7 @@ export class PostgresApiLogStore implements ApiLogStore {
    */
   async listLatest(limit: number): Promise<ApiLogRow[]> {
     const rows = await this.#sql.query<ApiLogSqlRow>(
-      `SELECT id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin
+      `SELECT id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin, operator
        FROM api_log
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
@@ -328,7 +336,7 @@ export class PostgresApiLogStore implements ApiLogStore {
   async listPage(limit: number, query?: ApiLogPageQuery): Promise<ApiLogRow[]> {
     const rows = await this.#sql.query<ApiLogSqlRow>(
       `SELECT id, created_at, method, path, status, ms, account_id, auth_kind,
-       client_ip, client_country, cf_ray, user_agent, accept_language, origin
+       client_ip, client_country, cf_ray, user_agent, accept_language, origin, operator
 FROM api_log
 WHERE ($1::uuid IS NULL OR account_id = $1::uuid)
   AND (
@@ -380,6 +388,7 @@ function mapApiLogRow(row: ApiLogSqlRow): ApiLogRow {
     ms: Number(row.ms),
     accountId: row.account_id,
     authKind: parseAuthKind(row.auth_kind),
+    operator: row.operator,
     clientIp: row.client_ip,
     clientCountry: row.client_country,
     cfRay: row.cf_ray,

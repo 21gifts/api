@@ -350,6 +350,7 @@ describe('POS routes', () => {
         listForAccount: (accountId, limit) => base.listForAccount(accountId, limit),
         listLatest: (limit) => base.listLatest(limit),
         listCreatedBetween: (startMs, endMs) => base.listCreatedBetween(startMs, endMs),
+        listLatestCreatedByAccount: (accountIds) => base.listLatestCreatedByAccount(accountIds),
         issueSparkInvoice: (chargeId, invoice, nowMs) =>
           base.issueSparkInvoice(chargeId, invoice, nowMs),
         recordInvoice: (chargeId, paymentHash, nowMs) =>

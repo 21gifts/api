@@ -226,6 +226,7 @@ describe('debugCatalogRoutes', () => {
               ms: 1,
               accountId: null,
               authKind: 'none',
+              operator: null,
               clientIp: null,
               clientCountry: null,
               cfRay: null,
@@ -247,6 +248,7 @@ describe('debugCatalogRoutes', () => {
       expect.objectContaining({
         path: '/healthz',
         authKind: 'none',
+        operator: null,
         clientIp: null,
         clientCountry: null,
         cfRay: null,

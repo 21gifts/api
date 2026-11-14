@@ -211,6 +211,8 @@ function quoteIdentifier(identifier: string): string {
  * charge that can still be paid. A daily
  * roster row of the merged account in a bucket where the surviving account
  * is listed too is deleted; the catalog update moves its other roster rows.
+ * The merged account's `fond_deposit_address` row is deleted: it names a
+ * deposit address of the merged account's wallet, which goes with its row.
  * Before the passkey challenges and the catalog-listed rows move, it deletes
  * the merged account's `recovery_share`, `pending_recovery`, and
  * `previous_wallet` rows and its `recovery` passkey challenges: they belong
@@ -1011,6 +1013,7 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        WHERE src.account_id = $1 AND dst.account_id = $2 AND dst.slot = src.slot`,
       accountParams,
     );
+    await tx.query('DELETE FROM fond_deposit_address WHERE account_id = $1', [input.from]);
     await tx.query(
       `DELETE FROM daily_roster_entry AS src
        USING daily_roster_entry AS dst
@@ -1089,13 +1092,88 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
                    AND dst.transfer_updated_at IS NOT NULL
                     THEN src.transfer_updated_at > dst.transfer_updated_at
                   WHEN src.transfer_updated_at IS NOT NULL THEN true
-                  ELSE false
+                  WHEN dst.transfer_updated_at IS NOT NULL THEN false
+                  WHEN src.status = 'completed'
+                   AND src.direction = 'out'
+                   AND src.type = 'transfer'
+                   AND dst.status = 'completed'
+                   AND dst.direction = 'out'
+                   AND dst.type = 'transfer'
+                   AND src_shop.present <> dst_shop.present
+                    THEN src_shop.present
+                  WHEN src.status = 'completed'
+                   AND src.direction = 'out'
+                   AND src.type = 'transfer'
+                   AND NOT (
+                     dst.status = 'completed'
+                     AND dst.direction = 'out'
+                     AND dst.type = 'transfer'
+                   ) THEN true
+                  WHEN dst.status = 'completed'
+                   AND dst.direction = 'out'
+                   AND dst.type = 'transfer'
+                   AND NOT (
+                     src.status = 'completed'
+                     AND src.direction = 'out'
+                     AND src.type = 'transfer'
+                   ) THEN false
+                  WHEN src.status <> 'pending' AND dst.status = 'pending' THEN true
+                  WHEN src.status = 'pending' AND dst.status <> 'pending' THEN false
+                  ELSE src.last_seen_at > dst.last_seen_at
                 END AS state_from_src
          FROM wallet_transfer AS src
          JOIN wallet_transfer AS dst
            ON dst.account_id = $2
           AND dst.wallet_pubkey = src.wallet_pubkey
           AND dst.transfer_id = src.transfer_id
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(src.transfer_updated_at, src.transfer_created_at) IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(src.counterparty_pubkeys) AS counterparty(pubkey)
+                JOIN LATERAL (
+                  SELECT COALESCE(
+                    (SELECT id FROM account
+                     WHERE spark_pubkey = counterparty.pubkey
+                       AND spark_pubkey_verified_at IS NOT NULL
+                     ORDER BY id LIMIT 1),
+                    (SELECT account_id FROM previous_wallet
+                     WHERE spark_pubkey = counterparty.pubkey
+                     ORDER BY replaced_at DESC, account_id LIMIT 1)
+                  ) AS account_id
+                ) AS resolved ON resolved.account_id IS NOT NULL
+                JOIN message AS shop
+                  ON shop.shop_account_id = resolved.account_id
+                 AND shop.parent_id IS NULL
+                 AND shop.deleted_at IS NULL
+                 AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
+                WHERE resolved.account_id NOT IN ($1, $2)
+              ) AS present
+         ) AS src_shop
+         CROSS JOIN LATERAL (
+           SELECT COALESCE(dst.transfer_updated_at, dst.transfer_created_at) IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM unnest(dst.counterparty_pubkeys) AS counterparty(pubkey)
+                JOIN LATERAL (
+                  SELECT COALESCE(
+                    (SELECT id FROM account
+                     WHERE spark_pubkey = counterparty.pubkey
+                       AND spark_pubkey_verified_at IS NOT NULL
+                     ORDER BY id LIMIT 1),
+                    (SELECT account_id FROM previous_wallet
+                     WHERE spark_pubkey = counterparty.pubkey
+                     ORDER BY replaced_at DESC, account_id LIMIT 1)
+                  ) AS account_id
+                ) AS resolved ON resolved.account_id IS NOT NULL
+                JOIN message AS shop
+                  ON shop.shop_account_id = resolved.account_id
+                 AND shop.parent_id IS NULL
+                 AND shop.deleted_at IS NULL
+                 AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
+                WHERE resolved.account_id NOT IN ($1, $2)
+              ) AS present
+         ) AS dst_shop
          WHERE src.account_id = $1
        )
        UPDATE wallet_transfer AS dst

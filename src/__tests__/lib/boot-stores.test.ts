@@ -814,6 +814,7 @@ describe('openBootStores', () => {
       ms: 1,
       accountId: null,
       authKind: 'none',
+      operator: null,
       clientIp: null,
       clientCountry: null,
       cfRay: null,

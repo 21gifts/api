@@ -4,8 +4,9 @@
  *
  * A row is written by the ping path with the already-decided amount and
  * comment. The member-session `/fond` route then requests the invoice; the
- * paid worker detects its settlement. Column layout matches
- * `docs/schema/fond_payout.sql`.
+ * paid worker detects its settlement. `fond_deposit_address` holds the
+ * on-chain deposit address the Fond account registers for its own wallet.
+ * Column layout matches `docs/schema/fond_payout.sql`.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
@@ -246,6 +247,24 @@ export interface FondPayoutStore {
    * @returns The updated row, or `undefined` when the row is missing or not settling.
    */
   releaseSettlement(id: string): Promise<FondPayoutRow | undefined>;
+
+  /**
+   * Read the on-chain deposit address stored for an account.
+   *
+   * @param accountId - Account id.
+   * @returns The stored address, or `null` when none is stored.
+   */
+  depositAddress(accountId: string): Promise<string | null>;
+
+  /**
+   * Store the on-chain deposit address of an account, replacing a previous
+   * one. The same address again writes nothing.
+   *
+   * @param accountId - Account id.
+   * @param address - Bitcoin mainnet address, already validated.
+   * @returns `true` when the stored address changed, `false` when it was already stored.
+   */
+  setDepositAddress(accountId: string, address: string): Promise<boolean>;
 }
 
 /** Idempotent DDL (matches `docs/schema/fond_payout.sql`). */
@@ -283,6 +302,11 @@ export const FOND_PAYOUT_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_welcome_uidx
     ON fond_payout (kind, address)
     WHERE kind = 'welcome'`,
+  `CREATE TABLE IF NOT EXISTS fond_deposit_address (
+  account_id uuid PRIMARY KEY REFERENCES account (id),
+  address text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+)`,
 ];
 
 /**
@@ -598,6 +622,33 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       status: 'invoiced',
       claimedAt: null,
     }));
+  }
+
+  readonly #depositAddresses = new Map<string, string>();
+
+  /**
+   * Read the stored on-chain deposit address.
+   *
+   * @param accountId - Account id.
+   * @returns The stored address, or `null`.
+   */
+  async depositAddress(accountId: string): Promise<string | null> {
+    return this.#depositAddresses.get(accountId) ?? null;
+  }
+
+  /**
+   * Store the on-chain deposit address unless it is already stored.
+   *
+   * @param accountId - Account id.
+   * @param address - Validated Bitcoin mainnet address.
+   * @returns `true` when the stored address changed.
+   */
+  async setDepositAddress(accountId: string, address: string): Promise<boolean> {
+    if (this.#depositAddresses.get(accountId) === address) {
+      return false;
+    }
+    this.#depositAddresses.set(accountId, address);
+    return true;
   }
 
   #transition(
@@ -1005,5 +1056,41 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
     );
     const row = rows[0];
     return row === undefined ? undefined : mapRow(row);
+  }
+
+  /**
+   * Read `fond_deposit_address.address` for the account.
+   *
+   * @param accountId - Account id.
+   * @returns The stored address, or `null`.
+   * @throws Propagates SQL failures.
+   */
+  async depositAddress(accountId: string): Promise<string | null> {
+    const rows = await this.#sql.query<{ address: string }>(
+      'SELECT address FROM fond_deposit_address WHERE account_id = $1',
+      [accountId],
+    );
+    return rows[0]?.address ?? null;
+  }
+
+  /**
+   * Upsert the address; the conflict update runs only when the address
+   * differs, so the same address writes no row and no `db_change`.
+   *
+   * @param accountId - Account id.
+   * @param address - Validated Bitcoin mainnet address.
+   * @returns `true` when a row was inserted or updated.
+   * @throws Propagates SQL failures.
+   */
+  async setDepositAddress(accountId: string, address: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ account_id: string }>(
+      `INSERT INTO fond_deposit_address (account_id, address)
+VALUES ($1, $2)
+ON CONFLICT (account_id) DO UPDATE SET address = EXCLUDED.address, updated_at = now()
+WHERE fond_deposit_address.address IS DISTINCT FROM EXCLUDED.address
+RETURNING account_id`,
+      [accountId, address],
+    );
+    return rows.length === 1;
   }
 }

@@ -22,6 +22,7 @@ Source: [src/lib/api-log.ts](../../../src/lib/api-log.ts)
 | `user_agent`      | Free text          | `text`                     | Yes      | –       | –                            |
 | `accept_language` | Free text          | `text`                     | Yes      | –       | –                            |
 | `origin`          | Free text          | `text`                     | Yes      | –       | –                            |
+| `operator`        | Free text          | `text`                     | Yes      | –       | –                            |
 
 ## Indexes
 

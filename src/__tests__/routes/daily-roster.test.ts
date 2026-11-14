@@ -17,6 +17,11 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import { fundingRoutes } from '@/routes/funding';
 import { createApp } from '@/server';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 const now = (): number => 1_700_000_000_000;
 const FOUNDER = '11111111-1111-4111-8111-111111111111';
@@ -168,7 +173,7 @@ function mount(
   authStore: InMemoryAuthStore,
   rosterStore?: DailyRosterStore,
   spendApiToken?: string,
-  tokens: { debugToken?: string; debugReadToken?: string } = {},
+  tokens: { debugToken?: string; operatorLogin?: OperatorLogin } = {},
 ): Hono {
   return new Hono().route(
     '/funding',
@@ -1872,7 +1877,7 @@ describe('daily payout roster routes', () => {
 });
 
 describe('GET /funding/daily-roster with an operator token', () => {
-  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -1883,7 +1888,7 @@ describe('GET /funding/daily-roster with an operator token', () => {
     warn.mockRestore();
   });
 
-  it.each(['op-write', 'op-read'])(
+  it.each(['op-write', OP_READ])(
     'reads the roster with %s and logs no account id',
     async (token) => {
       const res = await get(
@@ -1906,7 +1911,7 @@ describe('GET /funding/daily-roster with an operator token', () => {
     const res = await get(
       mount(await seeded(), store, undefined, TOKENS),
       '/funding/daily-roster',
-      'op-read',
+      OP_READ,
     );
     expect(res.status).toBe(502);
     const failed = parsedEvents(warn).filter(
@@ -1925,7 +1930,7 @@ describe('GET /funding/daily-roster with an operator token', () => {
 });
 
 describe('GET /funding/daily-roster/links', () => {
-  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -1936,7 +1941,7 @@ describe('GET /funding/daily-roster/links', () => {
     warn.mockRestore();
   });
 
-  it.each(['op-write', 'op-read'])(
+  it.each(['op-write', OP_READ])(
     'lists linked counts, unlinked rows, and sums with %s',
     async (token) => {
       const store = new InMemoryDailyRosterStore();
@@ -1980,7 +1985,7 @@ describe('GET /funding/daily-roster/links', () => {
     const res = await get(
       mount(await seeded(), store, undefined, TOKENS),
       '/funding/daily-roster/links',
-      'op-read',
+      OP_READ,
     );
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: 'Daily roster is unavailable' });
