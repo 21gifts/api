@@ -9753,6 +9753,15 @@ describe('PostgresWalletUsageStore', () => {
         );
       };
 
+      const platformProfileNoteId = await insertNote(platformId, false);
+      await client.execute(`UPDATE account SET profile_message_id = $1 WHERE id = $2`, [
+        platformProfileNoteId,
+        platformId,
+      ]);
+      // A platform-authored note that is not the profile note is ordinary and
+      // can receive a real forum gift.
+      const platformOrdinaryNoteId = await insertNote(platformId, false);
+
       await insertPayment({
         accountId: memberA,
         paymentId: `${run}-g1`,
@@ -10201,6 +10210,7 @@ describe('PostgresWalletUsageStore', () => {
       });
       const platformFeeHash = hex64();
       const platformHeartHash = hex64();
+      const platformOrdinaryGiftHash = hex64();
       await insertPayment({
         accountId: memberA,
         paymentId: `${run}-platform-fee`,
@@ -10227,6 +10237,34 @@ describe('PostgresWalletUsageStore', () => {
         paymentHash: platformHeartHash,
         invoice: null,
       });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-platform-ordinary-gift`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 52,
+        feeSats: 0,
+        paidAt: at(912),
+        category: 'gift',
+        counterpartyAccountId: platformId,
+        paymentHash: platformOrdinaryGiftHash,
+        invoice: null,
+      });
+      // An incoming-only row names its payer through `counterparty_account_id`.
+      // It must still count as members-to-members rather than outside-to-member.
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-incoming-only`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 53,
+        feeSats: 0,
+        paidAt: at(913),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: null,
+      });
 
       const forumHeartAt = at(30);
       const forumGiftAt = at(40);
@@ -10250,11 +10288,12 @@ describe('PostgresWalletUsageStore', () => {
         description: string | null;
         conversationId: string | null;
         hiddenNote: boolean;
+        noteId?: string;
         noteAuthorId?: string;
         paid: boolean;
       }): Promise<void> => {
         const noteAuthorId = row.noteAuthorId ?? memberB;
-        const messageId = await insertNote(noteAuthorId, row.hiddenNote);
+        const messageId = row.noteId ?? (await insertNote(noteAuthorId, row.hiddenNote));
         await client.execute(
           `INSERT INTO message_invoice (
              id, created_at, message_id, payer_account_id, author_account_id,
@@ -10463,6 +10502,7 @@ describe('PostgresWalletUsageStore', () => {
         description: null,
         conversationId: null,
         hiddenNote: false,
+        noteId: platformProfileNoteId,
         noteAuthorId: platformId,
         paid: true,
       });
@@ -10476,6 +10516,22 @@ describe('PostgresWalletUsageStore', () => {
         description: null,
         conversationId: null,
         hiddenNote: false,
+        noteId: platformProfileNoteId,
+        noteAuthorId: platformId,
+        paid: true,
+      });
+      const forumPlatformOrdinaryGiftAt = at(140);
+      await insertForum({
+        createdAt: forumPlatformOrdinaryGiftAt,
+        amountSats: 3,
+        result: 'ok',
+        heart: false,
+        paymentHash: platformOrdinaryGiftHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        noteId: platformOrdinaryNoteId,
         noteAuthorId: platformId,
         paid: true,
       });
@@ -10779,8 +10835,8 @@ describe('PostgresWalletUsageStore', () => {
       expect(
         ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
       ).toEqual([
-        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 61, 62, 63, 64, 65, 66, 67, 68,
-        70, 71, 72, 74, 150, 500, 1000, 12321, 69089, 293955,
+        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 61, 62, 63, 64, 65,
+        66, 67, 68, 70, 71, 72, 74, 150, 500, 1000, 12321, 69089, 293955,
       ]);
       expect(byAmount(74)).toMatchObject({
         feeSats: 3,
@@ -10947,6 +11003,22 @@ describe('PostgresWalletUsageStore', () => {
         payeeParty: 'platform',
         isForumGift: true,
       });
+      expect(byAmount(52)).toMatchObject({
+        category: 'gift',
+        payerAccountId: memberA,
+        payeeAccountId: platformId,
+        payerParty: 'members',
+        payeeParty: 'platform',
+        isForumGift: true,
+      });
+      expect(byAmount(53)).toMatchObject({
+        category: 'member',
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+        payerParty: 'members',
+        payeeParty: 'members',
+        isForumGift: false,
+      });
       expect(byAmount(66)).toMatchObject({
         feeSats: 1,
         payerAccountId: memberA,
@@ -11024,9 +11096,14 @@ describe('PostgresWalletUsageStore', () => {
         amountSats: 2,
         heart: true,
       });
+      expect(forumAt(forumPlatformOrdinaryGiftAt)).toEqual({
+        createdAt: forumPlatformOrdinaryGiftAt,
+        amountSats: 3,
+        heart: false,
+      });
       expect(forum.every((row) => row.createdAt.getTime() >= since.getTime())).toBe(true);
       expect(forum.map((row) => row.amountSats).sort((left, right) => left - right)).toEqual([
-        2, 5, 21, 45, 47, 48,
+        2, 3, 5, 21, 45, 47, 48,
       ]);
 
       const charges = await store.shopCharges(since.getTime());

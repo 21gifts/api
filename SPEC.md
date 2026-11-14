@@ -7562,9 +7562,11 @@ query, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>
 top-level parent; a missing, hidden, or nested parent falls back to a
 top-level post with the remaining body. An empty comment does not create a
 blank living-room post. The 1-sat compose fee is a platform payment, not a
-forum gift: `GET /wallets/usage` omits a non-heart invoice on a note authored
-by the platform account from its paid forum gifts and forum series. A heart on
-such a note keeps the heart rule.
+forum gift: `GET /wallets/usage` omits a non-heart invoice on the platform
+account's profile note (the note named by `account.profile_message_id`) from
+its paid forum gifts and forum series. An ordinary platform-authored note is
+not the profile note, so a gift on it counts. A heart on the profile note keeps
+the heart rule.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -8587,10 +8589,11 @@ payment_id)` is the `wallet_payment` primary key, and it is disjoint from the
 `row:` namespace. A counted payment enters the totals only when its earliest
 `paid_at` is on or after the release. The
 amount is the greatest `amount_sats` and the fee is the sum of `fee_sats`. The
-payer is the outgoing account, or outside when there is no outgoing row. The
-payee is the incoming account, otherwise the outgoing row's counterparty,
-otherwise outside. An account with `is_platform` is `platform`; role `fond` is
-`fund`; every other account, including a shop, is `members`.
+payer is the outgoing account, otherwise the incoming row's
+`counterparty_account_id`, otherwise outside. The payee is the incoming
+account, otherwise the outgoing row's counterparty, otherwise outside. An
+account with `is_platform` is `platform`; role `fond` is `fund`; every other
+account, including a shop, is `members`.
 
 Purpose, first match: a paid `fond_payout` whose `bolt11` or `spark_invoice`
 equals any row invoice is `fund_payout` (including a payout to a shop); a fund
@@ -8615,10 +8618,12 @@ does not make a forum gift, and the counterparty does not decide it: a payment
 that matches a claimed forum gift or heart invoice on a note not hidden by
 staff is a forum gift, whoever the counterparty is, except for the compose fee
 below. Conversation invoices and credit repayments are not forum gifts. A
-non-heart invoice on a note authored by the official platform account is the
-1-sat compose fee, a platform payment, not a forum gift; the same exclusion
-applies when its hash is claimed as a zap receipt. A heart on such a note keeps
-the heart rule.
+non-heart invoice on the official platform account's profile note is the 1-sat
+compose fee, a platform payment, not a forum gift; the same exclusion applies
+when its hash is claimed as a zap receipt. The profile note is exactly the note
+where the platform account's `account.profile_message_id` equals the note id.
+A gift on an ordinary platform-authored note is a forum gift. A heart on the
+profile note keeps the heart rule.
 
 `days` has every UTC day from the release day through today, and every purpose
 key. `flows` keeps only directions that occurred and is sorted by day, from,
@@ -8631,8 +8636,9 @@ decimal places and 0 when the volume is 0. `forum` starts 28 days before
 release (`gifts` are hearts that are false). The forum series and
 `totals.heartCount` include only paid forum gifts and hearts on living notes:
 no conversation invoices, no credit repayments, no hidden notes, and no unpaid
-invoices. A non-heart invoice on a note authored by the platform account is the
-compose fee and is excluded; a heart on that note remains in the series.
+invoices. A non-heart invoice on the platform account's profile note is the
+compose fee and is excluded; a heart on that note remains in the series. A
+non-heart invoice on an ordinary platform-authored note remains in the series.
 `shopCharges` starts 14 days before release. A heart increments the
 release total only when its own timestamp is on or after the release instant.
 Shop charges count only when `pos_charge.account_id` is the current

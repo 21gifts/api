@@ -44,7 +44,10 @@ export interface WalletUsagePaymentRow {
    * otherwise any non-`unknown` category, otherwise `unknown`.
    */
   category: string;
-  /** Account of the outgoing row, or null when the payer is outside. */
+  /**
+   * Account of the outgoing row, otherwise the incoming row's
+   * `counterparty_account_id`, otherwise null (outside).
+   */
   payerAccountId: string | null;
   /**
    * Account of the incoming row, otherwise the outgoing row's
@@ -68,16 +71,18 @@ export interface WalletUsagePaymentRow {
    * `result = 'ok'`, no conversation, no `repay:` / `repayp:` description, a
    * claimed `nostr_zap_payment` hash, and a note whose `deleted_at` is null;
    * or a zap receipt gift or paid heart on such a note. A non-heart invoice on
-   * a note authored by the platform account is the compose fee and does not
-   * qualify; a heart on that note still does.
+   * the platform account's profile note is the compose fee and does not
+   * qualify; a heart on that note still does. A gift on an ordinary
+   * platform-authored note qualifies.
    */
   isForumGift: boolean;
 }
 
 /**
  * One successful forum invoice (`message_invoice.result = 'ok'`) in the forum
- * series. A non-heart invoice on a platform-authored note is the compose fee
- * and is not included.
+ * series. A non-heart invoice on the platform account's profile note is the
+ * compose fee and is not included; an ordinary platform-authored note is not
+ * excluded.
  */
 export interface WalletUsageForumRow {
   /** When the invoice row was stored. */
