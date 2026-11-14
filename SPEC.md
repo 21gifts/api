@@ -4592,7 +4592,7 @@ secret. A cursor that does not match the key is **Response** `400`
 `GET /debug/db` lists `wallet_balance_snapshot`, `wallet_payment`,
 `wallet_transfer`, `wallet_token_transaction`, `wallet_transfer_sync`, and
 `member_event` like every other table for an operator; an admin session sees
-only the four wallet-history tables. `?table=<name>` pages their
+only the four wallet-history tables and `fond_deposit_address`. `?table=<name>` pages their
 rows. The first two are also filled by the legacy supplementary
 `POST /me/wallet/report`; `wallet_transfer` and viewer balance snapshots come
 directly from Spark operators; `member_event` is filled by `POST /me/events`
