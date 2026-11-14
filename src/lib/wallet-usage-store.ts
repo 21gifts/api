@@ -1,10 +1,12 @@
 /**
  * Read side of the public wallet-usage aggregates.
- * Account ids stay on the rows the builder counts. They are not part of the
- * HTTP body.
+ * Payment account ids stay on the rows the builder counts. Charge rows carry
+ * only time and status. No account id is part of the HTTP body.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
+import { LIVE_ASSIGNED_SHOPS_SQL, type ShopNoteRef } from '@/lib/message-store';
+import { assignedShopAccountIds } from '@/lib/shop-activity';
 import type {
   WalletUsageChargeRow,
   WalletUsageForumRow,
@@ -24,6 +26,11 @@ export interface WalletUsageStore {
    * Unrelated completed rows that share a `payment_id` but do not form a pair
    * stay separate.
    *
+   * Pairs and their uniqueness are evaluated among completed rows paid at most
+   * one day before the read window start; a row whose matching side is older
+   * counts on its own (and a payment is counted only when its earliest row is
+   * in the window).
+   *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns Merged payments. Order is not significant.
    */
@@ -38,7 +45,9 @@ export interface WalletUsageStore {
    */
   forumInvoices(sinceMs: number): Promise<WalletUsageForumRow[]>;
   /**
-   * Point-of-sale charges created on or after `sinceMs`.
+   * Point-of-sale charges created on or after `sinceMs` whose account is the
+   * current `shop_account_id` of a live top-level note with the
+   * `#21GiftsShop` token. A charge by any other account is not a shop charge.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns Charge rows. Order is not significant.
@@ -111,6 +120,20 @@ interface MemoryZapGift {
   hidden: boolean;
 }
 
+/**
+ * A seeded point-of-sale charge with its shop detail.
+ *
+ * `shop: false` excludes the row. `shop: true` includes it. With neither flag,
+ * an `accountId` is looked up in {@link WalletUsageSeed.shopAccountIds}; a row
+ * without either seeded detail defaults to a shop charge.
+ */
+interface MemoryChargeRow extends WalletUsageChargeRow {
+  /** Seeded `pos_charge.account_id`, for lookup in `shopAccountIds`. */
+  accountId?: string;
+  /** Explicit shop membership. Omitted means derive from `accountId`. */
+  shop?: boolean;
+}
+
 /** Optional rows for {@link InMemoryWalletUsageStore}. */
 interface WalletUsageSeed {
   /** Completed payments. */
@@ -120,8 +143,10 @@ interface WalletUsageSeed {
    * {@link InMemoryWalletUsageStore.forumInvoices} unless `heart` is true.
    */
   forumInvoices: readonly MemoryForumRow[];
-  /** Point-of-sale charges. */
-  shopCharges: readonly WalletUsageChargeRow[];
+  /** Point-of-sale charges. Omitted `shop` defaults to `true`. */
+  shopCharges: readonly MemoryChargeRow[];
+  /** Seeded current shop account ids for charges seeded with `accountId`. */
+  shopAccountIds?: ReadonlySet<string>;
   /** Seeded forum invoices that can mark or exclude a payment. Default none. */
   forumGiftInvoices?: readonly MemoryForumInvoice[];
   /** Claimed zap receipt gifts. Default none. */
@@ -135,7 +160,9 @@ interface WalletUsageSeed {
  * The default seed is empty. `isForumGift` is derived from the seed's claimed
  * forum invoices, zap gifts, and `sparkInvoiceHashes` with the same rule as the
  * Postgres statement. Seeded forum-series rows with `platformNote: true` are
- * omitted unless they are hearts, matching the Postgres forum series.
+ * omitted unless they are hearts, matching the Postgres forum series. Seeded
+ * charges are limited to current shop accounts by `shop` or `accountId` plus
+ * `shopAccountIds`, matching the Postgres shop filter.
  */
 export class InMemoryWalletUsageStore implements WalletUsageStore {
   readonly #payments: WalletUsagePaymentRow[];
@@ -155,6 +182,7 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
     const invoices = seed.forumGiftInvoices ?? [];
     const gifts = seed.zapGifts ?? [];
     const sparkInvoiceHashes = seed.sparkInvoiceHashes ?? new Map<string, string>();
+    const shopAccountIds = seed.shopAccountIds ?? new Set<string>();
     this.#payments = seed.payments.map((row) =>
       copyPayment({
         ...row,
@@ -162,7 +190,9 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
       }),
     );
     this.#forumInvoices = seed.forumInvoices.filter(memoryIsForumInvoice).map(copyForum);
-    this.#shopCharges = seed.shopCharges.map(copyCharge);
+    this.#shopCharges = seed.shopCharges
+      .filter((row) => memoryIsShopCharge(row, shopAccountIds))
+      .map(copyCharge);
   }
 
   /**
@@ -192,7 +222,8 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
   }
 
   /**
-   * Charges with `createdAt` on or after `sinceMs`, as copies.
+   * Shop charges with `createdAt` on or after `sinceMs`, as copies. Only
+   * charges seeded for a current shop account are returned.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns A new array. Mutating a returned `Date` does not change the store.
@@ -224,8 +255,17 @@ interface ForumSqlRow {
 }
 
 interface ChargeSqlRow {
+  /** `pos_charge.account_id`, used only to apply the shop filter. */
+  account_id: unknown;
   created_at: Date | string;
   status: unknown;
+}
+
+/** One row from {@link LIVE_ASSIGNED_SHOPS_SQL}. */
+interface AssignedShopSqlRow {
+  id: unknown;
+  shop_account_id: unknown;
+  text: unknown;
 }
 
 /**
@@ -241,7 +281,9 @@ interface ChargeSqlRow {
  * one payment when they share the same `payment_id`, the same
  * `lower(payment_hash)` (both non-null), or the same `invoice` (both non-null
  * and non-empty). Each of the two rows must have exactly one such partner among
- * completed rows; an ambiguous match stays unpaired. A pair's key is
+ * completed rows paid at most one day before `$1`; an ambiguous match stays
+ * unpaired. A row whose matching side is older than that candidate window is
+ * unpaired. A pair's key is
  * `'pair:' || <out row account_id> || ':' || <out row payment_id>`, which is
  * deterministic and injective because the outgoing `(account_id, payment_id)`
  * is the `wallet_payment` primary key, and it is disjoint from the `row:`
@@ -545,13 +587,16 @@ WHERE invoice.result = 'ok'
     WHERE z.payment_hash = lower(invoice.payment_hash)
   )`;
 
-const CHARGES_SQL = `SELECT created_at, status
+/** Charges with the account id used to keep only current shop accounts. */
+const CHARGES_SQL = `SELECT account_id, created_at, status
 FROM pos_charge
 WHERE created_at >= $1`;
 
 /**
  * Postgres reads for `GET /wallets/usage`.
- * One statement per method. The constructor does not query. Reads
+ * `payments` and `forumInvoices` run one statement; `shopCharges` reads
+ * charges and the shared live-assigned-shop note set. The constructor does not
+ * query. Reads
  * `wallet_payment`, `account`, `spark_invoice`, `fond_payout`,
  * `message_invoice`, `message`, `nostr_zap_payment`, `nostr_zap_receipt`, and
  * `pos_charge`; it does not write or migrate.
@@ -596,14 +641,31 @@ export class PostgresWalletUsageStore implements WalletUsageStore {
   }
 
   /**
-   * Read point-of-sale charges created on or after `sinceMs`.
+   * Read shop charges created on or after `sinceMs`.
+   *
+   * A charge counts only when its `pos_charge.account_id` is the current
+   * `shop_account_id` of a live top-level note whose text has the
+   * `#21GiftsShop` token, using {@link assignedShopAccountIds}. The note query is
+   * {@link LIVE_ASSIGNED_SHOPS_SQL}, the same note set as
+   * `listLiveAssignedShops`.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds (`$1`).
    * @returns Mapped rows. Query failures throw.
    */
   async shopCharges(sinceMs: number): Promise<WalletUsageChargeRow[]> {
     const rows = await this.sql.query<ChargeSqlRow>(CHARGES_SQL, [new Date(sinceMs)]);
-    return rows.map(mapCharge);
+    if (rows.length === 0) {
+      return [];
+    }
+    const charges = rows.map((row) => ({
+      accountId: sqlText(row.account_id, 'charge account id'),
+      row,
+    }));
+    const notes = await this.sql.query<AssignedShopSqlRow>(LIVE_ASSIGNED_SHOPS_SQL);
+    const shopAccountIds = assignedShopAccountIds(notes.map(mapAssignedShop));
+    return charges
+      .filter((charge) => shopAccountIds.has(charge.accountId))
+      .map((charge) => mapCharge(charge.row));
   }
 }
 
@@ -733,8 +795,32 @@ function copyForum(row: MemoryForumRow): WalletUsageForumRow {
   };
 }
 
-function copyCharge(row: WalletUsageChargeRow): WalletUsageChargeRow {
-  return { ...row, createdAt: new Date(row.createdAt.getTime()) };
+/**
+ * Copy a seeded charge without its internal shop detail.
+ *
+ * @param row - Seeded charge.
+ * @returns Public charge with a fresh date.
+ */
+function copyCharge(row: MemoryChargeRow): WalletUsageChargeRow {
+  return { createdAt: new Date(row.createdAt.getTime()), status: row.status };
+}
+
+/**
+ * Apply the in-memory shop filter to one seeded charge.
+ *
+ * @param row - Seeded charge with optional `shop` and `accountId`.
+ * @param shopAccountIds - Seeded current shop account ids.
+ * @returns `false` only for an explicit non-shop, or an `accountId` outside
+ *   the seeded shop set.
+ */
+function memoryIsShopCharge(row: MemoryChargeRow, shopAccountIds: ReadonlySet<string>): boolean {
+  if (row.shop === false) {
+    return false;
+  }
+  if (row.shop === true || row.accountId === undefined) {
+    return true;
+  }
+  return shopAccountIds.has(row.accountId);
 }
 
 function sqlInstant(value: Date | string): Date {
@@ -813,5 +899,19 @@ function mapCharge(row: ChargeSqlRow): WalletUsageChargeRow {
   return {
     createdAt: sqlInstant(row.created_at),
     status: sqlText(row.status, 'charge status'),
+  };
+}
+
+/**
+ * Map a live assigned shop row to the shared shop-note shape.
+ *
+ * @param row - Row from {@link LIVE_ASSIGNED_SHOPS_SQL}.
+ * @returns The note id, current shop account id, and text.
+ */
+function mapAssignedShop(row: AssignedShopSqlRow): ShopNoteRef {
+  return {
+    id: sqlText(row.id, 'shop note id'),
+    accountId: sqlText(row.shop_account_id, 'shop account id'),
+    text: sqlText(row.text, 'shop note text'),
   };
 }

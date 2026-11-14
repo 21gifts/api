@@ -32,6 +32,7 @@ function payment(paidAt: Date, amountSats = 1): WalletUsagePaymentRow {
 class MockSql implements SqlClient {
   queries: Array<{ text: string; params: readonly unknown[] }> = [];
   rows: unknown[] = [];
+  rowSets: unknown[][] = [];
   error: Error | undefined;
 
   query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
@@ -39,7 +40,7 @@ class MockSql implements SqlClient {
     if (this.error !== undefined) {
       return Promise.reject(this.error);
     }
-    return Promise.resolve(this.rows as T[]);
+    return Promise.resolve((this.rowSets.shift() ?? this.rows) as T[]);
   }
 
   execute(): Promise<void> {
@@ -123,6 +124,29 @@ describe('InMemoryWalletUsageStore', () => {
     ]);
     expect(rows.some((row) => 'platformNote' in row)).toBe(false);
   });
+
+  it('keeps only charges seeded for current shop accounts', async () => {
+    const store = new InMemoryWalletUsageStore({
+      payments: [],
+      forumInvoices: [],
+      shopCharges: [
+        { createdAt: AT, status: 'paid' },
+        { createdAt: BEFORE, status: 'paid', shop: false },
+        { createdAt: AFTER, status: 'pending', accountId: 'shop' },
+        { createdAt: AT, status: 'paid', accountId: 'member' },
+        { createdAt: BEFORE, status: 'paid', shop: true, accountId: 'member' },
+      ],
+      shopAccountIds: new Set(['shop']),
+    });
+    const rows = await store.shopCharges(0);
+    expect(rows).toEqual([
+      { createdAt: AT, status: 'paid' },
+      { createdAt: AFTER, status: 'pending' },
+      { createdAt: BEFORE, status: 'paid' },
+    ]);
+    expect(rows.some((row) => 'accountId' in row)).toBe(false);
+    expect(rows.some((row) => 'shop' in row)).toBe(false);
+  });
 });
 
 describe('PostgresWalletUsageStore', () => {
@@ -132,7 +156,7 @@ describe('PostgresWalletUsageStore', () => {
     expect(sql.queries).toEqual([]);
   });
 
-  it('reads each series with one parameterized statement', async () => {
+  it('reads each series with parameterized statements', async () => {
     const sql = new MockSql();
     const store = new PostgresWalletUsageStore(sql);
     sql.rows = [];
@@ -261,9 +285,34 @@ describe('PostgresWalletUsageStore', () => {
       'AND (invoice.heart IS TRUE OR coalesce(author.is_platform, false) = false)',
     );
     expect(charges.text).toContain('pos_charge');
+    expect(charges.text).toContain('account_id');
     expect(charges.text).toContain('created_at');
     expect(charges.text).toContain('status');
     expect(charges.text).toContain('created_at >= $1');
+  });
+
+  it('keeps charges whose account has a live assigned shop note', async () => {
+    const sql = new MockSql();
+    const store = new PostgresWalletUsageStore(sql);
+    sql.rowSets = [
+      [
+        { account_id: 'shop', created_at: AT, status: 'paid' },
+        { account_id: 'member', created_at: AFTER, status: 'pending' },
+      ],
+      [
+        { id: 'shop-note', shop_account_id: 'shop', text: 'Cafe #21giftsshop' },
+        { id: 'member-note', shop_account_id: 'member', text: 'Cafe #21GiftsShopper' },
+      ],
+    ];
+    await expect(store.shopCharges(AT.getTime())).resolves.toEqual([
+      { createdAt: AT, status: 'paid' },
+    ]);
+    expect(sql.queries.map((query) => query.params)).toEqual([[AT], []]);
+    const notes = sql.queries[1]?.text;
+    expect(notes).toContain('FROM message');
+    expect(notes).toContain('parent_id IS NULL');
+    expect(notes).toContain('deleted_at IS NULL');
+    expect(notes).toContain('shop_account_id IS NOT NULL');
   });
 
   it('maps merged rows and treats a null heart as false', async () => {
@@ -327,7 +376,10 @@ describe('PostgresWalletUsageStore', () => {
       { createdAt: new Date('2026-11-10T00:00:00.000Z'), amountSats: 6, heart: false },
       { createdAt: AT, amountSats: 7, heart: false },
     ]);
-    sql.rows = [{ created_at: '2026-11-12T01:00:00.000Z', status: 'paid' }];
+    sql.rowSets = [
+      [{ account_id: 'shop', created_at: '2026-11-12T01:00:00.000Z', status: 'paid' }],
+      [{ id: 'shop-note', shop_account_id: 'shop', text: 'Cafe #21GiftsShop' }],
+    ];
     await expect(store.shopCharges(0)).resolves.toEqual([
       { createdAt: new Date('2026-11-12T01:00:00.000Z'), status: 'paid' },
     ]);
@@ -756,8 +808,33 @@ describe('PostgresWalletUsageStore', () => {
     await rejects({ ...base, payer_party: 'shop' }, 'wallet usage party is invalid');
     sql.rows = [{ created_at: 'not-a-date', amount_sats: 1, heart: false }];
     await expect(store.forumInvoices(0)).rejects.toThrow('wallet usage time is invalid');
-    sql.rows = [{ created_at: AT, status: 4 }];
+    sql.rowSets = [
+      [{ account_id: 'shop', created_at: AT, status: 4 }],
+      [{ id: 'shop-note', shop_account_id: 'shop', text: 'Cafe #21GiftsShop' }],
+    ];
     await expect(store.shopCharges(0)).rejects.toThrow('wallet usage charge status is invalid');
+    sql.rowSets = [[{ account_id: 4, created_at: AT, status: 'paid' }]];
+    await expect(store.shopCharges(0)).rejects.toThrow('wallet usage charge account id is invalid');
+    sql.rowSets = [
+      [{ account_id: 'shop', created_at: 'not-a-date', status: 'paid' }],
+      [{ id: 'shop-note', shop_account_id: 'shop', text: 'Cafe #21GiftsShop' }],
+    ];
+    await expect(store.shopCharges(0)).rejects.toThrow('wallet usage time is invalid');
+    sql.rowSets = [
+      [{ account_id: 'shop', created_at: AT, status: 'paid' }],
+      [{ id: 4, shop_account_id: 'shop', text: 'Cafe #21GiftsShop' }],
+    ];
+    await expect(store.shopCharges(0)).rejects.toThrow('wallet usage shop note id is invalid');
+    sql.rowSets = [
+      [{ account_id: 'shop', created_at: AT, status: 'paid' }],
+      [{ id: 'shop-note', shop_account_id: 4, text: 'Cafe #21GiftsShop' }],
+    ];
+    await expect(store.shopCharges(0)).rejects.toThrow('wallet usage shop account id is invalid');
+    sql.rowSets = [
+      [{ account_id: 'shop', created_at: AT, status: 'paid' }],
+      [{ id: 'shop-note', shop_account_id: 'shop', text: 4 }],
+    ];
+    await expect(store.shopCharges(0)).rejects.toThrow('wallet usage shop note text is invalid');
   });
 
   it('propagates a query failure', async () => {
