@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
@@ -58,8 +59,8 @@ export interface MembersRouteDeps {
   fiatRates?: FiatRateBook;
   /** Operator write token. Unset → no operator read on the staff GET routes. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /** Auth or member-load outcome. */
@@ -139,7 +140,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
 
   return new Hono()
     .get('/:accountId/activity', async (c) => {
-      if (checkOperator('read', deps, c.req.header('authorization')) !== true) {
+      if ((await checkOperator('read', deps, c.req.header('authorization'))) !== true) {
         const auth = await requireForumRead(deps, c);
         if (!auth.ok) {
           return auth.response;

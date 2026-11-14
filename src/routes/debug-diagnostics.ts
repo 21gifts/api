@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import {
   DIAGNOSTIC_LIST_LIMIT,
   serializeDebugDiagnostic,
@@ -9,7 +10,7 @@ import { logEvent } from '@/lib/log';
 
 /**
  * Operator debug surface. Read-only listing of diagnostic_event rows.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  */
 
 /**
@@ -21,6 +22,8 @@ import { logEvent } from '@/lib/log';
 export function debugDiagnosticsRoutes(deps: {
   store: DiagnosticStore;
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }): Hono {
   return new Hono().get('/', requireOperator('read', deps), async (c) => {
     try {

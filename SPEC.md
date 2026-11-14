@@ -197,9 +197,9 @@ Public base URLs used in examples:
 | GET    | `/funding/places`                                    | none                                                              | Public: grant round places (`round`, `startsAt`, `places`, `admitted`, `placesLeft`, `nextGoalShops`)                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)                                               | Reject grant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/funding/withdraw`                                  | Bearer                                                            | Member leaves the grant program: pending, trial, or admitted → `withdrawn`; frees an admitted place. 409 otherwise. Basis 403                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| GET    | `/funding/withdrawals`                               | `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`                               | Operator: every withdrawal from the grant program, newest first, from `db_change`; any session → 401                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| GET    | `/funding/withdrawals`                               | `DEBUG_TOKEN` or an operator key token                            | Operator: every withdrawal from the grant program, newest first, from `db_change`; any session → 401                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/funding/daily-roster`                              | At least initiator Bearer or `DEBUG_*_TOKEN`                      | Operator token skips the gate; else 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. 502 Daily roster is unavailable.                                                                                                                                 |
-| GET    | `/funding/daily-roster/links`                        | `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`                               | Operator check of the roster account link: `{ rows, linked, unlinked: [{ bucket, address, amountUsd }], buckets: { daily, moderator } }`, each bucket `{ rows, linked, totalUsd, linkedUsd }`. 401 without an operator token. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                                                            |
+| GET    | `/funding/daily-roster/links`                        | `DEBUG_TOKEN` or an operator key token                            | Operator check of the roster account link: `{ rows, linked, unlinked: [{ bucket, address, amountUsd }], buckets: { daily, moderator } }`, each bucket `{ rows, linked, totalUsd, linkedUsd }`. 401 without an operator token. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                                                            |
 | POST   | `/funding/daily-roster/comment`                      | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
 | POST   | `/funding/daily-roster/payments`                     | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
 | POST   | `/funding/daily-roster/recipients`                   | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ accountId, amountUsd }` or `{ username, amountUsd }`. Route loads the account; the wallet does not matter. Unknown account → 400 Unknown person. Store load failure → 502 Daily roster is unavailable. The API store lists the account id. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. Local bad body → Invalid person or amount. |
@@ -279,7 +279,7 @@ Public base URLs used in examples:
 | POST   | `/debug/shop-proofs/:id/retry`                       | `Authorization: Bearer`                                           | Operator retry of a `stuck` shop payment proof (`DEBUG_TOKEN`; mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/debug/api-log`                                     | `Authorization: Bearer`                                           | Operator HTTP audit log (`DEBUG_TOKEN`); follow `before`/`beforeId`; no query string, body, or Authorization stored                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/debug/diagnostics`                                 | `Authorization: Bearer`                                           | Operator diagnostic log (`DEBUG_TOKEN`); newest 200; no secrets                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| GET    | `/debug/db`                                          | `Authorization: Bearer`                                           | Operator page through every public table (`DEBUG_TOKEN` / `DEBUG_READ_TOKEN`); a live member session at least `software_developer` can read only `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`, and `wallet_token_transaction`; follow `nextCursor`                                                                                                                                                                                                                                                                                      |
+| GET    | `/debug/db`                                          | `Authorization: Bearer`                                           | Operator page through every public table (`DEBUG_TOKEN` / an operator key token); a live member session at least `software_developer` can read only `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`, and `wallet_token_transaction`; follow `nextCursor`                                                                                                                                                                                                                                                                                   |
 | GET    | `/debug/contacts`                                    | `Authorization: Bearer`                                           | Operator contact listing (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/debug/invoices`                                    | `Authorization: Bearer`                                           | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/debug/invoices/settle`                             | `Authorization: Bearer`                                           | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -3150,7 +3150,7 @@ same JSON as `GET /me/activity` for **that** member, including loan series that
 sum stored grant fiat and leave a missing currency null. 503 `{ "error": "Gift
 stats are unavailable" }` when the gift store throws.
 
-Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
+Operator access: `DEBUG_TOKEN` or an operator key token as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
 ### `GET /mentions`
 
@@ -3262,7 +3262,7 @@ Staff pending-moderator queue. Bearer **session** required (moderator),
 or an operator token (below). No `forum.read` /
 rules gate — a moderator without rules agreement is still **200**.
 
-Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
+Operator access: `DEBUG_TOKEN` or an operator key token as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
 Lists pending proposals: the latest `moderator_propose` / `moderator_reject`
 edge is `moderator_propose`, the live subject is still `verified`, and
@@ -3490,7 +3490,7 @@ JSON `{ "applications": [ { accountId, name, role, appliedAt } ] }`.
 Logs `funding.applications.listed`. Same 401/403/503 shapes as
 `GET /trust/proposals` with `{ "error": "Funding is unavailable" }`.
 
-Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
+Operator access: `DEBUG_TOKEN` or an operator key token as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
 ### `GET /funding/applications/:accountId`
 
@@ -3504,7 +3504,7 @@ member left the program on their own (`decidedAt` is the withdrawal time).
 `account.lightningAddress` is the receiving address (verified wallet) or
 `null`.
 
-Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
+Operator access: `DEBUG_TOKEN` or an operator key token as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
 ### `POST /funding/trial`
 
@@ -3601,7 +3601,7 @@ leaving the program starts none.
 
 ### `GET /funding/withdrawals`
 
-Operator only: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer, like
+Operator only: `DEBUG_TOKEN` or an operator key token as Bearer, like
 `GET /funding/daily-roster/links`. No session grants access: no bearer, any
 other bearer, and every session including moderator and above → **401**
 `{ "error": "Unauthorized" }`.
@@ -3662,13 +3662,13 @@ No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 **403** `{ "error": "Forbidden" }`. Store throw → **503**
 `{ "error": "Funding is unavailable" }` (`funding.payouts.failed`).
 
-Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
+Operator access: `DEBUG_TOKEN` or an operator key token as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
 ### `GET /funding/daily-roster`
 
 Bearer session, then at least initiator (`canEditDailyPayoutRoster`). No session → 401 `{ "error": "Unauthorized" }`. Any other role, including moderator and software developer → 403 `{ "error": "Forbidden" }` and never 503. The API roster store is always present. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1: the USD paid to an unlisted admitted or trial grant. Moderator rows stay out of `recipients` and are returned on `moderators`. Each row is a listed account: `accountId`, its trimmed lower-case `username` (or `null`), its trimmed `name` (or `null`), the amount, and `address`, the row's edit key: `<username>@<host of PUBLIC_BASE_URL>`, the bare username when the LNURL server is off, or the account id when the account has no username. `address` is not a payout address and does not say whether the wallet is verified. A store 400 whose `error` is exactly `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, or `Unknown address` stays 400 with that text. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`.
 
-Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above. The operator read logs `{ operator: true, action }` instead of an account id.
+Operator access: `DEBUG_TOKEN` or an operator key token as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above. The operator read logs `{ operator: true, action }` instead of an account id.
 
 ### `POST /funding/daily-roster/comment`
 
@@ -3708,7 +3708,7 @@ Same session gate (at least initiator; operator tokens do not write) and success
 
 ### `GET /funding/daily-roster/links`
 
-Operator only: Bearer `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`; anything else, including a member session → 401 `{ "error": "Unauthorized" }`. Success 200 is the account link check of every stored roster row, linked to an account or not:
+Operator only: Bearer `DEBUG_TOKEN` or an operator key token; anything else, including a member session → 401 `{ "error": "Unauthorized" }`. Success 200 is the account link check of every stored roster row, linked to an account or not:
 
 ```json
 {
@@ -3771,7 +3771,7 @@ Spend Bearer, same as the invoices. Body `{ enabled: boolean }` is passed to `se
 ### `GET /funding/goal`
 
 Bearer session. Any signed-in role, including `basis`. The operator
-`DEBUG_TOKEN` or `DEBUG_READ_TOKEN` reads the same body without a session;
+`DEBUG_TOKEN` or an operator key token reads the same body without a session;
 the body holds only counts. Missing bearer, or a bearer that is neither an
 operator token nor a session, is **401** `{ "error": "Unauthorized" }`. Seven UTC days
 ending on the server clock's today, oldest first. A shop is a live
@@ -4504,10 +4504,119 @@ restart clears the cache. There is no durable (Postgres) cache yet. No auth.
 No new environment variables for this route; the process still boots with
 zero extra config when `DATABASE_URL` and `DEBUG_TOKEN` are unset.
 
+### Operator access to `/debug`
+
+Every `/debug` route except the two login routes below declares an operator
+level: `read` (every `GET`, and so `HEAD`), `write`, or `admin` (the seven
+routes `PATCH /debug/accounts/:id`, `POST /debug/accounts/:id/session`,
+`POST /debug/accounts/merge`, `DELETE /debug/sessions`,
+`POST /debug/invoices/settle`, `POST /debug/push-broadcast`, and
+`POST /debug/shop-keys`). A higher level includes the lower ones. The same
+`read` check opens the operator reads of `GET /funding/goal`,
+`GET /funding/payout-days`, `GET /funding/applications`,
+`GET /funding/applications/:accountId`, `GET /funding/daily-roster`,
+`GET /funding/daily-roster/links`, `GET /funding/withdrawals`,
+`GET /trust/proposals`, `GET /members/:accountId/activity`,
+`GET /messages/hidden`, and `GET /messages/:id/edits`.
+
+Two credentials are accepted as `Authorization: Bearer`:
+
+- `DEBUG_TOKEN` grants `admin`. Its status codes and bodies are unchanged.
+- A key token from the operator login with SSH keys grants the level it was
+  issued with. On every request the api checks that the token is stored and
+  not expired, and that its operator is still listed in the loaded
+  allowed-signers files with the same key, at the token's level or higher,
+  and not past `valid-before`.
+
+Neither `DEBUG_TOKEN` nor a loaded key login → **503**
+`{ "error": "Debug is not configured" }`. A valid key token below the declared
+level → **403** `{ "error": "Forbidden" }`. Any other bearer, including an
+unknown or expired key token → **401** `{ "error": "Unauthorized" }`.
+
+Configuration (read once at boot; the api boots without it):
+
+| Variable                    | Meaning                                                                                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DEBUG_ALLOWED_SIGNERS_DIR` | Directory with `read.allowed_signers`, `write.allowed_signers`, and `admin.allowed_signers` (OpenSSH allowed-signers format), mounted read-only. |
+| `DEBUG_SIGNING_NAMESPACE`   | `21gifts-debug-dev`, `21gifts-debug-stg`, or `21gifts-debug-prd`; the only namespace this api accepts.                                           |
+
+Only `ssh-ed25519` lines are loaded; every other line is dropped and logged
+(`debug.auth.signers.line_dropped`). Accepted options are `namespaces` and
+`valid-before` (`YYYYMMDD`, `YYYYMMDDHHMM`, or `YYYYMMDDHHMMSS`, optional
+`Z`, read as UTC). A key listed in more than one file gets the highest
+level. Example line:
+
+```
+daniel-mac-agent namespaces="21gifts-debug-prd" ssh-ed25519 AAAA…
+```
+
+A missing directory or namespace, a namespace outside the three, or a file
+that cannot be read turns the key login off: both login routes answer
+**503** `{ "error": "Operator login is not configured" }` and `DEBUG_TOKEN`
+keeps working.
+
+### `GET /debug/auth/challenge`
+
+No authentication. Deletes expired challenges and tokens, then stores and
+returns a new challenge (32 random bytes, base64url) valid **60 seconds** and
+single use. Challenges live in `operator_challenge`, so a restart or a second
+api instance does not break a login.
+
+```json
+{ "challenge": "<43 base64url characters>", "expiresAt": "2026-11-14T12:01:00.000Z" }
+```
+
+More than 30 requests per client address and minute → **429**
+`{ "error": "Too many requests" }`. Key login off → **503**.
+
+### `POST /debug/auth`
+
+No authentication besides the signed challenge. Body (at most 4096 bytes,
+else **413** `{ "error": "Request body is too large" }`):
+
+```json
+{ "challenge": "<from GET /debug/auth/challenge>", "signature": "-----BEGIN SSH SIGNATURE-----\n…" }
+```
+
+`signature` is the output of
+`printf '%s' "$challenge" | ssh-keygen -Y sign -n 21gifts-debug-<env> -f <key>`
+and at most 2048 bytes. A body that is not such JSON → **400**
+`{ "error": "Invalid login" }`. More than 10 requests per client address and
+minute → **429**. Key login off → **503**.
+
+The api deletes expired challenges and tokens, then consumes the challenge
+atomically; an unknown, expired, or used challenge is refused before any
+process starts. A signature key other than `ssh-ed25519` is refused. The api
+runs `ssh-keygen -Y find-principals` and then `ssh-keygen -Y verify` with this
+api's namespace and the principal `find-principals` named, both with a fixed
+argument list, the signature in a fresh private temp directory, and a
+5-second limit; only exit code 0 passes. The level is the highest level that
+principal and key hold now. Every refusal → **401**
+`{ "error": "Unauthorized" }`.
+
+Success → **200**:
+
+```json
+{
+  "token": "op_<43 base64url characters>",
+  "operator": "daniel-mac-agent",
+  "level": "read",
+  "keyFingerprint": "SHA256:…",
+  "expiresAt": "2026-11-14T12:15:00.000Z"
+}
+```
+
+The token is valid **15 minutes**. Only its SHA-256 hex is stored
+(`operator_token`, with operator name, key fingerprint, level, and expiry).
+Every attempt logs `debug.auth.login.ok` or `debug.auth.login.refused` with
+the operator name when known and the key fingerprint; the token, the
+signature, and the challenge are never logged. Requests made with the token
+are stored in `api_log` with `authKind` `debug` and `operator` set.
+
 ### `GET /debug/db`
 
 Operator read of every ordinary table in schema `public`. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`.
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token.
 Alternatively, a live member session whose role is at least
 `software_developer` may use this same GET route, but sees only
 `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`, and
@@ -4759,7 +4868,7 @@ most `limit` rows (default 50, decimal integer 1..500). `nextCursor` is an
 opaque cursor when another row exists and is omitted on the last page. Every
 `WalletPaymentRecord` field is JSON, with dates as ISO strings. Unknown or
 non-UUID id → **Response** `404`; malformed limit or cursor → **Response**
-`400`. `DEBUG_TOKEN` and `DEBUG_READ_TOKEN` both read this route. A store
+`400`. `DEBUG_TOKEN` and an operator key token of any level read this route. A store
 failure → **Response** `503` `{ "error": "Wallet data is unavailable" }`.
 
 ### `POST /debug/accounts`
@@ -5204,7 +5313,8 @@ Success logs `debug.trust_edges.deleted` `{ subjectId, kind }`.
 ### `GET /debug/api-log`
 
 Operator listing of HTTP audit rows (`api_log`). Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of
+any level. This is not an end-user
 session. Rows are newest-first (`createdAt` descending, then `id`). Each
 response is one keyset page of at most **200** logs. `hasMore` is true only
 when another page exists. Follow `before` (the last log's `createdAt`) and
@@ -5267,6 +5377,7 @@ Success → **Response** `200`:
       "ms": 8,
       "accountId": "<uuid>",
       "authKind": "session",
+      "operator": null,
       "clientIp": null,
       "clientCountry": null,
       "cfRay": null,
@@ -5281,6 +5392,9 @@ Success → **Response** `200`:
 
 `authKind` is `session`, `debug`, `spend`, or `none`. `accountId` is the
 session account when `authKind` is `session`; otherwise JSON `null`.
+`operator` is the operator name when the request carried a key token of the
+operator login with SSH keys (`authKind` `debug`); `DEBUG_TOKEN` requests and
+every other request have JSON `null`.
 `clientIp`, `clientCountry`, `cfRay`, `userAgent`, `acceptLanguage`, and
 `origin` are always present and are JSON `null` when that header is missing
 or fails validation. `clientIp` is `CF-Connecting-IP` only when it is an
@@ -6424,7 +6538,7 @@ Success → **Response** `200`:
 ### `GET /debug/logins`
 
 Operator read of the login switch (see Login controls). Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
-end-user session); `DEBUG_READ_TOKEN` is not accepted.
+end-user session), or an operator key token of level `read` or higher; a lower key token → **403** `{ "error": "Forbidden" }`.
 
 `DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
@@ -6449,7 +6563,7 @@ oldest first; `createdAt` is ISO 8601.
 ### `PUT /debug/logins`
 
 Operator set of the login switch. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
-end-user session); `DEBUG_READ_TOKEN` is not accepted.
+end-user session), or an operator key token of level `write` or higher; a lower key token → **403** `{ "error": "Forbidden" }`.
 JSON body `{ "open": <boolean> }` with no other keys. Stores the value in
 `app_setting` (`logins_open`), which wins over `LOGINS_OPEN_DEFAULT` from
 then on. Existing sessions are not touched. Logs `debug.logins.set`.
@@ -6514,7 +6628,7 @@ Success → **Response** `200` `{ "enabled": <boolean> }`.
 ### `POST /debug/logins/allowlist`
 
 Operator add of one account to the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
-end-user session); `DEBUG_READ_TOKEN` is not accepted.
+end-user session), or an operator key token of level `write` or higher; a lower key token → **403** `{ "error": "Forbidden" }`.
 JSON body `{ "accountId": "<uuid>" }` with no other keys (any case, stored
 lower case). Logs `debug.logins.allowlist.add`.
 
@@ -6531,7 +6645,7 @@ Success → **Response** `200`: `{ "added": true, ...GET /debug/logins }`.
 ### `DELETE /debug/logins/allowlist/:accountId`
 
 Operator removal of one account from the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
-end-user session); `DEBUG_READ_TOKEN` is not accepted.
+end-user session), or an operator key token of level `write` or higher; a lower key token → **403** `{ "error": "Forbidden" }`.
 Does not end the account's sessions. Logs `debug.logins.allowlist.remove`.
 
 `DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
@@ -6544,7 +6658,7 @@ Success → **Response** `200`: `{ "removed": true, ...GET /debug/logins }`.
 ### `DELETE /debug/sessions`
 
 Operator end of every member session. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
-end-user session); `DEBUG_READ_TOKEN` is not accepted.
+end-user session), or an operator key token of level `admin` or higher; a lower key token → **403** `{ "error": "Forbidden" }`.
 Deletes every `auth_session` row in one statement. Every bearer that held one
 answers 401 on its next request. The existing `trg_db_change` row trigger
 records each deleted row with the token hashed. Logs `debug.sessions.deleted`
@@ -8830,7 +8944,7 @@ Staff replacement of the stills on a live top-level shop note. Bearer session re
 
 Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null (`username` is null when the till account had none). `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
 
-Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
+Operator access: `DEBUG_TOKEN` or an operator key token as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
 ### `GET /messages/hidden`
 
@@ -8842,7 +8956,7 @@ include every hidden row regardless of external-zapper entitlement — the
 moderation view is intentionally unaffected by the public read-visibility
 rule.
 
-Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
+Operator access: `DEBUG_TOKEN` or an operator key token as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
 Lists only rows with `deletedAt` set, newest-hidden first (`deletedAt`
 desc, then `id` desc), capped at **200**. JSON `{ "messages": [ … ] }`

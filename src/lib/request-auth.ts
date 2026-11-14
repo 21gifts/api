@@ -2,13 +2,16 @@
  * Classify an Authorization header for the HTTP audit log.
  *
  * Debug and spend tokens are compared with the same constant-time helper as
- * the debug routes. Session tokens go through {@link resolveSession}.
+ * the debug routes. Key tokens of the operator SSH key login go through
+ * {@link OperatorLogin.resolveBearer}. Session tokens go through
+ * {@link resolveSession}.
  */
 
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import type { ApiLogAuthKind } from '@/lib/api-log';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import type { OperatorLogin } from '@/lib/operator-login';
 
 function sessionBearerToken(header: string | undefined): string | null {
   if (header === undefined || !header.startsWith('Bearer ')) {
@@ -24,12 +27,17 @@ export interface RequestAuth {
   accountId: string | null;
   /** Bearer class. */
   authKind: ApiLogAuthKind;
+  /** Operator name when the bearer is a key token of the SSH key login; else null. */
+  operator: string | null;
 }
 
 /**
  * Classify `Authorization` as debug, spend, session, or none.
  *
- * @param args - Header, stores, clock, and configured tokens.
+ * `DEBUG_TOKEN` is `debug` without an operator. A valid key token of the SSH
+ * key login is `debug` with the operator name.
+ *
+ * @param args - Header, stores, clock, configured tokens, and the optional key login.
  * @returns Auth kind and optional account id. Never returns the token.
  */
 export async function resolveRequestAuth(args: {
@@ -38,22 +46,27 @@ export async function resolveRequestAuth(args: {
   now: number;
   debugToken: string | undefined;
   spendApiToken: string | undefined;
+  operatorLogin?: OperatorLogin | undefined;
 }): Promise<RequestAuth> {
   const debugToken = args.debugToken?.trim() ?? '';
   if (debugToken !== '' && bearerMatchesDebugToken(debugToken, args.authorizationHeader)) {
-    return { accountId: null, authKind: 'debug' };
+    return { accountId: null, authKind: 'debug', operator: null };
   }
   const spendToken = args.spendApiToken?.trim() ?? '';
   if (spendToken !== '' && bearerMatchesDebugToken(spendToken, args.authorizationHeader)) {
-    return { accountId: null, authKind: 'spend' };
+    return { accountId: null, authKind: 'spend', operator: null };
+  }
+  const grant = (await args.operatorLogin?.resolveBearer(args.authorizationHeader)) ?? null;
+  if (grant !== null) {
+    return { accountId: null, authKind: 'debug', operator: grant.operator };
   }
   const token = sessionBearerToken(args.authorizationHeader);
   if (token === null) {
-    return { accountId: null, authKind: 'none' };
+    return { accountId: null, authKind: 'none', operator: null };
   }
   const account = await resolveSession(args.authStore, args.now, token);
   if (account === null) {
-    return { accountId: null, authKind: 'none' };
+    return { accountId: null, authKind: 'none', operator: null };
   }
-  return { accountId: account.id, authKind: 'session' };
+  return { accountId: account.id, authKind: 'session', operator: null };
 }

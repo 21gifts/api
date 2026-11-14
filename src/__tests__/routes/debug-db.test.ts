@@ -8,6 +8,11 @@ import {
 } from '@/lib/debug-db';
 import { debugDbRoutes } from '@/routes/debug-db';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -33,7 +38,7 @@ function store(partial: Partial<DebugDbStore> = {}): DebugDbStore {
 function app(deps: {
   store: DebugDbStore | undefined;
   debugToken: string | undefined;
-  debugReadToken?: string;
+  operatorLogin?: OperatorLogin;
 }): Hono {
   return new Hono().route('/debug/db', debugDbRoutes(deps));
 }
@@ -113,8 +118,8 @@ describe('debugDbRoutes', () => {
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
       debugToken: undefined,
-      debugReadToken: 'read-secret',
-    }).request('/debug/db', { headers: { authorization: 'Bearer read-secret' } });
+      operatorLogin: OP_KEYS.operatorLogin,
+    }).request('/debug/db', { headers: { authorization: `Bearer ${OP_READ}` } });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ tables });
   });
@@ -124,7 +129,7 @@ describe('debugDbRoutes', () => {
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
       debugToken: 'secret',
-      debugReadToken: 'read-secret',
+      operatorLogin: OP_KEYS.operatorLogin,
     }).request('/debug/db', { headers: { authorization: 'Bearer secret' } });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ tables });
@@ -135,8 +140,8 @@ describe('debugDbRoutes', () => {
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
       debugToken: 'secret',
-      debugReadToken: 'read-secret',
-    }).request('/debug/db', { headers: { authorization: 'Bearer read-secret' } });
+      operatorLogin: OP_KEYS.operatorLogin,
+    }).request('/debug/db', { headers: { authorization: `Bearer ${OP_READ}` } });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ tables });
   });
@@ -257,7 +262,7 @@ describe('debugDbRoutes', () => {
     const res = await app({
       store: store(),
       debugToken: undefined,
-      debugReadToken: 'read-secret',
+      operatorLogin: OP_KEYS.operatorLogin,
     }).request('/debug/db', { headers: { authorization: 'Bearer other' } });
     expect(res.status).toBe(401);
     await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });

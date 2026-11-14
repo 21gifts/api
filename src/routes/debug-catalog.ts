@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import type { ApiLogStore } from '@/lib/api-log';
 import type { AuthStore } from '@/lib/auth/store';
 import type { ContactStore } from '@/lib/contact-store';
@@ -49,6 +50,8 @@ export interface DebugCatalogRouteDeps {
   lnurlServer?: LnurlServerConfig;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {

@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import { checkOperator } from '@/lib/operator';
@@ -11,7 +12,7 @@ import { bearerToken } from '@/routes/me';
 const WINDOW_DAYS = 7;
 const MS_PER_DAY = 86_400_000;
 
-/** Collaborators the `/funding/goal` route needs. All required except `debugReadToken`. */
+/** Collaborators the `/funding/goal` route needs. All required except `operatorLogin`. */
 export interface GrantContinuationRouteDeps {
   /** Shared auth persistence port. */
   authStore: AuthStore;
@@ -23,15 +24,15 @@ export interface GrantContinuationRouteDeps {
   pos: { listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]> };
   /** Operator write token, or `undefined` when unset. Reads the same body as a session. */
   debugToken: string | undefined;
-  /** Optional operator read-only token. Reads the same body as a session. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /**
  * Build the `/funding/goal` route group.
  *
  * Mounted at `/funding/goal` so the public path is `GET /funding/goal`.
- * Any signed-in role may read it. `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` also
+ * Any signed-in role may read it. `DEBUG_TOKEN` or an operator key token also
  * reads it without a session, because the body holds only counts.
  * This does not serve the public 30-day series.
  *
@@ -41,7 +42,7 @@ export interface GrantContinuationRouteDeps {
 export function grantContinuationRoutes(deps: GrantContinuationRouteDeps): Hono {
   return new Hono().get('/', async (c) => {
     const authorization = c.req.header('authorization');
-    if (checkOperator('read', deps, authorization) !== true) {
+    if ((await checkOperator('read', deps, authorization)) !== true) {
       const token = bearerToken(authorization);
       if (token === null) {
         return c.json({ error: 'Unauthorized' }, 401);

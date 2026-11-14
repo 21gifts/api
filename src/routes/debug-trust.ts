@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
 import { requireOperator } from '@/lib/operator';
@@ -9,7 +10,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Operator backfill and delete of stored trust edges. Authenticated by
- * `DEBUG_TOKEN` (Bearer), not by an end-user session. Does not change
+ * `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session. Does not change
  * `account.role`.
  */
 
@@ -21,6 +22,8 @@ export interface DebugTrustRouteDeps {
   trustStore: TrustStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (injected for testability). */
   now?: () => number;
 }

@@ -102,6 +102,11 @@ import {
   type WalletStore,
 } from '@/lib/wallet-store';
 import {
+  migrateOperatorLoginSchema,
+  PostgresOperatorLoginStore,
+  type OperatorLoginStore,
+} from '@/lib/operator-login-store';
+import {
   migrateLoginGateSchema,
   PostgresLoginGateStore,
   type LoginGateStore,
@@ -267,6 +272,12 @@ export interface BootStores {
    * `createApp` keeps the empty in-memory default.
    */
   loginGateStore: LoginGateStore | undefined;
+  /**
+   * Postgres-backed challenges and tokens of the operator SSH key login
+   * (`operator_challenge`, `operator_token`), or `undefined` when no SQL
+   * client was opened so `createApp` keeps the in-memory default.
+   */
+  operatorLoginStore: OperatorLoginStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -321,7 +332,7 @@ export interface BootFxOptions {
  * `sparkInvoiceStore: undefined`,
  * `walletStore: undefined`,
  * `memberEventStore: undefined`,
- * `loginGateStore: undefined`,
+ * `loginGateStore: undefined`, `operatorLoginStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `shopIdentityStore: undefined`, `nostrKek: undefined`,
  * `recoveryShareKek: undefined`,
@@ -363,7 +374,8 @@ export interface BootFxOptions {
  * {@link PostgresFundingStore}, {@link PostgresBannerStore},
  * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore},
  * {@link PostgresDebugDbStore}, {@link PostgresWalletStore},
- * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}.
+ * {@link PostgresMemberEventStore}, {@link PostgresLoginGateStore}, and
+ * {@link PostgresOperatorLoginStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` then
  * `migrateDailyRosterSchema` then `migrateFondPayoutSchema` run after
  * auth/`account` exists and before `migrateApiLogSchema` /
@@ -381,16 +393,17 @@ export interface BootFxOptions {
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`,
  * `migrateSparkViewerSchema`, `migrateMemberEventSchema`, then
- * `migrateLoginGateSchema`, then `migrateDbChangeSchema`, so
+ * `migrateLoginGateSchema`, then `migrateOperatorLoginSchema`, then
+ * `migrateDbChangeSchema`, so
  * `diagnostic_event`, `spark_invoice` / `member_spark_invoice`, wallet tables,
  * `member_event`,
- * `app_setting`, and `login_allowlist` are migrated between `account_image`
+ * `app_setting`, `login_allowlist`, `operator_challenge`, and `operator_token` are migrated between `account_image`
  * and `db_change` and `trg_db_change` attaches to `api_log`,
  * `account_image`, `diagnostic_event`, `spark_invoice` / `member_spark_invoice`,
  * `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`,
  * `wallet_token_transaction`, `wallet_transfer_sync`,
  * `spark_viewer_key`, `welcome_invoice_reservation`, `member_event`,
- * `app_setting`, and `login_allowlist`.
+ * `app_setting`, `login_allowlist`, `operator_challenge`, and `operator_token`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
@@ -465,6 +478,7 @@ export async function openBootStores(
       walletViewerPublicKey: memoryViewer?.publicKey ?? null,
       memberEventStore: undefined,
       loginGateStore: undefined,
+      operatorLoginStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -502,6 +516,7 @@ export async function openBootStores(
   await migrateSparkViewerSchema(sqlClient);
   await migrateMemberEventSchema(sqlClient);
   await migrateLoginGateSchema(sqlClient);
+  await migrateOperatorLoginSchema(sqlClient);
   const logSql = fx?.logSql ?? sqlClient;
   const diagnosticStore = new PostgresDiagnosticStore(logSql);
   setDiagnosticSink((event, fields) => {
@@ -735,5 +750,6 @@ export async function openBootStores(
     walletViewerPublicKey: sparkViewerKey.publicKey,
     memberEventStore: new PostgresMemberEventStore(sqlClient),
     loginGateStore: new PostgresLoginGateStore(sqlClient),
+    operatorLoginStore: new PostgresOperatorLoginStore(sqlClient),
   };
 }

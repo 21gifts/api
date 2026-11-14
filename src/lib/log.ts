@@ -4,6 +4,7 @@ import type { MiddlewareHandler } from 'hono';
 import type { ApiLogStore } from '@/lib/api-log';
 import type { AuthStore } from '@/lib/auth/store';
 import { resolveRequestAuth } from '@/lib/request-auth';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { presentClientFields, readClientRequestMeta } from '@/lib/request-meta';
 
 /** JSON-serialisable event fields. No nested objects. */
@@ -184,6 +185,8 @@ export interface RequestLogDeps {
   debugToken: string | undefined;
   /** Spend-worker shared secret, or `undefined` when spend auth is disabled. */
   spendApiToken: string | undefined;
+  /** SSH key login whose key tokens are logged with their operator name. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
   now?: () => number;
   /**
@@ -224,19 +227,23 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
   const clock = deps.now ?? Date.now;
   let accountId: string | null = null;
   let authKind: 'session' | 'debug' | 'spend' | 'none' = 'none';
+  let operator: string | null = null;
   try {
     const auth = await resolveRequestAuth({
       authorizationHeader: captured.authorizationHeader,
       debugToken: deps.debugToken,
       spendApiToken: deps.spendApiToken,
+      operatorLogin: deps.operatorLogin,
       authStore: deps.authStore,
       now: clock(),
     });
     accountId = auth.accountId;
     authKind = auth.authKind;
+    operator = auth.operator;
   } catch {
     accountId = null;
     authKind = 'none';
+    operator = null;
   }
   try {
     await deps.apiLogStore.append({
@@ -248,6 +255,7 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
       ms: captured.ms,
       accountId,
       authKind,
+      operator,
       clientIp: captured.meta.clientIp,
       clientCountry: captured.meta.clientCountry,
       cfRay: captured.meta.cfRay,

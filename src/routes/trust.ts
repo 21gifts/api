@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import { roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
@@ -59,8 +60,8 @@ export interface TrustRouteDeps {
   giftStore?: Pick<GiftStore, 'listOutbound'>;
   /** Operator write token. Unset → no operator read on the staff GET routes. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /**
@@ -160,7 +161,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
     .get('/proposals', async (c) => {
       try {
         const header = c.req.header('authorization');
-        if (checkOperator('read', deps, header) !== true) {
+        if ((await checkOperator('read', deps, header)) !== true) {
           const caller = await authedAccount(deps, header);
           if (caller === null) {
             return c.json({ error: 'Unauthorized' }, 401);

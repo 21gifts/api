@@ -5,6 +5,7 @@
  */
 
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { requireOperator } from '@/lib/operator';
@@ -43,6 +44,8 @@ export interface DebugPushBroadcastRouteDeps {
   now: () => number;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Public VAPID key when configured; missing/blank → 503 on a send that is not a dry run. */
   vapidPublicKey: string | undefined;
 }

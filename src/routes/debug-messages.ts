@@ -3,13 +3,14 @@
  * row (including soft-hidden notes and replies), serve hidden photo bytes,
  * restore a missing forum-video file for an already-existing message with
  * `hasVideo`, and unhide a soft-hidden row (`POST /:id/restore`). Authenticated
- * by `DEBUG_TOKEN` (Bearer), not by an end-user session. Does not create rows.
+ * by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session. Does not create rows.
  * Video restore does not change DB. Unhide clears `deletedAt` / `deletedBy`
  * and removes the pubkey block tied to that message via
  * `unblockPubkeyByMessage`.
  */
 
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import {
@@ -33,6 +34,8 @@ export interface DebugMessagesRouteDeps {
   store: MessageStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /**
    * Shop identities. With `shopKek`, a restore that makes the note a
    * public shop creates its key. The restore write queues the

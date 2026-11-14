@@ -29,11 +29,26 @@
 #               DELETE /debug/sessions). No raw SQL.
 #
 # Credentials (never in this script, never printed):
-#   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
+#   ~/.config/21gifts/debug.env  ->  DEBUG_API_URL, and DEBUG_TOKEN or DEBUG_SSH_KEY,
+#                                    optional DEBUG_SSH_ADMIN_KEY,
+#                                    optional DEBUG_SIGNING_NAMESPACE,
 #                                    optional DEBUG_SPEND_URL (default https://spend.21.gifts)
 #   Override path with GIFTS_DEBUG_ENV.
 #
+# Operator login with SSH keys (GET /debug/auth/challenge, POST /debug/auth):
+#   DEBUG_SSH_KEY        private ed25519 key listed in the api's allowed-signers files.
+#                        When set, every api request uses a 15-minute key token kept in
+#                        ${XDG_STATE_HOME:-~/.local/state}/21gifts/ (mode 600) and logs in
+#                        again by itself on 401. When unset, DEBUG_TOKEN is used as before.
+#   DEBUG_SSH_ADMIN_KEY  optional second key; on 403 the script logs in with it (ssh-keygen
+#                        may ask for its passphrase) and retries the request once.
+#   DEBUG_SIGNING_NAMESPACE  default from DEBUG_API_URL: dev-api.21.gifts -> 21gifts-debug-dev,
+#                        api.21.gifts -> 21gifts-debug-prd; set it for any other host
+#                        (21gifts-debug-dev, 21gifts-debug-stg, or 21gifts-debug-prd).
+#   The spend roster (gifts-debug spend) still uses DEBUG_TOKEN.
+#
 # Usage:
+#   gifts-debug login                # sign a challenge with DEBUG_SSH_KEY; keep the token
 #   gifts-debug auth                 # check token; print account count on stderr
 #   gifts-debug accounts [--raw]     # table (default) or JSON
 #   gifts-debug account <id>         # GET /debug/accounts/:id JSON
@@ -147,18 +162,132 @@ read_env_var_optional() {
 }
 
 [ -f "$ENV_FILE" ] || die "missing $ENV_FILE"
-DEBUG_TOKEN=$(read_env_var DEBUG_TOKEN "$ENV_FILE")
 DEBUG_API_URL=$(read_env_var DEBUG_API_URL "$ENV_FILE")
 DEBUG_API_URL="${DEBUG_API_URL%/}"
 DEBUG_SPEND_URL=$(read_env_var_optional DEBUG_SPEND_URL "$ENV_FILE")
 DEBUG_SPEND_URL="${DEBUG_SPEND_URL:-https://spend.21.gifts}"
 DEBUG_SPEND_URL="${DEBUG_SPEND_URL%/}"
+DEBUG_SSH_KEY=$(read_env_var_optional DEBUG_SSH_KEY "$ENV_FILE")
+DEBUG_SSH_KEY="${DEBUG_SSH_KEY/#\~/$HOME}"
+DEBUG_SSH_ADMIN_KEY=$(read_env_var_optional DEBUG_SSH_ADMIN_KEY "$ENV_FILE")
+DEBUG_SSH_ADMIN_KEY="${DEBUG_SSH_ADMIN_KEY/#\~/$HOME}"
+DEBUG_TOKEN=$(read_env_var_optional DEBUG_TOKEN "$ENV_FILE")
+if [ -z "$DEBUG_SSH_KEY" ] && [ -z "$DEBUG_TOKEN" ]; then
+  die "DEBUG_TOKEN or DEBUG_SSH_KEY must be set in $ENV_FILE"
+fi
+
+# Namespace of the api being called: 21gifts-debug-<dev|stg|prd>.
+signing_namespace() {
+  local ns host
+  ns=$(read_env_var_optional DEBUG_SIGNING_NAMESPACE "$ENV_FILE")
+  if [ -z "$ns" ]; then
+    host="${DEBUG_API_URL#*://}"
+    host="${host%%/*}"
+    case "$host" in
+      dev-api.21.gifts) ns=21gifts-debug-dev ;;
+      api.21.gifts) ns=21gifts-debug-prd ;;
+      *) die "set DEBUG_SIGNING_NAMESPACE in $ENV_FILE for ${host}" ;;
+    esac
+  fi
+  case "$ns" in
+    21gifts-debug-dev|21gifts-debug-stg|21gifts-debug-prd) printf '%s' "$ns" ;;
+    *) die "DEBUG_SIGNING_NAMESPACE must be 21gifts-debug-dev, 21gifts-debug-stg, or 21gifts-debug-prd" ;;
+  esac
+}
+
+# Token file of one key; only the user can read it.
+token_file() {
+  local kind="$1" dir
+  dir="${XDG_STATE_HOME:-$HOME/.local/state}/21gifts"
+  (umask 077 && mkdir -p "$dir")
+  chmod 700 "$dir"
+  printf '%s/debug-%s-%s.token' "$dir" "$(signing_namespace)" "$kind"
+}
+
+# Sign a fresh challenge with one key and keep the token. Prints the login
+# summary (operator, level, expiry) on stderr; never the token.
+key_login() {
+  local key="$1" kind="$2" ns challenge signature tmp status body file token
+  [ -f "$key" ] || die "missing key file: $key"
+  ns=$(signing_namespace)
+  tmp=$(mktemp)
+  status=$(curl -sS -o "$tmp" -w '%{http_code}' "${DEBUG_API_URL}/debug/auth/challenge") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  [ "$status" = "200" ] || die "HTTP ${status}: ${body}"
+  challenge=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["challenge"])')
+  # ssh-keygen reads the challenge on stdin and asks for a passphrase on the terminal.
+  signature=$(printf '%s' "$challenge" | ssh-keygen -Y sign -n "$ns" -f "$key") \
+    || die "ssh-keygen could not sign with $key"
+  tmp=$(mktemp)
+  status=$(python3 -c 'import json,sys; print(json.dumps({"challenge": sys.argv[1], "signature": sys.argv[2] + "\n"}))' \
+      "$challenge" "$signature" \
+    | curl -sS -o "$tmp" -w '%{http_code}' -X POST \
+      -H "Content-Type: application/json" \
+      --data-binary @- \
+      "${DEBUG_API_URL}/debug/auth") || {
+    rm -f "$tmp"
+    die "request failed"
+  }
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  [ "$status" = "200" ] || die "login failed: HTTP ${status}: ${body}"
+  token=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+  file=$(token_file "$kind")
+  (umask 077 && printf '%s' "$token" > "$file")
+  printf '%s' "$body" | python3 -c '
+import json, sys
+b = json.load(sys.stdin)
+sys.stderr.write("logged in as %s (%s) until %s\n" % (b["operator"], b["level"], b["expiresAt"]))
+'
+}
+
+# Bearer of the configured key, logging in when no token is kept yet.
+key_token() {
+  local kind="$1" key="$2" file
+  file=$(token_file "$kind")
+  if [ ! -s "$file" ]; then
+    key_login "$key" "$kind"
+  fi
+  cat "$file"
+}
+
+# curl for every api request; prints the HTTP status (callers pass -o and -w).
+# With DEBUG_SSH_KEY: key token, one new login on 401, and on 403 one retry with
+# DEBUG_SSH_ADMIN_KEY when it is set. Without it: DEBUG_TOKEN as before.
+op_curl() {
+  local status token
+  if [ -z "$DEBUG_SSH_KEY" ]; then
+    curl -sS -H "Authorization: Bearer ${DEBUG_TOKEN}" "$@"
+    return
+  fi
+  token=$(key_token operator "$DEBUG_SSH_KEY") || return 1
+  status=$(curl -sS -H "Authorization: Bearer ${token}" "$@") || return 1
+  if [ "$status" = "401" ]; then
+    key_login "$DEBUG_SSH_KEY" operator || return 1
+    token=$(key_token operator "$DEBUG_SSH_KEY") || return 1
+    status=$(curl -sS -H "Authorization: Bearer ${token}" "$@") || return 1
+  fi
+  if [ "$status" = "403" ] && [ -n "$DEBUG_SSH_ADMIN_KEY" ]; then
+    key_login "$DEBUG_SSH_ADMIN_KEY" admin || return 1
+    token=$(key_token admin "$DEBUG_SSH_ADMIN_KEY") || return 1
+    status=$(curl -sS -H "Authorization: Bearer ${token}" "$@") || return 1
+  fi
+  printf '%s' "$status"
+}
+
+cmd_login() {
+  [ -n "$DEBUG_SSH_KEY" ] || die "DEBUG_SSH_KEY is not set in $ENV_FILE"
+  key_login "$DEBUG_SSH_KEY" operator
+}
 
 fetch_accounts() {
   local tmp status body
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     "${DEBUG_API_URL}/debug/accounts") || {
     rm -f "$tmp"
     die "request failed"
@@ -174,8 +303,7 @@ fetch_accounts() {
 debug_get() {
   local path="$1" tmp status body
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     "${DEBUG_API_URL}${path}") || {
     rm -f "$tmp"
     die "request failed"
@@ -198,8 +326,7 @@ fetch_wallet() {
   local account_id="$1" tmp status body
   shift
   tmp=$(mktemp)
-  status=$(curl -sS -G -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+  status=$(op_curl -G -o "$tmp" -w '%{http_code}' \
     "$@" \
     "${DEBUG_API_URL}/debug/accounts/${account_id}/wallet") || {
     rm -f "$tmp"
@@ -393,9 +520,8 @@ cmd_refuse_session() {
     *) die "usage: gifts-debug refuse-session <account-id> [true|false]" ;;
   esac
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     -X PATCH \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"sessionRefused\":${flag}}" \
     "${DEBUG_API_URL}/debug/accounts/${id}") || {
@@ -415,8 +541,7 @@ debug_json() {
   local method="$1" path="$2" data="${3:-}" tmp status body
   tmp=$(mktemp)
   if [ -n "$data" ]; then
-    status=$(curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
-      -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    status=$(op_curl -o "$tmp" -w '%{http_code}' -X "$method" \
       -H "Content-Type: application/json" \
       -d "$data" \
       "${DEBUG_API_URL}${path}") || {
@@ -424,8 +549,7 @@ debug_json() {
       die "request failed"
     }
   else
-    status=$(curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
-      -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+    status=$(op_curl -o "$tmp" -w '%{http_code}' -X "$method" \
       "${DEBUG_API_URL}${path}") || {
       rm -f "$tmp"
       die "request failed"
@@ -465,10 +589,9 @@ cmd_passkey_renew_reopen() {
   [[ "$id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
     || die "invalid account uuid"
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     -A taproot-diagnostics \
     -X POST \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"accountId\":\"${id}\"}" \
     "${DEBUG_API_URL}/debug/passkey-renew/reopen") || {
@@ -488,9 +611,8 @@ cmd_role() {
   [ -n "$id" ] || die "usage: gifts-debug role <account-id> <role>"
   [ -n "$role" ] || die "usage: gifts-debug role <account-id> <role>"
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     -X PATCH \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"role\":\"${role}\"}" \
     "${DEBUG_API_URL}/debug/accounts/${id}") || {
@@ -508,8 +630,7 @@ cmd_role() {
 fetch_messages() {
   local tmp status body
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     "${DEBUG_API_URL}/debug/messages") || {
     rm -f "$tmp"
     die "request failed"
@@ -525,8 +646,7 @@ fetch_messages() {
 fetch_api_log() {
   local tmp status body
   tmp=$(mktemp)
-  status=$(curl -sS -G -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+  status=$(op_curl -G -o "$tmp" -w '%{http_code}' \
     "$@" \
     "${DEBUG_API_URL}/debug/api-log") || {
     rm -f "$tmp"
@@ -639,8 +759,7 @@ print("%s rows" % len(rows), file=sys.stderr)
 fetch_external_pubkeys() {
   local tmp status body
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     "${DEBUG_API_URL}/debug/external-pubkeys") || {
     rm -f "$tmp"
     die "request failed"
@@ -683,8 +802,7 @@ cmd_message() {
   local id="${1:-}" tmp status body
   [ -n "$id" ] || die "usage: gifts-debug message <id>"
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     "${DEBUG_API_URL}/debug/messages/${id}") || {
     rm -f "$tmp"
     die "request failed"
@@ -704,9 +822,8 @@ cmd_trust_edge() {
   [ -n "$actor" ] || die "usage: gifts-debug trust-edge <subject-id> <actor-id> <kind>"
   [ -n "$kind" ] || die "usage: gifts-debug trust-edge <subject-id> <actor-id> <kind>"
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     -X POST \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"subjectId\":\"${subject}\",\"actorId\":\"${actor}\",\"kind\":\"${kind}\"}" \
     "${DEBUG_API_URL}/debug/trust-edges") || {
@@ -726,9 +843,8 @@ cmd_trust_edge_delete() {
   [ -n "$subject" ] || die "usage: gifts-debug trust-edge-delete <subject-id> <kind>"
   [ -n "$kind" ] || die "usage: gifts-debug trust-edge-delete <subject-id> <kind>"
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     -X DELETE \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"subjectId\":\"${subject}\",\"kind\":\"${kind}\"}" \
     "${DEBUG_API_URL}/debug/trust-edges") || {
@@ -749,9 +865,8 @@ cmd_video_put() {
   [ -n "$path" ] || die "usage: gifts-debug video-put <message-id> <file>"
   [ -f "$path" ] || die "file not found: ${path}"
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     -X PUT \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     --data-binary @"${path}" \
     "${DEBUG_API_URL}/debug/messages/${id}/video") || {
     rm -f "$tmp"
@@ -769,9 +884,8 @@ cmd_restore() {
   local id="${1:-}" tmp status body
   [ -n "$id" ] || die "usage: gifts-debug restore <id>"
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     -X POST \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     "${DEBUG_API_URL}/debug/messages/${id}/restore") || {
     rm -f "$tmp"
     die "request failed"
@@ -790,9 +904,8 @@ cmd_settle() {
   [ -n "$note" ] || die "usage: gifts-debug settle <payment-hash> <note> [preimage]"
   payload=$(python3 -c 'import json,sys; data={"paymentHash":sys.argv[1],"note":sys.argv[2]}; sys.argv[3] and data.update({"preimage":sys.argv[3]}); print(json.dumps(data))' "$payment_hash" "$note" "$preimage")
   tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
+  status=$(op_curl -o "$tmp" -w '%{http_code}' \
     -X POST \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$payload" \
     "${DEBUG_API_URL}/debug/invoices/settle") || {
@@ -809,6 +922,7 @@ cmd_settle() {
 
 fetch_recipients() {
   local tmp status body
+  [ -n "$DEBUG_TOKEN" ] || die "DEBUG_TOKEN is not set in $ENV_FILE (the spend roster needs it)"
   tmp=$(mktemp)
   status=$(curl -sS -o "$tmp" -w '%{http_code}' \
     -H "Authorization: Bearer ${DEBUG_TOKEN}" \
@@ -892,8 +1006,7 @@ cmd_edits() {
 fetch_debug_db() {
   local tmp status body
   tmp=$(mktemp)
-  status=$(curl -sS -G -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+  status=$(op_curl -G -o "$tmp" -w '%{http_code}' \
     "$@" \
     "${DEBUG_API_URL}/debug/db") || {
     rm -f "$tmp"
@@ -971,6 +1084,7 @@ done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 
 case "${1:-}" in
+  login) cmd_login ;;
   auth) cmd_auth ;;
   accounts) cmd_accounts ;;
   account) shift; cmd_account "$@" ;;

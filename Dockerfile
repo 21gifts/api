@@ -24,6 +24,8 @@ RUN bun build src/index.ts --target=bun --outdir=dist
 
 FROM oven/bun:1.4.4-alpine
 WORKDIR /app
+# ssh-keygen verifies the signatures of the operator login with SSH keys.
+RUN apk add --no-cache openssh-keygen
 RUN addgroup -S app && adduser -S app -G app \
   && mkdir -p /data/media && chown app:app /data/media
 COPY --from=builder /app/dist ./dist

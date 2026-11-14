@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import {
   API_LOG_LIST_LIMIT,
   serializeDebugApiLog,
@@ -10,7 +11,7 @@ import { logEvent } from '@/lib/log';
 
 /**
  * Operator debug surface. Read-only listing of HTTP audit rows.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  */
 
 /** Collaborators the debug api-log routes need. */
@@ -19,6 +20,8 @@ export interface DebugApiLogRouteDeps {
   store: ApiLogStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

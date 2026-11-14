@@ -46,6 +46,10 @@ import { InMemoryShopIdentityStore, shopNpub, type ShopIdentityStore } from '@/l
 import { runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
 import type { MapPush } from '@/lib/ocp-place';
 import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -15577,7 +15581,7 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
 
 describe('GET /messages/hidden and GET /messages/:id/edits with an operator token', () => {
   const SHOP_ID = '11111111-1111-4111-8111-111111111111';
-  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
 
   async function shopStore(): Promise<InMemoryMessageStore> {
     const messages = new InMemoryMessageStore();
@@ -15593,19 +15597,16 @@ describe('GET /messages/hidden and GET /messages/:id/edits with an operator toke
     return messages;
   }
 
-  it.each(['op-write', 'op-read'])(
-    'reads both staff logs with %s and no session',
-    async (token) => {
-      const app = mount(new InMemoryAuthStore(), await shopStore(), TOKENS);
-      const headers = { authorization: `Bearer ${token}` };
-      const hidden = await app.request('/messages/hidden', { headers });
-      expect(hidden.status).toBe(200);
-      expect(await hidden.json()).toEqual({ messages: [] });
-      const edits = await app.request('/messages/' + SHOP_ID + '/edits', { headers });
-      expect(edits.status).toBe(200);
-      expect(await edits.json()).toEqual({ edits: [] });
-    },
-  );
+  it.each(['op-write', OP_READ])('reads both staff logs with %s and no session', async (token) => {
+    const app = mount(new InMemoryAuthStore(), await shopStore(), TOKENS);
+    const headers = { authorization: `Bearer ${token}` };
+    const hidden = await app.request('/messages/hidden', { headers });
+    expect(hidden.status).toBe(200);
+    expect(await hidden.json()).toEqual({ messages: [] });
+    const edits = await app.request('/messages/' + SHOP_ID + '/edits', { headers });
+    expect(edits.status).toBe(200);
+    expect(await edits.json()).toEqual({ edits: [] });
+  });
 
   it('keeps the session gate for a wrong bearer and a basis session', async () => {
     const app = mount(await seededStore(), await shopStore(), TOKENS);
