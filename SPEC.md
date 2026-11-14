@@ -8534,9 +8534,10 @@ point-of-sale charges. The body contains only aggregates: no account id,
 username, name, payment id, payment hash, invoice, Lightning address, or node
 key. `GET /wallets/stats` is unchanged.
 
-A completed payment is a `payment_id` with exactly two completed rows, of
-opposite direction on two accounts, whose earliest `paid_at` is on or after the
-release. It counts once. Every other completed row counts on its own. The
+A payment id counts once only when it has exactly two rows overall, both
+completed, of opposite direction on two accounts; every other completed row
+counts on its own. A counted payment enters the totals only when its earliest
+`paid_at` is on or after the release. The
 amount is the greatest `amount_sats` and the fee is the sum of `fee_sats`. The
 payer is the outgoing account, or outside when there is no outgoing row. The
 payee is the incoming account, otherwise the outgoing row's counterparty,
@@ -8575,9 +8576,10 @@ release (`gifts` are hearts that are false). The forum series and
 no conversation invoices, no credit repayments, no hidden notes, and no unpaid
 invoices. `shopCharges` starts 14 days before release. A heart increments the
 release total only when its own timestamp is on or after the release instant.
-`totals.paidShopChargeCount` is the sum of `paid` in the published
-`shopCharges` days, so it covers the whole shop window and is derivable from
-those daily cells. A payment whose `paid_at` is before the release instant and
+`totals.paidShopChargeCount` is the sum of the published daily
+`shopCharges[].paid` cells over the whole shop window, from
+`2026-10-26 11:17 UTC`, and is derivable from those daily cells. A payment
+whose `paid_at` is before the release instant and
 a row after the current UTC day are ignored. 200 sends
 `Cache-Control: public, max-age=60`.
 
