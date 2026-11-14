@@ -1,9 +1,10 @@
 /**
  * Operator debug ping that enqueues a test Web Push for one account.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  */
 
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import type { AuthStore } from '@/lib/auth/store';
 import { requireOperator } from '@/lib/operator';
 import type { PushStore } from '@/lib/push-store';
@@ -19,6 +20,8 @@ export interface DebugPushRouteDeps {
   now: () => number;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /**
    * Public VAPID key when configured; missing/blank → 503
    * `{ error: "Push is not configured" }` after the debug gate.

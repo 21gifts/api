@@ -1,10 +1,11 @@
 /**
  * Operator insert of a live shop note that has a till and no pin.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  * `POST /messages` still refuses this shape. The pin is not accepted.
  */
 
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import type { AuthStore } from '@/lib/auth/store';
 import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
@@ -26,6 +27,8 @@ export interface DebugShopNoteRouteDeps {
   kek: Uint8Array | undefined;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** Clock for the note's `createdAt`. */
   now: () => number;
 }

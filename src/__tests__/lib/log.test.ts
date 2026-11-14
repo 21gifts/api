@@ -12,6 +12,8 @@ import {
   setDiagnosticSink,
 } from '@/lib/log';
 import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import type { OperatorLogin } from '@/lib/operator-login';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -397,6 +399,100 @@ describe('requestLog', () => {
       .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))[0];
     expect(raw).toBeDefined();
     expect(raw).not.toContain(key);
+  });
+
+  it('classifies a key token at the request start, so a token that expires during the handler keeps its operator', async () => {
+    let clock = 1_700_000_000_000;
+    const keys = await seededOperatorLogin(() => clock);
+    const store = new InMemoryApiLogStore();
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        debugToken: undefined,
+        spendApiToken: undefined,
+        operatorLogin: keys.operatorLogin,
+        now: () => clock,
+        awaitWrite: true,
+      }),
+    );
+    app.get('/slow', (c) => {
+      clock += 15 * 60_000;
+      return c.text('done');
+    });
+    const res = await app.request('/slow', {
+      headers: { authorization: `Bearer ${keys.tokens.read}` },
+    });
+    expect(res.status).toBe(200);
+    const rows = await store.listLatest(10);
+    expect(rows.map((row) => [row.authKind, row.operator])).toEqual([['debug', 'op-read']]);
+    expect(rows[0]?.createdAt.getTime()).toBe(clock);
+  });
+
+  it('keeps the operator when the token row is deleted by a cleanup during the handler', async () => {
+    let clock = 1_700_000_000_000;
+    const keys = await seededOperatorLogin(() => clock);
+    const store = new InMemoryApiLogStore();
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        debugToken: undefined,
+        spendApiToken: undefined,
+        operatorLogin: keys.operatorLogin,
+        now: () => clock,
+        awaitWrite: true,
+      }),
+    );
+    app.get('/slow', async (c) => {
+      clock += 15 * 60_000;
+      // What a concurrent login does first: delete every expired challenge and token.
+      await keys.operatorLoginStore.deleteExpired(clock);
+      return c.text('done');
+    });
+    const res = await app.request('/slow', {
+      headers: { authorization: `Bearer ${keys.tokens.write}` },
+    });
+    expect(res.status).toBe(200);
+    expect(await keys.operatorLogin.resolveBearer(`Bearer ${keys.tokens.write}`)).toBeNull();
+    const rows = await store.listLatest(10);
+    expect(rows.map((row) => [row.authKind, row.operator])).toEqual([['debug', 'op-write']]);
+  });
+
+  it('serves the request, logs the failure, and does not look up again when the early key lookup fails', async () => {
+    let lookups = 0;
+    const failing = {
+      resolveBearer: () => {
+        lookups += 1;
+        return Promise.reject(new Error('db'));
+      },
+    } as unknown as OperatorLogin;
+    const store = new InMemoryApiLogStore();
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        debugToken: undefined,
+        spendApiToken: undefined,
+        operatorLogin: failing,
+        awaitWrite: true,
+      }),
+    );
+    app.get('/info', (c) => c.text('info'));
+    const res = await app.request('/info', {
+      headers: { authorization: `Bearer op_${'a'.repeat(43)}` },
+    });
+    expect(res.status).toBe(200);
+    const rows = await store.listLatest(10);
+    expect(rows.map((row) => [row.authKind, row.operator])).toEqual([['none', null]]);
+    expect(lookups).toBe(1);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'api_log.key_lookup.failed')).toBe(true);
   });
 
   it('still stores a none row when session lookup throws', async () => {

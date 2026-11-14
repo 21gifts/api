@@ -8,6 +8,11 @@ import {
 } from '@/lib/debug-db';
 import { debugDbRoutes } from '@/routes/debug-db';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -33,7 +38,7 @@ function store(partial: Partial<DebugDbStore> = {}): DebugDbStore {
 function app(deps: {
   store: DebugDbStore | undefined;
   debugToken: string | undefined;
-  debugReadToken?: string;
+  operatorLogin?: OperatorLogin;
 }): Hono {
   return new Hono().route('/debug/db', debugDbRoutes(deps));
 }
@@ -108,35 +113,35 @@ describe('debugDbRoutes', () => {
     );
   });
 
-  it('lists tables when only the read token is configured and matches', async () => {
+  it('lists tables when only the key login is configured and a read key token matches', async () => {
     const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
       debugToken: undefined,
-      debugReadToken: 'read-secret',
-    }).request('/debug/db', { headers: { authorization: 'Bearer read-secret' } });
+      operatorLogin: OP_KEYS.operatorLogin,
+    }).request('/debug/db', { headers: { authorization: `Bearer ${OP_READ}` } });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ tables });
   });
 
-  it('lists tables when the write token matches and a read token is also set', async () => {
+  it('lists tables when DEBUG_TOKEN matches while a key login is also loaded', async () => {
     const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
       debugToken: 'secret',
-      debugReadToken: 'read-secret',
+      operatorLogin: OP_KEYS.operatorLogin,
     }).request('/debug/db', { headers: { authorization: 'Bearer secret' } });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ tables });
   });
 
-  it('lists tables when both tokens are set and the read bearer matches', async () => {
+  it('lists tables when DEBUG_TOKEN and a key login are configured and a read key token matches', async () => {
     const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
       debugToken: 'secret',
-      debugReadToken: 'read-secret',
-    }).request('/debug/db', { headers: { authorization: 'Bearer read-secret' } });
+      operatorLogin: OP_KEYS.operatorLogin,
+    }).request('/debug/db', { headers: { authorization: `Bearer ${OP_READ}` } });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ tables });
   });
@@ -253,11 +258,11 @@ describe('debugDbRoutes', () => {
     expect(head.status).toBe(401);
   });
 
-  it('returns 401 when only the read token is set and the bearer does not match', async () => {
+  it('returns 401 when only the key login is configured and the bearer is no key token', async () => {
     const res = await app({
       store: store(),
       debugToken: undefined,
-      debugReadToken: 'read-secret',
+      operatorLogin: OP_KEYS.operatorLogin,
     }).request('/debug/db', { headers: { authorization: 'Bearer other' } });
     expect(res.status).toBe(401);
     await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });

@@ -1,24 +1,28 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import type { OperatorLogin } from '@/lib/operator-login';
 
 /** Operator level a debug route declares. A higher level includes the lower ones. */
 export type OperatorLevel = 'read' | 'write' | 'admin';
 
+/** Every operator level, lowest first. */
+export const OPERATOR_LEVELS: readonly OperatorLevel[] = ['read', 'write', 'admin'];
+
 /**
- * Operator tokens a route accepts.
+ * Operator credentials a route accepts.
  *
- * `debugToken` is `DEBUG_TOKEN`. `debugReadToken` is `DEBUG_READ_TOKEN`; a
- * route accepts it only when its route group is given that token.
+ * `debugToken` is `DEBUG_TOKEN` and grants `admin`. `operatorLogin` checks
+ * the short-lived tokens of the SSH key login; each grants its own level.
  */
 export interface OperatorTokens {
-  /** Operator write token, or `undefined` when unset. */
+  /** Operator token, or `undefined` when unset. */
   debugToken?: string | undefined;
-  /** Operator read token, or `undefined` when the route does not accept it. */
-  debugReadToken?: string | undefined;
+  /** SSH key login, or `undefined` when the route does not accept key tokens. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /** Outcome of an operator check that did not pass. */
-export type OperatorRefusal = 'unconfigured' | 'unauthorized';
+export type OperatorRefusal = 'unconfigured' | 'unauthorized' | 'forbidden';
 
 /** Options for {@link requireOperator}. */
 export interface RequireOperatorOptions {
@@ -29,70 +33,56 @@ export interface RequireOperatorOptions {
   onRefused?: (c: Context, next: Next, refuse: () => Response) => Promise<Response | void>;
 }
 
-const LEVEL_RANK: Record<OperatorLevel, number> = { read: 0, write: 1, admin: 2 };
-
 /** Property under which a {@link requireOperator} middleware carries its declared level. */
 export const OPERATOR_LEVEL: unique symbol = Symbol('operatorLevel');
 
 /**
- * Level the operator tokens grant to an `Authorization` header.
- *
- * Trim both tokens. Both empty → `unconfigured`. The write token is tried
- * first and grants `admin`; the read token grants `read`. A configured token
- * that does not match is `unauthorized`.
- *
- * @param tokens - Operator tokens the route accepts.
- * @param authorizationHeader - Raw `Authorization` header, or `undefined`.
- * @returns The granted level, or why none is granted.
- */
-function operatorGrant(
-  tokens: OperatorTokens,
-  authorizationHeader: string | undefined,
-): OperatorLevel | OperatorRefusal {
-  const write = (tokens.debugToken ?? '').trim();
-  const read = (tokens.debugReadToken ?? '').trim();
-  if (write === '' && read === '') {
-    return 'unconfigured';
-  }
-  if (write !== '' && bearerMatchesDebugToken(write, authorizationHeader)) {
-    return 'admin';
-  }
-  if (read !== '' && bearerMatchesDebugToken(read, authorizationHeader)) {
-    return 'read';
-  }
-  return 'unauthorized';
-}
-
-/**
  * Whether an `Authorization` header passes the operator check for `level`.
  *
+ * `DEBUG_TOKEN` (trimmed) is tried first and grants `admin`. A key token of
+ * the SSH key login grants the level it was issued with, while its operator
+ * is still listed at that level. Neither `DEBUG_TOKEN` nor a loaded key login
+ * → `unconfigured`. A key token below `level` → `forbidden`. Any other bearer
+ * → `unauthorized`.
+ *
  * @param level - Required operator level.
- * @param tokens - Operator tokens the route accepts.
+ * @param tokens - Operator credentials the route accepts.
  * @param authorizationHeader - Raw `Authorization` header, or `undefined`.
  * @returns `true` when the granted level is at least `level`, otherwise the refusal.
  */
-export function checkOperator(
+export async function checkOperator(
   level: OperatorLevel,
   tokens: OperatorTokens,
   authorizationHeader: string | undefined,
-): true | OperatorRefusal {
-  const granted = operatorGrant(tokens, authorizationHeader);
-  if (granted === 'unconfigured' || granted === 'unauthorized') {
-    return granted;
+): Promise<true | OperatorRefusal> {
+  const write = (tokens.debugToken ?? '').trim();
+  const login = tokens.operatorLogin?.configured === true ? tokens.operatorLogin : undefined;
+  if (write === '' && login === undefined) {
+    return 'unconfigured';
   }
-  return LEVEL_RANK[granted] >= LEVEL_RANK[level] ? true : 'unauthorized';
+  if (write !== '' && bearerMatchesDebugToken(write, authorizationHeader)) {
+    return true;
+  }
+  const grant = login === undefined ? null : await login.resolveBearer(authorizationHeader);
+  if (grant === null) {
+    return 'unauthorized';
+  }
+  return OPERATOR_LEVELS.indexOf(grant.level) >= OPERATOR_LEVELS.indexOf(level)
+    ? true
+    : 'forbidden';
 }
 
 /**
  * Hono middleware that declares and enforces the operator level of a route.
  *
- * Reads `tokens` on every request. A pass calls `next`. Otherwise it answers
- * 503 `{ error: 'Debug is not configured' }` when no token is configured and
+ * Checks `tokens` on every request. A pass calls `next`. Otherwise it answers
+ * 503 `{ error: 'Debug is not configured' }` when no credential is
+ * configured, 403 `{ error: 'Forbidden' }` for a key token below `level`, and
  * 401 `{ error: 'Unauthorized' }` for any other bearer, or hands that answer
  * to `options.onRefused`.
  *
  * @param level - Operator level the route declares.
- * @param tokens - Operator tokens the route accepts.
+ * @param tokens - Operator credentials the route accepts.
  * @param options - Optional `onRefused` path.
  * @returns The middleware, carrying `level` under {@link OPERATOR_LEVEL}.
  */
@@ -102,15 +92,19 @@ export function requireOperator(
   options: RequireOperatorOptions = {},
 ): MiddlewareHandler {
   const middleware: MiddlewareHandler = async (c, next) => {
-    const result = checkOperator(level, tokens, c.req.header('authorization'));
+    const result = await checkOperator(level, tokens, c.req.header('authorization'));
     if (result === true) {
       await next();
       return;
     }
-    const refuse = (): Response =>
-      result === 'unconfigured'
-        ? c.json({ error: 'Debug is not configured' }, 503)
+    const refuse = (): Response => {
+      if (result === 'unconfigured') {
+        return c.json({ error: 'Debug is not configured' }, 503);
+      }
+      return result === 'forbidden'
+        ? c.json({ error: 'Forbidden' }, 403)
         : c.json({ error: 'Unauthorized' }, 401);
+    };
     if (options.onRefused !== undefined) {
       return options.onRefused(c, next, refuse);
     }

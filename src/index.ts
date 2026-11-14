@@ -299,6 +299,9 @@ if (import.meta.main) {
     ...(welcomeInvoiceReservationStore === undefined ? {} : { welcomeInvoiceReservationStore }),
     env: process.env,
     ...(boot.loginGateStore === undefined ? {} : { loginGateStore: boot.loginGateStore }),
+    ...(boot.operatorLoginStore === undefined
+      ? {}
+      : { operatorLoginStore: boot.operatorLoginStore }),
     messageStore: forumMessages,
     shopIdentityStore: shopIdentities,
     giftStore: appGiftStore,

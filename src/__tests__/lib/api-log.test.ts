@@ -41,6 +41,7 @@ const EARLY: ApiLogRow = {
   ms: 1,
   accountId: null,
   authKind: 'none',
+  operator: null,
   clientIp: null,
   clientCountry: null,
   cfRay: null,
@@ -58,6 +59,7 @@ const LATE: ApiLogRow = {
   ms: 4,
   accountId: 'acc',
   authKind: 'session',
+  operator: null,
   clientIp: null,
   clientCountry: null,
   cfRay: null,
@@ -75,6 +77,7 @@ const TIE_LOW: ApiLogRow = {
   ms: 1,
   accountId: null,
   authKind: 'none',
+  operator: null,
   clientIp: null,
   clientCountry: null,
   cfRay: null,
@@ -92,6 +95,7 @@ const TIE_HIGH: ApiLogRow = {
   ms: 2,
   accountId: 'acc',
   authKind: 'session',
+  operator: null,
   clientIp: null,
   clientCountry: null,
   cfRay: null,
@@ -111,6 +115,7 @@ describe('serializeDebugApiLog', () => {
       ms: 4,
       accountId: 'acc',
       authKind: 'session',
+      operator: null,
       clientIp: null,
       clientCountry: null,
       cfRay: null,
@@ -184,6 +189,7 @@ describe('migrateApiLogSchema', () => {
       'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS accept_language text',
       'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS origin text',
       'CREATE INDEX IF NOT EXISTS api_log_account_created_at_idx ON api_log (account_id, created_at DESC, id DESC)',
+      'ALTER TABLE api_log ADD COLUMN IF NOT EXISTS operator text',
     ]);
   });
 });
@@ -193,10 +199,10 @@ describe('PostgresApiLogStore', () => {
     const sql = new MockSql();
     await new PostgresApiLogStore(sql).append(LATE);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO api_log \(id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin\)/,
+      /INSERT INTO api_log \(id, created_at, method, path, status, ms, account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin, operator\)/,
     );
     expect(sql.executes[0]?.text).toMatch(
-      /VALUES \(\$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14\)/,
+      /VALUES \(\$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14,\$15\)/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params).toEqual([
@@ -208,6 +214,7 @@ describe('PostgresApiLogStore', () => {
       4,
       'acc',
       'session',
+      null,
       null,
       null,
       null,
@@ -229,6 +236,7 @@ describe('PostgresApiLogStore', () => {
         ms: '2',
         account_id: 'acc',
         auth_kind: 'session',
+        operator: 'op-admin',
         client_ip: '192.0.2.1',
         client_country: 'CH',
         cf_ray: '0123456789abcdef-ZRH',
@@ -245,6 +253,7 @@ describe('PostgresApiLogStore', () => {
         ms: 1,
         account_id: null,
         auth_kind: 'mystery',
+        operator: null,
         client_ip: null,
         client_country: null,
         cf_ray: null,
@@ -255,7 +264,7 @@ describe('PostgresApiLogStore', () => {
     ];
     const listed = await new PostgresApiLogStore(sql).listLatest(50);
     expect(sql.queries[0]?.text).toMatch(
-      /account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin/,
+      /account_id, auth_kind, client_ip, client_country, cf_ray, user_agent, accept_language, origin, operator/,
     );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
     expect(sql.queries[0]?.params).toEqual([50]);
@@ -269,6 +278,7 @@ describe('PostgresApiLogStore', () => {
         ms: 2,
         accountId: 'acc',
         authKind: 'session',
+        operator: 'op-admin',
         clientIp: '192.0.2.1',
         clientCountry: 'CH',
         cfRay: '0123456789abcdef-ZRH',
@@ -285,6 +295,7 @@ describe('PostgresApiLogStore', () => {
         ms: 1,
         accountId: null,
         authKind: 'none',
+        operator: null,
         clientIp: null,
         clientCountry: null,
         cfRay: null,
@@ -308,6 +319,7 @@ describe('PostgresApiLogStore', () => {
         ms: '2',
         account_id: 'acc',
         auth_kind: 'session',
+        operator: null,
         client_ip: '192.0.2.1',
         client_country: 'CH',
         cf_ray: '0123456789abcdef-ZRH',
@@ -332,6 +344,7 @@ describe('PostgresApiLogStore', () => {
         ms: 2,
         accountId: 'acc',
         authKind: 'session',
+        operator: null,
         clientIp: '192.0.2.1',
         clientCountry: 'CH',
         cfRay: '0123456789abcdef-ZRH',

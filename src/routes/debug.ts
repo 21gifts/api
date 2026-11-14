@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import {
   EMPTY_DEBUG_NOSTR,
@@ -28,7 +29,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Operator debug surface for registered accounts.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  * Exposes `GET /` (list), `GET /:id` (detail with nested auth rows),
  * `POST /` (provision), `PATCH /:id`
  * (set role, username alone, the official platform flag, or sessionRefused),
@@ -41,6 +42,8 @@ export interface DebugRouteDeps {
   store: AuthStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /** LNURL server config for each account's receiving address; omitted → none. */
   lnurlServer?: LnurlServerConfig;
   /**

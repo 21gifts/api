@@ -59,6 +59,8 @@ import {
 } from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
+import { migrateOperatorLoginSchema, PostgresOperatorLoginStore } from '@/lib/operator-login-store';
+import { migrateApiLogSchema, PostgresApiLogStore } from '@/lib/api-log';
 import { parseWalletReport } from '@/lib/wallet-report';
 import { buildWalletStats } from '@/lib/wallet-stats';
 import {
@@ -9576,6 +9578,111 @@ describe('shop identity on Postgres', () => {
       expect(await ctx.messages.getByIds([])).toEqual([]);
     } finally {
       await ctx.cleanup();
+    }
+  });
+});
+
+describe('PostgresOperatorLoginStore and api_log.operator', () => {
+  test('single-use challenges, token lookup, expiry cleanup, operator column, db_change rows', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateApiLogSchema(client);
+      await migrateApiLogSchema(client);
+      await migrateOperatorLoginSchema(client);
+      await migrateOperatorLoginSchema(client);
+      await migrateDbChangeSchema(client);
+      const [mark] = await client.query<{ id: string }>(
+        `SELECT COALESCE(MAX(id), 0)::text AS id FROM db_change`,
+      );
+
+      const store = new PostgresOperatorLoginStore(client);
+      const now = Date.now();
+      const challenge = `itest-${crypto.randomUUID()}`;
+      await store.addChallenge(challenge, now, now + 60_000);
+      // Two consumers race for the same challenge; exactly one wins.
+      const raced = await Promise.all([
+        store.consumeChallenge(challenge, now),
+        store.consumeChallenge(challenge, now),
+      ]);
+      expect(raced.filter(Boolean)).toHaveLength(1);
+      const expired = `itest-${crypto.randomUUID()}`;
+      await store.addChallenge(expired, now - 120_000, now - 60_000);
+      expect(await store.consumeChallenge(expired, now)).toBe(false);
+
+      const tokenHash = createHash('sha256').update(crypto.randomUUID()).digest('hex');
+      const record = {
+        tokenHash,
+        operator: 'itest-operator',
+        keyFingerprint: 'SHA256:itest',
+        level: 'write' as const,
+        createdAt: now,
+        expiresAt: now + 900_000,
+      };
+      await store.addToken(record);
+      expect(await store.findToken(tokenHash, now)).toEqual(record);
+      expect(await store.findToken(tokenHash, now + 900_000)).toBeNull();
+
+      const stale = `itest-${crypto.randomUUID()}`;
+      await store.addChallenge(stale, now - 120_000, now - 60_000);
+      await store.addToken({
+        ...record,
+        tokenHash: `${tokenHash.slice(0, 60)}0000`,
+        expiresAt: now - 1,
+      });
+      await store.deleteExpired(now);
+      const left = await client.query<{ n: string }>(
+        `SELECT (SELECT count(*) FROM operator_challenge WHERE expires_at <= $1)
+              + (SELECT count(*) FROM operator_token WHERE expires_at <= $1) AS n`,
+        [new Date(now)],
+      );
+      expect(Number(left[0]?.n)).toBe(0);
+      expect(await store.findToken(tokenHash, now)).toEqual(record);
+
+      const apiLog = new PostgresApiLogStore(client);
+      const rowId = crypto.randomUUID();
+      await apiLog.append({
+        id: rowId,
+        createdAt: new Date(now),
+        method: 'GET',
+        path: '/debug/logins',
+        status: 200,
+        ms: 1,
+        accountId: null,
+        authKind: 'debug',
+        operator: 'itest-operator',
+        clientIp: null,
+        clientCountry: null,
+        cfRay: null,
+        userAgent: null,
+        acceptLanguage: null,
+        origin: null,
+      });
+      const logged = (await apiLog.listLatest(50)).find((row) => row.id === rowId);
+      expect(logged?.operator).toBe('itest-operator');
+
+      const changes = await client.query<{
+        table_name: string;
+        op: string;
+        challenge: string | null;
+      }>(
+        `SELECT table_name, op, COALESCE(after->>'challenge', before->>'challenge') AS challenge
+         FROM db_change
+         WHERE id > $1::bigint
+           AND table_name IN ('operator_challenge', 'operator_token')`,
+        [mark?.id ?? '0'],
+      );
+      const seen = new Set(changes.map((row) => `${row.table_name}:${row.op}`));
+      expect(seen.has('operator_challenge:INSERT')).toBe(true);
+      expect(seen.has('operator_challenge:DELETE')).toBe(true);
+      expect(seen.has('operator_token:INSERT')).toBe(true);
+      expect(seen.has('operator_token:DELETE')).toBe(true);
+      // The challenge column is stored as its SHA-256 hex in db_change.
+      const hashed = createHash('sha256').update(challenge).digest('hex');
+      expect(changes.some((row) => row.challenge === hashed)).toBe(true);
+      expect(changes.some((row) => row.challenge === challenge)).toBe(false);
+    } finally {
+      await closeIfPossible(sql);
     }
   });
 });
