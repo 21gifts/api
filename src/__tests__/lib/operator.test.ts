@@ -7,6 +7,7 @@ import {
   type OperatorLevel,
   type OperatorTokens,
 } from '@/lib/operator';
+import type { DebugDbStore } from '@/lib/debug-db';
 import { createApp } from '@/server';
 
 const WRITE = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -306,10 +307,25 @@ describe('operator tokens across the app', () => {
   });
 
   it('opens HEAD on GET /debug/db and the account wallet to DEBUG_READ_TOKEN', async () => {
-    for (const key of READ_TOKEN_DEBUG_ROUTES) {
-      const res = await call(app, key.replace('GET ', 'HEAD '), READ);
-      expect([key, res.status]).not.toEqual([key, 401]);
-    }
+    const store: DebugDbStore = {
+      listTables: async () => [],
+      readPage: async () => undefined,
+    };
+    const withStore = createApp({
+      env: { LNURL_SERVER_URL: 'https://lnurl.example', PUBLIC_BASE_URL: 'https://api.example' },
+      fetchImpl: refusedFetch,
+      debugToken: WRITE,
+      debugReadToken: READ,
+      debugDbStore: store,
+    });
+    expect((await call(withStore, 'HEAD /debug/db', READ)).status).toBe(200);
+    // An unknown account answers 404 only after the operator check passed.
+    expect((await call(withStore, 'HEAD /debug/accounts/:id/wallet', READ)).status).toBe(404);
+    const wallet = await call(withStore, 'GET /debug/accounts/:id/wallet', READ);
+    expect(wallet.status).toBe(404);
+    expect(await wallet.json()).toEqual({ error: 'Not found' });
+    expect((await call(withStore, 'HEAD /debug/db', 'other')).status).toBe(401);
+    expect((await call(withStore, 'HEAD /debug/accounts/:id/wallet', 'other')).status).toBe(401);
   });
 
   it('answers 503 on the write-token debug routes when only DEBUG_READ_TOKEN is set', async () => {
