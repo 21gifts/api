@@ -141,7 +141,7 @@ describe('debugDbRoutes', () => {
     await expect(res.json()).resolves.toEqual({ tables });
   });
 
-  it('limits a software-developer session to the four wallet history tables', async () => {
+  it('limits a software-developer session to the wallet history tables and the Fond deposit address', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: '00000000-0000-4000-8000-000000000001',
