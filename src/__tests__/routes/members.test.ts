@@ -297,6 +297,36 @@ describe('GET /members/:accountId', () => {
     ).toBeNull();
   });
 
+  it('shows no funding review stamp or reviewer for a withdrawn grant', async () => {
+    const authStore = await seededCaller();
+    await addAccount(authStore, ACCOUNT_ID, 'b'.repeat(64));
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: ACCOUNT_ID,
+        status: 'withdrawn',
+        appliedAt: 1,
+        decidedAt: now(),
+        decidedBy: ACCOUNT_ID,
+        trialUtcDate: null,
+        admittedAt: now(),
+        note: null,
+      },
+    ]);
+    const res = await mount(
+      authStore,
+      new InMemoryMessageStore(),
+      new InMemoryTrustStore(),
+      fundingStore,
+    ).request(`/members/${ACCOUNT_ID}`, { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      fundingReviewedAt: number | null;
+      fundingReviewedByName: string | null;
+    };
+    expect(body.fundingReviewedAt).toBeNull();
+    expect(body.fundingReviewedByName).toBeNull();
+  });
+
   it('marks the profile note not payable when eventId is empty', async () => {
     const authStore = await seededCaller();
     const noteId = '55555555-5555-4555-8555-555555555555';

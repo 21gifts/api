@@ -195,6 +195,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           if (result.error === 'shop_payment_open') {
             return c.json({ error: 'A payment is already open' }, 409);
           }
+          if (result.error === 'welcome_invoice_open') {
+            return c.json({ error: 'Welcome invoice already open' }, 409);
+          }
           if (result.error === 'repayment_unavailable') {
             return c.json({ error: 'Repayment history is unavailable' }, 409);
           }

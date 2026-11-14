@@ -37,6 +37,8 @@ interface FakeDatabaseOptions {
   intoId?: string;
   platform?: boolean;
   bothGrants?: boolean;
+  /** Live welcome leases held by the two locked accounts. */
+  welcomeReservations?: readonly { account_id: string }[];
   shopPayments?: readonly { id: string }[];
   /** Stateful `shop_payment` rows: the open check filters them and the column move updates them. */
   shopRows?: FakeShopRow[];
@@ -224,6 +226,9 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           }
           if (text.includes("p.status = 'open'")) {
             return (options.openBesideCharge ?? []) as T[];
+          }
+          if (text.includes('FROM welcome_invoice_reservation')) {
+            return (options.welcomeReservations ?? []) as T[];
           }
           if (text.includes('FOR UPDATE')) {
             if (options.lock !== undefined) {
@@ -1121,6 +1126,92 @@ describe('mergeAccounts', () => {
     expect(walletCollision).toBeLessThan(catalog);
     expect(queries[walletCollision]?.params).toEqual([FROM, INTO]);
     expect(queries[walletCollision]?.text).toContain('dst.payment_id = src.payment_id');
+    const transferCollision = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM wallet_transfer AS src'),
+    );
+    const transferReconcile = queries.findIndex((query) =>
+      query.text.includes('UPDATE wallet_transfer AS dst'),
+    );
+    expect(transferReconcile).toBeGreaterThan(walletCollision);
+    expect(transferReconcile).toBeLessThan(transferCollision);
+    expect(queries[transferReconcile]?.text).toContain(
+      'CASE WHEN src.state_from_src THEN src.status ELSE dst.status END',
+    );
+    expect(queries[transferReconcile]?.text).toContain(
+      "WHEN src.status <> 'pending' AND dst.status = 'pending' THEN true",
+    );
+    expect(queries[transferReconcile]?.text).toContain(
+      'WHEN src.transfer_updated_at IS NOT NULL THEN true',
+    );
+    expect(queries[transferReconcile]?.text).toContain(
+      'WHEN dst.transfer_updated_at IS NOT NULL THEN false',
+    );
+    expect(queries[transferReconcile]?.text).toContain("WHEN src.status = 'completed'");
+    expect(queries[transferReconcile]?.text).toContain("AND src.direction = 'out'");
+    expect(queries[transferReconcile]?.text).toContain("AND src.type = 'transfer'");
+    expect(queries[transferReconcile]?.text).toContain("WHEN dst.status = 'completed'");
+    expect(queries[transferReconcile]?.text).toContain('ELSE src.last_seen_at > dst.last_seen_at');
+    expect(queries[transferReconcile]?.text).toContain(
+      'first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at)',
+    );
+    expect(queries[transferReconcile]?.text).toContain(
+      'last_seen_at = GREATEST(src.last_seen_at, dst.last_seen_at)',
+    );
+    expect(transferCollision).toBeGreaterThan(walletCollision);
+    expect(transferCollision).toBeLessThan(catalog);
+    expect(queries[transferCollision]?.params).toEqual([FROM, INTO]);
+    expect(queries[transferCollision]?.text).toContain('dst.transfer_id = src.transfer_id');
+    expect(queries[transferCollision]?.text).toContain('dst.wallet_pubkey = src.wallet_pubkey');
+    const tokenReconcile = queries.findIndex((query) =>
+      query.text.includes('UPDATE wallet_token_transaction AS dst'),
+    );
+    const tokenDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM wallet_token_transaction AS src'),
+    );
+    expect(tokenReconcile).toBeGreaterThan(transferCollision);
+    expect(tokenReconcile).toBeLessThan(tokenDelete);
+    expect(queries[tokenReconcile]?.text).toContain(
+      'CASE WHEN src.last_seen_at > dst.last_seen_at THEN src.status ELSE dst.status END',
+    );
+    expect(queries[tokenReconcile]?.text).toContain(
+      'CASE WHEN src.projection_from_src THEN src.direction ELSE dst.direction END',
+    );
+    expect(queries[tokenReconcile]?.text).toContain(
+      'WHEN src.resolved_input_count <> dst.resolved_input_count',
+    );
+    expect(queries[tokenReconcile]?.text).toContain(
+      'first_seen_at = LEAST(src.first_seen_at, dst.first_seen_at)',
+    );
+    const sourceLeaseDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM welcome_invoice_reservation AS src'),
+    );
+    const destinationLeaseDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM welcome_invoice_reservation AS dst'),
+    );
+    expect(sourceLeaseDelete).toBeGreaterThan(tokenDelete);
+    expect(destinationLeaseDelete).toBeGreaterThan(sourceLeaseDelete);
+    expect(queries[sourceLeaseDelete]?.text).toContain('src.expires_at <= dst.expires_at');
+    expect(queries[destinationLeaseDelete]?.text).toContain('src.expires_at > dst.expires_at');
+    expect(queries[sourceLeaseDelete]?.params).toEqual([FROM, INTO]);
+    expect(queries[destinationLeaseDelete]?.params).toEqual([FROM, INTO]);
+    expect(
+      queries.some(
+        (query) =>
+          query.text.includes('UPDATE welcome_invoice_reservation') &&
+          query.text.includes('reservation_id'),
+      ),
+    ).toBe(false);
+    const syncReconcile = queries.findIndex((query) =>
+      query.text.includes('UPDATE wallet_transfer_sync AS dst'),
+    );
+    const syncDelete = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM wallet_transfer_sync AS src'),
+    );
+    expect(syncReconcile).toBeGreaterThan(tokenDelete);
+    expect(syncReconcile).toBeLessThan(syncDelete);
+    expect(queries[syncReconcile]?.text).toContain(
+      'last_full_sync_at = GREATEST(src.last_full_sync_at, dst.last_full_sync_at)',
+    );
     const walletSelfCounterparty = queries.findIndex((query) =>
       query.text.includes('SET counterparty_account_id = NULL'),
     );
@@ -1128,6 +1219,12 @@ describe('mergeAccounts', () => {
     expect(walletSelfCounterparty).toBeLessThan(catalog);
     expect(queries[walletSelfCounterparty]?.params).toEqual([FROM, INTO]);
     expect(queries[walletSelfCounterparty]?.text).toContain('counterparty_account_id IN ($1, $2)');
+    const transferSelfCounterparty = queries.findIndex((query) =>
+      query.text.includes('UPDATE wallet_transfer SET counterparty_account_id = NULL'),
+    );
+    expect(transferSelfCounterparty).toBeGreaterThan(walletSelfCounterparty);
+    expect(transferSelfCounterparty).toBeLessThan(catalog);
+    expect(queries[transferSelfCounterparty]?.params).toEqual([FROM, INTO]);
     expect(queries.some((query) => query.text.includes('DELETE FROM auth_session'))).toBe(true);
     expect(queries).toContainEqual({
       text: 'UPDATE "public"."passkey_credential" SET "account_id" = $1 WHERE "account_id" = $2',
@@ -1307,6 +1404,21 @@ describe('mergeAccounts', () => {
       error: 'both_grants',
     });
     expect(queries.some((query) => query.text.includes('DELETE FROM account'))).toBe(false);
+  });
+
+  it('refuses two live welcome leases before any write', async () => {
+    const { db, queries } = fakeDatabase({
+      welcomeReservations: [{ account_id: FROM }, { account_id: INTO }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'welcome_invoice_open',
+    });
+    const check = queries.find((query) => query.text.includes('FROM welcome_invoice_reservation'));
+    expect(check?.text).toContain('expires_at > now()');
+    expect(check?.text).toContain('FOR UPDATE');
+    expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
   });
 
   it('refuses while the merged account has a shop payment that is neither paid nor closed', async () => {

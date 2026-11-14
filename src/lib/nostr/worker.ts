@@ -10,6 +10,7 @@ import type { ConversationStore } from '@/lib/conversation-store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { resolveRecoveryShareRequiredFrom } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -158,6 +159,8 @@ export interface NostrWorkerDeps {
   replyLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  /** Server-verified transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Optional profile-photo and wide-image store. Omitted → the shared icon and the shared banner. The About me photo is neither. */
   banners?: BannerStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
@@ -185,6 +188,7 @@ export type ZapIngestDeps = Pick<
   | 'postLimiter'
   | 'replyLimiter'
   | 'fundingStore'
+  | 'walletTransfers'
   | 'fiatRates'
   | 'lnurlServer'
 >;
@@ -283,6 +287,7 @@ function indexOpenZapReceiptsArgs(
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
     ...(deps.replyLimiter === undefined ? {} : { replyLimiter: deps.replyLimiter }),
     ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
+    ...(deps.walletTransfers === undefined ? {} : { walletTransfers: deps.walletTransfers }),
     recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(deps.env),
     ...(deps.fiatRates === undefined ? {} : { fiatRates: deps.fiatRates }),
     ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),

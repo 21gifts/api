@@ -192,6 +192,27 @@ function account(
 }
 
 describe('replayPayoutWindow', () => {
+  it('reports no_shop_payment when the shop payment rule blocks a payout', async () => {
+    const h = await harness({ grants: [admitted(ADA)] });
+    const hasShopPayment = vi.fn(async () => false);
+    h.deps.walletTransfers = { hasShopPayment };
+    await h.member(ADA, 'ada', 'moderator');
+    await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
+
+    const result = await h.run();
+
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        eventId: id(1),
+        status: 'skipped',
+        reason: 'not_eligible',
+        detail: 'no_shop_payment',
+      }),
+    ]);
+    expect(hasShopPayment).toHaveBeenCalledWith(ADA, '2026-10-28', '2026-10-29');
+    expect(h.spend.pingOnDay).not.toHaveBeenCalled();
+  });
+
   it('pays a post before 00:00 once on its own day and still pays a post after 00:00 on the new day', async () => {
     const h = await harness({ grants: [admitted(ADA)] });
     await h.member(ADA, 'ada', 'moderator');
@@ -447,6 +468,38 @@ describe('replayPayoutWindow', () => {
         status: 'skipped',
         reason: 'not_eligible',
         detail: 'trial_day_passed',
+      }),
+    ]);
+    expect(h.spend.pingOnDay).not.toHaveBeenCalled();
+  });
+
+  it('replays no decision for a withdrawal and does not pay a withdrawn member', async () => {
+    const h = await harness({
+      grants: [
+        {
+          accountId: ADA,
+          status: 'withdrawn',
+          appliedAt: 1,
+          decidedAt: Date.parse('2026-10-29T23:40:00.000Z'),
+          decidedBy: ADA,
+          trialUtcDate: null,
+          admittedAt: null,
+          note: null,
+        },
+      ],
+    });
+    await h.member(ADA, 'ada', 'moderator');
+    await h.post(id(1), ADA, '2026-10-29T23:45:00.000Z');
+
+    const result = await h.run();
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        trigger: 'post',
+        eventId: id(1),
+        username: 'ada',
+        status: 'skipped',
+        reason: 'not_eligible',
+        detail: 'grant',
       }),
     ]);
     expect(h.spend.pingOnDay).not.toHaveBeenCalled();

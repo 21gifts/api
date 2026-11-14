@@ -62,6 +62,48 @@ describe('GET /wallets/stats', () => {
     });
   });
 
+  it('uses legacy balances only for accounts without a keyed balance', async () => {
+    const store = new InMemoryWalletStore();
+    const day = new Date('2026-11-09T10:00:00.000Z');
+    await store.recordBalance({
+      id: 'legacy-replaced',
+      accountId: 'account-a',
+      walletPubkey: null,
+      balanceSats: 900,
+      syncedAt: day,
+      receivedAt: day,
+    });
+    await store.recordBalance({
+      id: 'keyed',
+      accountId: 'account-a',
+      walletPubkey: `02${'a'.repeat(64)}`,
+      balanceSats: 100,
+      syncedAt: day,
+      receivedAt: day,
+    });
+    await store.recordBalance({
+      id: 'legacy-fallback',
+      accountId: 'account-b',
+      walletPubkey: null,
+      balanceSats: 50,
+      syncedAt: day,
+      receivedAt: day,
+    });
+
+    const res = await createApp({
+      walletStore: store,
+      now: () => Date.parse('2026-11-09T12:00:00.000Z'),
+    }).request('/wallets/stats');
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      walletCount: 2,
+      fundedWalletCount: 2,
+      totalSats: 150,
+      totalBtc: '0.00000150',
+    });
+  });
+
   it('returns full totals with carry-forward for two accounts over two days', async () => {
     const store = new InMemoryWalletStore();
     await store.recordBalance({

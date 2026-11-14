@@ -10,7 +10,7 @@ import { unsignedNostrDefaults, type ForumPhoto } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
-import { invoiceRoutes } from '@/routes/invoices';
+import { invoiceRoutes, issueGiftInvoice } from '@/routes/invoices';
 import { createApp as createAppRaw } from '@/server';
 import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
@@ -29,6 +29,7 @@ import {
   allInternal,
   walletLnurlFetch,
 } from '@/__tests__/helpers/wallet-lnurl';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -53,9 +54,30 @@ function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
   ]);
 }
 
+function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
+  return {
+    listWallets: async () => [],
+    syncState: async () => ({
+      newestCreatedAt: null,
+      oldestPendingCreatedAt: null,
+      pendingWithoutCreatedAt: false,
+      lastFullSyncAt: null,
+    }),
+    upsertTransfer: async () => ({
+      inserted: false,
+      updated: false,
+      shopPaymentBecameCompleted: false,
+    }),
+    upsertTokenTransaction: async () => undefined,
+    markFullSync: async () => undefined,
+    hasShopPayment: async () => shopPayment,
+  };
+}
+
 function createApp(deps: Parameters<typeof createAppRaw>[0] = {}): ReturnType<typeof createAppRaw> {
   return createAppRaw({
     fundingStore: admittedStore(),
+    walletTransferStore: fakeWalletTransferStore(),
     env: { ...process.env, ...LNURL_ENV },
     ...deps,
   });
@@ -96,6 +118,7 @@ const HASH = 'aa'.repeat(32);
 const PREIMAGE = '11'.repeat(32);
 const MATCHING_HASH = createHash('sha256').update(Buffer.from(PREIMAGE, 'hex')).digest('hex');
 const MAX_SENDABLE = 100_000_000_000;
+const ONE_USD_AT_100K_MSAT = 1_000_000;
 const POST_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NEWER_POST_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const OTHER_POST_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -1054,6 +1077,8 @@ describe('POST /invoices', () => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     mockedDecode.mockReset();
     mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 1000 });
+    mockedSpot.mockReset();
+    mockedSpot.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -3362,10 +3387,14 @@ describe('POST /invoices/proof', () => {
   });
 
   it('returns 409 when expired unpaid and the preimage does not match', async () => {
-    store.put(unpaid({ expiresAt: 10 }));
+    const release = vi.fn(async () => undefined);
+    store.put(
+      unpaid({ expiresAt: 10, welcomeReservationAccountId: 'welcome-reservation-account' }),
+    );
     const res = await createApp({
       spendApiToken: TOKEN,
       invoiceStore: store,
+      welcomeInvoiceReservationStore: { reserve: async () => false, release },
       now: () => 11,
     }).request(
       '/invoices/proof',
@@ -3376,6 +3405,7 @@ describe('POST /invoices/proof', () => {
     );
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Invoice expired' });
+    expect(release).toHaveBeenCalledWith('welcome-reservation-account', unpaid().id);
   });
 
   it('returns 400 when the preimage does not match', async () => {
@@ -4442,6 +4472,13 @@ describe('invoiceRoutes funding store fallback', () => {
 });
 
 describe('GET /invoices/eligible', () => {
+  beforeEach(() => {
+    mockedDecode.mockReset();
+    mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 1000 });
+    mockedSpot.mockReset();
+    mockedSpot.mockResolvedValue(null);
+  });
+
   it('returns 503 when the spend token is not configured', async () => {
     const res = await spendApp({ spendApiToken: '' }).request(
       `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
@@ -4517,6 +4554,671 @@ describe('GET /invoices/eligible', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
+  });
+
+  it('reports a withdrawn grant as not eligible with status none', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc-alice',
+        status: 'withdrawn',
+        appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+        decidedAt: GATE_MS - 1,
+        decidedBy: 'acc-alice',
+        trialUtcDate: null,
+        admittedAt: null,
+        note: null,
+      },
+    ]);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore,
+      walletTransferStore: fakeWalletTransferStore(),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
+  });
+
+  it('keeps an unwelcomed verified member eligible for the welcome preflight without a shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
+    expect(mockedSpot).toHaveBeenCalled();
+  });
+
+  it('does not give a moderator the welcome preflight exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, role: 'moderator' });
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+    expect(mockedSpot).not.toHaveBeenCalled();
+  });
+
+  it('does not give the platform account the welcome preflight exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, role: 'verified', isPlatform: true });
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+    expect(mockedSpot).not.toHaveBeenCalled();
+  });
+
+  it('requires a shop payment in the welcome preflight when the spot is unavailable', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+  });
+
+  it('requires a shop payment in the welcome preflight when the spot lookup throws', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    mockedSpot.mockRejectedValueOnce(new Error('down'));
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+  });
+
+  it('still requires a shop payment in eligible after the account received its welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(3),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+  });
+
+  it('refuses invoice issue when an admitted member has no recent verified shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('still requires a shop payment when Welcome has another normalized amount', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '2.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('issues the one-dollar welcome on the spend route without a shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    mockedDecode.mockReturnValueOnce({
+      paymentHash: HASH,
+      amountMsat: ONE_USD_AT_100K_MSAT,
+    });
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(mockedSpot).toHaveBeenCalledWith(fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns 409 for a second live welcome lease even with a qualifying shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValue('100000');
+    mockedDecode.mockReturnValue({
+      paymentHash: HASH,
+      amountMsat: ONE_USD_AT_100K_MSAT,
+    });
+    const app = spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(true),
+      now: () => GATE_MS,
+    });
+    const request = () =>
+      app.request(
+        '/invoices',
+        auth({
+          method: 'POST',
+          body: JSON.stringify({
+            address: ADDRESS,
+            amountMsat: ONE_USD_AT_100K_MSAT,
+            amountUsd: '1.00',
+            comment: 'Welcome',
+          }),
+        }),
+      );
+
+    const first = await request();
+    expect(first.status).toBe(200);
+    const fetchCallsAfterFirst = fetchImpl.mock.calls.length;
+    const second = await request();
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: 'Welcome invoice already open' });
+    expect(fetchImpl).toHaveBeenCalledTimes(fetchCallsAfterFirst);
+  });
+
+  it('reuses the fallback welcome reservation store for the same invoice store', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValue('100000');
+    mockedDecode.mockReturnValue({
+      paymentHash: HASH,
+      amountMsat: ONE_USD_AT_100K_MSAT,
+    });
+    const app = new Hono().route(
+      '/invoices',
+      invoiceRoutes({
+        spendApiToken: TOKEN,
+        store: new InMemoryInvoiceStore(),
+        authStore,
+        messageStore: livePostStore(),
+        fundingStore: admittedStore(),
+        walletTransfers: fakeWalletTransferStore(false),
+        now: () => GATE_MS,
+        fetchImpl,
+        lnurlServer: LNURL_SERVER,
+      }),
+    );
+    const request = () =>
+      app.request(
+        '/invoices',
+        auth({
+          method: 'POST',
+          body: JSON.stringify({
+            address: ADDRESS,
+            amountMsat: ONE_USD_AT_100K_MSAT,
+            amountUsd: '1.00',
+            comment: 'Welcome',
+          }),
+        }),
+      );
+
+    const first = await request();
+    expect(first.status).toBe(200);
+    const fetchCallsAfterFirst = fetchImpl.mock.calls.length;
+    const second = await request();
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: 'Welcome invoice already open' });
+    expect(fetchImpl).toHaveBeenCalledTimes(fetchCallsAfterFirst);
+  });
+
+  it('releases a welcome reservation when a later issue gate fails', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const release = vi.fn(async () => undefined);
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: new InMemoryMessageStore(),
+      welcomeInvoiceReservationStore: { reserve: async () => true, release },
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(release).toHaveBeenCalledWith('acc-alice', expect.stringMatching(/^[0-9a-f]{32}$/));
+  });
+
+  it('returns 503 when durable welcome reservation fails despite a shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      welcomeInvoiceReservationStore: {
+        reserve: async () => Promise.reject(new Error('unavailable')),
+        release: async () => undefined,
+      },
+      walletTransferStore: fakeWalletTransferStore(true),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Welcome invoice reservation unavailable' });
+  });
+
+  it('allows the one-dollar welcome at exactly ten percent above the server conversion', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const amountMsat = 1_100_000;
+    mockedSpot.mockResolvedValueOnce('100000');
+    mockedDecode.mockReturnValueOnce({ paymentHash: HASH, amountMsat });
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires a shop payment above the one-dollar spot tolerance', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 10_000_000_000,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('requires a shop payment when the one-dollar spot is unavailable', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fails the welcome exception closed when the spot lookup unexpectedly throws', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockRejectedValueOnce(new Error('down'));
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('requires a shop payment for a second canonical welcome request', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(3),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a basis account as the server welcome exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    await authStore.updateAccount({ ...account!, role: 'basis' });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not give a moderator the server welcome exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, role: 'moderator' });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(mockedSpot).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not treat the platform account as the server welcome exception', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const account = await authStore.getAccount('acc-alice');
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, role: 'verified', isPlatform: true });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      walletTransferStore: fakeWalletTransferStore(false),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: ONE_USD_AT_100K_MSAT,
+          amountUsd: '1.00',
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(mockedSpot).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not let a daily roster comment 'Welcome' bypass the shop payment", async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const result = await issueGiftInvoice(
+      {
+        walletTransfers: fakeWalletTransferStore(false),
+        store: new InMemoryInvoiceStore(),
+        authStore,
+        messageStore: livePostStore(),
+        now: () => GATE_MS,
+        fetchImpl,
+        lnurlServer: LNURL_SERVER,
+        fundingStore: admittedStore(),
+        giftStore: new InMemoryGiftStore(),
+        recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
+      },
+      {
+        address: ADDRESS,
+        amountMsat: 1000,
+        amountUsd: '1.00',
+        comment: 'Welcome',
+        messageId: POST_ID,
+      },
+    );
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps internal welcome provenance compatible with the same server-side facts', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    mockedSpot.mockResolvedValueOnce('100000');
+    mockedDecode.mockReturnValueOnce({
+      paymentHash: HASH,
+      amountMsat: ONE_USD_AT_100K_MSAT,
+    });
+    const result = await issueGiftInvoice(
+      {
+        walletTransfers: fakeWalletTransferStore(false),
+        store: new InMemoryInvoiceStore(),
+        authStore,
+        messageStore: livePostStore(),
+        now: () => GATE_MS,
+        fetchImpl,
+        lnurlServer: LNURL_SERVER,
+        fundingStore: admittedStore(),
+        giftStore: new InMemoryGiftStore(),
+        recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
+      },
+      {
+        address: ADDRESS,
+        amountMsat: ONE_USD_AT_100K_MSAT,
+        amountUsd: '1.00',
+        comment: 'Welcome',
+        serverPayoutKind: 'welcome',
+      },
+    );
+    expect(result.ok).toBe(true);
+    // LNURL-pay first discovers the callback, then requests the invoice from it.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('returns eligible false when there is no grant', async () => {

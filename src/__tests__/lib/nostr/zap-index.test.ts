@@ -2026,6 +2026,19 @@ describe('manual invoice settlement', () => {
       rulesAgreedAt: 1,
     });
     await verifyWallet(auth, 'eligible-payer', 'ada-eligible');
+    const mediaPostId = '77777777-7777-4777-8777-777777777777';
+    await store.create(
+      {
+        id: mediaPostId,
+        accountId: 'eligible-payer',
+        name: 'Ada',
+        text: 'Today',
+        createdAt: new Date(1_700),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
     const fundingStore = new InMemoryFundingStore([
       {
         accountId: 'eligible-payer',
@@ -2068,7 +2081,7 @@ describe('manual invoice settlement', () => {
     expect(spendPing.ping).toHaveBeenCalledTimes(1);
     expect(spendPing.ping).toHaveBeenCalledWith(
       'ada-eligible@example.test',
-      created?.id,
+      mediaPostId,
       'daily',
       'admitted',
     );
@@ -2081,6 +2094,7 @@ describe('manual invoice settlement', () => {
     async function settleGated(
       share: boolean,
       requiredFrom: string | null = '2026-10-29',
+      hasTodayMedia = true,
     ): Promise<{
       ping: ReturnType<typeof vi.fn>;
       createdId: string | undefined;
@@ -2110,6 +2124,21 @@ describe('manual invoice settlement', () => {
         rulesAgreedAt: 1,
       });
       await verifyWallet(auth, 'gated-payer', 'ada-gated');
+      const mediaPostId = '88888888-8888-4888-8888-888888888888';
+      if (hasTodayMedia) {
+        await store.create(
+          {
+            id: mediaPostId,
+            accountId: 'gated-payer',
+            name: 'Ada',
+            text: 'Today',
+            createdAt: new Date(GATE_NOW - 1),
+            hasPhoto: true,
+            ...unsignedNostrDefaults(),
+          },
+          { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+        );
+      }
       if (share) {
         const payer = await auth.getAccount('gated-payer');
         await storeRecoveryShare(auth, 'gated-payer', payer!.sparkPubkey!);
@@ -2162,16 +2191,26 @@ describe('manual invoice settlement', () => {
     }
 
     it('pings an admitted payer with a recovery share', async () => {
-      const { ping, createdId } = await settleGated(true);
-      expect(ping).toHaveBeenCalledWith('ada-gated@example.test', createdId, 'daily', 'admitted');
+      const { ping } = await settleGated(true);
+      expect(ping).toHaveBeenCalledWith(
+        'ada-gated@example.test',
+        '88888888-8888-4888-8888-888888888888',
+        'daily',
+        'admitted',
+      );
     });
 
     it.each([
       ['the day before the start day', '2026-10-30'],
       ['an unset start day', null],
     ])('pings an admitted payer without a share on %s', async (_label, requiredFrom) => {
-      const { ping, createdId } = await settleGated(false, requiredFrom);
-      expect(ping).toHaveBeenCalledWith('ada-gated@example.test', createdId, 'daily', 'admitted');
+      const { ping } = await settleGated(false, requiredFrom);
+      expect(ping).toHaveBeenCalledWith(
+        'ada-gated@example.test',
+        '88888888-8888-4888-8888-888888888888',
+        'daily',
+        'admitted',
+      );
     });
 
     it('skips an admitted payer without a recovery share as not eligible', async () => {
@@ -2179,6 +2218,14 @@ describe('manual invoice settlement', () => {
       expect(ping).not.toHaveBeenCalled();
       expect(events).toContainEqual(
         expect.objectContaining({ event: 'spend.ping.skipped', reason: 'not_eligible' }),
+      );
+    });
+
+    it('skips an eligible compose payer without a media post today', async () => {
+      const { ping, events } = await settleGated(true, '2026-10-29', false);
+      expect(ping).not.toHaveBeenCalled();
+      expect(events).toContainEqual(
+        expect.objectContaining({ event: 'spend.ping.skipped', reason: 'media_post' }),
       );
     });
   });

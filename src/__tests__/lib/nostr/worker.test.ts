@@ -183,6 +183,32 @@ async function inboundTick(
 }
 
 describe('runNostrWorkerTick', () => {
+  it('forwards wallet transfers to receipt ingest', async () => {
+    const { auth, messages } = await seed();
+    const walletTransfers = {} as NonNullable<NostrWorkerDeps['walletTransfers']>;
+    const indexOpenZapReceipts = vi.spyOn(zapIndexForWorkerTest, 'indexOpenZapReceipts');
+
+    try {
+      await runNostrWorkerTick(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => 1_700_000_000_000,
+          env: {},
+          walletTransfers,
+        }),
+      );
+
+      expect(indexOpenZapReceipts).toHaveBeenCalledWith(
+        expect.objectContaining({ walletTransfers }),
+      );
+    } finally {
+      indexOpenZapReceipts.mockRestore();
+    }
+  });
+
   it('re-signs pending kind:1 events that lack t=bitcoin', async () => {
     const { auth, messages } = await seed();
     await messages.updateSignedEvent('m1', 'ab'.repeat(32), {
@@ -6823,6 +6849,25 @@ describe('startNostrWorker', () => {
     );
   });
 
+  it('runs zap ingest without the optional wallet transfer store', async () => {
+    const { auth, messages } = await seed();
+    const querier = new RecordingQuerier();
+    const workerDeps = deps({
+      messages,
+      auth,
+      kek: KEK,
+      publisher: new RecordingPublisher(),
+      querier,
+      now: () => 1_700_000_000_000,
+      env: {},
+    });
+    delete workerDeps.walletTransfers;
+
+    await runNostrWorkerTick(workerDeps);
+
+    expect(querier.calls.length).toBeGreaterThan(0);
+  });
+
   it('starts ingest immediately and waits for settle before the next pass', async () => {
     vi.useFakeTimers();
     const { auth, messages } = await seed();
@@ -7807,121 +7852,141 @@ describe('zapReceiptIngest', () => {
   });
 
   it.each([
-    ['the start day', '2026-10-29', 0],
-    ['the day before the start day', '2026-10-30', 1],
-  ])('passes the recovery share start day from env: %s', async (_label, requiredFrom, pings) => {
-    const nowMs = Date.parse('2026-10-29T12:00:00.000Z');
-    const auth = new InMemoryAuthStore();
-    const messages = new InMemoryMessageStore();
-    const eventId = 'ef'.repeat(32);
-    const receiptPubkey = 'ab'.repeat(32);
-    const base = {
-      linkingKey: null,
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      createdAt: 1,
-      rulesAgreedAt: 1,
-    };
-    await auth.createAccount({
-      ...base,
-      id: 'plat',
-      role: 'founder',
-      username: 'plat',
-      walletRequired: true,
-      viewKey: 'c'.repeat(64),
-      isPlatform: true,
-      profileMessageId: 'm-plat',
-    });
-    await auth.claimSparkPubkey('plat', `02${'c'.repeat(64)}`);
-    await auth.markSparkPubkeyVerified('plat', `02${'c'.repeat(64)}`, 'plat', 2);
-    await auth.createAccount({
-      ...base,
-      id: 'payer',
-      role: 'verified',
-      username: 'payer',
-      walletRequired: true,
-      viewKey: 'd'.repeat(64),
-    });
-    await auth.claimSparkPubkey('payer', `02${'d'.repeat(64)}`);
-    await auth.markSparkPubkeyVerified('payer', `02${'d'.repeat(64)}`, 'payer', 2);
-    await messages.create({
-      id: 'm-plat',
-      accountId: 'plat',
-      name: 'Ada',
-      text: 'platform note',
-      createdAt: new Date('2026-10-01T00:00:00.000Z'),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-      eventId,
-    });
-    await messages.recordInvoiceAttempt({
-      id: 'inv-plat',
-      createdAt: new Date('2026-10-29T00:00:00.000Z'),
-      messageId: 'm-plat',
-      payerAccountId: 'payer',
-      authorAccountId: 'plat',
-      amountSats: 21,
-      lightningAddress: null,
-      zapRequest: { content: 'Hello from Ada' },
-      result: 'ok',
-      httpStatus: 200,
-      pr: 'lnbc-plat',
-      paymentHash: 'd5'.repeat(32),
-      description: null,
-      descriptionHash: null,
-      isNip57Invoice: true,
-      lnurlResponse: null,
-    });
-    mockedDecode.mockReturnValue({ paymentHash: 'd5'.repeat(32), amountMsat: 21_000 });
-    const ping = vi.fn(async () => undefined);
-    const ingestOne = zapReceiptIngest(
-      deps({
-        messages,
-        auth,
-        kek: KEK,
-        publisher: new RecordingPublisher(),
-        now: () => nowMs,
-        env: { RECOVERY_SHARE_REQUIRED_FROM: requiredFrom },
-        verifyReceipt: () => true,
-        fetchImpl: async () =>
-          Response.json({
-            callback: 'https://gifts.test/lnurlp/plat/invoice',
-            minSendable: 1000,
-            maxSendable: 10_000_000,
-            allowsNostr: true,
-            nostrPubkey: receiptPubkey,
-          }),
-        lnurlServer: LNURL_SERVER,
-        spendPing: { ping },
-        postLimiter: new PostRateLimiter(),
-        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
-        fundingStore: new InMemoryFundingStore([
+    ['the start day', '2026-10-29', true, 0],
+    ['the day before the start day', '2026-10-30', true, 1],
+    ['the day before the start day without media', '2026-10-30', false, 0],
+  ])(
+    'passes the recovery share start day from env: %s',
+    async (_label, requiredFrom, hasMedia, pings) => {
+      const nowMs = Date.parse('2026-10-29T12:00:00.000Z');
+      const auth = new InMemoryAuthStore();
+      const messages = new InMemoryMessageStore();
+      const eventId = 'ef'.repeat(32);
+      const receiptPubkey = 'ab'.repeat(32);
+      const base = {
+        linkingKey: null,
+        name: 'Ada',
+        forumLawsDismissed: false,
+        location: null,
+        createdAt: 1,
+        rulesAgreedAt: 1,
+      };
+      await auth.createAccount({
+        ...base,
+        id: 'plat',
+        role: 'founder',
+        username: 'plat',
+        walletRequired: true,
+        viewKey: 'c'.repeat(64),
+        isPlatform: true,
+        profileMessageId: 'm-plat',
+      });
+      await auth.claimSparkPubkey('plat', `02${'c'.repeat(64)}`);
+      await auth.markSparkPubkeyVerified('plat', `02${'c'.repeat(64)}`, 'plat', 2);
+      await auth.createAccount({
+        ...base,
+        id: 'payer',
+        role: 'verified',
+        username: 'payer',
+        walletRequired: true,
+        viewKey: 'd'.repeat(64),
+      });
+      await auth.claimSparkPubkey('payer', `02${'d'.repeat(64)}`);
+      await auth.markSparkPubkeyVerified('payer', `02${'d'.repeat(64)}`, 'payer', 2);
+      if (hasMedia) {
+        await messages.create(
           {
+            id: 'm-payer-today',
             accountId: 'payer',
-            status: 'admitted',
-            appliedAt: 1,
-            decidedAt: 2,
-            decidedBy: 'staff',
-            trialUtcDate: null,
-            admittedAt: 2,
-            note: null,
+            name: 'Ada',
+            text: 'today photo',
+            createdAt: new Date('2026-10-29T08:00:00.000Z'),
+            hasPhoto: false,
+            ...unsignedNostrDefaults(),
           },
-        ]),
-      }),
-    );
-    await ingestOne({
-      id: 'r-plat',
-      pubkey: receiptPubkey,
-      kind: 9735,
-      tags: [
-        ['e', eventId],
-        ['bolt11', 'lnbc-plat'],
-      ],
-    });
-    expect((await messages.listLatest(20)).some((row) => row.text === 'Hello from Ada')).toBe(true);
-    expect(ping).toHaveBeenCalledTimes(pings);
-  });
+          { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+        );
+      }
+      await messages.create({
+        id: 'm-plat',
+        accountId: 'plat',
+        name: 'Ada',
+        text: 'platform note',
+        createdAt: new Date('2026-10-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId,
+      });
+      await messages.recordInvoiceAttempt({
+        id: 'inv-plat',
+        createdAt: new Date('2026-10-29T00:00:00.000Z'),
+        messageId: 'm-plat',
+        payerAccountId: 'payer',
+        authorAccountId: 'plat',
+        amountSats: 21,
+        lightningAddress: null,
+        zapRequest: { content: 'Hello from Ada' },
+        result: 'ok',
+        httpStatus: 200,
+        pr: 'lnbc-plat',
+        paymentHash: 'd5'.repeat(32),
+        description: null,
+        descriptionHash: null,
+        isNip57Invoice: true,
+        lnurlResponse: null,
+      });
+      mockedDecode.mockReturnValue({ paymentHash: 'd5'.repeat(32), amountMsat: 21_000 });
+      const ping = vi.fn(async () => undefined);
+      const ingestOne = zapReceiptIngest(
+        deps({
+          messages,
+          auth,
+          kek: KEK,
+          publisher: new RecordingPublisher(),
+          now: () => nowMs,
+          env: { RECOVERY_SHARE_REQUIRED_FROM: requiredFrom },
+          verifyReceipt: () => true,
+          fetchImpl: async () =>
+            Response.json({
+              callback: 'https://gifts.test/lnurlp/plat/invoice',
+              minSendable: 1000,
+              maxSendable: 10_000_000,
+              allowsNostr: true,
+              nostrPubkey: receiptPubkey,
+            }),
+          lnurlServer: LNURL_SERVER,
+          spendPing: { ping },
+          postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
+          fundingStore: new InMemoryFundingStore([
+            {
+              accountId: 'payer',
+              status: 'admitted',
+              appliedAt: 1,
+              decidedAt: 2,
+              decidedBy: 'staff',
+              trialUtcDate: null,
+              admittedAt: 2,
+              note: null,
+            },
+          ]),
+        }),
+      );
+      await ingestOne({
+        id: 'r-plat',
+        pubkey: receiptPubkey,
+        kind: 9735,
+        tags: [
+          ['e', eventId],
+          ['bolt11', 'lnbc-plat'],
+        ],
+      });
+      expect((await messages.listLatest(20)).some((row) => row.text === 'Hello from Ada')).toBe(
+        true,
+      );
+      expect(ping).toHaveBeenCalledTimes(pings);
+    },
+  );
 });
 
 describe('shop identities (S1 keys, S2 profiles)', () => {
@@ -9163,3 +9228,4 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
     });
   });
 });
+import * as zapIndexForWorkerTest from '@/lib/nostr/zap-index';

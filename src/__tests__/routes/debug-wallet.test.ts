@@ -59,7 +59,10 @@ class FailingWalletStore implements WalletStore {
     return Promise.reject(new Error('sql failed'));
   }
 
-  latestBalance(_accountId: string): Promise<WalletBalanceSnapshot | undefined> {
+  latestBalance(
+    _accountId: string,
+    _walletPubkey: string | null,
+  ): Promise<WalletBalanceSnapshot | undefined> {
     return Promise.reject(new Error('sql failed'));
   }
 
@@ -97,6 +100,7 @@ async function walletApp(
     now?: () => number;
     walletStore?: WalletStore;
     withAccount?: boolean;
+    walletPubkey?: string;
   } = {},
 ): Promise<Hono> {
   const authStore = new InMemoryAuthStore();
@@ -112,7 +116,17 @@ async function walletApp(
       createdAt: T1.getTime(),
       rulesAgreedAt: T1.getTime(),
       username: 'ada',
+      walletRequired: true,
     });
+    if (options.walletPubkey !== undefined) {
+      await authStore.claimSparkPubkey(ACCOUNT_ID, options.walletPubkey);
+      await authStore.markSparkPubkeyVerified(
+        ACCOUNT_ID,
+        options.walletPubkey,
+        'ada',
+        T1.getTime(),
+      );
+    }
   }
   return new Hono().route(
     '/debug/accounts',
@@ -263,9 +277,11 @@ describe('debugWalletRoutes', () => {
 
   it('returns the newest balance with a floored, non-negative age and serialized payments', async () => {
     const store = new InMemoryWalletStore();
+    const walletPubkey = `02${'d'.repeat(64)}`;
     await store.recordBalance({
       id: 'snapshot-1',
       accountId: ACCOUNT_ID,
+      walletPubkey,
       balanceSats: 1000,
       syncedAt: T1,
       receivedAt: RECEIVED,
@@ -274,6 +290,7 @@ describe('debugWalletRoutes', () => {
     const app = await walletApp({
       debugToken: 'secret',
       walletStore: store,
+      walletPubkey,
       now: () => T2.getTime(),
     });
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
@@ -314,6 +331,39 @@ describe('debugWalletRoutes', () => {
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'debug.wallet.shown', accountId: ACCOUNT_ID, count: 1 }),
     );
+  });
+
+  it('falls back to a legacy balance when the verified wallet has no keyed snapshot', async () => {
+    const store = new InMemoryWalletStore();
+    const walletPubkey = `02${'d'.repeat(64)}`;
+    await store.recordBalance({
+      id: 'legacy-snapshot',
+      accountId: ACCOUNT_ID,
+      walletPubkey: null,
+      balanceSats: 1000,
+      syncedAt: T1,
+      receivedAt: RECEIVED,
+    });
+    const app = await walletApp({
+      debugToken: 'secret',
+      walletStore: store,
+      walletPubkey,
+      now: () => T2.getTime(),
+    });
+
+    const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
+      headers: { authorization: 'Bearer secret' },
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      balance: {
+        balanceSats: 1000,
+        syncedAt: T1.toISOString(),
+        receivedAt: RECEIVED.toISOString(),
+        ageSeconds: 192,
+      },
+    });
   });
 
   it('never reports a negative balance age when the clock is before receivedAt', async () => {

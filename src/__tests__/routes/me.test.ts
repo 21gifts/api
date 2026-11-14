@@ -13,6 +13,9 @@ import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { SPARK_EXPLORER_BASE_URL } from '@/lib/spark-explorer';
 import type { SpendPing } from '@/lib/spend-ping';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
+import type { GiftStore } from '@/lib/gift-store';
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import { bearerToken, meRoutes } from '@/routes/me';
 import {
   PINNED,
@@ -56,6 +59,10 @@ interface MountOpts {
   fundingStore?: FundingStore;
   recoveryShareRequiredFrom?: string | null;
   spendPing?: SpendPing;
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+  walletViewerPublicKey?: string | null;
+  giftStore?: GiftStore;
+  rosterStore?: Pick<DailyRosterStore, 'get'>;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -73,11 +80,17 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       ...(opts.recoveryShareKek === undefined ? {} : { recoveryShareKek: opts.recoveryShareKek }),
       ...(opts.fetchImpl === undefined ? {} : { fetchImpl: opts.fetchImpl }),
       ...(opts.fundingStore === undefined ? {} : { fundingStore: opts.fundingStore }),
+      ...(opts.giftStore === undefined ? {} : { giftStore: opts.giftStore }),
+      ...(opts.rosterStore === undefined ? {} : { rosterStore: opts.rosterStore }),
       recoveryShareRequiredFrom:
         opts.recoveryShareRequiredFrom === undefined
           ? new Date(GATE_NOW).toISOString().slice(0, 10)
           : opts.recoveryShareRequiredFrom,
       ...(opts.spendPing === undefined ? {} : { spendPing: opts.spendPing }),
+      ...(opts.walletTransfers === undefined ? {} : { walletTransfers: opts.walletTransfers }),
+      ...(opts.walletViewerPublicKey === undefined
+        ? {}
+        : { walletViewerPublicKey: opts.walletViewerPublicKey }),
     }),
   );
 }
@@ -214,10 +227,12 @@ describe('GET /me', () => {
       locale: 'en' | 'de' | 'es' | 'fil' | null;
       fiat: 'CHF' | 'EUR' | 'USD' | 'PHP' | null;
       funding: null;
+      grantPayoutToday: { state: string; reason: string | null } | null;
       walletRequired: boolean;
       walletBackupSeenAt: number | null;
       passkeyRenewFailed: boolean;
       passkeyRenewClosed: boolean;
+      walletViewerPublicKey: string | null;
     };
     expect(body.id).toBe('acc');
     expect(body.role).toBe('basis');
@@ -237,10 +252,12 @@ describe('GET /me', () => {
     expect(body.locale).toBeNull();
     expect(body.fiat).toBeNull();
     expect(body.funding).toBeNull();
+    expect(body.grantPayoutToday).toEqual({ state: 'blocked', reason: 'verify' });
     expect(body.walletRequired).toBe(false);
     expect(body.walletBackupSeenAt).toBeNull();
     expect(body.passkeyRenewFailed).toBe(false);
     expect(body.passkeyRenewClosed).toBe(false);
+    expect(body.walletViewerPublicKey).toBeNull();
   });
 
   it('returns funding none for a verified account without a grant', async () => {
@@ -261,9 +278,194 @@ describe('GET /me', () => {
       admittedAt: null,
       reviewedByName: null,
       dailyPayoutStoppedNotice: false,
+      shopPaymentDue: false,
+      payoutToday: { state: 'blocked', reason: 'admission' },
     });
     expect(funded.walletRequired).toBe(false);
     expect(funded.walletBackupSeenAt).toBeNull();
+  });
+
+  it('returns the deployment viewer key and shop-payment due fact', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: null,
+        trialUtcDate: null,
+        admittedAt: 2,
+        note: null,
+      },
+    ]);
+    const hasShopPayment = vi.fn(() => Promise.resolve(false));
+    const res = await mount(store, {
+      fundingStore,
+      walletTransfers: { hasShopPayment },
+      walletViewerPublicKey: SPARK_PUBKEY,
+    }).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      walletViewerPublicKey: string | null;
+      funding: { shopPaymentDue: boolean };
+    };
+    expect(body.walletViewerPublicKey).toBe(SPARK_PUBKEY);
+    expect(body.funding.shopPaymentDue).toBe(true);
+    expect(hasShopPayment).toHaveBeenCalledOnce();
+  });
+
+  it('clears shop-payment due after a verified payment and reports read failure as unknown', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: null,
+        trialUtcDate: null,
+        admittedAt: 2,
+        note: null,
+      },
+    ]);
+    const paid = await mount(store, {
+      fundingStore,
+      walletTransfers: { hasShopPayment: async () => true },
+    }).request('/me', { headers: AUTH });
+    expect(
+      ((await paid.json()) as { funding: { shopPaymentDue: boolean } }).funding.shopPaymentDue,
+    ).toBe(false);
+
+    const unavailable = await mount(store, {
+      fundingStore,
+      walletTransfers: {
+        hasShopPayment: async () => {
+          throw new Error('transfers unavailable');
+        },
+      },
+    }).request('/me', { headers: AUTH });
+    const unavailableBody = (await unavailable.json()) as {
+      funding: { shopPaymentDue: boolean | null };
+    };
+    expect(unavailableBody.funding.shopPaymentDue).toBeNull();
+  });
+
+  it('returns the due payout state after every current condition holds', async () => {
+    const store = await seededStore({ wallet: true });
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const messages = new InMemoryMessageStore();
+    await messages.create(
+      {
+        id: '00000000-0000-4000-8000-000000000001',
+        accountId: 'acc',
+        name: 'Alice',
+        text: 'today',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    const res = await mount(store, {
+      messages,
+      fundingStore: admitted(),
+      walletTransfers: { hasShopPayment: async () => true },
+      rosterStore: { get: async () => ({ paymentsEnabled: true }) as never },
+      recoveryShareRequiredFrom: null,
+    }).request('/me', { headers: AUTH });
+    const body = (await res.json()) as {
+      funding: { payoutToday: unknown; shopPaymentDue: boolean };
+    };
+    expect(body.funding.payoutToday).toEqual({ state: 'due', reason: null });
+    expect(body.funding.shopPaymentDue).toBe(false);
+  });
+
+  it('returns an unknown payout state and logs when a payout fact read fails', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const giftStore: GiftStore = {
+      listOutbound: async () => {
+        throw new Error('ledger unavailable');
+      },
+    };
+    const res = await mount(store, { giftStore }).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      funding: { payoutToday: unknown };
+      grantPayoutToday: unknown;
+    };
+    expect(body.funding.payoutToday).toBeNull();
+    expect(body.grantPayoutToday).toBeNull();
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'funding.payout_today.failed', accountId: 'acc' }),
+    );
+  });
+
+  it('keeps GET /me available when the shared funding read fails', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const fundingStore = new InMemoryFundingStore();
+    vi.spyOn(fundingStore, 'getByAccountId').mockRejectedValue(new Error('grant unavailable'));
+    const res = await mount(store, { fundingStore }).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      funding: { status: string; payoutToday: unknown; shopPaymentDue: boolean | null };
+    };
+    expect(body.funding.status).not.toBe('none');
+    expect(body.funding.status).toBe('unknown');
+    expect(body.funding.payoutToday).toBeNull();
+    expect(body.funding.shopPaymentDue).toBeNull();
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'funding.payout_today.failed', accountId: 'acc' }),
+    );
+  });
+
+  it('keeps basis funding private when its shared funding read fails', async () => {
+    const store = await seededStore();
+    const fundingStore = new InMemoryFundingStore();
+    vi.spyOn(fundingStore, 'getByAccountId').mockRejectedValue(new Error('grant unavailable'));
+    const res = await mount(store, { fundingStore }).request('/me', { headers: AUTH });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { funding: unknown; grantPayoutToday: unknown };
+    expect(body.funding).toBeNull();
+    expect(body.grantPayoutToday).toBeNull();
+  });
+
+  it("returns today's trial funding for its eligible day", async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    expect(existing).toBeDefined();
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const trialUtcDate = new Date(now()).toISOString().slice(0, 10);
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc',
+        status: 'trial',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: 'staff',
+        trialUtcDate,
+        admittedAt: null,
+        note: null,
+      },
+    ]);
+
+    const res = await mount(store, { fundingStore }).request('/me', { headers: AUTH });
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { funding: unknown }).funding).toMatchObject({
+      status: 'trial',
+      trialUtcDate,
+    });
   });
 
   it('returns dailyPayoutStoppedNotice true for a listed verified account without a grant', async () => {
@@ -288,6 +490,46 @@ describe('GET /me', () => {
     };
     expect(funded.funding.status).toBe('none');
     expect(funded.funding.dailyPayoutStoppedNotice).toBe(true);
+  });
+
+  it('returns a withdrawn grant exactly like no grant, notice off, for a listed account', async () => {
+    const store = new InMemoryAuthStore();
+    const id = '14101481-f421-42ef-9d37-6df3ccb6b25f';
+    await store.createAccount({
+      id,
+      linkingKey: LINKING_KEY,
+      role: 'verified',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+    await store.createSession({ token: 'tok', accountId: id, createdAt: 1_000_000 });
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: id,
+        status: 'withdrawn',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: id,
+        trialUtcDate: null,
+        admittedAt: null,
+        note: null,
+      },
+    ]);
+    const res = await mount(store, { fundingStore }).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { funding: unknown }).funding).toEqual({
+      status: 'none',
+      trialUtcDate: null,
+      admittedAt: null,
+      reviewedByName: null,
+      dailyPayoutStoppedNotice: false,
+      shopPaymentDue: false,
+      payoutToday: { state: 'blocked', reason: 'admission' },
+    });
   });
 
   it('returns hasPosted false when the only live row is the profile note', async () => {
@@ -2742,6 +2984,7 @@ describe('PUT /me/recovery-share', () => {
     it("pings today's media post of an eligible member without reading the share again", async () => {
       const store = await memberStore();
       const shareReads = vi.spyOn(store, 'hasRecoveryShareForVerifiedWallet');
+      const hasShopPayment = vi.fn(async () => true);
       let readsDuringPing = -1;
       const ping = vi.fn(async () => {
         readsDuringPing = shareReads.mock.calls.length;
@@ -2754,6 +2997,7 @@ describe('PUT /me/recovery-share', () => {
           fundingStore: admitted(),
           messages: await todayPhoto(),
           spendPing: { ping },
+          walletTransfers: { hasShopPayment },
         }),
         body,
       );
@@ -2761,6 +3005,28 @@ describe('PUT /me/recovery-share', () => {
       expect(ping).toHaveBeenCalledTimes(1);
       expect(ping).toHaveBeenCalledWith('alice@example.test', MEMBER_PHOTO, 'daily', 'admitted');
       expect(readsDuringPing).toBe(0);
+      expect(hasShopPayment).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not ping until a recent verified shop payment exists', async () => {
+      const store = await memberStore();
+      const hasShopPayment = vi.fn(async () => false);
+      const ping = vi.fn(async () => undefined);
+      const res = await putShare(
+        mount(store, {
+          clock: gateClock,
+          walletEnabled: true,
+          recoveryShareKek: SHARE_KEK,
+          fundingStore: admitted(),
+          messages: await todayPhoto(),
+          spendPing: { ping },
+          walletTransfers: { hasShopPayment },
+        }),
+        body,
+      );
+      expect(res.status).toBe(200);
+      expect(hasShopPayment).toHaveBeenCalledOnce();
+      expect(ping).not.toHaveBeenCalled();
     });
 
     it.each([

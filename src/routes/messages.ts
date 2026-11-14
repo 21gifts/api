@@ -9,15 +9,11 @@ import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import type { FxSpotQuote } from '@/lib/fx-spot';
-import {
-  canonicalGoalAmount,
-  type GoalCurrency,
-  type GoalFiatCode,
-  type GoalRateDay,
-} from '@/lib/goal-rate';
+import { canonicalGoalAmount, type GoalCurrency, type GoalFiatCode } from '@/lib/goal-rate';
 import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { isOperatorBearer } from '@/lib/debug-token';
 import type { GiftStore } from '@/lib/gift-store';
 import { attachHeartStats } from '@/lib/heart-stats';
@@ -281,6 +277,8 @@ function invoiceAttemptBase(args: {
 
 /** Collaborators the `/messages` routes need. */
 export interface MessagesRouteDeps {
+  /** Server-verified wallet transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   /** Forum persistence. */
   store: MessageStore;
   /** Shared auth persistence port. */
@@ -389,16 +387,12 @@ export interface MessagesRouteDeps {
   /** Poll interval for `sinceSats` (tests inject; default {@link WAIT_SATS_POLL_MS}). */
   waitSatsPollMs?: number;
   /**
-   * Latest spot used to freeze a currency ask. Omitted or a null quote:
-   * a BTC ask still posts; a fiat ask is 400. A throw is 503 for a fiat
-   * ask; a BTC ask still stores the typed sats.
+   * Latest spot used to freeze a currency ask and price not-yet-invoiced fiat
+   * repayment units. Omitted or a null quote: a BTC ask still posts; a fiat
+   * ask is 400 and a due fiat repayment is unavailable. A throw is 503 when
+   * that path needs the quote; a BTC ask still stores the typed sats.
    */
   fxSpot?: { latest(): Promise<FxSpotQuote | null> };
-  /**
-   * Gift-day loader for a fiat repayment share. An ask does not read it.
-   * Omitted → a fiat repayment share cannot be priced.
-   */
-  goalRateDay?: () => Promise<GoalRateDay | null>;
   /** Operator write token. Unset → no operator read on the staff GET routes. */
   debugToken?: string;
   /** Operator read-only token. Unset → no operator read on the staff GET routes. */
@@ -1484,15 +1478,16 @@ async function persistForumPost(
         lnurlServer,
       });
       try {
-        const { grant, eligible } = await loadPayoutEligibility(
+        const { grant, eligible, reason } = await loadPayoutEligibility(
           deps.fundingStore ?? new InMemoryFundingStore(),
           deps.authStore,
           account,
           deps.now(),
           deps.recoveryShareRequiredFrom ?? null,
+          deps.walletTransfers,
         );
         if (!eligible) {
-          logEvent('spend.ping.skipped', { reason: 'not_eligible' });
+          logEvent('spend.ping.skipped', { reason: reason ?? 'not_eligible' });
         } else if (
           created.hasPhoto === true ||
           created.hasVideo === true ||

@@ -18,7 +18,7 @@ import { linksRoutes } from '@/routes/links';
 import { viewRoutes } from '@/routes/view';
 import { lightningAddressRoutes } from '@/routes/lightning-address';
 import { debugRoutes } from '@/routes/debug';
-import { bindGoalRateDay, giftsStatsRoutes } from '@/routes/stats';
+import { giftsStatsRoutes } from '@/routes/stats';
 import { walletStatsRoutes } from '@/routes/wallets';
 import { giftsRoutes } from '@/routes/gifts';
 import { invoiceRoutes } from '@/routes/invoices';
@@ -87,6 +87,7 @@ import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
 import { walletAccountKind } from '@/lib/wallet-category';
 import { InMemoryWalletStore, type WalletStore } from '@/lib/wallet-store';
+import { InMemoryWalletTransferStore, type WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { InMemoryMemberEventStore, type MemberEventStore } from '@/lib/member-event-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
@@ -125,6 +126,10 @@ import {
 } from '@/lib/config';
 import { InMemorySparkInvoiceStore, type SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
+import {
+  InMemoryWelcomeInvoiceReservationStore,
+  type WelcomeInvoiceReservationStore,
+} from '@/lib/welcome-reservation';
 import type { InvoiceStore } from '@/lib/invoice-store';
 import type { GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
@@ -185,8 +190,8 @@ export interface AppDeps {
   debugToken?: string;
   /**
    * Read-only bearer for `GET /debug/db`, `GET /debug/accounts/:id/wallet`,
-   * `GET /funding/goal`, the operator staff GET reads, and
-   * `GET /funding/daily-roster/links`
+   * `GET /funding/goal`, the operator staff GET reads,
+   * `GET /funding/daily-roster/links`, and `GET /funding/withdrawals`
    * (default: `process.env.DEBUG_READ_TOKEN`).
    * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
    * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
@@ -220,6 +225,10 @@ export interface AppDeps {
    * when `DATABASE_URL` is set.
    */
   walletStore?: WalletStore;
+  /** Server-verified Spark transfers (default: empty in-memory store). */
+  walletTransferStore?: WalletTransferStore;
+  /** Spark viewer identity key returned in owner JSON, or null when unavailable. */
+  walletViewerPublicKey?: string | null;
   /**
    * Member interaction-log events (default: empty
    * {@link InMemoryMemberEventStore}). Boot injects
@@ -309,6 +318,8 @@ export interface AppDeps {
   invoiceRateCaps?: InvoiceRateCaps | null;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
+  /** Atomic welcome-exception entitlement reservations (default: in-memory). */
+  welcomeInvoiceReservationStore?: WelcomeInvoiceReservationStore;
   /**
    * Persist proven spend gifts into `gift` (default: no-op). Boot injects
    * {@link SqlGiftRecorder} when `DATABASE_URL` is set.
@@ -326,9 +337,9 @@ export interface AppDeps {
    */
   fiatRates?: FiatRateBook;
   /**
-   * Last good BTC spot quote for `GET /fx/spot` (default: empty
-   * {@link InMemoryFxSpotStore} — answers `rates: {}`). Boot keeps it fresh
-   * with the spot worker.
+   * Last good BTC spot quote for `GET /fx/spot`, ask freezing, and fiat loan
+   * share pricing (default: empty {@link InMemoryFxSpotStore} — answers
+   * `rates: {}`). Boot keeps it fresh with the spot worker.
    */
   fxSpotStore?: FxSpotStore;
   /**
@@ -634,6 +645,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     new InMemoryWalletStore((accountId) =>
       walletAccountKind({ authStore: store, messages: messageStore }, accountId),
     );
+  const walletTransferStore = deps.walletTransferStore ?? new InMemoryWalletTransferStore();
   const memberEventStore = deps.memberEventStore ?? new InMemoryMemberEventStore();
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -683,6 +695,8 @@ export function createApp(deps: AppDeps = {}): Hono {
   const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const replyLimiter = deps.replyLimiter ?? new PostRateLimiter(REPLY_POST_CAPS);
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
+  const welcomeInvoiceReservationStore =
+    deps.welcomeInvoiceReservationStore ?? new InMemoryWelcomeInvoiceReservationStore();
   const giftRecorder = deps.giftRecorder;
 
   const app = new Hono();
@@ -746,13 +760,6 @@ export function createApp(deps: AppDeps = {}): Hono {
     })(c, next);
   });
   app.use('*', sundayRest(now));
-  const goalRateDay = bindGoalRateDay({
-    store: giftStore,
-    rates: btcUsdRates,
-    fiatRates,
-    now,
-  });
-
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
   const webhookSecret = resolvePaymentWebhookSecret(env);
@@ -799,7 +806,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       store: messageStore,
       authStore: store,
       now,
-      goalRateDay,
+      fxSpot: fxSpotStore,
       ...receivingDeps,
     }),
   );
@@ -878,6 +885,9 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
+      rosterStore,
+      walletTransfers: walletTransferStore,
+      walletViewerPublicKey: deps.walletViewerPublicKey ?? null,
       recoveryShareRequiredFrom,
       fetchImpl,
       ...receivingDeps,
@@ -958,6 +968,8 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugDbRoutes({
       store: deps.debugDbStore,
       debugToken,
+      authStore: store,
+      now,
       ...(debugReadToken === undefined ? {} : { debugReadToken }),
     }),
   );
@@ -982,6 +994,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
       ...(spendPing === undefined ? {} : { spendPing }),
       fundingStore,
+      walletTransfers: walletTransferStore,
       recoveryShareRequiredFrom,
       conversationStore,
       trustStore,
@@ -1082,6 +1095,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     fundingRoutes({
       authStore: store,
       fundingStore,
+      walletTransfers: walletTransferStore,
       recoveryShareRequiredFrom,
       messageStore,
       ...receivingDeps,
@@ -1106,6 +1120,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     messagesRoutes({
       store: messageStore,
       authStore: store,
+      walletTransfers: walletTransferStore,
       now,
       fetchImpl,
       ...receivingDeps,
@@ -1120,7 +1135,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       giftStore,
       shopIdentities: shopIdentityStore,
       fxSpot: fxSpotStore,
-      goalRateDay,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
@@ -1209,6 +1223,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     conversationRoutes({
       store: conversationStore,
       authStore: store,
+      walletTransfers: walletTransferStore,
       messageStore,
       now,
       fetchImpl,
@@ -1242,6 +1257,8 @@ export function createApp(deps: AppDeps = {}): Hono {
     invoiceRoutes({
       spendApiToken,
       store: invoiceStore,
+      welcomeReservations: welcomeInvoiceReservationStore,
+      walletTransfers: walletTransferStore,
       authStore: store,
       messageStore,
       now,
@@ -1270,6 +1287,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(sparkInvoices === undefined ? {} : { freePayments: true }),
       actions: {
         store: invoiceStore,
+        welcomeReservations: welcomeInvoiceReservationStore,
+        walletTransfers: walletTransferStore,
         authStore: store,
         messageStore,
         now,
@@ -1289,6 +1308,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     spendInstructionRoutes({
       spendApiToken,
       authStore: store,
+      walletTransfers: walletTransferStore,
       messageStore,
       fundingStore,
       recoveryShareRequiredFrom,

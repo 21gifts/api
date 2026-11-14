@@ -169,6 +169,13 @@ test('Function: accountWelcomed — posted lookup is up', async ({ request }) =>
   expect(res.status()).toBe(503);
 });
 
+test('Function: isWelcomeRecipient — welcome dry-run applies the shared rule', async ({
+  request,
+}) => {
+  const res = await request.get('/debug/welcome-sweep', { headers: DEBUG });
+  expect(res.status()).toBe(200);
+});
+
 test('Function: welcomeSweepCandidates — dry-run lists nobody without the LNURL server', async ({
   request,
 }) => {
@@ -956,7 +963,21 @@ test('Function: giftsStatsRoutes — GET /gifts/stats is empty on default boot',
   const body = (await res.json()) as { giftCount: number; totalSats: number };
   expect(body.giftCount).toBe(0);
   expect(body.totalSats).toBe(0);
-  expect(body).not.toHaveProperty('byRecipient');
+});
+
+test('Function: giftsForRecipient — GET /gifts/stats?recipient= is empty on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/gifts/stats?recipient=alice');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    giftCount: number;
+    totalSats: number;
+    spendOverTime: unknown[];
+  };
+  expect(body.giftCount).toBe(0);
+  expect(body.totalSats).toBe(0);
+  expect(body.spendOverTime).toEqual([]);
 });
 
 test('Function: InMemoryGiftStore — GET /gifts/stats is empty on default boot', async ({
@@ -978,7 +999,6 @@ test('Function: buildGiftStats — GET /gifts/stats is empty on default boot', a
   };
   expect(body.spendOverTime).toEqual([]);
   expect(body.firstPaidAt).toBeNull();
-  expect(body).not.toHaveProperty('byRecipient');
 });
 
 test('Function: loadGiftStatsSnapshot — GET /gifts/stats has no spend on default boot', async ({
@@ -1026,38 +1046,6 @@ async function verifiedAskSession(request: APIRequestContext): Promise<{ authori
 }
 
 // Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: loadLatestGoalRateDay — a fiat ask is 409 without a verified wallet', async ({
-  request,
-}) => {
-  const auth = await verifiedAskSession(request);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'pesos', goalCurrency: 'PHP', goalAmount: '200' },
-  });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
-  });
-});
-
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: bindGoalRateDay — a bitcoin ask is 409 without a verified wallet', async ({
-  request,
-}) => {
-  const auth = await verifiedAskSession(request);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'sats', goalCurrency: 'BTC', goalAmount: '21' },
-  });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
-  });
-});
-
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
 test('Function: canonicalDecimal — an ask with a decimal goalAmount is 409 without a verified wallet', async ({
   request,
 }) => {
@@ -1094,22 +1082,6 @@ test('Function: fiatToSats — an ask is 409 without a verified wallet', async (
   const res = await request.post('/messages', {
     headers: auth,
     data: { text: 'both', goalSats: 21, goalCurrency: 'USD', goalAmount: '1' },
-  });
-  expect(res.status()).toBe(409);
-  expect(await res.json()).toEqual({
-    error: 'missing_requirements',
-    missing: ['lightning-address'],
-  });
-});
-
-// Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
-test('Function: satsToFiatAmount — a bitcoin ask is 409 without a verified wallet', async ({
-  request,
-}) => {
-  const auth = await verifiedAskSession(request);
-  const res = await request.post('/messages', {
-    headers: auth,
-    data: { text: 'freeze', goalCurrency: 'BTC', goalAmount: '21' },
   });
   expect(res.status()).toBe(409);
   expect(await res.json()).toEqual({
@@ -1862,6 +1834,13 @@ test('Function: fetchBtcUsdSpot — empty stats skip USD conversion', async ({ r
   const body = (await res.json()) as { giftCount: number; totalUsd: string };
   expect(body.giftCount).toBe(0);
   expect(body.totalUsd).toBe('0.00');
+});
+
+test('Function: usdToMsat — default boot cannot reach conversion because the Fond signer is unset', async ({
+  request,
+}) => {
+  const res = await request.post('/fond/payouts/00000000-0000-4000-8000-000000000001/invoice');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: parseUsdPerBtc — empty stats skip USD conversion', async ({ request }) => {
@@ -3452,6 +3431,34 @@ test('Function: dailyPayoutStoppedNotice — default boot has no DATABASE_URL', 
 });
 test('Function: serializeOwnerFunding — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: ownerFundingStatus — GET /me reads none and POST /funding/withdraw is 403 then 409', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const headers = { authorization: member.authorization };
+  const basis = await request.post('/funding/withdraw', { headers });
+  expect(basis.status()).toBe(403);
+  expect(await basis.json()).toEqual({ error: 'Forbidden' });
+  const patched = await request.patch(`/debug/accounts/${member.id}`, {
+    headers: DEBUG,
+    data: { role: 'verified' },
+  });
+  expect(patched.status()).toBe(200);
+  const me = await request.get('/me', { headers });
+  expect(me.status()).toBe(200);
+  expect(((await me.json()) as { funding: unknown }).funding).toEqual({
+    status: 'none',
+    trialUtcDate: null,
+    admittedAt: null,
+    reviewedByName: null,
+    dailyPayoutStoppedNotice: false,
+    shopPaymentDue: false,
+    payoutToday: { state: 'blocked', reason: 'admission' },
+  });
+  const none = await request.post('/funding/withdraw', { headers, data: { accountId: member.id } });
+  expect(none.status()).toBe(409);
+  expect(await none.json()).toEqual({ error: 'Conflict' });
 });
 test('Function: fundingReviewedAt — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
@@ -5123,4 +5130,71 @@ test('Function: InMemoryFondPayoutStore — GET /fond/payouts is 404 when PAYOUT
 test('Function: canSignFondPayouts — default boot serves HTTP', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
+});
+
+test('Function: migrateSparkViewerSchema — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: ensureSparkViewer — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: InMemoryWalletTransferStore — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: PostgresWalletTransferStore — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: InMemoryWelcomeInvoiceReservationStore — POST /invoices stops at unconfigured spend before reservation', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices', {
+    data: { address: 'alice@example.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(503);
+});
+
+test('Function: PostgresWelcomeInvoiceReservationStore — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: migrateWelcomeInvoiceReservationSchema — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: runWalletTransferTick — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: startWalletTransferWorker — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: latestTodayMediaPostId — default member stops at verify before the media lookup', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  expect(await me.json()).toMatchObject({
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
+});
+
+test('Function: loadFundingPayoutToday — GET /me exposes one payout explanation', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  expect(await me.json()).toMatchObject({
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
 });

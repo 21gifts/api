@@ -17,6 +17,7 @@ import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { createApp } from '@/server';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 
 const TOKEN = 'spend-secret-token';
 const ADDRESS = 'alice@example.test';
@@ -65,6 +66,26 @@ function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
   ]);
 }
 
+function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
+  return {
+    listWallets: async () => [],
+    syncState: async () => ({
+      newestCreatedAt: null,
+      oldestPendingCreatedAt: null,
+      pendingWithoutCreatedAt: false,
+      lastFullSyncAt: null,
+    }),
+    upsertTransfer: async () => ({
+      inserted: false,
+      updated: false,
+      shopPaymentBecameCompleted: false,
+    }),
+    upsertTokenTransaction: async () => undefined,
+    markFullSync: async () => undefined,
+    hasShopPayment: async () => shopPayment,
+  };
+}
+
 function fakeStore(get?: DailyRosterStore['get']): DailyRosterStore {
   const fallback = new InMemoryDailyRosterStore(PAYING_ROSTER);
   return {
@@ -96,6 +117,7 @@ function createSpendApp(deps: Parameters<typeof createApp>[0] = {}): ReturnType<
     spendApiToken: TOKEN,
     rosterStore: fakeStore(),
     fundingStore: admittedStore(),
+    walletTransferStore: fakeWalletTransferStore(),
     now: () => NOW_MS,
     env: { ...process.env, ...LNURL_ENV },
     ...deps,
@@ -129,6 +151,7 @@ async function seedPasskeyAccount(
   authStore: InMemoryAuthStore,
   role: 'verified' | 'basis' = 'verified',
   share = true,
+  profileMessageId: string | null = null,
 ): Promise<void> {
   await authStore.createAccount({
     id: 'acc-alice',
@@ -142,6 +165,7 @@ async function seedPasskeyAccount(
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
+    profileMessageId,
   });
   await verifyWallet(authStore, share);
   await authStore.createPasskeyCredential({
@@ -160,7 +184,7 @@ function livePostStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
       accountId,
       name: 'Ada',
       text: 'first',
-      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      createdAt: new Date('2026-10-08T09:00:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     },
@@ -175,7 +199,7 @@ async function liveMediaPostStore(accountId: string = 'acc-alice'): Promise<InMe
       accountId,
       name: 'Ada',
       text: 'first',
-      createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      createdAt: new Date('2026-10-08T09:00:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     },
@@ -309,20 +333,51 @@ describe('POST /spend/daily-instruction', () => {
     expect(await res.json()).toEqual({ action: 'skip', reason: 'no_passkey' });
   });
 
-  it('returns no_post when there is no live top-level non-profile post', async () => {
+  it('always reads today media and returns no_post when no top-level post exists', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const messageStore = new InMemoryMessageStore();
-    const hasMedia = vi.spyOn(messageStore, 'accountHasLiveTopLevelMediaPost');
-    const listPosts = vi.spyOn(messageStore, 'listPostsByAccount');
+    const latestMedia = vi.spyOn(messageStore, 'latestLiveTopLevelMediaId');
+    const getById = vi.spyOn(messageStore, 'getById');
     const res = await createSpendApp({ authStore, messageStore }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ action: 'skip', reason: 'no_post' });
-    expect(hasMedia).not.toHaveBeenCalled();
-    expect(listPosts).not.toHaveBeenCalled();
+    expect(latestMedia).toHaveBeenCalledWith('acc-alice');
+    expect(getById).not.toHaveBeenCalled();
+  });
+
+  it('pays when today media is the About-me profile note', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, 'verified', true, PROFILE_NOTE_ID);
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create(
+      {
+        id: PROFILE_NOTE_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'About Ada',
+        createdAt: new Date('2026-10-08T09:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      JPEG,
+    );
+
+    const res = await createSpendApp({ authStore, messageStore }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      action: 'pay',
+      amountUsd: 2,
+      comment: 'thanks',
+      messageId: PROFILE_NOTE_ID,
+    });
   });
 
   it('returns no_media when the live post has no media', async () => {
@@ -336,6 +391,33 @@ describe('POST /spend/daily-instruction', () => {
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
     );
     expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'no_media' });
+  });
+
+  it('returns no_media when the only live media post is from an earlier UTC day', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const messageStore = await liveMediaPostStore();
+    const media = await messageStore.getById(POST_ID);
+    expect(media?.createdAt.toISOString().slice(0, 10)).toBe('2026-10-08');
+    const oldStore = new InMemoryMessageStore();
+    await oldStore.create(
+      {
+        id: POST_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'old photo',
+        createdAt: new Date('2026-10-07T23:59:59.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      JPEG,
+    );
+
+    const res = await createSpendApp({ authStore, messageStore: oldStore }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
     expect(await res.json()).toEqual({ action: 'skip', reason: 'no_media' });
   });
 
@@ -372,6 +454,21 @@ describe('POST /spend/daily-instruction', () => {
     expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
   });
 
+  it('returns not_eligible when an admitted member has no recent verified shop payment', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+      walletTransferStore: fakeWalletTransferStore(false),
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
+  });
+
   it.each([
     ['the day before the start day', new Date(NOW_MS + 86_400_000).toISOString().slice(0, 10)],
     ['an unset start day', ''],
@@ -388,6 +485,33 @@ describe('POST /spend/daily-instruction', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ action: 'pay' });
+  });
+
+  it('returns not_eligible for a withdrawn member even while the roster lists them', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+      fundingStore: new InMemoryFundingStore([
+        {
+          accountId: 'acc-alice',
+          status: 'withdrawn',
+          appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
+          decidedAt: NOW_MS - 60_000,
+          decidedBy: 'acc-alice',
+          trialUtcDate: null,
+          admittedAt: null,
+          note: null,
+        },
+      ]),
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(PAYING_ROSTER.recipients).toEqual([{ accountId: 'acc-alice', amountUsd: 2 }]);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
   });
 
   it('returns not_eligible for an admitted member without a recovery share', async () => {
@@ -484,7 +608,7 @@ describe('POST /spend/daily-instruction', () => {
       accountId: 'acc-alice',
       name: 'Ada',
       text: 'later',
-      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      createdAt: new Date('2026-10-08T10:00:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
@@ -511,7 +635,7 @@ describe('POST /spend/daily-instruction', () => {
         accountId: 'acc-alice',
         name: 'Ada',
         text: 'later photo',
-        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        createdAt: new Date('2026-10-08T10:00:00.000Z'),
         hasPhoto: false,
         ...unsignedNostrDefaults(),
       },
@@ -530,7 +654,7 @@ describe('POST /spend/daily-instruction', () => {
     });
   });
 
-  it('omits messageId when listed posts have no non-profile id', async () => {
+  it('requires a media message id from today', async () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
@@ -557,15 +681,8 @@ describe('POST /spend/daily-instruction', () => {
     const inner = new InMemoryMessageStore();
     const messageStore = new Proxy(inner, {
       get(target, prop, receiver) {
-        if (prop === 'accountHasLiveTopLevelPost') {
-          return async () => true;
-        }
-        if (prop === 'accountHasLiveTopLevelMediaPost') {
-          return async () => true;
-        }
-        if (prop === 'listPostsByAccount') {
-          return async () => [{ id: PROFILE_NOTE_ID }];
-        }
+        if (prop === 'accountHasLiveTopLevelPost') return async () => true;
+        if (prop === 'latestLiveTopLevelMediaId') return async () => null;
         const value = Reflect.get(target, prop, receiver) as unknown;
         return typeof value === 'function'
           ? (value as (...args: never[]) => unknown).bind(target)
@@ -577,11 +694,7 @@ describe('POST /spend/daily-instruction', () => {
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      action: 'pay',
-      amountUsd: 2,
-      comment: 'thanks',
-    });
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'no_media' });
   });
 
   it('returns 503 when the gift ledger cannot be listed and does not read the roster', async () => {

@@ -140,6 +140,41 @@ describe('buildFundingPayoutMatrix', () => {
     ]);
   });
 
+  it('never shows a withdrawn grant as missed and keeps its paid days', () => {
+    const matrix = buildFundingPayoutMatrix({
+      nowMs: NOW,
+      accounts: [account({ id: 'a' }), account({ id: 'b', name: 'Bea', lightningAddress: null })],
+      grants: [
+        grant({
+          accountId: 'a',
+          status: 'withdrawn',
+          decidedAt: Date.parse('2026-09-24T09:00:00.000Z'),
+          decidedBy: 'a',
+        }),
+        // A row that still carried stale trial or admission fields entitles no day either.
+        grant({
+          accountId: 'b',
+          status: 'withdrawn',
+          trialUtcDate: '2026-09-25',
+          admittedAt: Date.parse('2026-09-20T00:00:00.000Z'),
+        }),
+      ],
+      gifts: [
+        gift({
+          kind: 'daily',
+          recipientWosUser: 'ada@example.com',
+          paidAt: new Date('2026-09-23T10:00:00.000Z'),
+        }),
+      ],
+    });
+    expect(matrix.rows).toEqual([
+      matrixRow({
+        accountId: 'a',
+        days: ['blocked', 'blocked', 'blocked', 'paid', 'blocked', 'blocked', 'blocked'],
+      }),
+    ]);
+  });
+
   it('treats a null admittedAt as entitled on every day of the window', () => {
     const matrix = buildFundingPayoutMatrix({
       nowMs: NOW,

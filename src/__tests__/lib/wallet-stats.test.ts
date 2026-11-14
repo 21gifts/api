@@ -8,10 +8,12 @@ function snapshot(
   id: string,
   balanceSats: number,
   receivedAt: string,
+  walletPubkey: string | null = null,
 ): WalletBalanceSnapshot {
   return {
     accountId,
     id,
+    walletPubkey,
     balanceSats,
     receivedAt: new Date(receivedAt),
     syncedAt: new Date(receivedAt),
@@ -60,7 +62,7 @@ describe('buildWalletStats', () => {
     });
   });
 
-  it('sums several wallets on the same day', () => {
+  it('uses legacy-only rows as wallet identities', () => {
     const stats = buildWalletStats(
       [
         snapshot('account-a', 'a', 100, '2026-11-09T08:00:00.000Z'),
@@ -86,6 +88,54 @@ describe('buildWalletStats', () => {
         fundedWalletCount: 2,
       },
     ]);
+  });
+
+  it('counts keyed-only current and previous wallets as distinct identities', () => {
+    const current = `02${'a'.repeat(64)}`;
+    const previous = `02${'b'.repeat(64)}`;
+    const stats = buildWalletStats(
+      [
+        snapshot('account-a', 'current', 100, '2026-11-09T08:00:00.000Z', current),
+        snapshot('account-a', 'previous', 50, '2026-11-09T09:00:00.000Z', previous),
+      ],
+      Date.parse('2026-11-09T18:00:00.000Z'),
+    );
+
+    expect(stats).toMatchObject({
+      walletCount: 2,
+      fundedWalletCount: 2,
+      totalSats: 150,
+      totalBtc: '0.00000150',
+    });
+  });
+
+  it('uses legacy rows only for accounts without a keyed row in mixed data', () => {
+    const keyed = `02${'a'.repeat(64)}`;
+    const stats = buildWalletStats(
+      [
+        snapshot('account-a', 'legacy-newer', 900, '2026-11-09T10:00:00.000Z'),
+        snapshot('account-a', 'keyed', 100, '2026-11-09T08:00:00.000Z', keyed),
+        snapshot('account-b', 'legacy-only', 50, '2026-11-09T09:00:00.000Z'),
+      ],
+      Date.parse('2026-11-09T18:00:00.000Z'),
+    );
+
+    expect(stats).toEqual({
+      walletCount: 2,
+      fundedWalletCount: 2,
+      totalSats: 150,
+      totalBtc: '0.00000150',
+      asOf: '2026-11-09T09:00:00.000Z',
+      balanceOverTime: [
+        {
+          day: '2026-11-09',
+          totalSats: 150,
+          totalBtc: '0.00000150',
+          walletCount: 2,
+          fundedWalletCount: 2,
+        },
+      ],
+    });
   });
 
   it('keeps a zero balance in walletCount while it stops counting as funded', () => {

@@ -10,7 +10,13 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
 or a round trip through sats does not fill or replace it. This file does not
 describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit). Before that, 2026-11-09 (Orchestra never delays Lightning: a pay-link fetch starts or joins a pending charge's creation but answers at once; `POST /pay/:username/payment` opens Lightning-first and fills stablecoin offers in the background; a fetch starts or joins a quote replacement but answers at once, and a Lightning-only fallback row does not defeat an in-flight offers quote). Before that, 2026-11-07 (member Spark invoices of `POST /pay/:username/invoice` are stored in `member_spark_invoice` and get the receive push once the coordinator reports them finalized, and expired ones are deleted hourly even while the Spark invoice worker is off; 2026-11-05: `RECOVERY_SHARE_REQUIRED_FROM`: a payout needs the 21.gifts recovery share only from that UTC day; 2026-10-30: held-share boxes: `GET /me/held-shares`, `PUT /me/held-shares/:id`, and `DELETE /me/held-shares/:id`, always mounted, store a social recovery holder's shares as opaque boxes the api cannot open; the payout gate is unchanged. Also `POST /debug/spend-ping` also takes a window `{ from, to, dryRun? }` and replays every payout trigger in it: daily payouts and moderator stipends on each event's own UTC day for an account that passes the payout gate now, recovery share included, welcome gifts through the welcome path). Before that, 2026-10-29 (social recovery per [docs/social-recovery.md](docs/social-recovery.md): `POST /auth/passkey/recovery/begin` and `POST /auth/passkey/recovery/finish`, behind the app build check and the login switch, store a pending recovery for a new passkey and wallet key, proven by the old wallet's verified lookup and its signature; `POST /lnurlpay/:pubkey/transfer` forwards the Lightning address transfer and commits it; `PUT /me/recovery-share` stores the encrypted 21.gifts share; `GET /me/previous-wallets` and `DELETE /me/previous-wallets/:sparkPubkey` list and drop the previous wallets; these four are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `POST /lnurlpay/:pubkey/recover` also passes a pending recovery's new key and settles a forwarded recovery; `POST /auth/passkey/authenticate/finish` answers 409 `recovery_pending` for the new passkey of a pending recovery; owner JSON `socialRecoverySetUp`; from the grant gate day `eligibleToday` also requires a 21.gifts recovery share for the current verified wallet, with no start date of its own; `POST /me/events` accepts `recovery_done`; `RECOVERY_SHARE_KEK` is required with `DATABASE_URL`; an account merge deletes the source's recovery rows). Before that, 2026-10-21 (`GET /accounts/by-username/:username` is an exact username lookup: 200 `{ id, username, name }`, stored `username` and stored `name` including null). Before that, 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waited at most until 8 s after its fetch arrived (removed 2026-11-09); the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`GET /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
+**2026-11-13 decision:** Not-yet-invoiced fiat loan-share units are priced in
+sats from the current stored `FxSpotQuote`, read once per request. Gift rows and
+daily-rate proportions are not a repayment pricing source. An open invoice and
+a settled part keep their stored sats. An unavailable spot leaves read-path sat
+fields null; an invoice path that needs those units answers 503.
+
+**Status**: living document. Last revised 2026-11-13 (`POST /funding/withdraw`: a member leaves the grant program on their own; the stored status `withdrawn` frees an admitted place at once, ends every payout from the moment of the write, reads as `none` on the owner wire and on `GET /invoices/eligible`, shows as `withdrawn` on the staff detail, and may apply again; operator-only `GET /funding/withdrawals` lists every withdrawal from `db_change`, also after a new application). Also 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit; terminal receiver-edge status, bounded/queued token-owner enrichment, independent catch-up retry, monotone viewer upserts, atomic welcome-invoice entitlement reservations, input-owned token direction and amounts, token invoice attachments, verified-only current-wallet counterparty ownership, and one About-me-inclusive daily-media definition). Before that, 2026-11-12 (encrypted deployment Spark viewer, direct current/previous-wallet transfer sync, admin wallet-table reads, the server-verified shop-payment grant condition, and the owner-facing single reason for today's grant payout). Earlier decisions remain documented in the Decisions Log and the endpoint sections below.
 
 ---
 
@@ -60,8 +66,8 @@ and in the already-paid check of the `POST /debug/spend-ping` window replay
 does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
-report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-01, and a 21.gifts recovery share for the current verified wallet from `RECOVERY_SHARE_REQUIRED_FROM`);
-`POST /invoices` requires passkey and `eligibleToday` (grant required from UTC 2026-10-01, recovery share from `RECOVERY_SHARE_REQUIRED_FROM`), then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver.
+report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `ownerFundingStatus`, the effective status with a withdrawn grant read as `none`; grant required from UTC 2026-10-01, a 21.gifts recovery share for the current verified wallet from `RECOVERY_SHARE_REQUIRED_FROM`, and a completed server-verified shop payment today or yesterday UTC);
+its preflight omits only that shop-payment condition while server-owned facts satisfy the welcome path's recipient rule (role exactly `verified`, not the platform account) and show that account has not received its welcome gift; this does not make any other invoice payable. `POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when those same recipient facts hold, the account has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
 Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
@@ -190,6 +196,8 @@ Public base URLs used in examples:
 | POST   | `/funding/admit`                                     | Bearer (moderator+)                                               | Admit grant while the round has a free place; full round → 409 `All grant places are taken`                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/funding/places`                                    | none                                                              | Public: grant round places (`round`, `startsAt`, `places`, `admitted`, `placesLeft`, `nextGoalShops`)                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)                                               | Reject grant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/funding/withdraw`                                  | Bearer                                                            | Member leaves the grant program: pending, trial, or admitted → `withdrawn`; frees an admitted place. 409 otherwise. Basis 403                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| GET    | `/funding/withdrawals`                               | `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`                               | Operator: every withdrawal from the grant program, newest first, from `db_change`; any session → 401                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/funding/daily-roster`                              | At least initiator Bearer or `DEBUG_*_TOKEN`                      | Operator token skips the gate; else 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. 502 Daily roster is unavailable.                                                                                                                                 |
 | GET    | `/funding/daily-roster/links`                        | `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`                               | Operator check of the roster account link: `{ rows, linked, unlinked: [{ bucket, address, amountUsd }], buckets: { daily, moderator } }`, each bucket `{ rows, linked, totalUsd, linkedUsd }`. 401 without an operator token. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                                                            |
 | POST   | `/funding/daily-roster/comment`                      | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
@@ -271,7 +279,7 @@ Public base URLs used in examples:
 | POST   | `/debug/shop-proofs/:id/retry`                       | `Authorization: Bearer`                                           | Operator retry of a `stuck` shop payment proof (`DEBUG_TOKEN`; mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/debug/api-log`                                     | `Authorization: Bearer`                                           | Operator HTTP audit log (`DEBUG_TOKEN`); follow `before`/`beforeId`; no query string, body, or Authorization stored                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/debug/diagnostics`                                 | `Authorization: Bearer`                                           | Operator diagnostic log (`DEBUG_TOKEN`); newest 200; no secrets                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| GET    | `/debug/db`                                          | `Authorization: Bearer`                                           | Operator page through every public table (`DEBUG_TOKEN`); follow `nextCursor`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| GET    | `/debug/db`                                          | `Authorization: Bearer`                                           | Operator page through every public table (`DEBUG_TOKEN` / `DEBUG_READ_TOKEN`); a live member session at least `software_developer` can read only `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`, and `wallet_token_transaction`; follow `nextCursor`                                                                                                                                                                                                                                                                                      |
 | GET    | `/debug/contacts`                                    | `Authorization: Bearer`                                           | Operator contact listing (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/debug/invoices`                                    | `Authorization: Bearer`                                           | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/debug/invoices/settle`                             | `Authorization: Bearer`                                           | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -317,7 +325,7 @@ Public base URLs used in examples:
 | GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`                                          | Whether the address is funding-eligible today, plus effective grant `status`                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`                                          | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, from `RECOVERY_SHARE_REQUIRED_FROM` the 21.gifts recovery share, and forum post required)                                                                                                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`                                          | Accept payment preimage as proof                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| POST   | `/spend/daily-instruction`                           | Bearer `SPEND_API_TOKEN`                                          | Spend Bearer. Body `{ address }`. The kind is always daily. 503 if the token env is unset; 401 wrong/missing Bearer. Success 200 is `{ action: skip, reason }` or `{ action: pay, amountUsd, comment }`, plus messageId only when the decision includes it.                                                                                                                                                                                                                                                                                               |
+| POST   | `/spend/daily-instruction`                           | Bearer `SPEND_API_TOKEN`                                          | Spend Bearer. Body `{ address }`. The kind is always daily. 503 if the token env is unset; 401 wrong/missing Bearer. Pay requires today's live top-level photo/video, including the About-me profile note, and returns it as `messageId`; success 200 is `{ action: skip, reason }` or `{ action: pay, amountUsd, comment, messageId }`.                                                                                                                                                                                                                  |
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
@@ -2763,6 +2771,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "locale": null,
   "fiat": null,
   "funding": null,
+  "grantPayoutToday": { "state": "blocked", "reason": "verify" },
+  "walletViewerPublicKey": "02<64-lowercase-hex>",
   "walletRequired": false,
   "walletBackupSeenAt": null,
   "walletIntroSeen": false,
@@ -2794,43 +2804,74 @@ name-copy is not a bio, including after a display-name rename when the note
 text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
 stays `null`)).
 
-| Field                        | Type           | Meaning                                                                                                                                                                                                                                                                                                                                                                                           |
-| ---------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                         | string         | Opaque account id                                                                                                                                                                                                                                                                                                                                                                                 |
-| `linkingKey`                 | string \| null | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                                                                                                                                           |
-| `role`                       | string         | `basis`, `verified`, `moderator`, `fond`, `software_developer`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                                         |
-| `name`                       | string \| null | Display name, or `null` until set                                                                                                                                                                                                                                                                                                                                                                 |
-| `username`                   | string \| null | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`, no trailing `.`, no `..`), or `null` until set. Cannot skip. Fixed once the wallet is verified.                                                                                                                                                                                                                                                   |
-| `location`                   | string \| null | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                                                                                                                                          |
-| `lightningAddress`           | string \| null | Receiving address: the verified in-app wallet `<username>@<host of PUBLIC_BASE_URL>`, or `null` without one (or with the LNURL server off). Name kept for app compatibility; the stored external address is never returned.                                                                                                                                                                       |
-| `lightningAddressVerified`   | boolean        | `true` exactly when `lightningAddress` is set (verified wallet). Name kept for app compatibility.                                                                                                                                                                                                                                                                                                 |
-| `forumLawsDismissed`         | boolean        | `true` after the welcome-forum living-room laws hint was dismissed                                                                                                                                                                                                                                                                                                                                |
-| `viewKey`                    | string         | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                                                                                                                                                     |
-| `createdAt`                  | number         | Creation time (epoch ms)                                                                                                                                                                                                                                                                                                                                                                          |
-| `rulesAgreedAt`              | number \| null | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                                                                                                                                          |
-| `setup`                      | string \| null | Next wizard step: `name`, `username`, `lightning-address` (the receiving-wallet step, done once the wallet is verified), `rules`, or `null` when complete. The union still includes `wallet` for older clients; the api never returns it. Skip timestamps count as done except username, which cannot be skipped. Wallet backup is not a setup step. Clients must not invent a parallel sequence. |
-| `missing`                    | string[]       | Factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Only a verified wallet clears `lightning-address`. Never includes `wallet`. Does not include `profileMessageId`.                                                                                                                                                                                     |
-| hasPosted                    | boolean        | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only).                                                   |
-| `aboutMe`                    | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                                                                       |
-| `aboutMeHasPhoto`            | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                                                                                |
-| `aboutMessageId`             | string \| null | Id of the stored About me note when `aboutMe` is non-null. `null` when `aboutMe` is `null` (including a name-copy note). Not a display name.                                                                                                                                                                                                                                                      |
-| `notificationLevel`          | string         | Owner fan-out filter: `all`, `active`, `mentions`, or `none`. `none` is none of the living-room stream, including the dedicated `@username` channel. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                        |
-| `heartSats`                  | integer        | Whole-sat amount one heart payment sends. Default `1`; valid `1`–`10000000`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. `POST /me/heart-sats` sets it.                                                                                                                                                                                                                |
-| `amountUnit`                 | string         | Owner amount-entry unit: `btc` or `fiat`. Default `btc`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. The last unit the member chose on any amount field.                                                                                                                                                                                                               |
-| `locale`                     | string \| null | Owner UI language: `en`, `de`, `es`, or `fil`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the browser.                                                                                                                                                                                                        |
-| `fiat`                       | string \| null | Owner fiat: `CHF`, `EUR`, `USD`, or `PHP`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the language default.                                                                                                                                                                                                   |
-| `funding`                    | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }`. `dailyPayoutStoppedNotice` is true only for the six legacy daily accounts while effective status is `none`. Admitted includes live `reviewedByName`.                                          |
-| `walletRequired`             | boolean        | True when a seed-bearing passkey exists (new register/claim, seed finish, or a social recovery commit through `POST /lnurlpay/:pubkey/transfer` or a settling lookup). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                        |
-| `walletBackupSeenAt`         | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                                                                    |
-| `walletIntroSeen`            | boolean        | `false` for every account until `POST /me/wallet-intro-seen`, then `true` for good (no reset; a later account write does not clear it). Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                           |
-| `hadExternalWallet`          | boolean        | `true` when the account has a stored legacy external payout address (`account.lightning_address`, kept as data). Read-only; no route sets it. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                     |
-| `sparkPubkey`                | string \| null | Identity public key of the member's wallet (66 lower-case hex), or `null` until claimed. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                                                                          |
-| `sparkWalletVerified`        | boolean        | True when `sparkPubkeyVerifiedAt` is a number (LNURL server accepted a registration signed by that key). After a social recovery commit, the new key is verified by the accepted address transfer and `sparkPubkeyVerifiedAt` keeps the first verification time. Owner-only.                                                                                                                      |
-| `passkeyCredentialId`        | string \| null | Null when `walletRequired` is not true, even if a login passkey exists. When `walletRequired` is true it is the newest credential id (`created_at` desc, `credential_id` desc with `COLLATE "C"`). Owner-only.                                                                                                                                                                                    |
-| `passkeyRenewFailed`         | boolean        | True only when that account has a failed renew row whose `acknowledged_at` is null. Owner-only.                                                                                                                                                                                                                                                                                                   |
-| `passkeyRenewClosed`         | boolean        | True only when `walletRequired` is not true and a failed renew row has non-null `acknowledged_at`. A later seed (`walletRequired` true) is not closed. While this is true the account still has no seed. Owner-only.                                                                                                                                                                              |
-| `passkeyRenewPrfUnsupported` | boolean        | True only when the newest unacknowledged failed renew row has error name `prfUnsupported`. Owner-only. False when that row is absent, acknowledged, or a different error.                                                                                                                                                                                                                         |
-| `socialRecoverySetUp`        | boolean        | True when the api holds a 21.gifts recovery share for the account's current verified wallet (`sparkPubkey` with `sparkWalletVerified`; `PUT /me/recovery-share`). A share of a previous wallet does not count. No grant or date check. Owner-only.                                                                                                                                                |
+| Field                        | Type            | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`                         | string          | Opaque account id                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `linkingKey`                 | string \| null  | Historical LNURL-auth linking key (hex), or `null` for passkey accounts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `role`                       | string          | `basis`, `verified`, `moderator`, `fond`, `software_developer`, `initiator`, or `founder`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `name`                       | string \| null  | Display name, or `null` until set                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `username`                   | string \| null  | Unique LUD-16 / NIP-05 local-part (`a-z0-9-_.`, no trailing `.`, no `..`), or `null` until set. Cannot skip. Fixed once the wallet is verified.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `location`                   | string \| null  | Free-text location set by the owner, or `null` when unset. Not unique. Not a setup step.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `lightningAddress`           | string \| null  | Receiving address: the verified in-app wallet `<username>@<host of PUBLIC_BASE_URL>`, or `null` without one (or with the LNURL server off). Name kept for app compatibility; the stored external address is never returned.                                                                                                                                                                                                                                                                                                                                              |
+| `lightningAddressVerified`   | boolean         | `true` exactly when `lightningAddress` is set (verified wallet). Name kept for app compatibility.                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `forumLawsDismissed`         | boolean         | `true` after the welcome-forum living-room laws hint was dismissed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `viewKey`                    | string          | Durable 64 lowercase hex capability secret for GET /view/:viewKey. Owner-only. Not a session.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `createdAt`                  | number          | Creation time (epoch ms)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `rulesAgreedAt`              | number \| null  | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `setup`                      | string \| null  | Next wizard step: `name`, `username`, `lightning-address` (the receiving-wallet step, done once the wallet is verified), `rules`, or `null` when complete. The union still includes `wallet` for older clients; the api never returns it. Skip timestamps count as done except username, which cannot be skipped. Wallet backup is not a setup step. Clients must not invent a parallel sequence.                                                                                                                                                                        |
+| `missing`                    | string[]        | Factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Only a verified wallet clears `lightning-address`. Never includes `wallet`. Does not include `profileMessageId`.                                                                                                                                                                                                                                                                                                                                                            |
+| hasPosted                    | boolean         | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only).                                                                                                                                                                                                                          |
+| `aboutMe`                    | string \| null  | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                                                                                                                                                                                                                                              |
+| `aboutMeHasPhoto`            | boolean         | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                                                                                                                                                                                                                                                       |
+| `aboutMessageId`             | string \| null  | Id of the stored About me note when `aboutMe` is non-null. `null` when `aboutMe` is `null` (including a name-copy note). Not a display name.                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `notificationLevel`          | string          | Owner fan-out filter: `all`, `active`, `mentions`, or `none`. `none` is none of the living-room stream, including the dedicated `@username` channel. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                                                                                                                                               |
+| `heartSats`                  | integer         | Whole-sat amount one heart payment sends. Default `1`; valid `1`–`10000000`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. `POST /me/heart-sats` sets it.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `amountUnit`                 | string          | Owner amount-entry unit: `btc` or `fiat`. Default `btc`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. The last unit the member chose on any amount field.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `locale`                     | string \| null  | Owner UI language: `en`, `de`, `es`, or `fil`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the browser.                                                                                                                                                                                                                                                                                                                                                                               |
+| `fiat`                       | string \| null  | Owner fiat: `CHF`, `EUR`, `USD`, or `PHP`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the language default.                                                                                                                                                                                                                                                                                                                                                                          |
+| `funding`                    | object \| null  | Funding-program grant. `null` for `basis`. Otherwise always an object; no row and a withdrawn grant are both `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }` (never `withdrawn`). A failed owner grant read is `{ status: "unknown", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }`; it never fabricates `none`. `dailyPayoutStoppedNotice` is true only for the six legacy daily accounts with no grant row. Admitted includes live `reviewedByName`. |
+| `funding.shopPaymentDue`     | boolean \| null | Present inside non-`basis` `funding`. True exactly when the account is in the grant program today and has no completed server-verified payment to a live 21.gifts shop today or yesterday UTC; `null` when that transfer read failed or the grant read failed, because program membership is then unknown.                                                                                                                                                                                                                                                               |
+| `funding.payoutToday`        | object \| null  | Present inside non-`basis` `funding`. Exactly one explanation for today's daily grant: `{ state: "paid" \| "due" \| "blocked", reason }`, or `null` when a required store read failed. Paid daily and welcome gifts win first; otherwise the first missing condition is `verify`, `admission`, `wallet`, `recovery_share`, `shop_payment`, then `media_post`. A withdrawn grant is owner-visible `none`, stops at `blocked` / `admission`, and never reaches `due`. All conditions with no recorded payout are `due`; `payments_paused` is the only due reason.          |
+| `grantPayoutToday`           | object \| null  | Compatibility field for `basis`, whose documented `funding: null` contract is unchanged. It carries the same payout object (normally `{ state: "blocked", reason: "verify" }`) for `basis` and is `null` for every other role. A recorded daily or welcome gift today still wins before the current role.                                                                                                                                                                                                                                                                |
+| `walletViewerPublicKey`      | string \| null  | The deployment's 66-lowercase-hex read-only Spark viewer identity key that the app grants. It can never move funds. Null when viewer initialization was unavailable.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `walletRequired`             | boolean         | True when a seed-bearing passkey exists (new register/claim, seed finish, or a social recovery commit through `POST /lnurlpay/:pubkey/transfer` or a settling lookup). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                                                                                                                                                               |
+| `walletBackupSeenAt`         | number \| null  | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                                                                                                                                                                                                                                           |
+| `walletIntroSeen`            | boolean         | `false` for every account until `POST /me/wallet-intro-seen`, then `true` for good (no reset; a later account write does not clear it). Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                                                                                                                                                                                                  |
+| `hadExternalWallet`          | boolean         | `true` when the account has a stored legacy external payout address (`account.lightning_address`, kept as data). Read-only; no route sets it. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                                                                                                                                                                                            |
+| `sparkPubkey`                | string \| null  | Identity public key of the member's wallet (66 lower-case hex), or `null` until claimed. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `sparkWalletVerified`        | boolean         | True when `sparkPubkeyVerifiedAt` is a number (LNURL server accepted a registration signed by that key). After a social recovery commit, the new key is verified by the accepted address transfer and `sparkPubkeyVerifiedAt` keeps the first verification time. Owner-only.                                                                                                                                                                                                                                                                                             |
+| `passkeyCredentialId`        | string \| null  | Null when `walletRequired` is not true, even if a login passkey exists. When `walletRequired` is true it is the newest credential id (`created_at` desc, `credential_id` desc with `COLLATE "C"`). Owner-only.                                                                                                                                                                                                                                                                                                                                                           |
+| `passkeyRenewFailed`         | boolean         | True only when that account has a failed renew row whose `acknowledged_at` is null. Owner-only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `passkeyRenewClosed`         | boolean         | True only when `walletRequired` is not true and a failed renew row has non-null `acknowledged_at`. A later seed (`walletRequired` true) is not closed. While this is true the account still has no seed. Owner-only.                                                                                                                                                                                                                                                                                                                                                     |
+| `passkeyRenewPrfUnsupported` | boolean         | True only when the newest unacknowledged failed renew row has error name `prfUnsupported`. Owner-only. False when that row is absent, acknowledged, or a different error.                                                                                                                                                                                                                                                                                                                                                                                                |
+| `socialRecoverySetUp`        | boolean         | True when the api holds a 21.gifts recovery share for the account's current verified wallet (`sparkPubkey` with `sparkWalletVerified`; `PUT /me/recovery-share`). A share of a previous wallet does not count. No grant or date check. Owner-only.                                                                                                                                                                                                                                                                                                                       |
+
+`payoutToday` is computed for the current UTC day from the same durable facts
+as the payout paths. A recorded `daily` gift to this member today is
+`{ state: "paid", reason: null }`; if there is no daily gift but a `welcome`
+gift was recorded today, it is `{ state: "paid", reason: "welcome" }` only for
+an exactly `verified` non-platform welcome recipient. For every other role and
+the platform account it is `{ state: "paid", reason: null }`: the row still
+replaces that day's daily payout. Otherwise the api stops at the first missing
+condition in this order: the role must no longer be `basis`
+(`verify`), the member must be in the grant program today (`admission`), the
+in-app wallet must be verified (`wallet`), a recovery share must exist when
+`recoveryShareRequired` applies (`recovery_share`), a verified shop payment
+must exist today or yesterday (`shop_payment`), and a live top-level photo or
+video post must exist today (`media_post`). When all six hold, no recorded
+payout is `due`; its reason is `payments_paused` only when the daily roster's
+`paymentsEnabled` switch is false, otherwise null. Each read is lazy. A failure
+of one of these reads makes the payout field null without failing `GET /me`
+and logs `funding.payout_today.failed { accountId }`. A failed grant read keeps
+the non-`basis` funding object with `status: "unknown"` and all grant-derived
+fields null/false as documented above; `funding.shopPaymentDue` is also null.
+When only the shop-payment read fails, `funding.shopPaymentDue` is likewise
+`null` because absence is unknown, never conservatively reported as true.
+
+The long-standing contract that `funding` is null for `basis` protects the
+grant record and is retained. Therefore `basis` receives the same explanation
+in top-level `grantPayoutToday`; non-`basis` receives it only as
+`funding.payoutToday` and has top-level `grantPayoutToday: null`.
 
 ### `GET /me/activity`
 
@@ -2931,12 +2972,12 @@ Success → **Response** `200`:
 - `daysDue` and `daysPaid` are those of `GET /messages/:id/repayment`. One read of legacy repayments and parts supplies the plan, `repaidSats`, every open remainder, and all derived totals. `repaidSats` adds exact `message_repayment_part.sats` and only legacy full-share rows with no parts, so every payment is counted once. `totalSats` is `repaidSats` plus every unpaid remainder in sats and never combines different settlement snapshots; sats with no account are not repaid and not counted.
 - `due` covers every due, unpaid share. `payable*` are the shares whose lender can receive (the ones `POST /messages/:id/repayment/due` bills), `waiting*` the shares whose lender cannot. `*People` counts distinct lenders and `waitingShares` the waiting shares. `behindDays` is the number of due days before today that still have an unpaid share that is not waiting and did not fall due before its lender's wallet was verified (the rule of `daysPaid` in `GET /messages/:id/repayment`). `lastPayment` is true when paying `payable` would finish the loan.
 - `next` is the next repayment day after the due days: `dueOn` (`YYYY-MM-DD` UTC), its sats, and its amount; null when no later day remains.
-- `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, read once per request for every loan, and is `null` without a rate.
+- `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan the not-yet-invoiced units within `totalSats`, `payableSats`, `waitingSats`, and `next.sats` are priced from the current stored `FxSpotQuote`, read once per request for every loan, and are `null` without that currency rate. Open invoices and settled parts keep their stored sats.
 - `sundayRest` is true when the device `Time-Zone` names a zone that is in Sunday: the existing rule, under which repayments are refused today.
 - `lenderWaiting` is the caller's side as a lender. While the caller cannot receive (no verified wallet), `shares` counts the due, unpaid shares owed to the caller on every live funded loan the caller gave to (found through the caller's in-app invoices, counted only when the caller is one of its givers), `loans` the loans they belong to, and `sats` their sum in sats (a fiat share priced like `waitingSats`; `null` when one has no rate). All zero when the caller can receive.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
-A loan whose debt cannot be computed (one of the caller's, or one the caller gave to), or a rate that cannot be read → **503** `{ "error": "Ask amount is unavailable" }`.
+A loan whose debt cannot be computed (one of the caller's, or one the caller gave to) → **503** `{ "error": "Ask amount is unavailable" }`. A missing or unreadable spot leaves only the affected sat fields null.
 Store failure → **503** `{ "error": "Messages are unavailable" }` (logs `me.loans.failed`).
 
 ### `POST /me/wallet-backup-seen`
@@ -3047,7 +3088,7 @@ always present, including 0, and is not derived from the capped credit list.
 A live top-level note with `goalRepayable === true` belongs to its author
 account, not a shop assignment and not a hashtag; funded, unfunded, and
 still-live repaid notes all count; deleted notes and replies do not. Never
-pending/trial/rejected on the member card.
+pending/trial/rejected/withdrawn on the member card.
 
 ### `GET /members/:accountId/posts`
 
@@ -3302,10 +3343,10 @@ still take `{ "accountId" }` and the original accountId 400 sentence.
 Idempotent **200** when the existing verify edge's actor is the caller and
 the subject is already `verified` (no second insert). If that caller-owned
 edge exists and the subject is still `basis`, completes the role write and
-returns **200**. After a **200** that leaves the subject `verified` (new
-edge, completed role write, or this idempotent repeat), the subject is
-welcome-pinged when a live top-level photo or video exists, including About
-me. An account without a receiving address (no verified wallet, or the
+returns **200**. After a **200** that leaves the subject exactly `verified`
+(new edge, completed role write, or this idempotent repeat), the subject is
+welcome-pinged only when it is non-platform and a live top-level photo or
+video exists, including About me. An account without a receiving address (no verified wallet, or the
 LNURL server off), or one that already has the welcome gift (once per
 account, as for `POST /messages`), is not pinged. Omitted messages or spend
 ping skips that ping. A ping failure still returns **200**.
@@ -3431,9 +3472,10 @@ filled About me (real bio, not empty/name-only), an About me photo, and a
 non-empty location, checked in that order: missing About me → **400**
 `{ "error": "About me is required" }`; missing photo → **400**
 `{ "error": "About me photo is required" }`; missing location → **400**
-`{ "error": "Location is required" }`. Effective status `none` or
-`rejected` upserts `pending` (`appliedAt` now; trial/admitted/decided
-cleared). `pending` / `trial` / `admitted`, or a pending write that
+`{ "error": "Location is required" }`. Effective status `none`,
+`rejected`, or `withdrawn` upserts `pending` (`appliedAt` now; trial/admitted/decided
+cleared). A member who withdrew applies like anyone else: no priority and
+no reserved place. `pending` / `trial` / `admitted`, or a pending write that
 matches no row, → **409** `{ "error": "Conflict" }`. **200**
 `{ "funding": OwnerFundingJson }` logs `funding.applied` `{ accountId }`.
 Store throw → **503** `{ "error": "Funding is unavailable" }`
@@ -3443,7 +3485,8 @@ Store throw → **503** `{ "error": "Funding is unavailable" }`
 ### `GET /funding/applications`
 
 Staff Bearer (moderator). Lists effective **pending** grants
-oldest `appliedAt` first (expired trials included after lazy persist).
+oldest `appliedAt` first (expired trials included after lazy persist). A
+withdrawn grant is not pending and is not listed.
 JSON `{ "applications": [ { accountId, name, role, appliedAt } ] }`.
 Logs `funding.applications.listed`. Same 401/403/503 shapes as
 `GET /trust/proposals` with `{ "error": "Funding is unavailable" }`.
@@ -3456,7 +3499,9 @@ Staff Bearer. **404** when the id is not a UUID, the account is missing,
 or there is no grant. **200** `{ account: { id, name, role, lightningAddress },
 grant: { status, appliedAt, trialUtcDate, admittedAt, decidedAt },
 messages }` with **effective** grant status and the same video-drop as
-member posts (`MESSAGE_LIST_LIMIT`, `serializeMessage`).
+member posts (`MESSAGE_LIST_LIMIT`, `serializeMessage`). The status is one of
+`pending`, `trial`, `admitted`, `rejected`, or `withdrawn`: staff see that a
+member left the program on their own (`decidedAt` is the withdrawal time).
 `account.lightningAddress` is the receiving address (verified wallet) or
 `null`.
 
@@ -3467,7 +3512,7 @@ Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same 
 Staff Bearer. Body `{ "accountId" }`. Target must be effective pending,
 not self, not `basis`. Sets `trial`, `trialUtcDate` = today UTC,
 `decidedAt`/`decidedBy` now. **200** `{ id, name, role, funding }`.
-Self / ineligible → **409**. Same 401/403/400/404/503 as
+Self / ineligible (including a withdrawn grant) → **409**. Same 401/403/400/404/503 as
 `POST /trust/verify` with Funding-unavailable 503.
 
 After the write, when the spend ping is configured and the member has a
@@ -3490,7 +3535,9 @@ active trial it does not ping.
 
 Admission is limited per grant round. Round 1 starts UTC 2026-10-16 and
 has 10 places; only grants with status `admitted` and `admittedAt` at or
-after the round start count. The store counts and writes in one atomic
+after the round start count. A withdrawn grant does not count, so a place
+is free again as soon as an admitted member withdraws
+([`POST /funding/withdraw`](#post-fundingwithdraw)). The store counts and writes in one atomic
 step (`admitWithinPlaces`: Postgres transaction with
 `pg_advisory_xact_lock`, count, then the status-CAS update), so concurrent
 admissions never exceed the round. A full round is **409**
@@ -3512,7 +3559,83 @@ unavailable" }` and log `funding.places.failed`.
 ### `POST /funding/reject`
 
 Staff Bearer. Target effective pending or trial, not self. Sets
-`rejected` and clears trial/admitted. **200** same shape as trial.
+`rejected` and clears trial/admitted. **200** same shape as trial. A
+withdrawn grant is **409** like any other ineligible target.
+
+### `POST /funding/withdraw`
+
+Bearer session. The caller leaves the grant program on their own, for
+example to give the place to someone else. There is no staff variant and no
+`accountId`: the route acts on the caller's own grant and ignores any body.
+No session → **401** `{ "error": "Unauthorized" }`. Role `basis` → **403**
+`{ "error": "Forbidden" }`.
+
+Effective status `pending`, `trial`, or `admitted` (an expired trial is
+effective `pending`) stores the new status `withdrawn`: `trialUtcDate` null,
+`admittedAt` null, `appliedAt` and `note` kept, `decidedAt` now, `decidedBy`
+the caller's own account id. The write is a compare-and-set on the stored
+status the route read (`transition`), so a staff decision that lands first
+makes it miss → **409** `{ "error": "Conflict" }`, never a lost update.
+Effective status `none`, `rejected`, or `withdrawn` → **409**
+`{ "error": "Conflict" }` and nothing is written.
+
+**200** `{ "funding": OwnerFundingJson }`, which for a withdrawn grant is
+exactly the no-grant object (`status: "none"`, see `GET /me` `funding`).
+Logs `funding.withdrawn` `{ accountId, from }` with `from` the effective
+status before the write. Store throw → **503**
+`{ "error": "Funding is unavailable" }` (`funding.write.failed`).
+
+From the moment of the write the member is out of the grant program:
+`inGrantProgramToday` is false, so from the grant gate day (UTC 2026-10-01,
+already passed) `eligibleToday` is false too: no daily ping, no spend
+invoice, and `GET /invoices/eligible` answers `eligible: false`. An
+admitted place is free at once (`GET /funding/places`). A row on the daily
+payout roster is not changed; being listed lifts no payout condition, so a
+listed withdrawn member is not paid. The member may apply again
+(`POST /funding/apply`) without priority or a reserved place. A later
+application overwrites the `withdrawn` row, but the withdrawal stays in the
+append-only `db_change` log (before image with the earlier status, after
+image `withdrawn` with `decided_by` and `decided_at`), which
+[`GET /funding/withdrawals`](#get-fundingwithdrawals) reads. A local Sunday
+does not refuse a withdrawal: the Sunday rest pauses community activity, and
+leaving the program starts none.
+
+### `GET /funding/withdrawals`
+
+Operator only: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer, like
+`GET /funding/daily-roster/links`. No session grants access: no bearer, any
+other bearer, and every session including moderator and above → **401**
+`{ "error": "Unauthorized" }`.
+
+**200** lists every withdrawal ever made, newest first (then `accountId`
+ascending), also when the member has applied again since:
+
+```json
+{
+  "withdrawals": [
+    {
+      "accountId": "<uuid>",
+      "name": "Ada",
+      "withdrawnAt": 1763020800000,
+      "from": "admitted",
+      "admittedAt": 1762934400000,
+      "reapplied": true
+    }
+  ]
+}
+```
+
+With `DATABASE_URL` the list is read from `db_change`: `funding_grant`
+UPDATE rows whose after image has status `withdrawn` and whose before image
+has `pending`, `trial`, or `admitted`. `withdrawnAt` is the after image's
+`decided_at` (epoch ms; the log time when that is null), `from` the stored
+status before, and `admittedAt` the before image's `admitted_at` or `null`.
+Without a database the in-memory store records each such write itself, so
+the answer is the same. `name` is the live display name, or `null` when the
+account no longer exists. `reapplied` is true when the account's current
+grant exists and is no longer `withdrawn`. Logs `funding.withdrawals.listed`
+`{ count }`. Store throw → **503** `{ "error": "Funding is unavailable" }`
+(`funding.list.failed`).
 
 ### `GET /funding/payout-days`
 
@@ -3530,7 +3653,11 @@ Both may be true on the same UTC day. Moderator stipends, blank
 handles, gifts outside the window, and other kinds do not count.
 Entitlement comes from the grant alone: it does not reconstruct whether a
 21.gifts recovery share was stored on a day, so a day an entitled member was
-not paid for lack of a required share shows as `missed`.
+not paid for lack of a required share shows as `missed`. A withdrawn grant
+entitles no day: no day from the withdrawal on is `missed`, and because the
+withdrawal clears `trialUtcDate` and `admittedAt`, days before it are not
+reconstructed either (as for a rejected grant), so they are `blocked` unless
+a daily payout was recorded (`paid`).
 Logs `funding.payouts.listed` `{ count }`.
 No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 **403** `{ "error": "Forbidden" }`. Store throw → **503**
@@ -4061,8 +4188,9 @@ About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the
 note text still equals the stored profile-note `name` (Ada→Grace with
 text `Ada` stays `null`)). `aboutMeHasPhoto` is true when the live note
-has a stored photo. After that successful save, a verified account with a
-live top-level photo or video (including this note) is welcome-pinged. An
+has a stored photo. After that successful save, an exactly `verified`
+non-platform account with a live top-level photo or video (including this note)
+is welcome-pinged. An
 account without a receiving address (no verified wallet, or the LNURL
 server off), or one that already has the welcome gift (once per account, as
 for `POST /messages`), is not pinged. Omitted spend ping skips. A ping
@@ -4380,15 +4508,24 @@ zero extra config when `DATABASE_URL` and `DEBUG_TOKEN` are unset.
 ### `GET /debug/db`
 
 Operator read of every ordinary table in schema `public`. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
-session. `DEBUG_TOKEN` unset or blank → **Response** `503`
-`{ "error": "Debug is not configured" }`. Missing or non-matching bearer →
-**Response** `401` `{ "error": "Unauthorized" }`. Token matches but this
+`Authorization: Bearer` matching `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`.
+Alternatively, a live member session whose role is at least
+`software_developer` may use this same GET route, but sees only
+`wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`, and
+`wallet_token_transaction`; its table list contains only those four and any
+other table is 404. The route passes this allowlist into the store, so catalog
+discovery, row counts, and page catalog checks for that session never inspect
+another table. Lower roles are 401. An admin session never opens writes or another debug route.
+Both operator tokens unset or blank and no live session at least
+`software_developer` → **Response** `503`
+`{ "error": "Debug is not configured" }`. A bearer that is neither a configured
+operator token nor such a session, including a lower-role session and a session
+`HEAD`, → **Response** `401` `{ "error": "Unauthorized" }`. Token matches but this
 process has no SQL client → **Response** `503`
 `{ "error": "Database is not configured" }`. No `table` returns
 `{ tables: [{ name, rowCount }] }`. `table` returns 200 rows and
 `nextCursor` when another page exists. Follow `nextCursor` until it is
-absent. `bytea` cells, including `nostr_nsec_ciphertext`,
+absent. `bytea` cells, including `nostr_nsec_ciphertext`, `viewer_mnemonic_ciphertext`,
 `recovery_share_ciphertext`, and `held_share_box.ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
 `auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` is the string `"redacted"`. A primary key
@@ -4400,18 +4537,33 @@ secret. A cursor that does not match the key is **Response** `400`
 
 #### Wallet and interaction tables
 
-`GET /debug/db` lists `wallet_balance_snapshot`, `wallet_payment`, and
-`member_event` like every other table; `?table=<name>` pages their rows. They
-are filled by `POST /me/wallet/report` and `POST /me/events`
+`GET /debug/db` lists `wallet_balance_snapshot`, `wallet_payment`,
+`wallet_transfer`, `wallet_token_transaction`, `wallet_transfer_sync`, and
+`member_event` like every other table for an operator; an admin session sees
+only the four wallet-history tables. `?table=<name>` pages their
+rows. The first two are also filled by the legacy supplementary
+`POST /me/wallet/report`; `wallet_transfer` and viewer balance snapshots come
+directly from Spark operators; `member_event` is filled by `POST /me/events`
 (`docs/schema/wallet.sql`, `docs/schema/member_event.sql`). No column is
 redacted. An account merge moves these rows to the surviving account, with the
 two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
 
+`wallet_transfer` is the server-verified ledger of every Bitcoin value
+movement the operator poll observes and `wallet_token_transaction` is the
+server-verified token ledger of explicit non-secret facts the poll observes.
+Each observed current-state change is stored; polling cannot observe a status
+transition that begins and ends between polls, while append-only `db_change`
+keeps every change that was observed. Spark transfer responses have no fee field and no Lightning/on-chain
+destination. The supplementary `wallet_payment` report adds app-side fee,
+destination, invoice, memo, and method details. The viewer ledgers and
+`wallet_payment` together, not either source alone, are the complete non-secret
+record of the value-movement facts those two sources observe or report.
+
 - `wallet_balance_snapshot`: one row per accepted report. `id`, `account_id`
-  (reporting member), `balance_sats` (wallet balance at sync), `synced_at`
+  (reporting member), nullable `wallet_pubkey` (set for an operator-viewer
+  sync and current app reports, null on legacy app reports), `balance_sats` (wallet balance at sync), `synced_at`
   (sync time the app reported), `received_at` (server time of the report).
-  `GET /wallets/stats` reads the last snapshot per account and UTC day; no
-  write path or schema changes for that public read.
+  `GET /wallets/stats` reads the last snapshot per account, wallet key, and UTC day.
 - `wallet_payment`: one row per member and wallet payment id, key
   `(account_id, payment_id)`. `direction` (`in` / `out`, seen from
   `account_id`), `status` (`pending` / `completed` / `failed`), `amount_sats`,
@@ -4423,6 +4575,61 @@ two `wallet_payment` exceptions under `POST /me/wallet/report` (Storage).
   resolved one), `first_seen_at` (report that first stored the row),
   `updated_at` (last change of a stored value), `last_observed_at` (last
   accepted report that carried the payment).
+- `wallet_transfer`: one row per `(account_id, wallet_pubkey, transfer_id)`, read directly
+  through the deployment viewer. It stores the wallet key read, owner-relative
+  direction, normalized Spark transfer type and status, sats, every attributed
+  counterparty key (plus the sorted representative key and its resolved
+  current/previous-wallet account cache), optional Spark invoice,
+  operator creation/update times, and first/last server observation times.
+  Operator update times are ordered only when both observations have one;
+  in ordinary observation upserts, `last_seen_at` is never an ordering substitute.
+  An incoming operator time is
+  accepted over a row without one. An observation without an operator time
+  advances `last_seen_at` but neither clears a stored operator time nor changes
+  a final status back to `pending`.
+  Rows are retained; account merge moves them to the survivor like
+  `wallet_payment`. If both accounts have this composite key, the survivor row
+  keeps the earliest `first_seen_at` and greatest `last_seen_at`; mutable state
+  comes from the newer operator update time when both rows have one, with equal
+  times keeping the survivor; when only one row has an operator update time,
+  that row supplies the mutable state. Only when both times are null, a
+  completed outgoing `transfer` wins over a row without that shape. When both
+  rows have that shape, the row the shop-payment check would count wins if only
+  one qualifies: it has a creation time and a counterparty key resolving to a
+  different account with a live top-level `#21GiftsShop` note. If both or
+  neither qualify, a final state (`completed`, `cancelled`, `expired`, or
+  `returned`) wins over `pending`, then the later `last_seen_at` wins, with a
+  tie keeping the survivor. Thus a stored operator update time is never
+  replaced with null.
+  The source duplicate is then deleted.
+- `wallet_token_transaction`: one row per
+  `(account_id, wallet_pubkey, transaction_hash)`. It stores only the token
+  identifier, owner-relative direction and decimal amount, counterparty keys,
+  input count and resolved-input count, Spark invoice attachment strings,
+  normalized type and status, client creation/expiry times, and first/last
+  observation times. Raw SDK rows, signatures, secret keys, commitments,
+  and revocation secrets are never stored in this table or `db_change`.
+  Its current row changes only when the incoming server observation is not older.
+  A later observation with fewer resolved inputs may update its other facts and
+  `last_seen_at`, but cannot replace direction, amount, counterparties, or the
+  better resolution counts. Pre-migration rows have null counts; an incomplete
+  observation cannot replace their projection, while a fully resolved one can.
+  A transfer is outgoing only when an input's previous output belongs to this
+  wallet; its amount and counterparties are the outputs to other owners.
+  Otherwise it is incoming, its amount is the sum of this wallet's outputs,
+  and its counterparties are the previous-output owners. Mint and create rows
+  use the public issuer key as counterparty. Account-merge duplicates keep the
+  earliest first observation and latest non-projection facts, but choose
+  direction, amount, counterparties, and resolution counts from the
+  better-resolved row (latest observation breaks an equal-quality tie).
+- `wallet_transfer_sync`: the durable per-account/per-wallet time of the last
+  complete history pass. An account-merge duplicate keeps the maximum time.
+  It drives the daily full reread and is operational
+  state, not a payment-history surface for member sessions.
+- `welcome_invoice_reservation`: one active or expired welcome-exception lease
+  per account. Account merge refuses without writes while both sides have a live
+  lease; otherwise it keeps the later expiry when both sides have a row. Issue
+  failure or an expired proof deletes the matching lease.
 - `member_event`: one row per accepted event. `id`, `account_id`, `name` (one
   of `MEMBER_EVENT_NAMES`), `at` (client time), `path` (no query or fragment),
   `props` (flat JSON object of scalars), `received_at` (server time of the
@@ -4543,9 +4750,11 @@ Same `DEBUG_TOKEN` gate as `GET /debug/accounts`.
 
 ### `GET /debug/accounts/:id/wallet`
 
-Operator read of one account's wallet, read-only: the newest stored balance
-snapshot (`balanceSats`, ISO-8601 `syncedAt` and `receivedAt`, and floored,
-non-negative `ageSeconds`), or `null` when the account never reported, plus
+Operator read of one account's wallet, read-only: the newest snapshot for its
+current verified wallet key, falling back to the newest legacy null-key app
+report only when that key has no row and never selecting a previous wallet key
+(`balanceSats`, ISO-8601 `syncedAt` and `receivedAt`, and floored,
+non-negative `ageSeconds`), or `null` when neither source exists, plus
 that account's stored payments newest first (`paidAt`, then payment id), at
 most `limit` rows (default 50, decimal integer 1..500). `nextCursor` is an
 opaque cursor when another row exists and is omitted on the last page. Every
@@ -4815,6 +5024,9 @@ account is **404** `{ "error": "Not found" }`. The platform account
 is **409** `{ "error": "Cannot merge the platform account" }`. Two
 funding grants are **409**
 `{ "error": "Both accounts have a funding grant" }`. A source account
+and survivor that both have an unexpired welcome-invoice lease are **409**
+`{ "error": "Welcome invoice already open" }` before any write; the merge can
+be retried after one lease expires or its invoice is released. A source account
 with a shop payment that is neither `paid` nor closed is **409**
 `{ "error": "A payment is already open" }` and nothing changes, because
 that payment's BOLT11 still pays the source account's wallet, which the
@@ -5855,7 +6067,9 @@ payments the api has not acknowledged yet.
   kept out by the allow-list (secret-named fields are never read) and by the
   app, which never sends a preimage, seed, PRF output or key.
 
-The api stores one row in `wallet_balance_snapshot` per report and upserts
+The api stores one row in `wallet_balance_snapshot` per report, associated
+with the account's current verified wallet key (or null only when no wallet is
+verified), and upserts
 each payment into `wallet_payment` by `(account, id)`. Re-sending a payment
 is harmless: status, amounts, method, time, category, and counterparty are
 overwritten (so `pending` becomes `completed`), detail fields keep their
@@ -5911,7 +6125,108 @@ two rows or by two rows of the same direction is not paired. A paired row moves
 `updated_at` (never backwards) but not `last_observed_at`. Like any resolved
 category, a later re-send without details keeps it.
 
-**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has, clears a counterparty that is one of the two merged accounts, then moves the rest.
+**Storage.** `wallet_balance_snapshot` and `wallet_payment` (`docs/schema/wallet.sql`), migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise. Every SQL boot runs the pairing once over all stored rows (rows stored before pairing existed) and logs `wallet_payment.pairs_repaired` with `{ repaired }`, the number of changed rows; a second boot changes nothing. A merge deletes a source payment row whose id the surviving account already has and reconciles duplicate viewer rows to the earliest first observation and greatest last observation. Mutable transfer state comes from the newer operator update time when both rows have one (equal times keep the survivor), or from the only row with an operator update time. Only when both times are null, a completed outgoing `transfer` wins over a row without that shape; when both have that shape, the row counted as a shop payment wins if only one qualifies, based on a present creation time and a counterparty key resolving to another account with a live top-level `#21GiftsShop` note. If both or neither qualify, a final state wins over `pending`, then later `last_seen_at` wins, with a tie keeping the survivor. Thus a stored operator update time is never replaced with null. Token projection fields come from the better-resolved duplicate; the merge keeps the maximum duplicate full-sync time, clears a counterparty that is one of the two merged accounts, then moves the rest.
+
+The app report is supplementary and is not the source of truth for complete
+wallet history. At boot the api loads one deployment viewer from
+`spark_viewer_key`. If absent, it generates a BIP-39 12-word mnemonic while a
+fixed Postgres advisory lock is held, derives the 66-hex viewer identity key,
+and stores only an AES-GCM envelope in `viewer_mnemonic_ciphertext` under
+`NOSTR_NSEC_KEK`, with KEK id 1 in `viewer_kek_id`. The
+mnemonic is never stored in plaintext, logged, or returned; the public identity
+is returned by `GET /me`. `db_change` stores only the SHA-256 of
+`viewer_mnemonic_ciphertext`, and `GET /debug/db` exposes only its byte length.
+A database-free boot creates an ephemeral viewer.
+The viewer is read-only and cannot move funds; Spark private mode remains on.
+
+With a database, `wallet-transfer-worker` starts immediately and self-schedules
+every 60 seconds without overlapping ticks. It reads every verified current
+wallet and every `previous_wallet`, four wallets at a time, with a 15-second
+SDK-call timeout and per-wallet exponential backoff. A current account key is
+an owner only when `spark_pubkey_verified_at` is non-null; otherwise resolution
+falls through to `previous_wallet` ordered by replacement time and account id.
+A first sync pages the
+entire transfer history; later syncs overlap the newest creation time by one
+hour and use a cursor strictly before the oldest pending row. At least once per
+UTC day per wallet it rereads the full history, repairing late-indexed rows and
+newly resolvable counterparties. Every real transfer type is requested
+explicitly. Raw-page length controls termination: a short page or negative
+offset ends the scan, while a repeated offset fails that wallet into backoff.
+Direction and amount come from the authoritative non-empty sender/receiver
+edges and the leaves attributed to those edges; participant `amountSats` is
+never an attribution fallback, and deprecated single-party fields are used
+only when both participant lists are empty. Every outgoing recipient reached
+by an attributed leaf is retained; a self-transfer retains the wallet's own
+key. Outgoing is `completed` only when every reached receiver edge is status 6,
+is `cancelled` when any reached receiver is status 7, preserves aggregate
+`expired` / `returned`, and otherwise remains `pending`. Incoming is completed
+only when every own receiver edge is completed, and receiver cancellation is
+stored as `cancelled`. The worker also pages
+`getTokenTransactions` from newest to oldest on every tick, stopping
+incremental passes after their one-hour/pending-or-unresolved overlap and performing the
+complete reread once per UTC day. It stores only the explicit non-secret token
+facts listed above. A finalized or cancelled row whose resolved-input count is
+smaller than its input count stays in that overlap; an undated one forces a
+full token reread. Transfer direction is outgoing only when the wallet owns a
+spent previous output resolved by its outpoint or public spent-output id;
+revocation secrets are never copied. Incoming and outgoing amounts and
+counterparties follow the `wallet_token_transaction` rules above, and invoice
+attachment strings are stored in `spark_invoices`. Each primary token page is
+stored first; an unresolved input therefore remains incoming. Input-owner
+enrichment then advances one bounded lookup step for every unresolved primary
+page under its own timeout and keeps
+bounded process-local cursor/owner progress across ticks. The cache contains
+only allow-listed transaction facts and the outpoints/output ids required for
+the lookup, never raw SDK rows or revocation/withdrawal secrets. A cursor is
+consumed only after a successful response returns a new non-empty cursor. A
+lookup failure evicts that page's progress so the next tick starts a fresh
+lookup. A caller timeout retains the cache and its in-flight promise, so a late
+result is returned as the next primary page's transactions before that finished
+entry is removed; a refreshed page with new unknown input ids reuses and
+reopens the lookup. At most 128 unfinished resolutions exist. Capacity never
+evicts one: excess pages queue for admission, stay unresolved, and keep the
+full-sync watermark open until a slot is served and freed. An enrichment failure
+or timeout never prevents token upserts,
+catch-up, or the balance snapshot. A daily full-sync watermark is written only
+when no page in that full pass still has unresolved inputs. It normalizes
+SDK enums into `wallet_transfer`, resolves counterparties against verified current and previous wallet
+keys, and writes an owned balance snapshot. Private wallets that have not yet
+granted the viewer simply return no transfers. Changed wallets log only
+`wallet_transfer.synced { accountId, inserted, updated }`; errors log only
+`wallet_transfer.failed { accountId, reason }`. No address, wallet key,
+invoice, mnemonic, or amount is logged.
+
+`eligibleToday` additionally requires, from deployment and with no start-day
+configuration, a `wallet_transfer` for that member with direction `out`, type
+`transfer`, status `completed`, and at least one external recipient that
+resolves to the till account of a live top-level `#21GiftsShop` note. Its updated time
+(creation time fallback) must be the payout UTC day or the day before. This
+condition applies to posts, zap-paid notes, spend daily runs, spend invoices,
+operator replay, and moderator stipends. The one-time welcome gift is exempt
+only when server-owned facts show an exactly `verified` non-platform account with no stored
+welcome, comment exactly `Welcome`, neither `messageId` nor `groupMessageId`,
+and a normalized exact USD `1.00`, and `amountMsat` is at most the server's
+`usdToMsat("1.00", spot)` conversion plus the fixed 10% spot-drift tolerance.
+The conversion is the same whole-satoshi, half-up conversion used by Fond.
+Without a usable current spot, the exception fails closed and the recent shop
+payment is required. The public body has no payout-kind override;
+the internal `serverPayoutKind` cannot weaken these checks. Before using the
+exception, the API atomically reserves the account's entitlement in the durable,
+`db_change`-audited `welcome_invoice_reservation` table. A second active request
+is **409** `{ "error": "Welcome invoice already open" }`, even when the account
+has a qualifying shop payment; a reservation-store failure is **503** and never
+falls through to ordinary eligibility. Issue failure or unpaid expiry releases the row. A
+roster `Welcome` with a message id or another amount
+is not the exception. A failed decision reports `no_shop_payment`. On every tick, while
+such a payment is in D-1..D, the member is eligible, today's media exists, and
+no daily payout is recorded today, the worker claims the account/UTC-day key
+synchronously before its first asynchronous read and calls `pingTodayMedia`
+until a delivery is accepted. Two wallets therefore cannot send the same ping
+concurrently. Failed deliveries enter a separate catch-up backoff and
+never delay wallet observation, its balance snapshot, or full-sync watermark;
+failed and skipped deliveries release the claim (skips retry without error
+backoff). Only an accepted account/day remains remembered in the process.
+Spend still pays at most once daily.
 
 **Response** `200` `{ "acknowledgedIds": ["sdk-payment-id"] }` — every stored
 payment id, once each (a later duplicate in the same report wins).
@@ -6163,8 +6478,8 @@ Success → **Response** `200`: the same JSON as `GET /debug/logins`.
 
 Operator dry-run of the 15-minute welcome sweep. Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
-Lists every account the sweep would welcome-ping now: role `verified`, a
-verified wallet with the LNURL server on, a live top-level photo or video
+Lists every account the sweep would welcome-ping now: non-platform, role exactly
+`verified`, a verified wallet with the LNURL server on, a live top-level photo or video
 (About me included), and not welcomed before (a platform `Welcome` reply, a
 `welcome` gift paid to its legacy external address, or a `21gifts welcome`
 gift under its username at or after its wallet verification). Reads only:
@@ -6417,7 +6732,7 @@ This route has no error status. The response shape is stable.
 ### `GET /gifts/stats`
 
 Public aggregated outbound gift statistics. No auth. The body never includes
-invoices, fees, wallet identifiers, or per-recipient names and amounts.
+invoices, fees, or wallet identifiers.
 
 When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
 **200** with zeros, empty series, `totalBtc` `"0.00000000"`, `totalUsd` /
@@ -6433,14 +6748,17 @@ PHP. One null does not null the day, the other currencies, or a later
 cumulative. A day where every row lacks that currency is null. Gap days in
 `spendOverTime` are zero `giftCount`/sats/BTC and `"0.00"` fiat, and they do
 not change a running cumulative. Gap months in `byMonth` are zero sats/BTC and
-`"0.00"` fiat. An empty list stays zeros. The response has no
-`byRecipient` key. `recipientCount` is the number of distinct stored
-recipient handles (exact `recipient_wos_user` text, so `Alice` and `alice`
-are two).
+`"0.00"` fiat. An empty selection stays zeros.
 A query failure is **503**. A missing stored amount is never 503.
 
-The route aggregates every outbound row. A `recipient` query parameter
-does not change the response. The rate books are not read.
+Optional query `recipient` filters to one recipient handle (the local part
+of the receiving address)
+(case-insensitive). The value is trimmed first. When the trimmed value
+contains `@` after the first character, the local-part before `@` is used;
+otherwise the whole trimmed string is the handle. Missing or blank
+(after trim) `recipient` is unfiltered.
+An unknown handle is empty **200** (zeros, USD-only `fx.quotes`) without a
+Coinbase or Frankfurter call. The rate books are not read.
 
 **Response** `200`:
 
@@ -6457,6 +6775,7 @@ does not change the response. The rate books are not read.
   "firstPaidAt": null,
   "lastPaidAt": null,
   "spendOverTime": [],
+  "byRecipient": [],
   "byMonth": [],
   "fx": {
     "quote": "BTC-USD",
@@ -6467,21 +6786,22 @@ does not change the response. The rate books are not read.
 }
 ```
 
-| Field            | Type                                                                                                                                             | Meaning                                                                                                                          |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                        |
-| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                           |
-| `totalUsd`       | string or null                                                                                                                                   | Sum of stored USD strings (`"1234.56"`); `"0.00"` when there are no gifts; `null` only when every outbound gift lacks stored USD |
-| `totalChf`       | string or null                                                                                                                                   | Sum of stored CHF strings; `"0.00"` when there are no gifts; `null` only when every outbound gift lacks stored CHF               |
-| `totalEur`       | string or null                                                                                                                                   | Sum of stored EUR strings; `"0.00"` when there are no gifts; `null` only when every outbound gift lacks stored EUR               |
-| `totalPhp`       | string or null                                                                                                                                   | Sum of stored PHP strings; `"0.00"` when there are no gifts; `null` only when every outbound gift lacks stored PHP               |
-| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                         |
-| `recipientCount` | number                                                                                                                                           | Distinct stored recipient handles (exact `recipient_wos_user`; case-sensitive)                                                   |
-| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                    |
-| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                      |
-| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat     |
-| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                                |
-| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` is USD only                                                                         |
+| Field            | Type                                                                                                                                             | Meaning                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                             |
+| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                                |
+| `totalUsd`       | string or null                                                                                                                                   | Sum of stored USD strings (`"1234.56"`); `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored USD  |
+| `totalChf`       | string or null                                                                                                                                   | Sum of stored CHF strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored CHF                |
+| `totalEur`       | string or null                                                                                                                                   | Sum of stored EUR strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored EUR                |
+| `totalPhp`       | string or null                                                                                                                                   | Sum of stored PHP strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored PHP                |
+| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                              |
+| `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                            |
+| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                         |
+| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                           |
+| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat          |
+| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                      | Sorted by sats descending, then name; each fiat field sums stored strings and is `null` only when no gift to that recipient stored it |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                                     |
+| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` is USD only                                                                              |
 
 **Response** `503`:
 
@@ -6534,17 +6854,26 @@ Success is always **200** (never 404 for an unknown address):
 { "eligible": true, "status": "admitted" }
 ```
 
-`status` is `effectiveStatus`: `none`, `pending`, `trial`, `admitted`, or
-`rejected`. Unknown address and `basis` are always
+`status` is `ownerFundingStatus`: `none`, `pending`, `trial`, `admitted`, or
+`rejected`. It is `effectiveStatus`, except that a withdrawn grant is
+reported as `none` (and, from the grant gate day, `eligible: false`), so this answer keeps its five values. Unknown address and `basis` are always
 `{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
-2026-10-01 a missing/pending/rejected grant on a non-`basis` account is
-`eligible: true` with `status` still from `effectiveStatus`; from that day
+2026-10-01 a missing/pending/rejected/withdrawn grant on a non-`basis` account is
+`eligible: true` with `status` still from `ownerFundingStatus`; from that day
 `eligible` is false unless admitted or trial-today **and**, from the UTC day
 `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts
 recovery share is stored for the member's current verified wallet
 ([docs/social-recovery.md](docs/social-recovery.md)). From that day a member in the grant
 program without that share is `{ "eligible": false, "status": "admitted" }`
-(or `"trial"`): `status` stays the effective grant status.
+(or `"trial"`): `status` stays the grant status (`ownerFundingStatus`).
+Eligibility also requires a completed server-verified shop payment today or
+yesterday UTC. This preflight omits only that shop-payment condition while
+server-owned facts show an exactly `verified` non-platform account that has not received
+its welcome gift; it does not make any other invoice payable. `POST /invoices`
+still omits the condition only for normalized USD `1.00`, comment `Welcome`, no
+`messageId` or `groupMessageId`, and `amountMsat` no greater than the server's
+USD 1.00 spot conversion plus 10%. A missing or unusable spot fails closed and
+keeps the shop-payment condition.
 
 ### `GET /invoices/posted`
 
@@ -6657,6 +6986,10 @@ after the passkey and grant checks and before LNURL (with `groupMessageId`,
 after that id is resolved: a resolved moderator payout is recorded as
 `moderator` and is not refused; an ignored id is); the welcome gift is once
 per account, whichever address it went to. Stores `comment` on the invoice whenever it is sent, so a `Welcome` invoice without `messageId` is still recorded as a welcome gift on proof; with `messageId` it stores `messageId` and `comment` (or `''`).
+The shop-payment exception first atomically reserves one active durable
+entitlement row for the account. Concurrent or sequential requests before
+settlement cannot both use the exception. Issue failure and unpaid expiry
+release the reservation; all changes are covered by `db_change`.
 When `groupMessageId` is set (no `messageId`), the living-room post gate
 still applies. The id is display-only: it is stored only when it is that
 address's message in the closed `moderator_group` thread, the sender is not a
@@ -6821,10 +7154,15 @@ Success → **Response** `200`:
 
 Spend-worker daily instruction. Bearer `SPEND_API_TOKEN`. Body `{ "address" }`.
 Extra keys are ignored. The kind is always daily. The api collects passkey,
-live top-level post, media, funding eligibility (`eligibleToday`: grant and,
-from `RECOVERY_SHARE_REQUIRED_FROM`, 21.gifts recovery share), the same-UTC-day welcome
+live top-level post, a live top-level photo or video posted today UTC (the
+About-me profile note included), funding
+eligibility (`eligibleToday`: grant, the completed shop payment today or
+yesterday, and, from `RECOVERY_SHARE_REQUIRED_FROM`, the 21.gifts recovery
+share), the same-UTC-day welcome
 flag, and the daily roster, then returns whether to pay and the amount,
-comment, and optional `messageId`. Spend does not choose those fields. The
+comment, and today's media post as `messageId`. This is exactly the
+`latestTodayMediaPostId` fact used by `payoutToday` and `pingTodayMedia`; the
+profile note is not screened out before that lookup. Spend does not choose those fields. The
 address is matched as a member's receiving address (`<username>@<host of
 PUBLIC_BASE_URL>` with a verified wallet); any other address is a missing account.
 
@@ -6847,8 +7185,8 @@ roster request error keeps its status and `{ "error" }`. Any other roster
 throw → **502** `{ "error": "Daily roster is unavailable" }`.
 
 Success is always **200**: `{ "action": "skip", "reason" }` or
-`{ "action": "pay", "amountUsd", "comment" }` plus `messageId` only when
-the decision includes it. A skip is not logged. The token, comments, and
+`{ "action": "pay", "amountUsd", "comment", "messageId" }`, where
+`messageId` is today's qualifying media post. A skip is not logged. The token, comments, and
 Lightning addresses are not logged.
 
 ### `GET /messages`
@@ -7270,6 +7608,11 @@ otherwise **400** with that shop error and nothing is stored. A reply, and
 a note that is not a shop, may still omit the pin.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that for `goal_term_days` days, but for a credit outside the operator-approved exception never before 2026-11-16. A non-exempt credit that filled on or before 2026-11-15 starts on 2026-11-16. The three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c` are exempt from that minimum and start the day after they filled. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. A BTC `goalAmount` is the whole-sat canonical string: a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). A fiat `goalAmount` keeps the typed decimal after trim and a comma turned into a dot (`5.00` stays `5.00`, `1.0` stays `1.0`), and that string is also stored in `goal_amount_text`. A read uses `goal_amount_text` when it is a non-empty string, otherwise the numeric column. `goal_sats` is that integer for `BTC` (1..10_000_000; a missing spot quote does not reject it). For fiat, sats are half-up from the current spot rate of the typed currency (`round(typed * 1e8 / fiatPerBtc)`), and a positive amount that rounds to 0 becomes 1. Fiat needs a spot quote that prices the typed currency and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If the spot read throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the spot read throws or returns no quote. The typed currency's snapshot is the typed amount at two decimals, not a satoshi round trip. The other three currencies are frozen from that same spot quote and are null when their rate is missing. A BTC ask freezes each fiat snapshot from the spot, or leaves it null. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the stored typed string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
+For repayment pricing, “the rate of the day it is paid” means the current
+stored `FxSpotQuote` at invoice creation. The quote is read once per request.
+Gift rows and their daily proportions are not read. Not-yet-invoiced units move
+with the spot; an open invoice and a settled part keep their stored sats.
+
 Every public, debug, and hidden forum message JSON that can carry
 `goalRepayable: true` also carries `goalClosedAt` as an ISO-8601 string when
 `goal_closed_at` is set and omits `goalClosedAt` otherwise. This applies to
@@ -7341,20 +7684,23 @@ POST. `address` is the author's wallet-backed receiving address (no verified
 wallet → no ping). The api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
 Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant and,
-from `RECOVERY_SHARE_REQUIRED_FROM`, 21.gifts recovery share **and** the new row has media (`hasPhoto` /
+from `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts recovery share, a completed
+server-verified shop payment today or yesterday UTC, **and** the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`).
-Otherwise no ping, log `spend.ping.skipped` / `not_eligible` (ineligible) or
-`no_media` (eligible text-only). When `role === 'verified'` and any live
-top-level photo or video exists, including the About-me note, the api also
-POSTs `{ address, messageId, kind: "welcome" }` for that note, independent
+Otherwise no ping, log `spend.ping.skipped` / `no_shop_payment` for that
+missing condition, `not_eligible` for another ineligible condition, or
+`no_media` (eligible text-only). When the author is an exactly `verified`
+non-platform account and any live top-level photo or video exists, including
+the About-me note, the api also
+POSTs `{ address, kind: "welcome" }` for that note, independent
 of `eligibleToday` and independent of whether the new row itself has media.
 Spend pays the welcome gift and does not also pay the daily gift on that
 same UTC day. A later UTC day still pays the daily gift.
-The same ping runs when the account becomes verified and when About me is
-saved while verified. Every 15 minutes, while an operator has turned it on
-with `PUT /debug/welcome-sweep`, the welcome sweep welcome-pings every
-verified account that already has a live top-level photo or video (About me
-or a living-room post), so the gift still goes out when the photo post and
+The same ping runs when the account becomes exactly `verified` and is
+non-platform, and when About me is saved while welcome-eligible. Every 15 minutes, while an operator has turned it on
+with `PUT /debug/welcome-sweep`, the welcome sweep welcome-pings every exactly
+`verified` non-platform account that already has a live top-level photo
+or video (About me or a living-room post), so the gift still goes out when the photo post and
 verification happened in either order. A process starts with the sweep off,
 so its run at boot pings nobody (`spend.ping.skipped` / `sweep_off`).
 `GET /debug/welcome-sweep` lists the accounts it would ping without pinging.
@@ -7365,9 +7711,10 @@ address (the local part of `account.lightning_address` equals the gift's
 recipient handle), or a recorded `welcome` gift with description
 `21gifts welcome` under its username at or after its wallet verification, is
 not pinged again (`spend.ping.skipped` / `welcomed` for a single-account
-ping), whichever address the gift went to, so a member whose receiving address changed is not paid twice. Replies, and any role other than `verified`, do not
-welcome-ping. A verified text-only post with no photo or video anywhere does
-not welcome-ping.
+ping), whichever address the gift went to, so a member whose receiving address
+changed is not paid twice. Replies, every role other than exactly `verified`,
+and the platform account do not welcome-ping. An eligible text-only post with
+no photo or video anywhere does not welcome-ping.
 Errors are logged; the POST still
 returns **200**. Replies do not ping. Idempotent media replay does not ping
 again. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the
@@ -7542,7 +7889,10 @@ missing `pushStore` still writes in-app rows when `auth` is set; enqueue
 failure logs `push.enqueue.failed`). A member/invoice zap on the official platform profile
 note skips `notifyZap` and fans out `notifyForumPost` / `notifyForumReply`
 plus a top-level `spendPing` only when `eligibleToday` (same gate as
-`POST /messages`; ineligible logs `spend.ping.skipped` / `not_eligible`).
+`POST /messages`) and `latestTodayMediaPostId` finds the payer's qualifying
+media note from the current UTC day. That media note id is sent; the newly
+created text-only compose note is never sent. Ineligible logs
+`spend.ping.skipped` / `not_eligible`, and missing media logs `media_post`.
 An external zap on that same note still inserts a gift-reply under it. `GET /notifications` applies the same
 `notificationLevel` filter to stored rows. LNURL success with a non-NIP-57 invoice
 (plaintext description, missing/mismatched `description_hash`, or malformed
@@ -7688,9 +8038,9 @@ Success → **Response** `200`:
 }
 ```
 
-`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `closedAt` is ISO-8601 when the author ended collecting, else null. `paidSats` is the sats actually settled for that share so far (0 when none); `paidAmount` is the two-decimal settled amount for a fiat share, else null. A share is `paid` only when its remainder is zero; a partially paid share keeps `due` or `scheduled`, and `dueSats` is its remainder priced in sats. `startsOn` is the first repayment day as `YYYY-MM-DD` UTC (the `dueOn` of `dayIndex` 0), or null until then; it is the day after `fundedAt`, and for a credit outside the operator-approved exception never before 2026-11-16. The exception is the three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`: they start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` is null for bitcoin. On a fiat ask it is a two-decimal string in the ask currency: the sum, per giver, of the oldest indexed ingest line of each of that giver's receipts on this note, the amount fixed when it was paid, when every named giver has a parseable stored amount in that currency; otherwise the typed ask amount is split by sat weight. `amount` is a two-decimal string in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: the share in sats for a bitcoin loan, or for a fiat loan the share priced in sats at the rate `POST /messages/:id/repayment` would use now; it is `null` on every other line. The rate is read once per request, so `dueSats` and `next.sats` agree. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. `waiting` is true on a `due` line whose giver cannot receive, and `waitingShares` counts those lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share. A 1-sat or 1-cent gift is its own row.
+`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `closedAt` is ISO-8601 when the author ended collecting, else null. `paidSats` is the sats actually settled for that share so far (0 when none); `paidAmount` is the two-decimal settled amount for a fiat share, else null. A share is `paid` only when its remainder is zero; a partially paid share keeps `due` or `scheduled`, and `dueSats` is its remainder priced in sats. `startsOn` is the first repayment day as `YYYY-MM-DD` UTC (the `dueOn` of `dayIndex` 0), or null until then; it is the day after `fundedAt`, and for a credit outside the operator-approved exception never before 2026-11-16. The exception is the three operator-approved credit ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`: they start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` is null for bitcoin. On a fiat ask it is a two-decimal string in the ask currency: the sum, per giver, of the oldest indexed ingest line of each of that giver's receipts on this note, the amount fixed when it was paid, when every named giver has a parseable stored amount in that currency; otherwise the typed ask amount is split by sat weight. `amount` is a two-decimal string in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: for bitcoin it is the remaining units; for fiat it is the sum of the stored sats of open invoices and the current `FxSpotQuote` price of only the units no open invoice covers. `next.sats` is that same complete sum for the oldest unpaid due share whose giver can receive, not merely the amount of its next invoice. The spot is read at most once per request, shared by `dueSats` and `next.sats`, and only when at least one such uncovered fiat unit exists. `dueSats` is `null` on every other line. `next` is null when there is no payable due share or the credit has not filled. `waiting` is true on a `due` line whose giver cannot receive, and `waitingShares` counts those lines. A due, unpaid share whose giver cannot receive is waiting: it does not hold back `daysPaid` and is not behind. When the giver's wallet is verified, the share can be paid from that day. A share whose day is before the UTC repayment day of the giver's `sparkPubkeyVerifiedAt` is still owed and payable, but never counts against `daysPaid` or as behind, so the waiting days do not become days behind later. `daysDue` counts the term days that have begun, today included; `daysPaid` counts the leading due days that have no other unpaid share. A 1-sat or 1-cent gift is its own row.
 
-Fiat amount or gift-day rate missing, or the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. This holds whenever a fiat share is due, also when every due share waits for a giver who cannot receive.
+A missing fiat amount, or a missing rate or failed spot read while any due fiat units are not covered by an open invoice → **503** `{ "error": "Ask amount is unavailable" }`. A due share fully covered by open invoices returns its stored sats without reading the spot. Settled parts also keep their stored sats.
 
 ### `POST /messages/:id/repayment`
 
@@ -7728,7 +8078,7 @@ Other payment start failure → **400** `{ "error": "Could not start the Bitcoin
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
 Over-limit → **429** `{ "error": "Too many payments" }`.
-Fiat share cannot be priced, including when the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. Any due share is priced first, so a fiat loan without a rate answers this 503 before the `cannot_receive` 400.
+Not-yet-invoiced fiat share units cannot be priced, including when the spot cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. Any such due units are priced first, so a fiat loan without that currency's spot rate answers this 503 before the `cannot_receive` 400. An open invoice needs no new spot and keeps its stored sats.
 Signing keys missing or the invoice attempt cannot be stored → **503** `{ "error": "Messages are unavailable" }`.
 
 ### `POST /messages/:id/repayment/due`
@@ -7775,7 +8125,7 @@ Unknown id, a non-UUID after a valid session, a note that is not a live repayabl
 Author missing forum pay → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 Device `Time-Zone` in Sunday → **403** `{ "error": "SUNDAY_REST" }`. A missing, blank, or invalid zone does not refuse.
 Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`).
-Debt or a fiat share cannot be priced, including when the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`.
+Debt or a fiat share cannot be priced, including when the current spot cannot be read → **503** `{ "error": "Ask amount is unavailable" }`.
 Any other error of `POST /messages/:id/repayment` while making a bill (`This message cannot be paid yet`, a giver without a Nostr key, `A payment for this share is still open`, `Could not start the Bitcoin payment`, `Messages are unavailable`) answers the whole call with that status and body. Bills minted before it stay stored and are returned again on the next call.
 
 ### `POST /messages/:id/repayment/close`
@@ -8072,20 +8422,29 @@ query throws.
 ### `GET /wallets/stats`
 
 Public wallet totals across all 21.gifts member wallets. No auth. The source is
-`wallet_balance_snapshot`, filled by `POST /me/wallet/report`; the data are
-self-reported by the member apps and begin with the first report (2026-11-09 in
-production). A wallet is an `account_id` with at least one visible snapshot. The
+`wallet_balance_snapshot`, filled directly by the Spark viewer worker as well
+as by the supplementary `POST /me/wallet/report`. Viewer rows name
+`wallet_pubkey`; current app reports use that same verified key, while legacy
+app rows leave it null. A wallet identity is `(account_id, wallet_pubkey)`.
+Null-key rows are an account's migration fallback when it has no visible keyed
+row; when visible keyed rows exist for that account, those identities win and
+the legacy rows are not counted as an additional wallet. The
 response never includes account ids, per-account balances, or any other
 per-account value.
 
-An account's balance at the end of UTC day D is the `balance_sats` of its
+Each wallet identity's balance at the end of UTC day D is the `balance_sats` of its
 snapshot with the greatest `(received_at, id)` among rows with
-`received_at < D + 1 day 00:00 UTC`, the same order as `latestBalance`. An
-account with no such row is not part of day D. A balance carries forward over
+`received_at < D + 1 day 00:00 UTC`. An identity with no such row is not part
+of day D. A balance carries forward over
 days without a new snapshot. `totalSats` of day D sums every carried-forward
 wallet balance; `fundedWalletCount` counts those balances greater than 0.
 `walletCount` counts every wallet present at the end of that day, including a
 wallet whose balance is 0.
+
+Account-scoped current-balance reads take the account's current verified
+`wallet_pubkey`, prefer that key even when a previous wallet has a newer
+snapshot, and fall back to the newest legacy null-key row only when the current
+key has no row. With no verified wallet they read only null-key rows.
 
 `balanceOverTime` has no gaps: every UTC day from the earliest visible
 `received_at` through the current UTC day. A snapshot whose UTC day is after the
@@ -8872,10 +9231,12 @@ the caller has a receiving address (verified wallet; it is sent as
 `address`), `spendPing` is set, **and** the caller has a live
 living-room top-level post (not the profile note) whose `createdAt` is on
 the same UTC day **and** `eligibleToday` for the author's funding grant and,
-from `RECOVERY_SHARE_REQUIRED_FROM`, 21.gifts recovery share.
+from `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts recovery share, and a completed
+server-verified shop payment today or yesterday UTC.
 No such post → **200**, no ping, log `spend.ping.skipped` /
 `no_public_post`. Public post today but not funding-eligible → **200**, no
-ping, log `spend.ping.skipped` / `not_eligible`. Ping throw still **200**.
+ping, log `spend.ping.skipped` / `no_shop_payment` for that missing condition
+or `not_eligible` otherwise. Ping throw still **200**.
 Living-room lookup failure after persist is still **200**, no ping, log
 `spend.ping.skipped` / `posted_unreachable`. Empty or invalid text **without a still**
 is **400** and does not ping. Verified, basis and the platform account **404**
@@ -9405,3 +9766,9 @@ exist on the account model; `GET /debug/accounts` and
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
 - Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)
+
+> **SQL boot invariant:** When `DATABASE_URL` is configured, boot must create or
+> read the Spark viewer key successfully. Failure is fatal and is propagated from
+> `openBootStores`; the API must not start without the viewer used for wallet
+> indexing and grant-payout authorization. The no-database in-memory boot path
+> retains its existing behavior.

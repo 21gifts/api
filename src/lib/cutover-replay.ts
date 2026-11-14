@@ -16,10 +16,11 @@ import type { GiftStore } from '@/lib/gift-store';
 import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageListRow, MessageStore } from '@/lib/message-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { TrustStore } from '@/lib/trust-store';
-import { syncWelcomePing } from '@/lib/welcome-media';
+import { isWelcomeRecipient, syncWelcomePing } from '@/lib/welcome-media';
 
 /** What triggered a replayed payout. */
 export type ReplayTrigger = 'post' | 'moderator' | 'trial' | 'admit' | 'welcome';
@@ -75,6 +76,8 @@ export interface ReplayResult {
 
 /** Collaborators of {@link replayPayoutWindow}. */
 export interface ReplayDeps {
+  /** Server-verified transfers for the shop-payment payout gate. */
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
   auth: AuthStore;
   messages: MessageStore;
   conversations: ConversationStore;
@@ -266,9 +269,13 @@ function notEligibleDetail(
   eligible: boolean,
   nowMs: number,
   recoveryShareRequiredFrom: string | null,
+  shopReason: 'no_shop_payment' | null,
 ): string | null {
   if (eligible) {
     return null;
+  }
+  if (shopReason !== null) {
+    return shopReason;
   }
   if (
     account.role !== 'basis' &&
@@ -344,9 +351,14 @@ export async function replayPayoutWindow(
         : trigger.trigger === 'welcome'
           ? 'welcome'
           : 'daily';
-    // Only a verified account earns a welcome, once; other welcome triggers are not events.
+    // Only an exactly verified non-platform account earns a welcome, once;
+    // other welcome triggers are not events.
     if (payout === 'welcome') {
-      if (account?.role !== 'verified' || booked.has(`${account.id}|welcome`)) {
+      if (
+        account === undefined ||
+        !isWelcomeRecipient(account) ||
+        booked.has(`${account.id}|welcome`)
+      ) {
         continue;
       }
       booked.add(`${account.id}|welcome`);
@@ -398,12 +410,14 @@ export async function replayPayoutWindow(
       skip('no_wallet', 'no_verified_wallet');
       continue;
     }
-    const { grant, eligible } = await loadPayoutEligibility(
+    const { grant, eligible, reason } = await loadPayoutEligibility(
       deps.funding,
       deps.auth,
       account,
       nowMs,
       deps.recoveryShareRequiredFrom,
+      deps.walletTransfers,
+      day,
     );
     const ineligible = notEligibleDetail(
       account,
@@ -411,6 +425,7 @@ export async function replayPayoutWindow(
       eligible,
       nowMs,
       deps.recoveryShareRequiredFrom,
+      reason ?? null,
     );
     if (ineligible !== null) {
       skip('not_eligible', ineligible);
