@@ -62,7 +62,9 @@ export interface WalletUsagePaymentRow {
   isFundPayout: boolean;
   /**
    * True when the payment is a paid forum gift or paid heart: one of its
-   * hashes (or its invoice hash) matches a `message_invoice` with
+   * candidate hashes (its `payment_hash`, or the `spark_invoice.payment_hash`
+   * whose `invoice` equals the row's `invoice` or `destination`) or its
+   * invoice matches a `message_invoice` with
    * `result = 'ok'`, no conversation, no `repay:` / `repayp:` description, a
    * claimed `nostr_zap_payment` hash, and a note whose `deleted_at` is null;
    * or a zap receipt gift or paid heart on such a note.
