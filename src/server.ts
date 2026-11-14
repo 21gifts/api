@@ -276,7 +276,7 @@ export interface AppDeps {
   spendApiToken?: string;
   /**
    * Payout ping after a new top-level forum post or a `moderator_group`
-   * persist (default: `resolveSpendPing` with env, fetch, gift store, clock,
+   * persist (default: `resolveSpendPing` with env, gift store, clock,
    * roster store, payout store, accounts, and LNURL server). Unset or blank
    * `PAYOUT_SIGNER` omits it; `PAYOUT_SIGNER=fond` queues into
    * `fond_payout`. `POST /messages` and `POST /conversations/:id` still 200
@@ -509,7 +509,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   operatorLoginStore (optional; default {@link InMemoryOperatorLoginStore};
  *   SQL boot injects {@link PostgresOperatorLoginStore}),
  *   mergeDb, gift store,
- *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
+ *   BTC-USD rates, USD-fiat rates, message store,
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
  *   memberHabitStore (optional; default InMemoryMemberHabitStore; SQL boot

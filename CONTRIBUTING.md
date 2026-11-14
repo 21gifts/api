@@ -156,7 +156,7 @@ default boot leaves blank (its test asserts the 503 `Push is not configured`);
 asserts the 502 for a host that does not resolve;
 `InMemoryInvoiceStore`, `InMemoryWelcomeInvoiceReservationStore`, `newInvoiceId`,
 `NoopGiftRecorder`, `recipientHandleFromAddress`, `accountWelcomed`, `issueGiftInvoice`,
-`settleProvenGift`, `persistProvenGift`, and `accountByReceivingAddress`, which run only on the Fond
+`settleProvenGift`, and `persistProvenGift`, which run only on the Fond
 payout invoice path and so need `PAYOUT_SIGNER=fond` (their tests assert the 404 of
 `POST /fond/payouts/:id/invoice`);
 `requestGiftInvoice` and `decodeBolt11`, which need a member with a reachable LNURL-pay (their
