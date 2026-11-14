@@ -713,6 +713,25 @@ describe('backfillExternalZappers', () => {
     warn.mockRestore();
   });
 
+  it('does not report completion when the scan throws', async () => {
+    const store = new BackfillRowsStore([]);
+    store.listUnattributedIndexedReceipts = async () => {
+      throw new Error('receipts unavailable');
+    };
+    const summaries: unknown[] = [];
+    await expect(
+      backfillExternalZappers(store, {
+        auth: new InMemoryAuthStore(),
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+        onComplete: (summary) => summaries.push(summary),
+      }),
+    ).rejects.toThrow('receipts unavailable');
+    expect(summaries).toEqual([]);
+  });
+
   it('stops and logs after scanning the 10,000-receipt ceiling', async () => {
     const rows = Array.from({ length: 10_001 }, (_, index) =>
       backfillRow(`ceiling-receipt-${index}`, {

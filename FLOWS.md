@@ -414,8 +414,9 @@ inbound (relay query from three days back). A sender that is not a 21.gifts
 account reaches the inbox only as a known contact (an entitled external
 zapper, or a Damus thread in which the member already wrote), when not
 blocked, and within a per-pubkey and global limit; anything else stays on
-Nostr with no thread and no push. Once, at the first SQL boot with this rule,
-stored Damus threads in which the member never wrote and whose counterpart is
+Nostr with no thread and no push. Once, at the first SQL boot with this rule
+whose external-zapper backfill completed (otherwise a later boot), stored
+Damus threads in which the member never wrote and whose counterpart is
 not an entitled zapper are removed with their messages; the inbox and its
 unread badge drop them, and a device closes their notifications. Outbound wraps with the sender nsec (platform nsec for staff on
 official threads). Forum replies stay on `/messages` and are not mixed
