@@ -6969,8 +6969,9 @@ Coinbase or Frankfurter call. The rate books are not read.
 The `/fond` routes are always mounted. Each answers **404**
 `{ "error": "Not found" }` unless `PAYOUT_SIGNER` is `fond` (trimmed, any
 case). With `fond`, the spend ping queues each decided payout instruction
-(daily, welcome, moderator stipend) as one row in `fond_payout`, deduped per
-UTC day, kind, and address. The single Fond account (`FOND_USERNAME`) pays
+(daily, welcome, moderator stipend) as one row in `fond_payout`: at most one
+`daily` or `moderator` row per UTC day, kind, and address, and one `welcome`
+row per address. The single Fond account (`FOND_USERNAME`) pays
 the queued rows from its own in-app wallet. This api does not pay. When
 `PAYOUT_SIGNER` is unset or blank there is no payout sink: the spend ping is
 not configured, pings are skipped, and the process still boots. Any other

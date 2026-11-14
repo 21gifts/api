@@ -62,7 +62,9 @@ export class FondQueueSink implements PayoutSink {
   }
 
   /**
-   * Write one row, deduped per UTC day, kind, and address (see `FondPayoutStore.enqueue`).
+   * Write one row, deduped as `FondPayoutStore.enqueue` does: per UTC day,
+   * kind, and address for daily and moderator rows, once per address for
+   * welcome.
    *
    * @param address - Recipient Lightning Address.
    * @param body - Decided instruction body.
