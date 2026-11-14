@@ -39,7 +39,7 @@ export interface RequestAuth {
  * grant resolved when the request arrived, or `null` for no key token), it is
  * used as is and the token row is not looked up again.
  *
- * @param args - Header, stores, clock, configured tokens, and the optional key login.
+ * @param args - Header, stores, clock, configured tokens, the optional key login, and the optional `keyGrant` carried from the request start.
  * @returns Auth kind, optional account id, and the operator name of a key token. Never returns the token.
  */
 export async function resolveRequestAuth(args: {

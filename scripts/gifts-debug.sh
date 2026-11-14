@@ -226,10 +226,11 @@ print(digest[:16])
 # private temporary file in the same directory replaces it.
 write_token_file() {
   local file="$1" token="$2" tmp
-  tmp=$(mktemp "$(dirname "$file")/.token.XXXXXX")
-  chmod 600 "$tmp"
-  printf '%s' "$token" > "$tmp"
-  mv -f "$tmp" "$file"
+  tmp=$(mktemp "$(dirname "$file")/.token.XXXXXX") || die "cannot create a token file in $(dirname "$file")"
+  if ! { chmod 600 "$tmp" && printf '%s' "$token" > "$tmp" && mv -f "$tmp" "$file"; }; then
+    rm -f "$tmp"
+    die "cannot write $file"
+  fi
 }
 
 # Sign a fresh challenge with one key and keep the token. Prints the login
