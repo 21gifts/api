@@ -242,6 +242,34 @@ describe('enqueueNotificationDismiss', () => {
       warn.mockRestore();
     }
   });
+
+  it('rethrows the first failed chunk when strict', async () => {
+    const pushStore = new InMemoryPushStore();
+    let calls = 0;
+    pushStore.enqueue = async () => {
+      calls += 1;
+      throw new Error('boom');
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(
+        enqueueNotificationDismiss({
+          pushStore,
+          accountId: 'account',
+          tags: Array.from({ length: 31 }, (_, index) => `tag:${index}`),
+          nowMs: NOW.getTime(),
+          unreadCount: 2,
+          strict: true,
+        }),
+      ).rejects.toThrow('boom');
+      expect(calls).toBe(1);
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('push.dismiss.failed'))).toBe(
+        true,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe('fanoutToBellSubscribers', () => {

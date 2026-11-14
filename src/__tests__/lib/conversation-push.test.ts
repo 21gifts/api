@@ -528,8 +528,9 @@ describe('removeUnadmittedDamusThreads', () => {
     getAccount: async () => undefined,
     listAccounts: async () => [],
   };
+  const noZappers = { listZapperPubkeys: async (): Promise<string[]> => [] };
 
-  it('removes the threads, logs one event, and closes their device notifications with the new badge', async () => {
+  it('removes the threads, keeps zapper threads, logs one event, and closes device notifications with the new badge', async () => {
     const conversations = new InMemoryConversationStore();
     const push = new InMemoryPushStore();
     const notifications = new InMemoryNotificationStore();
@@ -557,6 +558,10 @@ describe('removeUnadmittedDamusThreads', () => {
     await conversations.appendMessage(
       message({ id: 'kept-1', conversationId: kept.id, senderAccountId: 'acc' }),
     );
+    const zapper = await conversations.openMemberDamus('acc', 'cc'.repeat(32), NOW);
+    await conversations.appendMessage(
+      message({ id: 'zap-1', conversationId: zapper.id, senderAccountId: null }),
+    );
     await conversations.openMemberDamus('nosub', 'aa'.repeat(32), NOW);
     vi.spyOn(notifications, 'unreadCount').mockResolvedValue(2);
     warn.mockClear();
@@ -566,6 +571,7 @@ describe('removeUnadmittedDamusThreads', () => {
         conversations,
         pushStore: push,
         notifications,
+        zappers: { listZapperPubkeys: async () => ['CC'.repeat(32)] },
         auth: noAccounts,
         nowMs: NOW.getTime() + 120_000,
       }),
@@ -574,10 +580,10 @@ describe('removeUnadmittedDamusThreads', () => {
     expect(parsedEvents(warn)).toEqual([
       expect.objectContaining({ event: 'conversations.damus_cleanup', threads: 2, messages: 1 }),
     ]);
-    expect(await conversations.unreadCount('acc', false, null)).toBe(0);
-    expect((await conversations.listVisible('acc', false, null, 10)).map((t) => t.id)).toEqual([
-      kept.id,
-    ]);
+    expect(await conversations.unreadCount('acc', false, null)).toBe(1);
+    expect(
+      (await conversations.listVisible('acc', false, null, 10)).map((t) => t.id).sort(),
+    ).toEqual([kept.id, zapper.id].sort());
     const dismiss = await push.claimPending(10, NOW.getTime() + 300_000, 60_000);
     expect(dismiss).toHaveLength(1);
     expect(dismiss[0]?.accountId).toBe('acc');
@@ -585,7 +591,7 @@ describe('removeUnadmittedDamusThreads', () => {
     expect(JSON.parse(dismiss[0]?.payload ?? '{}')).toEqual({
       type: 'dismiss',
       tags: [`conversation:${inbound.id}`],
-      unreadCount: 2,
+      unreadCount: 3,
     });
   });
 
@@ -597,6 +603,7 @@ describe('removeUnadmittedDamusThreads', () => {
     const first = await removeUnadmittedDamusThreads({
       conversations,
       pushStore: push,
+      zappers: noZappers,
       auth: noAccounts,
       nowMs: NOW.getTime(),
     });
@@ -609,6 +616,7 @@ describe('removeUnadmittedDamusThreads', () => {
       await removeUnadmittedDamusThreads({
         conversations,
         pushStore: push,
+        zappers: noZappers,
         auth: noAccounts,
         nowMs: NOW.getTime(),
       }),
@@ -620,6 +628,65 @@ describe('removeUnadmittedDamusThreads', () => {
     expect(await push.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
   });
 
+  it('reads and writes through the transaction stores the store hands over', async () => {
+    const conversations = new InMemoryConversationStore();
+    const outer = new InMemoryPushStore();
+    const inner = new InMemoryPushStore();
+    const innerConversations = new InMemoryConversationStore();
+    await subscribe(inner, 'acc');
+    const removed = { threads: [{ id: 'gone', memberId: 'acc' }], messages: 4 };
+    const tx = { query: async () => [], execute: async () => undefined };
+    vi.spyOn(conversations, 'removeDamusThreadsWithoutMemberMessage').mockImplementation(
+      async (_now, _keep, beforeCommit) => {
+        await beforeCommit(removed, tx);
+        return removed;
+      },
+    );
+    const seen: unknown[] = [];
+    expect(
+      await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: outer,
+        zappers: noZappers,
+        auth: noAccounts,
+        nowMs: NOW.getTime(),
+        storesFor: (client) => {
+          seen.push(client);
+          return { conversations: innerConversations, pushStore: inner };
+        },
+      }),
+    ).toEqual({ threads: 1, messages: 4 });
+    expect(seen).toEqual([tx]);
+    expect(await outer.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
+    const dismiss = await inner.claimPending(10, NOW.getTime(), 60_000);
+    expect(JSON.parse(dismiss[0]?.payload ?? '{}')).toEqual({
+      type: 'dismiss',
+      tags: ['conversation:gone'],
+      unreadCount: 0,
+    });
+  });
+
+  it('uses the given stores when a transaction client comes without a factory', async () => {
+    const conversations = new InMemoryConversationStore();
+    const push = new InMemoryPushStore();
+    await subscribe(push, 'acc');
+    const removed = { threads: [{ id: 'gone', memberId: 'acc' }], messages: 0 };
+    vi.spyOn(conversations, 'removeDamusThreadsWithoutMemberMessage').mockImplementation(
+      async (_now, _keep, beforeCommit) => {
+        await beforeCommit(removed, { query: async () => [], execute: async () => undefined });
+        return removed;
+      },
+    );
+    await removeUnadmittedDamusThreads({
+      conversations,
+      pushStore: push,
+      zappers: noZappers,
+      auth: noAccounts,
+      nowMs: NOW.getTime(),
+    });
+    expect(await push.claimPending(10, NOW.getTime(), 60_000)).toHaveLength(1);
+  });
+
   it('logs a failed removal and keeps booting', async () => {
     const conversations = new InMemoryConversationStore();
     vi.spyOn(conversations, 'removeDamusThreadsWithoutMemberMessage').mockRejectedValue(
@@ -629,6 +696,7 @@ describe('removeUnadmittedDamusThreads', () => {
       await removeUnadmittedDamusThreads({
         conversations,
         pushStore: new InMemoryPushStore(),
+        zappers: noZappers,
         auth: noAccounts,
         nowMs: NOW.getTime(),
       }),
@@ -638,35 +706,46 @@ describe('removeUnadmittedDamusThreads', () => {
     ]);
   });
 
-  it('logs a failed dismiss for one member and continues with the next', async () => {
+  it('fails the run when the zapper source fails, before removing anything', async () => {
+    const conversations = new InMemoryConversationStore();
+    const inbound = await conversations.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    expect(
+      await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: new InMemoryPushStore(),
+        zappers: {
+          listZapperPubkeys: async () => {
+            throw new Error('db down');
+          },
+        },
+        auth: noAccounts,
+        nowMs: NOW.getTime(),
+      }),
+    ).toEqual({ threads: 0, messages: 0 });
+    expect(parsedEvents(warn).map((e) => e['event'])).toEqual([
+      'conversations.damus_cleanup.failed',
+    ]);
+    expect((await conversations.getById(inbound.id))?.id).toBe(inbound.id);
+  });
+
+  it('fails the run when a dismiss push cannot be written, so a transactional store rolls back', async () => {
     const conversations = new InMemoryConversationStore();
     const push = new InMemoryPushStore();
-    await subscribe(push, 'second');
-    await conversations.openMemberDamus('first', 'aa'.repeat(32), NOW);
-    const second = await conversations.openMemberDamus('second', 'aa'.repeat(32), NOW);
-    const list = push.listByAccount.bind(push);
-    vi.spyOn(push, 'listByAccount').mockImplementation(async (accountId: string) => {
-      if (accountId === 'first') {
-        throw new Error('push down');
-      }
-      return list(accountId);
-    });
+    await subscribe(push, 'acc');
+    await conversations.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    vi.spyOn(push, 'enqueue').mockRejectedValue(new Error('push down'));
     expect(
       await removeUnadmittedDamusThreads({
         conversations,
         pushStore: push,
+        zappers: noZappers,
         auth: noAccounts,
         nowMs: NOW.getTime(),
       }),
-    ).toEqual({ threads: 2, messages: 0 });
+    ).toEqual({ threads: 0, messages: 0 });
     expect(parsedEvents(warn).map((e) => e['event'])).toEqual([
-      'conversations.damus_cleanup',
-      'conversations.damus_cleanup.dismiss_failed',
+      'push.dismiss.failed',
+      'conversations.damus_cleanup.failed',
     ]);
-    const dismiss = await push.claimPending(10, NOW.getTime(), 60_000);
-    expect(dismiss.map((row) => row.accountId)).toEqual(['second']);
-    expect(JSON.parse(dismiss[0]?.payload ?? '{}')).toMatchObject({
-      tags: [`conversation:${second.id}`],
-    });
   });
 });

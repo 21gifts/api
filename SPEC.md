@@ -7706,23 +7706,26 @@ way, even when a relay returns it.
 
 Stored member↔Damus threads are brought in line with this rule once. On the
 first SQL boot that carries it, `removeUnadmittedDamusThreads` removes every
-`member_damus` thread that holds no message sent by the member, with its
-messages, read markers, extra photos, translations, the `conversation` push
-outbox rows of its messages, and the invoice attempts that name the thread or
-one of its messages. `member_damus` threads in which the member sent at least
-one message, and all member↔member, member↔platform, and Moderators-group
-threads, stay. The run is recorded in `app_setting` (`member_damus_cleanup`) in
-the same transaction, so later boots remove nothing and a thread stored after
-the run stays; a failed run rolls back and is tried again on the next boot.
-Every deleted row is recorded in `db_change`. The boot logs one
+`member_damus` thread whose counterpart this rule would not admit as a known
+contact: the thread holds no message sent by the member, and its counterpart
+pubkey is not recorded in `nostr_zapper`. It is removed with its messages, read
+markers, extra photos, translations, the `conversation` push outbox rows of its
+messages, and the invoice attempts that name the thread or one of its messages.
+`member_damus` threads in which the member sent at least one message or whose
+counterpart is an entitled external zapper, and all member↔member,
+member↔platform, and Moderators-group threads, stay. Each affected member with
+a push subscription gets one dismiss push for the tags `conversation:<id>` of
+the removed threads, carrying the badge count after the removal; it is written
+in the same transaction as the deletes. The run is recorded in `app_setting`
+(`member_damus_cleanup`) in that transaction too, so later boots remove nothing
+and a thread stored after the run stays; any failure, a dismiss write
+included, rolls everything back and the next boot tries again. Every deleted
+and inserted row is recorded in `db_change`. The boot logs one
 `conversations.damus_cleanup` event with the number of removed threads and
 messages. `GET /conversations` no longer lists a removed thread or counts it in
-`unreadCount`, and each affected member with a push subscription gets one
-dismiss push for the tags `conversation:<id>` of the removed threads, carrying
-the badge count after the removal. A relay can return an event of a removed
-thread again within the query window; event-id dedupe no longer finds it, and
-the admission rule above decides it: a sender that is not a known contact is
-skipped, and an entitled external zapper is stored again.
+`unreadCount`. A relay can return an event of a removed thread again within
+the query window; event-id dedupe no longer finds it, and the admission rule
+above skips it, because its sender is not a known contact.
 
 Known limitation: if the payer's wallet publishes no kind:9735 receipt, the
 external zapper gains no website visibility. Operator manual settlement

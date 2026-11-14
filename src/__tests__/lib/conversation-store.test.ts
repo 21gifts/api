@@ -42,6 +42,14 @@ class MockSql implements SqlClient {
   }
 }
 
+/** No kept counterpart pubkeys for the Damus cleanup. */
+const NO_KEEP: ReadonlySet<string> = new Set();
+
+/** A cleanup hook that writes nothing. */
+async function noHook(): Promise<void> {
+  return undefined;
+}
+
 /** The same mock as one transaction client, for statements that need `transaction`. */
 function withTransaction(sql: MockSql): SqlClient {
   return {
@@ -662,8 +670,19 @@ describe('InMemoryConversationStore', () => {
     );
     const platform = await store.openMemberPlatform('acc', 'plat', NOW);
     const group = await store.ensureModeratorGroup('plat', NOW);
+    const zapper = await store.openMemberDamus('acc', 'dd'.repeat(32), NOW);
+    await store.appendMessage(
+      message({ id: 'z-1', conversationId: zapper.id, senderAccountId: null }),
+    );
+    const hooked: unknown[][] = [];
 
-    const removed = await store.removeDamusThreadsWithoutMemberMessage(NOW);
+    const removed = await store.removeDamusThreadsWithoutMemberMessage(
+      NOW,
+      new Set(['dd'.repeat(32)]),
+      async (done, tx) => {
+        hooked.push([done, tx, (await store.listAll(10)).length]);
+      },
+    );
 
     expect(removed.messages).toBe(2);
     expect(removed.threads.map((row) => row.id).sort()).toEqual([inbound.id, empty.id].sort());
@@ -674,30 +693,70 @@ describe('InMemoryConversationStore', () => {
     expect(await store.getPhoto('in-1')).toBeNull();
     expect(await store.getExtraPhoto('in-1', 1)).toBeNull();
     expect((await store.listAll(10)).map((row) => row.id).sort()).toEqual(
-      [wrote.id, pair.id, platform.id, group.id].sort(),
+      [wrote.id, pair.id, platform.id, group.id, zapper.id].sort(),
     );
     expect((await store.listAllMessages(10)).map((row) => row.id).sort()).toEqual([
       'p-1',
       'w-1',
       'w-2',
+      'z-1',
     ]);
+    expect(hooked).toEqual([[removed, null, 5]]);
     expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
     expect(await store.memberWroteToDamus('acc', 'bb'.repeat(32))).toBe(true);
   });
 
   it('removeDamusThreadsWithoutMemberMessage runs once per memory store', async () => {
     const store = new InMemoryConversationStore();
-    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW, NO_KEEP, noHook)).toEqual({
       threads: [],
       messages: 0,
     });
     const later = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
     await store.appendMessage(message({ conversationId: later.id, senderAccountId: null }));
-    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW, NO_KEEP, noHook)).toEqual({
       threads: [],
       messages: 0,
     });
     expect((await store.getById(later.id))?.id).toBe(later.id);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage keeps a zapper thread and calls no hook when nothing is removed', async () => {
+    const store = new InMemoryConversationStore();
+    const zapper = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: zapper.id, senderAccountId: null }));
+    let calls = 0;
+    expect(
+      await store.removeDamusThreadsWithoutMemberMessage(
+        NOW,
+        new Set(['aa'.repeat(32)]),
+        async () => {
+          calls += 1;
+        },
+      ),
+    ).toEqual({ threads: [], messages: 0 });
+    expect(calls).toBe(0);
+    expect((await store.getById(zapper.id))?.id).toBe(zapper.id);
+    expect(await store.unreadCount('acc', false, null)).toBe(1);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage removes a Damus thread without a counterpart pubkey', async () => {
+    const store = new InMemoryConversationStore([
+      thread({
+        id: 'no-key',
+        kind: 'member_damus',
+        accountA: 'acc',
+        accountB: null,
+        counterpartPubkey: null,
+      }),
+    ]);
+    const removed = await store.removeDamusThreadsWithoutMemberMessage(
+      NOW,
+      new Set(['aa'.repeat(32)]),
+      noHook,
+    );
+    expect(removed).toEqual({ threads: [{ id: 'no-key', memberId: 'acc' }], messages: 0 });
+    expect(await store.getById('no-key')).toBeUndefined();
   });
 
   it('removeDamusThreadsWithoutMemberMessage drops the unread count of a removed thread', async () => {
@@ -705,7 +764,7 @@ describe('InMemoryConversationStore', () => {
     const inbound = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
     await store.appendMessage(message({ conversationId: inbound.id, senderAccountId: null }));
     expect(await store.unreadCount('acc', false, null)).toBe(1);
-    await store.removeDamusThreadsWithoutMemberMessage(NOW);
+    await store.removeDamusThreadsWithoutMemberMessage(NOW, NO_KEEP, noHook);
     expect(await store.unreadCount('acc', false, null)).toBe(0);
     expect(await store.listVisible('acc', false, null, 10)).toEqual([]);
   });
@@ -1343,10 +1402,50 @@ describe('PostgresConversationStore', () => {
     const sql = new MockSql();
     sql.nextRows = [{ key: DAMUS_THREAD_CLEANUP_KEY }];
     await expect(
-      new PostgresConversationStore(sql).removeDamusThreadsWithoutMemberMessage(NOW),
+      new PostgresConversationStore(sql).removeDamusThreadsWithoutMemberMessage(
+        NOW,
+        NO_KEEP,
+        noHook,
+      ),
     ).rejects.toThrow('conversation cleanup needs a transaction');
     expect(sql.queries).toEqual([]);
     expect(sql.executes).toEqual([]);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage rolls back when the hook fails', async () => {
+    const sql = new MockSql();
+    sql.queryImpl = (text) => {
+      if (text.includes('INSERT INTO app_setting')) {
+        return [{ key: DAMUS_THREAD_CLEANUP_KEY }];
+      }
+      if (text.includes('SELECT c.id, c.account_a')) {
+        return [{ id: '00000000-0000-4000-8000-000000000001', account_a: 'acc' }];
+      }
+      return [];
+    };
+    let rolledBack = false;
+    const client: SqlClient = {
+      query: (text, params) => sql.query(text, params),
+      execute: (text, params) => sql.execute(text, params),
+      async transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T> {
+        try {
+          return await run(sql);
+        } catch (error) {
+          rolledBack = true;
+          throw error;
+        }
+      },
+    };
+    await expect(
+      new PostgresConversationStore(client).removeDamusThreadsWithoutMemberMessage(
+        NOW,
+        NO_KEEP,
+        async () => {
+          throw new Error('dismiss failed');
+        },
+      ),
+    ).rejects.toThrow('dismiss failed');
+    expect(rolledBack).toBe(true);
   });
 
   it('removeDamusThreadsWithoutMemberMessage propagates a failed delete from inside the transaction', async () => {
@@ -1375,7 +1474,11 @@ describe('PostgresConversationStore', () => {
       },
     };
     await expect(
-      new PostgresConversationStore(client).removeDamusThreadsWithoutMemberMessage(NOW),
+      new PostgresConversationStore(client).removeDamusThreadsWithoutMemberMessage(
+        NOW,
+        NO_KEEP,
+        noHook,
+      ),
     ).rejects.toThrow('delete failed');
     expect(rolledBack).toBe(true);
   });
@@ -1384,7 +1487,7 @@ describe('PostgresConversationStore', () => {
     const sql = new MockSql();
     sql.nextRows = [];
     const store = new PostgresConversationStore(withTransaction(sql));
-    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW, NO_KEEP, noHook)).toEqual({
       threads: [],
       messages: 0,
     });
@@ -1399,7 +1502,7 @@ describe('PostgresConversationStore', () => {
     const sql = new MockSql();
     sql.queryImpl = (text) => (text.includes('INSERT INTO app_setting') ? [{ key: 'k' }] : []);
     const store = new PostgresConversationStore(withTransaction(sql));
-    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW, NO_KEEP, noHook)).toEqual({
       threads: [],
       messages: 0,
     });
@@ -1407,6 +1510,10 @@ describe('PostgresConversationStore', () => {
     expect(sql.queries[1]?.text).toContain("c.kind = 'member_damus'");
     expect(sql.queries[1]?.text).toContain('m.sender_account_id IS NOT NULL');
     expect(sql.queries[1]?.text).toContain('FOR UPDATE');
+    expect(sql.queries[1]?.text).toContain(
+      "NOT (COALESCE(c.counterpart_pubkey, '') = ANY($1::text[]))",
+    );
+    expect(sql.queries[1]?.params).toEqual(['{}']);
     expect(sql.executes).toEqual([]);
   });
 
@@ -1448,7 +1555,16 @@ describe('PostgresConversationStore', () => {
       },
     };
     const store = new PostgresConversationStore(client);
-    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+    const hooked: unknown[] = [];
+    expect(
+      await store.removeDamusThreadsWithoutMemberMessage(
+        NOW,
+        new Set(['aa'.repeat(32)]),
+        async (done, hookTx) => {
+          hooked.push(done.messages, hookTx === tx, order.length);
+        },
+      ),
+    ).toEqual({
       threads: [
         { id: '00000000-0000-4000-8000-000000000001', memberId: 'acc' },
         { id: '00000000-0000-4000-8000-000000000002', memberId: 'other' },
@@ -1458,6 +1574,8 @@ describe('PostgresConversationStore', () => {
     expect(transactions).toBe(1);
     const literal =
       '{"00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002"}';
+    expect(order[1]?.params).toEqual([`{"${'aa'.repeat(32)}"}`]);
+    expect(hooked).toEqual([3, true, 9]);
     const deletes = order.slice(2);
     expect(deletes.map((row) => row.text.split('\n')[0])).toEqual([
       'DELETE FROM push_outbox p',

@@ -318,24 +318,38 @@ export interface ConversationStore {
   memberWroteToDamus(memberId: string, counterpartPubkey: string): Promise<boolean>;
 
   /**
-   * One-time removal of every `member_damus` thread that holds no message
-   * sent by the member (no message with a non-null `senderAccountId`),
-   * together with the rows that depend on it. Threads of the other kinds and
-   * `member_damus` threads in which the member sent at least one message stay
-   * untouched. Runs once per stored data set: the Postgres store records the
-   * run in `app_setting` (key {@link DAMUS_THREAD_CLEANUP_KEY}) in the same
-   * transaction and a later call removes nothing; the memory store runs once
-   * per instance. The Postgres store also deletes the `conversation` push
-   * outbox rows and the invoice attempts of those threads and messages, and
-   * their translations; the memory store removes only its own rows (threads,
-   * messages, photos, read markers), since a memory boot holds no stored row
-   * in the other memory stores.
+   * One-time removal of every `member_damus` thread whose counterpart the
+   * inbound direct-message admission rule would not admit: the thread holds
+   * no message sent by the member (no message with a non-null
+   * `senderAccountId`) and its counterpart pubkey is not in `keepPubkeys`
+   * (the entitled external zappers), together with the rows that depend on
+   * it. Threads of the other kinds stay untouched. Runs once per stored data
+   * set: the Postgres store records the run in `app_setting` (key
+   * {@link DAMUS_THREAD_CLEANUP_KEY}) in the same transaction and a later call
+   * removes nothing; the memory store runs once per instance. The Postgres
+   * store also deletes the `conversation` push outbox rows and the invoice
+   * attempts of those threads and messages, and their translations; the
+   * memory store removes only its own rows (threads, messages, photos, read
+   * markers), since a memory boot holds no stored row in the other memory
+   * stores.
+   *
+   * When at least one thread was removed, `beforeCommit` runs after the
+   * deletes: on Postgres inside the same transaction with its client, so its
+   * writes commit together with the deletes and a failure rolls everything
+   * back, the run marker included; on the memory store after the removal
+   * with `null` (no rollback there).
    *
    * @param now - Time recorded with the run.
+   * @param keepPubkeys - Lowercase counterpart pubkeys whose threads stay.
+   * @param beforeCommit - Work that must commit with the removal.
    * @returns The removed threads with their member and the number of removed
    *   messages; empty when the run already happened or nothing matched.
    */
-  removeDamusThreadsWithoutMemberMessage(now: Date): Promise<RemovedDamusThreads>;
+  removeDamusThreadsWithoutMemberMessage(
+    now: Date,
+    keepPubkeys: ReadonlySet<string>,
+    beforeCommit: (removed: RemovedDamusThreads, tx: SqlClient | null) => Promise<void>,
+  ): Promise<RemovedDamusThreads>;
 
   /**
    * Open or insert the closed singleton `moderator_group` thread.
@@ -1008,14 +1022,19 @@ export class InMemoryConversationStore implements ConversationStore {
     );
   }
 
-  removeDamusThreadsWithoutMemberMessage(_now: Date): Promise<RemovedDamusThreads> {
+  async removeDamusThreadsWithoutMemberMessage(
+    _now: Date,
+    keepPubkeys: ReadonlySet<string>,
+    beforeCommit: (removed: RemovedDamusThreads, tx: SqlClient | null) => Promise<void>,
+  ): Promise<RemovedDamusThreads> {
     if (this.#damusCleanupDone) {
-      return Promise.resolve({ threads: [], messages: 0 });
+      return { threads: [], messages: 0 };
     }
     this.#damusCleanupDone = true;
     const removed = this.#threads.filter(
       (thread) =>
         thread.kind === 'member_damus' &&
+        !keepPubkeys.has(thread.counterpartPubkey ?? '') &&
         !this.#messages.some(
           (row) => row.conversationId === thread.id && row.senderAccountId !== null,
         ),
@@ -1041,10 +1060,14 @@ export class InMemoryConversationStore implements ConversationStore {
         this.#threads.splice(i, 1);
       }
     }
-    return Promise.resolve({
+    const result = {
       threads: removed.map((thread) => ({ id: thread.id, memberId: thread.accountA })),
       messages,
-    });
+    };
+    if (result.threads.length > 0) {
+      await beforeCommit(result, null);
+    }
+    return result;
   }
 
   /**
@@ -1746,18 +1769,26 @@ export class PostgresConversationStore implements ConversationStore {
    * In one transaction (a client without `transaction` is refused before any
    * statement, so the marker never commits without the deletes): records the run in
    * `app_setting` (`ON CONFLICT DO NOTHING`; an existing row means the run
-   * already happened and nothing is removed), locks the threads in scope, and
-   * deletes their `conversation` push outbox rows, the invoice attempts that
-   * name the thread or one of its messages, translations, extra photos, read
-   * markers, messages, and finally the threads. `trg_db_change` records every
-   * deleted row.
+   * already happened and nothing is removed), locks the threads in scope
+   * (no member message, counterpart not in `keepPubkeys`), and deletes their
+   * `conversation` push outbox rows, the invoice attempts that name the thread
+   * or one of its messages, translations, extra photos, read markers,
+   * messages, and finally the threads. Then `beforeCommit` runs with the
+   * transaction client, so its writes commit with the deletes. `trg_db_change`
+   * records every deleted and inserted row.
    *
    * @param now - Time recorded in `app_setting`.
+   * @param keepPubkeys - Lowercase counterpart pubkeys whose threads stay.
+   * @param beforeCommit - Work that commits or rolls back with the removal.
    * @returns The removed threads with their member and the removed message count.
    * @throws When the client has no `transaction`, and on SQL failures; the
    *   transaction then rolls back, so the next boot runs it again.
    */
-  async removeDamusThreadsWithoutMemberMessage(now: Date): Promise<RemovedDamusThreads> {
+  async removeDamusThreadsWithoutMemberMessage(
+    now: Date,
+    keepPubkeys: ReadonlySet<string>,
+    beforeCommit: (removed: RemovedDamusThreads, tx: SqlClient | null) => Promise<void>,
+  ): Promise<RemovedDamusThreads> {
     const run = async (tx: SqlClient): Promise<RemovedDamusThreads> => {
       const marked = await tx.query<{ key: string }>(
         `INSERT INTO app_setting (key, value, updated_at) VALUES ($1, $2, $3)
@@ -1771,12 +1802,14 @@ export class PostgresConversationStore implements ConversationStore {
         `SELECT c.id, c.account_a
          FROM conversation c
          WHERE c.kind = 'member_damus'
+           AND NOT (COALESCE(c.counterpart_pubkey, '') = ANY($1::text[]))
            AND NOT EXISTS (
              SELECT 1 FROM conversation_message m
              WHERE m.conversation_id = c.id AND m.sender_account_id IS NOT NULL
            )
          ORDER BY c.id
          FOR UPDATE`,
+        [postgresTextArrayLiteral([...keepPubkeys])],
       );
       if (threads.length === 0) {
         return { threads: [], messages: 0 };
@@ -1818,10 +1851,12 @@ export class PostgresConversationStore implements ConversationStore {
         ids,
       );
       await tx.execute(`DELETE FROM conversation WHERE id = ANY($1::uuid[])`, ids);
-      return {
+      const removed = {
         threads: threads.map((row) => ({ id: row.id, memberId: row.account_a })),
         messages: messages.length,
       };
+      await beforeCommit(removed, tx);
+      return removed;
     };
     if (this.#sql.transaction === undefined) {
       throw new Error('conversation cleanup needs a transaction');

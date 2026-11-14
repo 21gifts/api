@@ -9539,7 +9539,11 @@ describe('inbound direct-message admission', () => {
       eventId: wrap.id,
     });
     expect(await ctx.conversations.unreadCount('acc', false, null)).toBe(1);
-    const removed = await ctx.conversations.removeDamusThreadsWithoutMemberMessage(new Date(NOW));
+    const removed = await ctx.conversations.removeDamusThreadsWithoutMemberMessage(
+      new Date(NOW),
+      new Set(),
+      async () => undefined,
+    );
     expect(removed).toEqual({ threads: [{ id: thread.id, memberId: 'acc' }], messages: 2 });
     expect(await ctx.conversations.getMessageByEventId(direct.id)).toBeUndefined();
     expect(await ctx.conversations.getMessageByEventId(wrap.id)).toBeUndefined();

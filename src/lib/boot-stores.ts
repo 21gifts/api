@@ -396,7 +396,9 @@ export interface BootFxOptions {
  * `daily_roster.accounts_linked` with `linked` and `unlinked`.
  * Once the Postgres conversation, push, and notification stores exist,
  * `removeUnadmittedDamusThreads` removes, once per database, the
- * `member_damus` threads that hold no message sent by the member and logs
+ * `member_damus` threads that hold no message sent by the member and whose
+ * counterpart is not an entitled external zapper, writes the dismiss pushes in
+ * the same transaction (stores built on the transaction client), and logs
  * `conversations.damus_cleanup`; a memory boot holds no stored thread and
  * does not run it.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
@@ -724,8 +726,14 @@ export async function openBootStores(
     conversations: conversationStore,
     pushStore,
     notifications: notificationStore,
+    zappers: messageStore,
     auth: authStore,
     nowMs: now(),
+    storesFor: (tx) => ({
+      conversations: new PostgresConversationStore(tx, { fetchImpl, fiatRates, now }),
+      pushStore: new PostgresPushStore(tx),
+      notifications: new PostgresNotificationStore(tx),
+    }),
   });
   const trustStore = new PostgresTrustStore(sqlClient);
   const fundingStore = new PostgresFundingStore(sqlClient, transactions);

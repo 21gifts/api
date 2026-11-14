@@ -2995,6 +2995,16 @@ describe('removeUnadmittedDamusThreads on Postgres', () => {
       const ticket = await conversations.openMemberPlatform(member, platform, now);
       await conversations.appendMessage(row(ticket.id, platform));
       const group = await conversations.ensureModeratorGroup(platform, now);
+      const messages = new PostgresMessageStore(client);
+      const zapperPubkey = hex64();
+      await messages.recordZapper(zapperPubkey.toUpperCase(), hex64(), now);
+      const zapper = await conversations.openMemberDamus(member, zapperPubkey, now);
+      await conversations.appendMessage(row(zapper.id, null));
+      const txStores = (tx: SqlClient) => ({
+        conversations: new PostgresConversationStore(tx),
+        pushStore: new PostgresPushStore(tx),
+        notifications: new PostgresNotificationStore(tx),
+      });
 
       const count = async (text: string, params: readonly unknown[]): Promise<number> =>
         Number((await client.query<{ n: string | number }>(text, params))[0]?.n ?? 0);
@@ -3017,12 +3027,41 @@ describe('removeUnadmittedDamusThreads on Postgres', () => {
       ];
       expect(await rowsOf(inbound.id)).toEqual([2, 1, 1]);
 
+      const failed = await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        notifications: new PostgresNotificationStore(client),
+        zappers: messages,
+        auth,
+        nowMs: now.getTime(),
+        storesFor: (tx) => {
+          const stores = txStores(tx);
+          stores.pushStore.enqueue = async () => {
+            throw new Error('push outbox unavailable');
+          };
+          return stores;
+        },
+      });
+      expect(failed).toEqual({ threads: 0, messages: 0 });
+      expect(await threadsLeft([inbound.id, empty.id])).toBe(2);
+      expect(await rowsOf(inbound.id)).toEqual([2, 1, 1]);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [removedPush.id]),
+      ).toBe(1);
+      expect(
+        await count('SELECT count(*) AS n FROM app_setting WHERE key = $1', [
+          DAMUS_THREAD_CLEANUP_KEY,
+        ]),
+      ).toBe(0);
+
       const first = await removeUnadmittedDamusThreads({
         conversations,
         pushStore: push,
         notifications: new PostgresNotificationStore(client),
+        zappers: messages,
         auth,
         nowMs: now.getTime(),
+        storesFor: txStores,
       });
       expect(first.threads).toBeGreaterThanOrEqual(2);
       expect(first.messages).toBeGreaterThanOrEqual(2);
@@ -3041,12 +3080,13 @@ describe('removeUnadmittedDamusThreads on Postgres', () => {
       expect(
         await count('SELECT count(*) AS n FROM message_invoice WHERE id = $1', [invoiceId]),
       ).toBe(0);
-      expect(await threadsLeft([wrote.id, pair.id, ticket.id, group.id])).toBe(4);
+      expect(await threadsLeft([wrote.id, pair.id, ticket.id, group.id, zapper.id])).toBe(5);
+      expect(await rowsOf(zapper.id)).toEqual([1, 0, 0]);
       expect(await rowsOf(wrote.id)).toEqual([2, 1, 1]);
       expect(
         await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [keptPush.id]),
       ).toBe(1);
-      expect(await conversations.unreadCount(member, false, platform)).toBe(2);
+      expect(await conversations.unreadCount(member, false, platform)).toBe(3);
       const dismiss = await client.query<{ payload: string }>(
         `SELECT payload FROM push_outbox WHERE account_id = $1 AND type = 'dismiss'`,
         [member],
@@ -3059,7 +3099,7 @@ describe('removeUnadmittedDamusThreads on Postgres', () => {
       expect(dismissPayload.tags.sort()).toEqual(
         [`conversation:${inbound.id}`, `conversation:${empty.id}`].sort(),
       );
-      expect(dismissPayload.unreadCount).toBe(2);
+      expect(dismissPayload.unreadCount).toBe(3);
       expect(
         await count('SELECT count(*) AS n FROM app_setting WHERE key = $1', [
           DAMUS_THREAD_CLEANUP_KEY,
@@ -3072,11 +3112,15 @@ describe('removeUnadmittedDamusThreads on Postgres', () => {
         await removeUnadmittedDamusThreads({
           conversations,
           pushStore: push,
+          zappers: messages,
           auth,
           nowMs: now.getTime(),
+          storesFor: txStores,
         }),
       ).toEqual({ threads: 0, messages: 0 });
-      expect(await threadsLeft([later.id, wrote.id, pair.id, ticket.id, group.id])).toBe(5);
+      expect(await threadsLeft([later.id, wrote.id, pair.id, ticket.id, group.id, zapper.id])).toBe(
+        6,
+      );
     } finally {
       await closeIfPossible(sql);
     }
