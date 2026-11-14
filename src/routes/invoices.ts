@@ -578,6 +578,7 @@ export async function settleProvenGift(
 
 /**
  * Issue one gift invoice for a decided payout (`POST /fond/payouts/:id/invoice`).
+ * Unpaid invoices past their sweep window are dropped from the store first.
  * After validation, a locked live top-level closed
  * credit is refused before passkey/funding/welcome/post/platform gates.
  * LNURL-pay fetch, BOLT11 check, and invoice persistence follow those gates.
@@ -590,6 +591,7 @@ export async function issueGiftInvoice(
   deps: GiftActionDeps,
   input: IssueGiftInvoiceInput,
 ): Promise<IssueGiftInvoiceResult> {
+  deps.store.sweep(deps.now());
   const messageId = input.messageId;
   if (messageId !== undefined && MESSAGE_ID_RE.test(messageId)) {
     const canonicalInput = { ...input, messageId: messageId.toLowerCase() };

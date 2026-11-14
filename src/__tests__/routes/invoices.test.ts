@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GIFT_INVOICE_MAX_MSAT, type LnurlServerConfig } from '@/lib/config';
+import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
@@ -729,6 +729,27 @@ describe('issueGiftInvoice', () => {
     expect(invoice.comment).toBe('21gifts daily');
     expect(store.get(invoice.id)).toEqual(invoice);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
+  });
+
+  it('drops unpaid invoices past the sweep window before issuing', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const store = new InMemoryInvoiceStore();
+    const deps = actionDeps({
+      authStore,
+      store,
+      messageStore: livePostStore(),
+      fetchImpl: happyFetch(),
+    });
+    const first = issuedInvoice(
+      await issueGiftInvoice(deps, { address: ADDRESS, amountMsat: 1000 }),
+    );
+    const later = first.expiresAt + GIFT_INVOICE_TTL_MS;
+    const second = issuedInvoice(
+      await issueGiftInvoice({ ...deps, now: () => later }, { address: ADDRESS, amountMsat: 1000 }),
+    );
+    expect(store.get(first.id)).toBeUndefined();
+    expect(store.get(second.id)).toEqual(second);
   });
 
   it('prints invoice.issued with addressRef and no address, and the sink keeps the address', async () => {
