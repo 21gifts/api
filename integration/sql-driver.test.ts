@@ -9338,6 +9338,7 @@ describe('PostgresWalletUsageStore', () => {
     const paymentHashes: string[] = [];
     const messageIds: string[] = [];
     const receiptIds: string[] = [];
+    const sparkInvoices: string[] = [];
     // Every inserted text id carries this prefix, so the assertions never read
     // another run's rows from the shared database.
     const run = `usage-${crypto.randomUUID()}`;
@@ -9349,6 +9350,7 @@ describe('PostgresWalletUsageStore', () => {
       await migratePosSchema(client);
       await migrateFondPayoutSchema(client);
       await migrateWalletSchema(client);
+      await migrateSparkInvoiceSchema(client);
       await migrateDbChangeSchema(client);
 
       const previous = await client.query<{ id: string }>(
@@ -9418,6 +9420,7 @@ describe('PostgresWalletUsageStore', () => {
         counterpartyAccountId: string | null;
         paymentHash: string | null;
         invoice: string | null;
+        destination?: string | null;
       }): Promise<void> => {
         await client.execute(
           `INSERT INTO wallet_payment (
@@ -9425,7 +9428,7 @@ describe('PostgresWalletUsageStore', () => {
              method, payment_hash, invoice, destination, description, lnurl_comment,
              category, counterparty_account_id, first_seen_at, updated_at
            ) VALUES (
-             $1,$2,$3,$4,$5,$6,$7,'lightning',$8,$9,NULL,NULL,NULL,$10,$11,$7,$7
+             $1,$2,$3,$4,$5,$6,$7,'lightning',$8,$9,$12,NULL,NULL,$10,$11,$7,$7
            )`,
           [
             row.accountId,
@@ -9439,6 +9442,7 @@ describe('PostgresWalletUsageStore', () => {
             row.invoice,
             row.category,
             row.counterpartyAccountId,
+            row.destination ?? null,
           ],
         );
       };
@@ -9454,6 +9458,23 @@ describe('PostgresWalletUsageStore', () => {
              id, utc_day, kind, address, amount_usd, comment, status, bolt11, spark_invoice
            ) VALUES ($1, '2400-01-01', 'welcome', $2, '1.00', 'usage', $3, $4, $5)`,
           [id, `${run}-${id}`, status, bolt, spark],
+        );
+      };
+      const insertSparkInvoice = async (paymentHash: string, invoice: string): Promise<void> => {
+        sparkInvoices.push(invoice);
+        await client.execute(
+          `INSERT INTO spark_invoice (
+             payment_hash, invoice, receiver_pubkey, amount_sats, bolt11, zap_request,
+             created_at, status
+           ) VALUES ($1,$2,$3,1,$4,$5,$6,'settled')`,
+          [
+            paymentHash,
+            invoice,
+            hex64(),
+            `${run}-spark-bolt-${crypto.randomUUID()}`,
+            `${run}-spark-zap-request-${crypto.randomUUID()}`,
+            at(0),
+          ],
         );
       };
 
@@ -9717,6 +9738,9 @@ describe('PostgresWalletUsageStore', () => {
       const heartHash = hex64();
       const invoiceOnlyHash = hex64();
       const zapHash = hex64();
+      const sparkInvoiceHash = hex64();
+      const sparkDestinationHash = hex64();
+      const sparkConversationHash = hex64();
       await insertPayment({
         accountId: memberA,
         paymentId: `${run}-conversation`,
@@ -9794,6 +9818,49 @@ describe('PostgresWalletUsageStore', () => {
         counterpartyAccountId: memberB,
         paymentHash: zapHash,
         invoice: null,
+      });
+      await insertSparkInvoice(sparkInvoiceHash, `${run}-spark-forum`);
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-spark-invoice`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 47,
+        feeSats: 0,
+        paidAt: at(895),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: `${run}-spark-forum`,
+      });
+      await insertSparkInvoice(sparkDestinationHash, `${run}-spark-destination`);
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-spark-destination`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 48,
+        feeSats: 0,
+        paidAt: at(896),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: null,
+        destination: `${run}-spark-destination`,
+      });
+      await insertSparkInvoice(sparkConversationHash, `${run}-spark-conversation`);
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-spark-conversation`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 49,
+        feeSats: 0,
+        paidAt: at(897),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: `${run}-spark-conversation`,
       });
 
       const forumHeartAt = at(30);
@@ -9981,6 +10048,42 @@ describe('PostgresWalletUsageStore', () => {
         hiddenNote: false,
         paid: true,
       });
+      await insertForum({
+        createdAt: at(898),
+        amountSats: 47,
+        result: 'ok',
+        heart: false,
+        paymentHash: sparkInvoiceHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: at(899),
+        amountSats: 48,
+        result: 'ok',
+        heart: false,
+        paymentHash: sparkDestinationHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: at(900),
+        amountSats: 49,
+        result: 'ok',
+        heart: false,
+        paymentHash: sparkConversationHash,
+        pr: null,
+        description: null,
+        conversationId: crypto.randomUUID(),
+        hiddenNote: false,
+        paid: true,
+      });
       // A zap receipt gift: claimed hash, living note, no heart invoice.
       const zapReceiptId = `${run}-zap-receipt`;
       receiptIds.push(zapReceiptId);
@@ -10133,8 +10236,8 @@ describe('PostgresWalletUsageStore', () => {
       expect(
         ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
       ).toEqual([
-        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 61, 62, 63, 64, 65, 150, 500, 1000, 12321, 69089,
-        293955,
+        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 61, 62, 63, 64, 65, 150, 500, 1000,
+        12321, 69089, 293955,
       ]);
       const pair = ours.filter((row) => row.amountSats === 63);
       expect(pair).toHaveLength(1);
@@ -10273,6 +10376,9 @@ describe('PostgresWalletUsageStore', () => {
       expect(byAmount(45).category).toBe('platform');
       expect(byAmount(46).isForumGift).toBe(true);
       expect(byAmount(46).category).toBe('gift');
+      expect(byAmount(47).isForumGift).toBe(true);
+      expect(byAmount(48).isForumGift).toBe(true);
+      expect(byAmount(49).isForumGift).toBe(false);
 
       const forum = await store.forumInvoices(since.getTime());
       const forumAt = (createdAt: Date) =>
@@ -10301,7 +10407,7 @@ describe('PostgresWalletUsageStore', () => {
       expect(forumAt(forumHiddenAt)).toBeUndefined();
       expect(forum.every((row) => row.createdAt.getTime() >= since.getTime())).toBe(true);
       expect(forum.map((row) => row.amountSats).sort((left, right) => left - right)).toEqual([
-        5, 21, 45,
+        5, 21, 45, 47, 48,
       ]);
 
       const charges = await store.shopCharges(since.getTime());
@@ -10344,6 +10450,11 @@ describe('PostgresWalletUsageStore', () => {
       if (payoutIds.length > 0) {
         await client.execute(`DELETE FROM fond_payout WHERE id = ANY($1::uuid[])`, [
           postgresTextArrayLiteral(payoutIds),
+        ]);
+      }
+      if (sparkInvoices.length > 0) {
+        await client.execute(`DELETE FROM spark_invoice WHERE invoice = ANY($1::text[])`, [
+          postgresTextArrayLiteral(sparkInvoices),
         ]);
       }
       if (platformId !== undefined) {
