@@ -4372,7 +4372,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Encodes strings as one Postgres text-array literal (`{}` when empty; each value double-quoted; a backslash or double quote inside a value is escaped). Bun SQL does not encode a JavaScript array (`malformed array literal`).
 - **Inputs:** `readonly string[]`.
 - **Returns / side effects:** One text-array literal string. No I/O.
-- **Used by:** `PostgresFundingStore.transition` and `PostgresMessageStore` (active feed staff ids, missing-hashtag unnest, exclude ids, `getByIds`).
+- **Used by:** `PostgresFundingStore.transition`, `PostgresMessageStore` (active feed staff ids, missing-hashtag unnest, exclude ids, `getByIds`), and `PostgresPosStore.listLatestCreatedByAccount` (account ids).
 
 ## Function: PostgresFundingStore
 
