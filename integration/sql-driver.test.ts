@@ -3718,6 +3718,7 @@ describe('GET /pos received without a till charge in Postgres', () => {
     const shopKey = `02${hex64()}`;
     const previousKey = `03${hex64()}`;
     const payerKey = `02${hex64()}`;
+    const mergedKey = `03${hex64()}`;
     const prefix = crypto.randomUUID();
     const id = (name: string): string => `${prefix}-${name}`;
     const now = Date.parse('2026-11-12T12:00:00.000Z');
@@ -3851,6 +3852,13 @@ describe('GET /pos received without a till charge in Postgres', () => {
         receipt('deposit', 5, { type: 'utxo_swap' }),
         receipt('from-previous', 5, { type: 'transfer', counterpartyPubkeys: [previousKey] }),
         receipt('self', 5, { type: 'transfer', counterpartyPubkeys: [shopKey] }),
+        // An account merge moved in the transfers of mergedKey, not its wallet row.
+        receipt('merged-side', 6, {
+          walletPubkey: mergedKey,
+          direction: 'out',
+          counterpartyPubkeys: [shopKey],
+        }),
+        receipt('from-merged', 6, { type: 'transfer', counterpartyPubkeys: [mergedKey] }),
         receipt('spark-paid', 8, {
           type: 'transfer',
           sparkInvoice: ` ${sparkPaid.toUpperCase()} `,

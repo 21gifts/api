@@ -792,6 +792,8 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
   const ALLOW = 300_000;
   const PREVIOUS = `03${'e'.repeat(64)}`;
   const PAYER = `02${'f'.repeat(64)}`;
+  const MERGED = `02${'9'.repeat(64)}`;
+  const FOREIGN = `03${'8'.repeat(64)}`;
   const HASH_A = 'aa'.repeat(32);
   const HASH_B = 'bb'.repeat(32);
   const HASH_C = 'cc'.repeat(32);
@@ -850,10 +852,20 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
         receipt('leaf-swap', 5, { type: 'swap' }),
         receipt('from-previous', 5, { type: 'transfer', counterpartyPubkeys: [PREVIOUS] }),
         receipt('self', 5, { type: 'transfer', counterpartyPubkeys: [OWNER] }),
+        // An account merge moved in the transfers of wallet MERGED, not its wallet row.
+        receipt('merged-side', 6, {
+          walletPubkey: MERGED,
+          direction: 'out',
+          counterpartyPubkeys: [OWNER],
+        }),
+        receipt('from-merged', 6, { type: 'transfer', counterpartyPubkeys: [MERGED] }),
+        receipt('other-account-wallet', 6, { accountId: 'other', walletPubkey: FOREIGN }),
+        receipt('from-foreign', 7, { type: 'transfer', counterpartyPubkeys: [FOREIGN] }),
       ],
       { ownWalletKeys: [PREVIOUS] },
     );
     await expect(store.listTillReceipts(query())).resolves.toEqual([
+      { id: 'from-foreign', amountSats: 21, receivedAt: at(7), kind: 'spark' },
       { id: 'ln', amountSats: 2100, receivedAt: at(10), kind: 'lightning' },
       { id: 'spark', amountSats: 21, receivedAt: at(20), kind: 'spark' },
     ]);

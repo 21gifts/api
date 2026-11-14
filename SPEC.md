@@ -1940,8 +1940,11 @@ returned transfers are not listed. Amount and time come only from that
 server-observed record.
 
 - **Not a payment from someone else.** A transfer whose sender key is one of
-  the account's own current or previous wallet keys (a move between the
-  member's own wallets) is not listed. Payments from anyone else are listed,
+  the account's own wallet keys (a move between the member's own wallets) is
+  not listed. Its own wallet keys are its current and previous wallets and
+  every wallet whose `wallet_transfer` rows it holds, so a wallet that an
+  account merge moved in (the merge moves the transfers, not the
+  `previous_wallet` row) still counts as its own. Payments from anyone else are listed,
   including the platform account and other members, because they are
   payments the wallet received.
 - **No payment twice.** A payment that settled one of the account's open

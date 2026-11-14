@@ -154,7 +154,7 @@ export interface TillReceiptCharge {
 
 /** Collaborator data of the in-memory till receipt read (the SQL adapter joins the tables). */
 export interface TillReceiptContext {
-  /** Current and previous wallet keys of the account. */
+  /** Current and previous wallet keys of the account (the wallets of its own rows count too). */
   ownWalletKeys: readonly string[];
   /** The account's till charges. */
   charges: readonly TillReceiptCharge[];
@@ -171,7 +171,9 @@ export interface TillReceiptStore {
   /**
    * List the account's completed incoming Lightning receipts and plain Spark
    * transfers that settled none of its open or paid till charges, newest first.
-   * Moves between the account's own current and previous wallets are left out.
+   * Moves between the account's own wallets are left out: its current and
+   * previous wallets and every wallet whose transfers it holds (an account
+   * merge moves the merged account's transfers, not its wallet rows).
    * A Spark payment settled a charge when its Spark invoice is the charge's. A
    * Lightning receipt settled a charge when the account's own wallet report of
    * that transfer id carries a payment hash recorded for the charge; while that
@@ -243,6 +245,11 @@ function selectTillReceipts(
       !charge.invoices.some((entry) => reportedHashes.has(entry.paymentHash))
     );
   });
+  // Every wallet whose transfers the account holds is its own, also a wallet an account merge moved in.
+  const ownKeys = new Set([
+    ...context.ownWalletKeys,
+    ...rows.filter((row) => row.accountId === query.accountId).map((row) => row.walletPubkey),
+  ]);
   const byId = new Map<string, TillReceipt>();
   for (const row of rows) {
     const created = row.transferCreatedAt?.getTime();
@@ -253,9 +260,7 @@ function selectTillReceipts(
       (row.type !== 'preimage_swap' && row.type !== 'transfer') ||
       created === undefined ||
       created < query.sinceMs ||
-      row.counterpartyPubkeys.some(
-        (key) => key === row.walletPubkey || context.ownWalletKeys.includes(key),
-      ) ||
+      row.counterpartyPubkeys.some((key) => ownKeys.has(key)) ||
       live.some((charge) => settles(row, charge))
     ) {
       continue;
@@ -991,6 +996,9 @@ export class PostgresWalletTransferStore
          SELECT spark_pubkey AS pubkey FROM account WHERE id = $1 AND spark_pubkey IS NOT NULL
          UNION
          SELECT spark_pubkey FROM previous_wallet WHERE account_id = $1
+         UNION
+         -- Every wallet whose transfers the account holds, also one an account merge moved in.
+         SELECT DISTINCT wallet_pubkey FROM wallet_transfer WHERE account_id = $1
        ),
        till_charge AS (
          SELECT id, lower(btrim(spark_invoice)) AS spark_invoice, paid_at
@@ -1007,7 +1015,7 @@ export class PostgresWalletTransferStore
            AND t.status = 'completed'
            AND t.type IN ('preimage_swap', 'transfer')
            AND t.transfer_created_at >= $2
-           AND NOT (t.counterparty_pubkeys && (ARRAY(SELECT pubkey FROM own_key) || t.wallet_pubkey))
+           AND NOT (t.counterparty_pubkeys && ARRAY(SELECT pubkey FROM own_key))
            AND NOT EXISTS (
              SELECT 1 FROM till_charge AS c
              WHERE t.spark_invoice IS NOT NULL AND c.spark_invoice = lower(btrim(t.spark_invoice))
