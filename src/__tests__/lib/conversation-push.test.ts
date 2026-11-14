@@ -6,7 +6,11 @@ import {
   type ConversationMessageRow,
   type ConversationThread,
 } from '@/lib/conversation';
-import { inboxUnreadCountFor, notifyConversationMessage } from '@/lib/conversation-push';
+import {
+  inboxUnreadCountFor,
+  notifyConversationMessage,
+  removeUnadmittedDamusThreads,
+} from '@/lib/conversation-push';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
@@ -516,5 +520,153 @@ describe('notifyConversationMessage', () => {
       }),
     ).rejects.toThrow('conversations.push.failed');
     expect(parsedEvents(warn).some((e) => e['event'] === 'conversations.push.failed')).toBe(true);
+  });
+});
+
+describe('removeUnadmittedDamusThreads', () => {
+  const noAccounts = {
+    getAccount: async () => undefined,
+    listAccounts: async () => [],
+  };
+
+  it('removes the threads, logs one event, and closes their device notifications with the new badge', async () => {
+    const conversations = new InMemoryConversationStore();
+    const push = new InMemoryPushStore();
+    const notifications = new InMemoryNotificationStore();
+    await subscribe(push, 'acc');
+    const inbound = await conversations.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    const inboundRow = message({ conversationId: inbound.id, senderAccountId: null });
+    await conversations.appendMessage(inboundRow);
+    await notifyConversationMessage({
+      conversations,
+      authStore: new InMemoryAuthStore(),
+      pushStore: push,
+      notifications,
+      thread: (await conversations.getById(inbound.id)) as ConversationThread,
+      message: inboundRow,
+      nowMs: NOW.getTime(),
+    });
+    const before = await push.claimPending(10, NOW.getTime(), 60_000);
+    expect(before.map((row) => row.type)).toEqual(['conversation']);
+    expect(JSON.parse(before[0]?.payload ?? '{}')).toMatchObject({
+      tag: `conversation:${inbound.id}`,
+      unreadCount: 1,
+    });
+    await push.markSent(before[0]?.id ?? '', NOW.getTime());
+    const kept = await conversations.openMemberDamus('acc', 'bb'.repeat(32), NOW);
+    await conversations.appendMessage(
+      message({ id: 'kept-1', conversationId: kept.id, senderAccountId: 'acc' }),
+    );
+    await conversations.openMemberDamus('nosub', 'aa'.repeat(32), NOW);
+    vi.spyOn(notifications, 'unreadCount').mockResolvedValue(2);
+    warn.mockClear();
+
+    expect(
+      await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        notifications,
+        auth: noAccounts,
+        nowMs: NOW.getTime() + 120_000,
+      }),
+    ).toEqual({ threads: 2, messages: 1 });
+
+    expect(parsedEvents(warn)).toEqual([
+      expect.objectContaining({ event: 'conversations.damus_cleanup', threads: 2, messages: 1 }),
+    ]);
+    expect(await conversations.unreadCount('acc', false, null)).toBe(0);
+    expect((await conversations.listVisible('acc', false, null, 10)).map((t) => t.id)).toEqual([
+      kept.id,
+    ]);
+    const dismiss = await push.claimPending(10, NOW.getTime() + 300_000, 60_000);
+    expect(dismiss).toHaveLength(1);
+    expect(dismiss[0]?.accountId).toBe('acc');
+    expect(dismiss[0]?.type).toBe('dismiss');
+    expect(JSON.parse(dismiss[0]?.payload ?? '{}')).toEqual({
+      type: 'dismiss',
+      tags: [`conversation:${inbound.id}`],
+      unreadCount: 2,
+    });
+  });
+
+  it('is a no-op with a zero event on a second run and without a notification store', async () => {
+    const conversations = new InMemoryConversationStore();
+    const push = new InMemoryPushStore();
+    await subscribe(push, 'acc');
+    await conversations.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    const first = await removeUnadmittedDamusThreads({
+      conversations,
+      pushStore: push,
+      auth: noAccounts,
+      nowMs: NOW.getTime(),
+    });
+    expect(first).toEqual({ threads: 1, messages: 0 });
+    const dismiss = await push.claimPending(10, NOW.getTime(), 60_000);
+    expect(JSON.parse(dismiss[0]?.payload ?? '{}')).toMatchObject({ unreadCount: 0 });
+    const again = await conversations.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    warn.mockClear();
+    expect(
+      await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        auth: noAccounts,
+        nowMs: NOW.getTime(),
+      }),
+    ).toEqual({ threads: 0, messages: 0 });
+    expect(parsedEvents(warn)).toEqual([
+      expect.objectContaining({ event: 'conversations.damus_cleanup', threads: 0, messages: 0 }),
+    ]);
+    expect((await conversations.getById(again.id))?.id).toBe(again.id);
+    expect(await push.claimPending(10, NOW.getTime(), 60_000)).toEqual([]);
+  });
+
+  it('logs a failed removal and keeps booting', async () => {
+    const conversations = new InMemoryConversationStore();
+    vi.spyOn(conversations, 'removeDamusThreadsWithoutMemberMessage').mockRejectedValue(
+      new Error('db down'),
+    );
+    expect(
+      await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: new InMemoryPushStore(),
+        auth: noAccounts,
+        nowMs: NOW.getTime(),
+      }),
+    ).toEqual({ threads: 0, messages: 0 });
+    expect(parsedEvents(warn)).toEqual([
+      expect.objectContaining({ event: 'conversations.damus_cleanup.failed' }),
+    ]);
+  });
+
+  it('logs a failed dismiss for one member and continues with the next', async () => {
+    const conversations = new InMemoryConversationStore();
+    const push = new InMemoryPushStore();
+    await subscribe(push, 'second');
+    await conversations.openMemberDamus('first', 'aa'.repeat(32), NOW);
+    const second = await conversations.openMemberDamus('second', 'aa'.repeat(32), NOW);
+    const list = push.listByAccount.bind(push);
+    vi.spyOn(push, 'listByAccount').mockImplementation(async (accountId: string) => {
+      if (accountId === 'first') {
+        throw new Error('push down');
+      }
+      return list(accountId);
+    });
+    expect(
+      await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        auth: noAccounts,
+        nowMs: NOW.getTime(),
+      }),
+    ).toEqual({ threads: 2, messages: 0 });
+    expect(parsedEvents(warn).map((e) => e['event'])).toEqual([
+      'conversations.damus_cleanup',
+      'conversations.damus_cleanup.dismiss_failed',
+    ]);
+    const dismiss = await push.claimPending(10, NOW.getTime(), 60_000);
+    expect(dismiss.map((row) => row.accountId)).toEqual(['second']);
+    expect(JSON.parse(dismiss[0]?.payload ?? '{}')).toMatchObject({
+      tags: [`conversation:${second.id}`],
+    });
   });
 });

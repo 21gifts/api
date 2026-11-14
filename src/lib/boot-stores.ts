@@ -73,6 +73,7 @@ import {
   type NotificationStore,
 } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
+import { removeUnadmittedDamusThreads } from '@/lib/conversation-push';
 import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
 import { migrateFundingSchema, PostgresFundingStore, type FundingStore } from '@/lib/funding-store';
 import {
@@ -393,6 +394,11 @@ export interface BootFxOptions {
  * `linkDailyRosterAccounts` links roster rows without an account (host of
  * `PUBLIC_BASE_URL` when the LNURL server resolves, else null) and logs
  * `daily_roster.accounts_linked` with `linked` and `unlinked`.
+ * Once the Postgres conversation, push, and notification stores exist,
+ * `removeUnadmittedDamusThreads` removes, once per database, the
+ * `member_damus` threads that hold no message sent by the member and logs
+ * `conversations.damus_cleanup`; a memory boot holds no stored thread and
+ * does not run it.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`,
@@ -714,6 +720,13 @@ export async function openBootStores(
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
+  await removeUnadmittedDamusThreads({
+    conversations: conversationStore,
+    pushStore,
+    notifications: notificationStore,
+    auth: authStore,
+    nowMs: now(),
+  });
   const trustStore = new PostgresTrustStore(sqlClient);
   const fundingStore = new PostgresFundingStore(sqlClient, transactions);
   const rosterStore = new PostgresDailyRosterStore(sqlClient, rosterLnurlServer?.host ?? null);

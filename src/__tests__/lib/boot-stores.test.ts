@@ -1107,6 +1107,63 @@ describe('openBootStores', () => {
     expect(logged[0]?.['repaired']).toBe(3);
   });
 
+  it('removes Damus threads without a member message once, after the db_change triggers', async () => {
+    const operations: Array<{ text: string; params: readonly unknown[] | undefined }> = [];
+    const client: SqlClient = {
+      query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
+        operations.push({ text, params });
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        if (text.includes('INSERT INTO app_setting')) {
+          return [{ key: 'member_damus_cleanup' }] as T[];
+        }
+        if (text.includes('SELECT c.id, c.account_a')) {
+          return [{ id: '00000000-0000-4000-8000-000000000001', account_a: 'acc' }] as T[];
+        }
+        if (text.startsWith('DELETE FROM conversation_message WHERE')) {
+          return [{ id: 'm1' }, { id: 'm2' }] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async (text: string, params?: readonly unknown[]) => {
+        operations.push({ text, params });
+      },
+    };
+
+    await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => withSparkViewerTransaction(client),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+      },
+    );
+
+    const lastTriggerIdx = operations.reduce(
+      (last, o, i) => (o.text.includes('trg_db_change') ? i : last),
+      -1,
+    );
+    const markers = operations.filter((o) => o.text.includes('INSERT INTO app_setting'));
+    expect(markers).toHaveLength(1);
+    expect(markers[0]?.params?.[0]).toBe('member_damus_cleanup');
+    expect(operations.findIndex((o) => o.text.includes('INSERT INTO app_setting'))).toBeGreaterThan(
+      lastTriggerIdx,
+    );
+    expect(
+      operations.some((o) => o.text.startsWith('DELETE FROM conversation WHERE id = ANY')),
+    ).toBe(true);
+    const logged = parsedEvents(warn).filter(
+      (event) => event['event'] === 'conversations.damus_cleanup',
+    );
+    expect(logged).toHaveLength(1);
+    expect(Object.keys(logged[0] ?? {}).sort()).toEqual(['event', 'messages', 'threads', 'ts']);
+    expect(logged[0]).toMatchObject({ threads: 1, messages: 2 });
+  });
+
   it('links roster rows by legacy address only when the LNURL server is off', async () => {
     const queries: Array<{ text: string; params: readonly unknown[] | undefined }> = [];
     const client: SqlClient = {

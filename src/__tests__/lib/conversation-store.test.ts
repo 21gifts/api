@@ -8,6 +8,7 @@ import {
 } from '@/lib/conversation';
 import {
   CONVERSATION_SCHEMA_SQL,
+  DAMUS_THREAD_CLEANUP_KEY,
   InMemoryConversationStore,
   migrateConversationSchema,
   PostgresConversationStore,
@@ -623,6 +624,81 @@ describe('InMemoryConversationStore', () => {
     await store.appendMessage(message({ conversationId: opened.id, senderAccountId: 'acc' }));
     expect(await store.memberWroteToDamus('acc', 'AA'.repeat(32))).toBe(true);
     expect(await store.memberWroteToDamus('acc', 'bb'.repeat(32))).toBe(false);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage removes only Damus threads without a member message', async () => {
+    const store = new InMemoryConversationStore();
+    const inbound = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(
+      message({ id: 'in-1', conversationId: inbound.id, senderAccountId: null, eventId: 'e1' }),
+      JPEG,
+      [JPEG2],
+    );
+    await store.appendMessage(
+      message({ id: 'in-2', conversationId: inbound.id, senderAccountId: null, eventId: 'e2' }),
+    );
+    await store.markRead(inbound.id, 'acc', NOW);
+    const empty = await store.openMemberDamus('acc', 'cc'.repeat(32), NOW);
+    const wrote = await store.openMemberDamus('acc', 'bb'.repeat(32), NOW);
+    await store.appendMessage(
+      message({ id: 'w-1', conversationId: wrote.id, senderAccountId: null }),
+    );
+    await store.appendMessage(
+      message({ id: 'w-2', conversationId: wrote.id, senderAccountId: 'acc' }),
+    );
+    await store.markRead(wrote.id, 'acc', NOW);
+    const pair = await store.openMemberMember('acc', 'other', NOW);
+    await store.appendMessage(
+      message({ id: 'p-1', conversationId: pair.id, senderAccountId: 'other' }),
+    );
+    const platform = await store.openMemberPlatform('acc', 'plat', NOW);
+    const group = await store.ensureModeratorGroup('plat', NOW);
+
+    const removed = await store.removeDamusThreadsWithoutMemberMessage(NOW);
+
+    expect(removed.messages).toBe(2);
+    expect(removed.threads.map((row) => row.id).sort()).toEqual([inbound.id, empty.id].sort());
+    expect(removed.threads.every((row) => row.memberId === 'acc')).toBe(true);
+    expect(await store.getById(inbound.id)).toBeUndefined();
+    expect(await store.getById(empty.id)).toBeUndefined();
+    expect(await store.getMessageByEventId('e1')).toBeUndefined();
+    expect(await store.getPhoto('in-1')).toBeNull();
+    expect(await store.getExtraPhoto('in-1', 1)).toBeNull();
+    expect((await store.listAll(10)).map((row) => row.id).sort()).toEqual(
+      [wrote.id, pair.id, platform.id, group.id].sort(),
+    );
+    expect((await store.listAllMessages(10)).map((row) => row.id).sort()).toEqual([
+      'p-1',
+      'w-1',
+      'w-2',
+    ]);
+    expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
+    expect(await store.memberWroteToDamus('acc', 'bb'.repeat(32))).toBe(true);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage runs once per memory store', async () => {
+    const store = new InMemoryConversationStore();
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+      threads: [],
+      messages: 0,
+    });
+    const later = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: later.id, senderAccountId: null }));
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+      threads: [],
+      messages: 0,
+    });
+    expect((await store.getById(later.id))?.id).toBe(later.id);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage drops the unread count of a removed thread', async () => {
+    const store = new InMemoryConversationStore();
+    const inbound = await store.openMemberDamus('acc', 'aa'.repeat(32), NOW);
+    await store.appendMessage(message({ conversationId: inbound.id, senderAccountId: null }));
+    expect(await store.unreadCount('acc', false, null)).toBe(1);
+    await store.removeDamusThreadsWithoutMemberMessage(NOW);
+    expect(await store.unreadCount('acc', false, null)).toBe(0);
+    expect(await store.listVisible('acc', false, null, 10)).toEqual([]);
   });
 
   it('hasInboundMessage is false for an empty thread', async () => {
@@ -1252,6 +1328,100 @@ describe('PostgresConversationStore', () => {
     expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
     sql.nextRows = [];
     expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage removes nothing once the run is recorded', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    const store = new PostgresConversationStore(sql);
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+      threads: [],
+      messages: 0,
+    });
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toContain('INSERT INTO app_setting');
+    expect(sql.queries[0]?.text).toContain('ON CONFLICT (key) DO NOTHING');
+    expect(sql.queries[0]?.params).toEqual([DAMUS_THREAD_CLEANUP_KEY, NOW.toISOString(), NOW]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage records the run when no thread is in scope', async () => {
+    const sql = new MockSql();
+    sql.queryImpl = (text) => (text.includes('INSERT INTO app_setting') ? [{ key: 'k' }] : []);
+    const store = new PostgresConversationStore(sql);
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+      threads: [],
+      messages: 0,
+    });
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[1]?.text).toContain("c.kind = 'member_damus'");
+    expect(sql.queries[1]?.text).toContain('m.sender_account_id IS NOT NULL');
+    expect(sql.queries[1]?.text).toContain('FOR UPDATE');
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage deletes dependent rows before the threads in one transaction', async () => {
+    const sql = new MockSql();
+    sql.queryImpl = (text) => {
+      if (text.includes('INSERT INTO app_setting')) {
+        return [{ key: DAMUS_THREAD_CLEANUP_KEY }];
+      }
+      if (text.includes('SELECT c.id, c.account_a')) {
+        return [
+          { id: '00000000-0000-4000-8000-000000000001', account_a: 'acc' },
+          { id: '00000000-0000-4000-8000-000000000002', account_a: 'other' },
+        ];
+      }
+      if (text.startsWith('DELETE FROM conversation_message WHERE')) {
+        return [{ id: 'm1' }, { id: 'm2' }, { id: 'm3' }];
+      }
+      return undefined;
+    };
+    let transactions = 0;
+    const order: { text: string; params: readonly unknown[] | undefined }[] = [];
+    const tx: SqlClient = {
+      query: <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
+        order.push({ text, params });
+        return sql.query<T>(text, params);
+      },
+      execute: (text, params) => {
+        order.push({ text, params });
+        return sql.execute(text, params);
+      },
+    };
+    const client: SqlClient = {
+      query: (text, params) => sql.query(text, params),
+      execute: (text, params) => sql.execute(text, params),
+      async transaction<T>(run: (inner: SqlClient) => Promise<T>): Promise<T> {
+        transactions += 1;
+        return run(tx);
+      },
+    };
+    const store = new PostgresConversationStore(client);
+    expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
+      threads: [
+        { id: '00000000-0000-4000-8000-000000000001', memberId: 'acc' },
+        { id: '00000000-0000-4000-8000-000000000002', memberId: 'other' },
+      ],
+      messages: 3,
+    });
+    expect(transactions).toBe(1);
+    const literal =
+      '{"00000000-0000-4000-8000-000000000001","00000000-0000-4000-8000-000000000002"}';
+    const deletes = order.slice(2);
+    expect(deletes.map((row) => row.text.split('\n')[0])).toEqual([
+      'DELETE FROM push_outbox p',
+      'DELETE FROM message_invoice',
+      'DELETE FROM conversation_message_translation t',
+      'DELETE FROM conversation_message_extra_photo e',
+      'DELETE FROM conversation_read WHERE conversation_id = ANY($1::uuid[])',
+      'DELETE FROM conversation_message WHERE conversation_id = ANY($1::uuid[]) RETURNING id',
+      'DELETE FROM conversation WHERE id = ANY($1::uuid[])',
+    ]);
+    expect(deletes[0]?.text).toContain("p.type = 'conversation'");
+    for (const row of deletes) {
+      expect(row.params).toEqual([literal]);
+    }
   });
 
   it('hasInboundMessage binds EXISTS inbound predicate and returns true', async () => {

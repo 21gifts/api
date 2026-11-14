@@ -18,6 +18,7 @@ import {
 import type { ForumPhoto, ForumPhotoContentType, NostrPublishState } from '@/lib/message';
 import type { FiatAmounts } from '@/lib/money';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 
 /** Fetch and rate-book options accepted by the store. An omitted snapshot does not read them. */
@@ -114,6 +115,21 @@ export type ConversationThreadPageQuery = {
 /**
  * Persistence port for conversation threads and messages.
  */
+/**
+ * `app_setting.key` that records the one-time removal of `member_damus`
+ * threads without a member message
+ * ({@link ConversationStore.removeDamusThreadsWithoutMemberMessage}).
+ */
+export const DAMUS_THREAD_CLEANUP_KEY = 'member_damus_cleanup';
+
+/** Threads and message count removed by one cleanup run. */
+export interface RemovedDamusThreads {
+  /** Removed `member_damus` threads with their member (`accountA`). */
+  threads: { id: string; memberId: string }[];
+  /** Number of removed messages of those threads. */
+  messages: number;
+}
+
 export interface ConversationStore {
   /** One thread by id, or `undefined`. */
   getById(id: string): Promise<ConversationThread | undefined>;
@@ -300,6 +316,26 @@ export interface ConversationStore {
    * @returns `true` when the member already wrote in that thread.
    */
   memberWroteToDamus(memberId: string, counterpartPubkey: string): Promise<boolean>;
+
+  /**
+   * One-time removal of every `member_damus` thread that holds no message
+   * sent by the member (no message with a non-null `senderAccountId`),
+   * together with the rows that depend on it. Threads of the other kinds and
+   * `member_damus` threads in which the member sent at least one message stay
+   * untouched. Runs once per stored data set: the Postgres store records the
+   * run in `app_setting` (key {@link DAMUS_THREAD_CLEANUP_KEY}) in the same
+   * transaction and a later call removes nothing; the memory store runs once
+   * per instance. The Postgres store also deletes the `conversation` push
+   * outbox rows and the invoice attempts of those threads and messages, and
+   * their translations; the memory store removes only its own rows (threads,
+   * messages, photos, read markers), since a memory boot holds no stored row
+   * in the other memory stores.
+   *
+   * @param now - Time recorded with the run.
+   * @returns The removed threads with their member and the number of removed
+   *   messages; empty when the run already happened or nothing matched.
+   */
+  removeDamusThreadsWithoutMemberMessage(now: Date): Promise<RemovedDamusThreads>;
 
   /**
    * Open or insert the closed singleton `moderator_group` thread.
@@ -690,6 +726,8 @@ export class InMemoryConversationStore implements ConversationStore {
   /** Extra stills; array index 0 = idx 1. */
   readonly #extraPhotos = new Map<string, ForumPhoto[]>();
   readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
+  /** Whether {@link removeDamusThreadsWithoutMemberMessage} already ran. */
+  #damusCleanupDone = false;
 
   /**
    * @param seedThreads - Optional seed threads; copied into private storage.
@@ -968,6 +1006,45 @@ export class InMemoryConversationStore implements ConversationStore {
         (row) => row.conversationId === thread.id && row.senderAccountId === memberId,
       ),
     );
+  }
+
+  removeDamusThreadsWithoutMemberMessage(_now: Date): Promise<RemovedDamusThreads> {
+    if (this.#damusCleanupDone) {
+      return Promise.resolve({ threads: [], messages: 0 });
+    }
+    this.#damusCleanupDone = true;
+    const removed = this.#threads.filter(
+      (thread) =>
+        thread.kind === 'member_damus' &&
+        !this.#messages.some(
+          (row) => row.conversationId === thread.id && row.senderAccountId !== null,
+        ),
+    );
+    const threadIds = new Set(removed.map((thread) => thread.id));
+    let messages = 0;
+    for (let i = this.#messages.length - 1; i >= 0; i -= 1) {
+      const row = this.#messages[i] as ConversationMessageRow;
+      if (threadIds.has(row.conversationId)) {
+        this.#photos.delete(row.id);
+        this.#extraPhotos.delete(row.id);
+        this.#messages.splice(i, 1);
+        messages += 1;
+      }
+    }
+    for (const key of [...this.#lastRead.keys()]) {
+      if (threadIds.has(key.slice(key.indexOf('\u0000') + 1))) {
+        this.#lastRead.delete(key);
+      }
+    }
+    for (let i = this.#threads.length - 1; i >= 0; i -= 1) {
+      if (threadIds.has((this.#threads[i] as ConversationThread).id)) {
+        this.#threads.splice(i, 1);
+      }
+    }
+    return Promise.resolve({
+      threads: removed.map((thread) => ({ id: thread.id, memberId: thread.accountA })),
+      messages,
+    });
   }
 
   /**
@@ -1661,6 +1738,91 @@ export class PostgresConversationStore implements ConversationStore {
       [memberId, counterpartPubkey.toLowerCase()],
     );
     return rows[0]?.exists === true;
+  }
+
+  /**
+   * One-time removal of the `member_damus` threads without a member message.
+   *
+   * In one transaction (when the client offers one): records the run in
+   * `app_setting` (`ON CONFLICT DO NOTHING`; an existing row means the run
+   * already happened and nothing is removed), locks the threads in scope, and
+   * deletes their `conversation` push outbox rows, the invoice attempts that
+   * name the thread or one of its messages, translations, extra photos, read
+   * markers, messages, and finally the threads. `trg_db_change` records every
+   * deleted row.
+   *
+   * @param now - Time recorded in `app_setting`.
+   * @returns The removed threads with their member and the removed message count.
+   * @throws Propagates SQL failures; the transaction then rolls back, so the
+   *   next boot runs it again.
+   */
+  async removeDamusThreadsWithoutMemberMessage(now: Date): Promise<RemovedDamusThreads> {
+    const run = async (tx: SqlClient): Promise<RemovedDamusThreads> => {
+      const marked = await tx.query<{ key: string }>(
+        `INSERT INTO app_setting (key, value, updated_at) VALUES ($1, $2, $3)
+         ON CONFLICT (key) DO NOTHING RETURNING key`,
+        [DAMUS_THREAD_CLEANUP_KEY, now.toISOString(), now],
+      );
+      if (marked.length === 0) {
+        return { threads: [], messages: 0 };
+      }
+      const threads = await tx.query<{ id: string; account_a: string }>(
+        `SELECT c.id, c.account_a
+         FROM conversation c
+         WHERE c.kind = 'member_damus'
+           AND NOT EXISTS (
+             SELECT 1 FROM conversation_message m
+             WHERE m.conversation_id = c.id AND m.sender_account_id IS NOT NULL
+           )
+         ORDER BY c.id
+         FOR UPDATE`,
+      );
+      if (threads.length === 0) {
+        return { threads: [], messages: 0 };
+      }
+      const ids = [postgresTextArrayLiteral(threads.map((row) => row.id))];
+      await tx.execute(
+        `DELETE FROM push_outbox p
+         USING conversation_message m
+         WHERE p.type = 'conversation' AND p.message_id = m.id
+           AND m.conversation_id = ANY($1::uuid[])`,
+        ids,
+      );
+      await tx.execute(
+        `DELETE FROM message_invoice
+         WHERE conversation_id = ANY($1::uuid[])
+            OR conversation_message_id IN (
+              SELECT id FROM conversation_message WHERE conversation_id = ANY($1::uuid[])
+            )`,
+        ids,
+      );
+      await tx.execute(
+        `DELETE FROM conversation_message_translation t
+         USING conversation_message m
+         WHERE t.message_id = m.id AND m.conversation_id = ANY($1::uuid[])`,
+        ids,
+      );
+      await tx.execute(
+        `DELETE FROM conversation_message_extra_photo e
+         USING conversation_message m
+         WHERE e.message_id = m.id AND m.conversation_id = ANY($1::uuid[])`,
+        ids,
+      );
+      await tx.execute(
+        `DELETE FROM conversation_read WHERE conversation_id = ANY($1::uuid[])`,
+        ids,
+      );
+      const messages = await tx.query<{ id: string }>(
+        `DELETE FROM conversation_message WHERE conversation_id = ANY($1::uuid[]) RETURNING id`,
+        ids,
+      );
+      await tx.execute(`DELETE FROM conversation WHERE id = ANY($1::uuid[])`, ids);
+      return {
+        threads: threads.map((row) => ({ id: row.id, memberId: row.account_a })),
+        messages: messages.length,
+      };
+    };
+    return this.#sql.transaction === undefined ? run(this.#sql) : this.#sql.transaction(run);
   }
 
   /**

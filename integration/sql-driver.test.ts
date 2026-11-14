@@ -32,8 +32,13 @@ import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { NOT_PAYABLE, serializeMessage, unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
 import { migrateBannerSchema } from '@/lib/banner-store';
-import { migrateConversationSchema, PostgresConversationStore } from '@/lib/conversation-store';
-import { migrateNotificationSchema } from '@/lib/notification-store';
+import {
+  DAMUS_THREAD_CLEANUP_KEY,
+  migrateConversationSchema,
+  PostgresConversationStore,
+} from '@/lib/conversation-store';
+import { removeUnadmittedDamusThreads } from '@/lib/conversation-push';
+import { migrateNotificationSchema, PostgresNotificationStore } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushOutboxRow } from '@/lib/push-store';
 import { migrateTrustSchema } from '@/lib/trust-store';
 import { PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
@@ -2873,6 +2878,205 @@ describe('PostgresConversationStore memberWroteToDamus', () => {
       await store.appendMessage(row(inboundThread.id, null));
       expect(await store.memberWroteToDamus(member, inboundOnly)).toBe(false);
       expect(await store.memberWroteToDamus(crypto.randomUUID(), wrote)).toBe(false);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('removeUnadmittedDamusThreads on Postgres', () => {
+  test('removes Damus threads without a member message with their rows, once', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migrateConversationSchema(client);
+      await migratePushSchema(client);
+      await migrateNotificationSchema(client);
+      await migrateLoginGateSchema(client);
+      await client.execute('DELETE FROM app_setting WHERE key = $1', [DAMUS_THREAD_CLEANUP_KEY]);
+      const auth = new PostgresAuthStore(client);
+      const conversations = new PostgresConversationStore(client);
+      const push = new PostgresPushStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const account = async (): Promise<string> => {
+        const id = crypto.randomUUID();
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+        return id;
+      };
+      const member = await account();
+      const other = await account();
+      const platform = await account();
+      await push.upsertSubscription({
+        endpoint: `https://push.example/${member}`,
+        accountId: member,
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(),
+        sessionToken: 'session',
+      });
+      const now = new Date();
+      const row = (conversationId: string, senderAccountId: string | null) => ({
+        id: crypto.randomUUID(),
+        conversationId,
+        text: 'hi',
+        createdAt: now,
+        senderAccountId,
+        senderPubkey: null,
+        name: 'n',
+        actorAccountId: senderAccountId,
+        actorName: '',
+        eventId: `${hex64()}`,
+        nostrPublishState: 'skipped' as const,
+        nostrEvent: null,
+        claimedUntil: null,
+        sats: 0,
+      });
+      const photo = { contentType: 'image/jpeg' as const, bytes: new Uint8Array([1, 2, 3]) };
+
+      const inbound = await conversations.openMemberDamus(member, hex64(), now);
+      const inboundA = row(inbound.id, null);
+      const inboundB = row(inbound.id, null);
+      await conversations.appendMessage(inboundA, photo, [photo]);
+      await conversations.appendMessage(inboundB);
+      await conversations.markRead(inbound.id, member, now);
+      await client.execute(
+        `INSERT INTO conversation_message_translation
+           (message_id, target_lang, source_sha256, translated_text, created_at)
+         VALUES ($1, 'de', 'x', 'hallo', $2)`,
+        [inboundA.id, now],
+      );
+      const outboxRow = (messageId: string): PushOutboxRow => ({
+        id: crypto.randomUUID(),
+        accountId: member,
+        type: 'conversation',
+        messageId,
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        finishedAt: null,
+        createdAt: now,
+        deliveredEndpoints: [],
+        skipEndpoints: [],
+      });
+      const removedPush = outboxRow(inboundA.id);
+      await push.enqueue(removedPush);
+      const invoiceId = crypto.randomUUID();
+      await client.execute(
+        `INSERT INTO message_invoice
+           (id, created_at, message_id, payer_account_id, author_account_id, amount_sats,
+            result, http_status, conversation_id)
+         VALUES ($1, $2, $3, $4, $3, 21, 'no_author', 400, $5)`,
+        [invoiceId, now, '00000000-0000-0000-0000-000000000000', member, inbound.id],
+      );
+      const empty = await conversations.openMemberDamus(member, hex64(), now);
+
+      const wrote = await conversations.openMemberDamus(member, hex64(), now);
+      const wroteInbound = row(wrote.id, null);
+      await conversations.appendMessage(wroteInbound, photo, [photo]);
+      await conversations.appendMessage(row(wrote.id, member));
+      await conversations.markRead(wrote.id, member, now);
+      const keptPush = outboxRow(wroteInbound.id);
+      await push.enqueue(keptPush);
+      const pair = await conversations.openMemberMember(member, other, now);
+      await conversations.appendMessage(row(pair.id, other));
+      const ticket = await conversations.openMemberPlatform(member, platform, now);
+      await conversations.appendMessage(row(ticket.id, platform));
+      const group = await conversations.ensureModeratorGroup(platform, now);
+
+      const count = async (text: string, params: readonly unknown[]): Promise<number> =>
+        Number((await client.query<{ n: string | number }>(text, params))[0]?.n ?? 0);
+      const threadsLeft = async (ids: readonly string[]): Promise<number> =>
+        count('SELECT count(*) AS n FROM conversation WHERE id = ANY($1::uuid[])', [
+          postgresTextArrayLiteral(ids),
+        ]);
+      const rowsOf = async (threadId: string): Promise<number[]> => [
+        await count('SELECT count(*) AS n FROM conversation_message WHERE conversation_id = $1', [
+          threadId,
+        ]),
+        await count('SELECT count(*) AS n FROM conversation_read WHERE conversation_id = $1', [
+          threadId,
+        ]),
+        await count(
+          `SELECT count(*) AS n FROM conversation_message_extra_photo e
+           JOIN conversation_message m ON m.id = e.message_id WHERE m.conversation_id = $1`,
+          [threadId],
+        ),
+      ];
+      expect(await rowsOf(inbound.id)).toEqual([2, 1, 1]);
+
+      const first = await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        notifications: new PostgresNotificationStore(client),
+        auth,
+        nowMs: now.getTime(),
+      });
+      expect(first.threads).toBeGreaterThanOrEqual(2);
+      expect(first.messages).toBeGreaterThanOrEqual(2);
+
+      expect(await threadsLeft([inbound.id, empty.id])).toBe(0);
+      expect(await rowsOf(inbound.id)).toEqual([0, 0, 0]);
+      expect(
+        await count(
+          'SELECT count(*) AS n FROM conversation_message_translation WHERE message_id = $1',
+          [inboundA.id],
+        ),
+      ).toBe(0);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [removedPush.id]),
+      ).toBe(0);
+      expect(
+        await count('SELECT count(*) AS n FROM message_invoice WHERE id = $1', [invoiceId]),
+      ).toBe(0);
+      expect(await threadsLeft([wrote.id, pair.id, ticket.id, group.id])).toBe(4);
+      expect(await rowsOf(wrote.id)).toEqual([2, 1, 1]);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [keptPush.id]),
+      ).toBe(1);
+      expect(await conversations.unreadCount(member, false, platform)).toBe(2);
+      const dismiss = await client.query<{ payload: string }>(
+        `SELECT payload FROM push_outbox WHERE account_id = $1 AND type = 'dismiss'`,
+        [member],
+      );
+      expect(dismiss).toHaveLength(1);
+      const dismissPayload = JSON.parse(dismiss[0]?.payload ?? '{}') as {
+        tags: string[];
+        unreadCount: number;
+      };
+      expect(dismissPayload.tags.sort()).toEqual(
+        [`conversation:${inbound.id}`, `conversation:${empty.id}`].sort(),
+      );
+      expect(dismissPayload.unreadCount).toBe(2);
+      expect(
+        await count('SELECT count(*) AS n FROM app_setting WHERE key = $1', [
+          DAMUS_THREAD_CLEANUP_KEY,
+        ]),
+      ).toBe(1);
+
+      const later = await conversations.openMemberDamus(member, hex64(), now);
+      await conversations.appendMessage(row(later.id, null));
+      expect(
+        await removeUnadmittedDamusThreads({
+          conversations,
+          pushStore: push,
+          auth,
+          nowMs: now.getTime(),
+        }),
+      ).toEqual({ threads: 0, messages: 0 });
+      expect(await threadsLeft([later.id, wrote.id, pair.id, ticket.id, group.id])).toBe(5);
     } finally {
       await closeIfPossible(sql);
     }

@@ -9523,6 +9523,38 @@ describe('inbound direct-message admission', () => {
     expect(ctx.decrypts()).toBe(0);
   });
 
+  it('does not store again a kind:4 or gift wrap of a thread removed by the Damus cleanup', async () => {
+    const ctx = await setup();
+    const sender = generateSecretKey();
+    const pubkey = getPublicKey(sender);
+    const direct = kind4(sender, ctx.recipient, 'old kind4');
+    const wrap = frame(wrapNip17(sender, ctx.recipient, 'old wrap'));
+    const thread = await ctx.conversations.openMemberDamus('acc', pubkey, new Date(NOW));
+    await ctx.conversations.appendMessage({
+      ...memberDamusRow(thread.id, 'old kind4', null),
+      eventId: direct.id,
+    });
+    await ctx.conversations.appendMessage({
+      ...memberDamusRow(thread.id, 'old wrap', null),
+      eventId: wrap.id,
+    });
+    expect(await ctx.conversations.unreadCount('acc', false, null)).toBe(1);
+    const removed = await ctx.conversations.removeDamusThreadsWithoutMemberMessage(new Date(NOW));
+    expect(removed).toEqual({ threads: [{ id: thread.id, memberId: 'acc' }], messages: 2 });
+    expect(await ctx.conversations.getMessageByEventId(direct.id)).toBeUndefined();
+    expect(await ctx.conversations.getMessageByEventId(wrap.id)).toBeUndefined();
+    ctx.querier.events = [direct, wrap];
+    await tick(ctx);
+    await tick(ctx);
+    await expectNothingStored(ctx);
+    expect(await ctx.conversations.unreadCount('acc', false, null)).toBe(0);
+    // Control: the same events are inside the query window and no longer deduped, so only
+    // the admission rule kept them out; a sender that becomes a known contact is stored.
+    await ctx.messages.recordZapper(pubkey, 'receipt-control', new Date(0));
+    await tick(ctx);
+    expect((await storedTexts(ctx)).sort()).toEqual(['old kind4', 'old wrap']);
+  });
+
   it('skips an admitted kind:4 when the direct-message limiter is exhausted', async () => {
     const ctx = await setup();
     const sender = generateSecretKey();

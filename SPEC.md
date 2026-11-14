@@ -7704,6 +7704,26 @@ occupy that memory. The `since` bound is checked on each received event as
 well: an event older than now minus `INBOUND_DM_SINCE_S` is skipped the same
 way, even when a relay returns it.
 
+Stored member↔Damus threads are brought in line with this rule once. On the
+first SQL boot that carries it, `removeUnadmittedDamusThreads` removes every
+`member_damus` thread that holds no message sent by the member, with its
+messages, read markers, extra photos, translations, the `conversation` push
+outbox rows of its messages, and the invoice attempts that name the thread or
+one of its messages. `member_damus` threads in which the member sent at least
+one message, and all member↔member, member↔platform, and Moderators-group
+threads, stay. The run is recorded in `app_setting` (`member_damus_cleanup`) in
+the same transaction, so later boots remove nothing and a thread stored after
+the run stays; a failed run rolls back and is tried again on the next boot.
+Every deleted row is recorded in `db_change`. The boot logs one
+`conversations.damus_cleanup` event with the number of removed threads and
+messages. `GET /conversations` no longer lists a removed thread or counts it in
+`unreadCount`, and each affected member with a push subscription gets one
+dismiss push for the tags `conversation:<id>` of the removed threads, carrying
+the badge count after the removal. A relay can return an event of a removed
+thread again within the query window; event-id dedupe no longer finds it, and
+the admission rule above decides it: a sender that is not a known contact is
+skipped, and an entitled external zapper is stored again.
+
 Known limitation: if the payer's wallet publishes no kind:9735 receipt, the
 external zapper gains no website visibility. Operator manual settlement
 covers member-created forum invoices only; it cannot create an external

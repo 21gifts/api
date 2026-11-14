@@ -12,8 +12,9 @@ import {
   type ConversationMessageRow,
   type ConversationThread,
 } from '@/lib/conversation';
-import type { ConversationStore } from '@/lib/conversation-store';
+import type { ConversationStore, RemovedDamusThreads } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
+import { enqueueNotificationDismiss } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import { buildConversationPushPayload } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
@@ -148,4 +149,70 @@ export async function notifyConversationMessage(args: {
   if (failed) {
     throw new Error('conversations.push.failed');
   }
+}
+
+/**
+ * Boot step: one-time removal of the member↔Damus threads that hold no
+ * message sent by the member, through
+ * {@link ConversationStore.removeDamusThreadsWithoutMemberMessage}.
+ *
+ * Logs one `conversations.damus_cleanup` event with the number of removed
+ * threads and messages (both 0 when the run already happened). Then, for each
+ * member with a push subscription who lost a thread, enqueues one dismiss
+ * push (`enqueueNotificationDismiss`) for the tags `conversation:<id>` of the
+ * removed threads, carrying the member's badge count after the removal
+ * (in-app notification unread plus listed inbox unread), so a device closes
+ * notifications of a removed thread and its badge drops. A failed removal logs
+ * `conversations.damus_cleanup.failed`, removes nothing (the store rolls
+ * back), and the boot continues; the next boot runs it again. A failed
+ * dismiss for one member logs `conversations.damus_cleanup.dismiss_failed`
+ * and continues with the next member. Does not throw.
+ *
+ * @param args - Conversation, push and optional notification stores, account
+ *   lookup for the badge count, and the clock.
+ * @returns Removed thread and message counts.
+ */
+export async function removeUnadmittedDamusThreads(args: {
+  conversations: ConversationStore;
+  pushStore: PushStore;
+  notifications?: Pick<NotificationStore, 'unreadCount'>;
+  auth: Pick<AuthStore, 'getAccount' | 'listAccounts'>;
+  nowMs: number;
+}): Promise<{ threads: number; messages: number }> {
+  let removed: RemovedDamusThreads;
+  try {
+    removed = await args.conversations.removeDamusThreadsWithoutMemberMessage(new Date(args.nowMs));
+  } catch {
+    logEvent('conversations.damus_cleanup.failed');
+    return { threads: 0, messages: 0 };
+  }
+  const counts = { threads: removed.threads.length, messages: removed.messages };
+  logEvent('conversations.damus_cleanup', counts);
+  const tagsByMember = new Map<string, string[]>();
+  for (const thread of removed.threads) {
+    const tags = tagsByMember.get(thread.memberId) ?? [];
+    tags.push(`conversation:${thread.id}`);
+    tagsByMember.set(thread.memberId, tags);
+  }
+  const inboxUnreadOf = inboxUnreadCountFor(args.conversations, args.auth);
+  for (const [memberId, tags] of tagsByMember) {
+    try {
+      const subs = await args.pushStore.listByAccount(memberId);
+      if (subs.length === 0) {
+        continue;
+      }
+      const notifUnread =
+        args.notifications === undefined ? 0 : await args.notifications.unreadCount(memberId);
+      await enqueueNotificationDismiss({
+        pushStore: args.pushStore,
+        accountId: memberId,
+        tags,
+        nowMs: args.nowMs,
+        unreadCount: notifUnread + (await inboxUnreadOf(memberId)),
+      });
+    } catch {
+      logEvent('conversations.damus_cleanup.dismiss_failed');
+    }
+  }
+  return counts;
 }
