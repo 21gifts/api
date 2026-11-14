@@ -15,6 +15,36 @@ const MS_PER_DAY = 86_400_000;
 const SHOP_HASHTAG = '21GiftsShop';
 
 /**
+ * Whether a live assigned note is a shop note.
+ *
+ * @param note - Live note with its current shop account and text.
+ * @returns `true` when the account id is non-empty and the text has the shop
+ *   hashtag token.
+ */
+function isAssignedShopNote(note: ShopNoteRef): boolean {
+  return note.accountId !== '' && textHasHashtagToken(note.text, SHOP_HASHTAG);
+}
+
+/**
+ * Current account ids of live assigned shop notes.
+ *
+ * Uses the same live-note and `#21GiftsShop` rule as {@link activeShopDays}.
+ * Current assignment, not assignment history. Duplicate account ids collapse.
+ *
+ * @param notes - Live assigned shop-note refs from `listLiveAssignedShops`.
+ * @returns The non-empty assigned account ids whose notes have the hashtag.
+ */
+export function assignedShopAccountIds(notes: readonly ShopNoteRef[]): ReadonlySet<string> {
+  const accountIds = new Set<string>();
+  for (const note of notes) {
+    if (isAssignedShopNote(note)) {
+      accountIds.add(note.accountId);
+    }
+  }
+  return accountIds;
+}
+
+/**
  * UTC midnight of `day` as epoch milliseconds.
  *
  * @param day - `YYYY-MM-DD`.
@@ -47,10 +77,7 @@ export function activeShopDays(
 
   const shops = new Map<string, ShopNoteRef>();
   for (const note of notes) {
-    if (shops.has(note.id) || note.accountId === '') {
-      continue;
-    }
-    if (!textHasHashtagToken(note.text, SHOP_HASHTAG)) {
+    if (shops.has(note.id) || !isAssignedShopNote(note)) {
       continue;
     }
     shops.set(note.id, note);

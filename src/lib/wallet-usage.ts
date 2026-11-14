@@ -88,11 +88,14 @@ export interface WalletUsageForumRow {
   heart: boolean;
 }
 
-/** One point-of-sale charge. */
+/**
+ * One point-of-sale charge from a current shop account. A charge by any other
+ * account is not a shop charge and is not returned by the usage store.
+ */
 export interface WalletUsageChargeRow {
   /** When the charge was created. */
   createdAt: Date;
-  /** Stored status, including `paid`. */
+  /** Stored status, including `paid`, `pending`, `cancelled`, and `expired`. */
   status: string;
 }
 
@@ -102,7 +105,7 @@ export interface WalletUsageInput {
   payments: readonly WalletUsagePaymentRow[];
   /** Successful forum invoices. */
   forumInvoices: readonly WalletUsageForumRow[];
-  /** Point-of-sale charges. */
+  /** Point-of-sale charges whose accounts are current shops. */
   shopCharges: readonly WalletUsageChargeRow[];
 }
 

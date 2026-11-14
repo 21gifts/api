@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ShopNoteRef } from '@/lib/message-store';
 import type { PosChargeRef } from '@/lib/pos-store';
-import { activeShopDays } from '@/lib/shop-activity';
+import { activeShopDays, assignedShopAccountIds } from '@/lib/shop-activity';
 
 const TODAY = '2026-03-15';
 const FIRST = '2026-02-14';
@@ -24,6 +24,19 @@ function charge(partial: Partial<PosChargeRef> = {}): PosChargeRef {
     ...partial,
   };
 }
+
+describe('assignedShopAccountIds', () => {
+  it('collects unique accounts from live assigned notes with the shop hashtag', () => {
+    expect(
+      assignedShopAccountIds([
+        shop({ id: 'one', accountId: 'shop' }),
+        shop({ id: 'two', accountId: 'shop' }),
+        shop({ id: 'blank', accountId: '' }),
+        shop({ id: 'long', accountId: 'other', text: 'Cafe #21GiftsShopping' }),
+      ]),
+    ).toEqual(new Set(['shop']));
+  });
+});
 
 describe('activeShopDays', () => {
   it('returns 30 zero-filled UTC days ending on today, oldest first', () => {

@@ -9408,6 +9408,29 @@ describe('PostgresWalletUsageStore', () => {
         return id;
       };
 
+      const insertShopNote = async (
+        accountId: string,
+        shopAccountId: string,
+        hidden: boolean,
+      ): Promise<string> => {
+        const id = crypto.randomUUID();
+        messageIds.push(id);
+        await client.execute(
+          `INSERT INTO message (id, account_id, shop_account_id, name, text, created_at, deleted_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            id,
+            accountId,
+            shopAccountId,
+            'Usage shop note',
+            `${run} shop #21GiftsShop`,
+            at(0),
+            hidden ? at(5) : null,
+          ],
+        );
+        return id;
+      };
+
       const insertPayment = async (row: {
         accountId: string;
         paymentId: string;
@@ -10437,6 +10460,8 @@ describe('PostgresWalletUsageStore', () => {
       const shopPaidAt = at(15);
       const shopPendingAt = at(25);
       const shopOldAt = at(-60);
+      await insertShopNote(shop, memberA, false);
+      await insertShopNote(memberB, memberB, true);
       const insertCharge = async (
         accountId: string,
         createdAt: Date,
@@ -10714,8 +10739,9 @@ describe('PostgresWalletUsageStore', () => {
       const chargeAt = (createdAt: Date) =>
         charges.find((row) => row.createdAt.getTime() === createdAt.getTime());
       expect(chargeAt(shopPaidAt)?.status).toBe('paid');
-      expect(chargeAt(shopPendingAt)?.status).toBe('pending');
+      expect(chargeAt(shopPendingAt)).toBeUndefined();
       expect(chargeAt(shopOldAt)).toBeUndefined();
+      expect(charges).toHaveLength(1);
       expect(charges.every((row) => row.createdAt.getTime() >= since.getTime())).toBe(true);
     } finally {
       if (receiptIds.length > 0) {
