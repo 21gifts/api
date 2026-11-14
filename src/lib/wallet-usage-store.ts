@@ -17,7 +17,8 @@ import type {
 /** Rows {@link buildWalletUsage} needs. Account ids never leave the builder. */
 export interface WalletUsageStore {
   /**
-   * Completed payments whose earliest `paid_at` is on or after `sinceMs`.
+   * Completed payments whose earliest `paid_at` is on or after `sinceMs` and
+   * before `untilMs`.
    *
    * A transfer pair is already merged. A completed `out` row and a completed
    * `in` row on different accounts pair when they share the same `payment_id`,
@@ -27,14 +28,18 @@ export interface WalletUsageStore {
    * stay separate.
    *
    * Pairs and their uniqueness are evaluated among completed rows paid at most
-   * one day before the read window start; a row whose matching side is older
-   * counts on its own (and a payment is counted only when its earliest row is
-   * in the window).
+   * one day before the read window start and before `untilMs`; a row whose
+   * matching side is older counts on its own (and a payment is counted only
+   * when its earliest row is in the window). A row at or after `untilMs` is not
+   * read, so it cannot pair with an in-window row, make that row ambiguous, or
+   * add its amount, fee, category, or account to the group.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
+   * @param untilMs - Exclusive upper bound, epoch milliseconds. The route
+   *   passes the start of the UTC day after its `now`.
    * @returns Merged payments. Order is not significant.
    */
-  payments(sinceMs: number): Promise<WalletUsagePaymentRow[]>;
+  payments(sinceMs: number, untilMs: number): Promise<WalletUsagePaymentRow[]>;
   /**
    * Successful forum invoices (`result = 'ok'`) created on or after `sinceMs`.
    * A non-heart invoice on a note authored by the platform account is the
@@ -196,14 +201,17 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
   }
 
   /**
-   * Payments with `paidAt` on or after `sinceMs`, as copies.
+   * Payments with `paidAt` in `[sinceMs, untilMs)`, as copies.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
+   * @param untilMs - Exclusive upper bound, epoch milliseconds.
    * @returns A new array. Mutating a returned `Date` does not change the store.
    */
-  payments(sinceMs: number): Promise<WalletUsagePaymentRow[]> {
+  payments(sinceMs: number, untilMs: number): Promise<WalletUsagePaymentRow[]> {
     return Promise.resolve(
-      this.#payments.filter((row) => row.paidAt.getTime() >= sinceMs).map(copyPayment),
+      this.#payments
+        .filter((row) => row.paidAt.getTime() >= sinceMs && row.paidAt.getTime() < untilMs)
+        .map(copyPayment),
     );
   }
 
@@ -273,17 +281,20 @@ interface AssignedShopSqlRow {
  *
  * Filtering rows at `$1` would split a payment whose sides fall on either side
  * of the bound, so `completed_rows` reads from one day before `$1` and the
- * final bound is `min(paid_at)` of the whole group. The slack lets two sides
- * recorded just on either side of the window start pair. `bounds` still keeps
- * only groups whose earliest `paid_at` is on or after `$1`, so that slack never
- * counts a payment from before the window.
+ * final lower bound is `min(paid_at)` of the whole group. The slack lets two
+ * sides recorded just on either side of the window start pair. `bounds` still
+ * keeps only groups whose earliest `paid_at` is on or after `$1`, so that slack
+ * never counts a payment from before the window. Rows at or after `$2` are
+ * excluded before pair matching: a future-dated row cannot pair with an
+ * in-window row, make it ambiguous, or contribute its amount, fee, category,
+ * or account to a group whose `min(paid_at)` would otherwise be in the window.
  * A completed `out` row and a completed `in` row on two different accounts form
  * one payment when they share the same `payment_id`, the same
  * `lower(payment_hash)` (both non-null), or the same `invoice` (both non-null
  * and non-empty). Each of the two rows must have exactly one such partner among
- * completed rows paid at most one day before `$1`; an ambiguous match stays
- * unpaired. A row whose matching side is older than that candidate window is
- * unpaired. A pair's key is
+ * completed rows paid at most one day before `$1` and before `$2`; an ambiguous
+ * match stays unpaired. A row whose matching side is older than that candidate
+ * window is unpaired. A pair's key is
  * `'pair:' || <out row account_id> || ':' || <out row payment_id>`, which is
  * deterministic and injective because the outgoing `(account_id, payment_id)`
  * is the `wallet_payment` primary key, and it is disjoint from the `row:`
@@ -327,6 +338,7 @@ const PAYMENTS_SQL = `WITH completed_rows AS (
   FROM wallet_payment
   WHERE wallet_payment.status = 'completed'
     AND wallet_payment.paid_at >= $1::timestamptz - interval '1 day'
+    AND wallet_payment.paid_at < $2::timestamptz
 ),
 pair_matches AS (
   SELECT out_row.account_id AS out_account_id,
@@ -610,18 +622,23 @@ export class PostgresWalletUsageStore implements WalletUsageStore {
 
   /**
    * Merge completed payments and keep groups whose earliest `paid_at` is on
-   * or after `sinceMs`.
+   * or after `sinceMs` and before `untilMs`.
    *
    * Rows from one day before `sinceMs` are read only so that a pair whose two
    * sides straddle the bound can be recognised. A group with a side before
    * `sinceMs` is still omitted, because its earliest `paid_at` is before the
-   * bound.
+   * bound. Rows at or after `untilMs` are excluded before pair matching, so a
+   * future-dated row cannot pair with an in-window row or make it ambiguous.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds (`$1`).
+   * @param untilMs - Exclusive upper bound, epoch milliseconds (`$2`).
    * @returns Mapped rows. Query failures, bad parties, and unsafe amounts throw.
    */
-  async payments(sinceMs: number): Promise<WalletUsagePaymentRow[]> {
-    const rows = await this.sql.query<PaymentSqlRow>(PAYMENTS_SQL, [new Date(sinceMs)]);
+  async payments(sinceMs: number, untilMs: number): Promise<WalletUsagePaymentRow[]> {
+    const rows = await this.sql.query<PaymentSqlRow>(PAYMENTS_SQL, [
+      new Date(sinceMs),
+      new Date(untilMs),
+    ]);
     return rows.map(mapPayment);
   }
 

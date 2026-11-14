@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
-import type {
-  WalletUsageChargeRow,
-  WalletUsageForumRow,
-  WalletUsagePaymentRow,
+import {
+  buildWalletUsage,
+  type WalletUsageChargeRow,
+  type WalletUsageForumRow,
+  type WalletUsagePaymentRow,
 } from '@/lib/wallet-usage';
 import { InMemoryWalletUsageStore, PostgresWalletUsageStore } from '@/lib/wallet-usage-store';
 
 const AT = new Date('2026-11-11T12:00:00.000Z');
 const BEFORE = new Date(AT.getTime() - 1);
 const AFTER = new Date(AT.getTime() + 1);
+const FAR_FUTURE = Date.parse('9999-12-31T00:00:00.000Z');
 
 function paymentFields(paidAt: Date, amountSats = 1): Omit<WalletUsagePaymentRow, 'isForumGift'> {
   return {
@@ -51,12 +53,12 @@ class MockSql implements SqlClient {
 describe('InMemoryWalletUsageStore', () => {
   it('returns empty lists when it is constructed without a seed', async () => {
     const store = new InMemoryWalletUsageStore();
-    await expect(store.payments(0)).resolves.toEqual([]);
+    await expect(store.payments(0, FAR_FUTURE)).resolves.toEqual([]);
     await expect(store.forumInvoices(0)).resolves.toEqual([]);
     await expect(store.shopCharges(0)).resolves.toEqual([]);
   });
 
-  it('keeps rows on or after the bound and returns copies', async () => {
+  it('keeps rows in the half-open payment window and returns copies', async () => {
     const payments = [payment(BEFORE, 1), payment(AT, 2), payment(AFTER, 3)];
     const forum: WalletUsageForumRow[] = [
       { createdAt: BEFORE, amountSats: 1, heart: false },
@@ -72,7 +74,7 @@ describe('InMemoryWalletUsageStore', () => {
       shopCharges: charges,
     });
     payments.push(payment(AFTER, 9));
-    const first = await store.payments(AT.getTime());
+    const first = await store.payments(AT.getTime(), FAR_FUTURE);
     expect(first.map((row) => row.amountSats)).toEqual([2, 3]);
     const firstPaid = first[0];
     if (firstPaid === undefined) {
@@ -80,7 +82,7 @@ describe('InMemoryWalletUsageStore', () => {
     }
     firstPaid.paidAt.setTime(0);
     firstPaid.amountSats = 0;
-    const again = await store.payments(AT.getTime());
+    const again = await store.payments(AT.getTime(), FAR_FUTURE);
     expect(again.map((row) => [row.amountSats, row.paidAt.toISOString()])).toEqual([
       [2, AT.toISOString()],
       [3, AFTER.toISOString()],
@@ -105,6 +107,23 @@ describe('InMemoryWalletUsageStore', () => {
     expect((await store.shopCharges(AT.getTime()))[0]?.createdAt.toISOString()).toBe(
       AT.toISOString(),
     );
+  });
+
+  it('omits a future payment that shares a hash with an in-window row', async () => {
+    const nextDay = new Date('2026-11-12T00:00:00.000Z');
+    const store = new InMemoryWalletUsageStore({
+      payments: [
+        { ...paymentFields(AT, 21), paymentHash: 'shared-hash' },
+        { ...paymentFields(nextDay, 99), paymentHash: 'shared-hash' },
+      ],
+      forumInvoices: [],
+      shopCharges: [],
+    });
+    const rows = await store.payments(AT.getTime(), nextDay.getTime());
+    expect(rows.map((row) => row.amountSats)).toEqual([21]);
+    expect(
+      buildWalletUsage({ payments: rows, forumInvoices: [], shopCharges: [] }, AT.getTime()),
+    ).toMatchObject({ totals: { paymentCount: 1, volumeSats: 21 } });
   });
 
   it('omits a platform-note compose fee from the forum series but keeps its heart', async () => {
@@ -160,7 +179,7 @@ describe('PostgresWalletUsageStore', () => {
     const sql = new MockSql();
     const store = new PostgresWalletUsageStore(sql);
     sql.rows = [];
-    await expect(store.payments(AT.getTime())).resolves.toEqual([]);
+    await expect(store.payments(AT.getTime(), AFTER.getTime())).resolves.toEqual([]);
     await expect(store.forumInvoices(AT.getTime())).resolves.toEqual([]);
     await expect(store.shopCharges(AT.getTime())).resolves.toEqual([]);
     expect(sql.queries).toHaveLength(3);
@@ -170,11 +189,12 @@ describe('PostgresWalletUsageStore', () => {
     if (payments === undefined || forum === undefined || charges === undefined) {
       throw new Error('expected three queries');
     }
-    expect(payments.params).toEqual([AT]);
+    expect(payments.params).toEqual([AT, AFTER]);
     expect(forum.params).toEqual([AT]);
     expect(charges.params).toEqual([AT]);
     expect(payments.text).toContain("status = 'completed'");
     expect(payments.text).toContain("paid_at >= $1::timestamptz - interval '1 day'");
+    expect(payments.text).toContain('paid_at < $2::timestamptz');
     expect(payments.text).toContain('min(paid_at)');
     expect(payments.text).toContain('max(amount_sats)');
     expect(payments.text).toContain('sum(coalesce(fee_sats, 0))');
@@ -344,7 +364,7 @@ describe('PostgresWalletUsageStore', () => {
         is_forum_gift: false,
       },
     ];
-    const rows = await store.payments(0);
+    const rows = await store.payments(0, FAR_FUTURE);
     expect(rows[0]).toEqual({
       paidAt: AT,
       amountSats: 10,
@@ -475,7 +495,7 @@ describe('PostgresWalletUsageStore', () => {
         { paymentHash: 'ii99', hidden: false },
       ],
     });
-    const rows = await store.payments(AT.getTime());
+    const rows = await store.payments(AT.getTime(), FAR_FUTURE);
     expect(rows.map((row) => row.isForumGift)).toEqual([
       true,
       true,
@@ -506,7 +526,10 @@ describe('PostgresWalletUsageStore', () => {
         },
       ],
     });
-    expect((await explicit.payments(0)).map((row) => row.isForumGift)).toEqual([true, false]);
+    expect((await explicit.payments(0, FAR_FUTURE)).map((row) => row.isForumGift)).toEqual([
+      true,
+      false,
+    ]);
   });
 
   it('rejects a zap gift when a conversation or repayment invoice owns its hash', async () => {
@@ -539,7 +562,7 @@ describe('PostgresWalletUsageStore', () => {
         { paymentHash: 'cc33', hidden: false },
       ],
     });
-    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([
+    expect((await store.payments(0, FAR_FUTURE)).map((row) => row.isForumGift)).toEqual([
       false,
       false,
       true,
@@ -611,7 +634,11 @@ describe('PostgresWalletUsageStore', () => {
         },
       ],
     });
-    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([false, true, false]);
+    expect((await store.payments(0, FAR_FUTURE)).map((row) => row.isForumGift)).toEqual([
+      false,
+      true,
+      false,
+    ]);
   });
 
   it('rejects a compose fee claimed as a zap receipt but keeps a platform heart', async () => {
@@ -648,7 +675,10 @@ describe('PostgresWalletUsageStore', () => {
         { paymentHash: 'bb22', hidden: false },
       ],
     });
-    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([false, true]);
+    expect((await store.payments(0, FAR_FUTURE)).map((row) => row.isForumGift)).toEqual([
+      false,
+      true,
+    ]);
   });
 
   it('correlates zap gift exclusions to the hashes that own them', async () => {
@@ -692,7 +722,10 @@ describe('PostgresWalletUsageStore', () => {
       ],
       sparkInvoiceHashes: new Map([['spark-gift', validZapGiftHash]]),
     });
-    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([true, false]);
+    expect((await store.payments(0, FAR_FUTURE)).map((row) => row.isForumGift)).toEqual([
+      true,
+      false,
+    ]);
   });
 
   it('matches a forum gift paid by Spark invoice through invoice or destination', async () => {
@@ -756,7 +789,7 @@ describe('PostgresWalletUsageStore', () => {
         ['spark-unrelated', unrelatedHash],
       ]),
     });
-    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([
+    expect((await store.payments(0, FAR_FUTURE)).map((row) => row.isForumGift)).toEqual([
       true,
       true,
       false,
@@ -782,7 +815,7 @@ describe('PostgresWalletUsageStore', () => {
     const rejects = async (row: unknown, message: string): Promise<void> => {
       sql.rows = [row];
       try {
-        await store.payments(0);
+        await store.payments(0, FAR_FUTURE);
       } catch (error) {
         expect(error).toBeInstanceOf(Error);
         expect((error as Error).message).toBe(message);
@@ -841,7 +874,7 @@ describe('PostgresWalletUsageStore', () => {
     const sql = new MockSql();
     sql.error = new Error('down');
     const store = new PostgresWalletUsageStore(sql);
-    await expect(store.payments(0)).rejects.toThrow('down');
+    await expect(store.payments(0, FAR_FUTURE)).rejects.toThrow('down');
     await expect(store.forumInvoices(0)).rejects.toThrow('down');
     await expect(store.shopCharges(0)).rejects.toThrow('down');
   });

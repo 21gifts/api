@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { utcDayKey } from '@/lib/funding';
+import { addUtcDays } from '@/lib/member-habit';
 import { buildWalletStats } from '@/lib/wallet-stats';
 import type { WalletStore } from '@/lib/wallet-store';
 import { buildWalletUsage, walletUsageReadSince } from '@/lib/wallet-usage';
@@ -22,7 +24,9 @@ export interface WalletStatsRouteDeps {
  * Build the public `/wallets` statistics route group.
  *
  * `GET /stats` is unchanged. `GET /usage` is a separate read of payment,
- * forum, and shop aggregates.
+ * forum, and shop aggregates. The payment read is bounded above by the start
+ * of the UTC day after `now`, so a future-dated row cannot pair with an
+ * in-window row or contribute to its group.
  *
  * @param deps - Wallet store, usage store, and clock.
  * @returns A Hono app serving `GET /stats` and `GET /usage`.
@@ -42,7 +46,8 @@ export function walletStatsRoutes(deps: WalletStatsRouteDeps): Hono {
     try {
       const since = walletUsageReadSince();
       const nowMs = deps.now();
-      const payments = await deps.usageStore.payments(since.payments);
+      const untilMs = Date.parse(`${addUtcDays(utcDayKey(nowMs), 1)}T00:00:00.000Z`);
+      const payments = await deps.usageStore.payments(since.payments, untilMs);
       const forumInvoices = await deps.usageStore.forumInvoices(since.forumInvoices);
       const shopCharges = await deps.usageStore.shopCharges(since.shopCharges);
       const body = buildWalletUsage({ payments, forumInvoices, shopCharges }, nowMs);
