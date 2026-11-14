@@ -65,18 +65,15 @@ type GiftActionAuthStore = Pick<
   | 'hasRecoveryShareForVerifiedWallet'
 >;
 
-/** Forum lookups and writes the gift actions use: posts, media, welcome, and gift replies. */
+/** Forum lookups and writes the gift actions use: posts, welcome, and gift replies. */
 type GiftActionMessageStore = Pick<
   MessageStore,
   | 'accountHasLiveTopLevelPost'
-  | 'accountHasLiveTopLevelMediaPost'
-  | 'latestLiveTopLevelMediaId'
   | 'accountHasWelcomeGift'
   | 'getById'
   | 'addSats'
   | 'addReceivedSats'
   | 'create'
-  | 'listPostsByAccount'
   | 'markDeleted'
   | 'withMessageLock'
 >;

@@ -1328,14 +1328,14 @@
 - **Purpose:** Whether `accountId` has at least one live top-level forum row that is not `excludeId` and has media (photo 0, extra stills, or video). Same live / top-level / exclude / Damus-null-account rules as `accountHasLiveTopLevelPost`. InMemory: `#photos.has(id)` or extras length > 0 or `row.hasVideo === true` (seed `hasPhoto: true` alone is not media). Postgres: `photo IS NOT NULL` or non-empty `video_content_type` or `EXISTS` extra still. Replies do not count.
 - **Inputs:** `accountId` (author account id), `excludeId` (auto profile note id, or `null` to exclude nothing extra).
 - **Returns / side effects:** `Promise<boolean>`. InMemory scans rows; Postgres `SELECT 1 … LIMIT 1` with params `[$1 accountId, $2 excludeId]`.
-- **Used by:** `issueGiftInvoice`.
+- **Used by:** No production caller; kept as a tested store method.
 
 ## Function: latestLiveTopLevelMediaId
 
 - **Purpose:** Newest live top-level photo or video id for one account, including the About-me note. Not capped by the public list size. Replies, soft-hidden rows, and other accounts do not count. InMemory matches a stored photo, extra stills, or `hasVideo` (seed `hasPhoto: true` alone is not media) and sorts `createdAt` then `id` descending. Postgres selects `photo IS NOT NULL`, a non-empty `video_content_type`, or an extra still, `ORDER BY created_at DESC, id DESC LIMIT 1`.
 - **Inputs:** `accountId` (author account id).
 - **Returns / side effects:** `Promise<string | null>`. Empty or missing id is `null`. No writes.
-- **Used by:** `syncWelcomePing`, `issueGiftInvoice`, and `fundingRoutes` (`POST /funding/trial` and `POST /funding/admit` from effective pending).
+- **Used by:** `syncWelcomePing` and `fundingRoutes` (`POST /funding/trial` and `POST /funding/admit` from effective pending).
 
 ## Function: InMemoryContactStore
 
