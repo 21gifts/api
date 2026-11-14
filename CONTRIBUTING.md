@@ -15,10 +15,11 @@ MEDIA_DIR="$(mktemp -d)" bun run dev    # → http://localhost:3000/healthz
 
 ## Prerequisites
 
-| Tool                       | Version | Purpose                                       |
-| -------------------------- | ------- | --------------------------------------------- |
-| [Bun](https://bun.sh)      | ≥ 1.4.4 | Runtime + package manager + test runner       |
-| Node.js (for tooling only) | ≥ 22    | Some dev-tools (TypeScript, ESLint) expect it |
+| Tool                       | Version                                                                          | Purpose                                                                                                                                                                                         |
+| -------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Bun](https://bun.sh)      | ≥ 1.4.4                                                                          | Runtime + package manager + test runner                                                                                                                                                         |
+| Node.js (for tooling only) | ≥ 22                                                                             | Some dev-tools (TypeScript, ESLint) expect it                                                                                                                                                   |
+| OpenSSH `ssh-keygen`       | with `-Y sign` / `-Y verify` (8.8 or later for `valid-before`; tested with 10.3) | Operator login with SSH keys: the api verifies signatures with it, and Vitest and Playwright make throwaway keys with it (macOS and most Linux distributions ship it; Alpine: `openssh-keygen`) |
 
 Install Bun:
 

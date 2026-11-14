@@ -7,7 +7,8 @@
 # Run:
 #   docker run -p 3000:3000 21gifts/api:latest
 #
-# Configuration is environment-variable only; see CONTRIBUTING.md.
+# Configuration is environment-variable only, except the operator allowed-signers
+# files mounted read-only in DEBUG_ALLOWED_SIGNERS_DIR; see CONTRIBUTING.md.
 
 FROM oven/bun:1.4.4-alpine AS deps
 WORKDIR /app
