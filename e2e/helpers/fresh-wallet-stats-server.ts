@@ -6,8 +6,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request as playwrightRequest, type APIRequestContext } from '@playwright/test';
 import { DEFAULT_BOOT_ENV, PINNED_OFF } from './pinned-env';
+import { E2E_SIGNING_NAMESPACE, e2eOperatorKeys, registerOperatorBaseURL } from './operator-keys';
 
-/** A dedicated memory-boot API and its isolated request context. */
+/**
+ * A dedicated memory-boot API and its isolated request context. It loads the
+ * allowed-signers files of the default boot, so `operatorHeaders` on its
+ * request context logs in there.
+ */
 export interface FreshWalletStatsServer {
   /** Request context whose relative paths resolve to the fresh API. */
   request: APIRequestContext;
@@ -68,7 +73,8 @@ export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsSer
       ...DEFAULT_BOOT_ENV,
       BIND_ADDR: `127.0.0.1:${port}`,
       PUBLIC_BASE_URL: baseURL,
-      DEBUG_TOKEN: 'e2e-debug-token',
+      DEBUG_ALLOWED_SIGNERS_DIR: e2eOperatorKeys().signersDir,
+      DEBUG_SIGNING_NAMESPACE: E2E_SIGNING_NAMESPACE,
       CORS_ALLOWED_ORIGINS: baseURL,
       MEDIA_DIR: mediaDir,
     },
@@ -88,6 +94,7 @@ export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsSer
   let context: APIRequestContext;
   try {
     context = await playwrightRequest.newContext({ baseURL });
+    registerOperatorBaseURL(context, baseURL);
   } catch (error) {
     await stopChild(child);
     rmSync(mediaDir, { recursive: true, force: true });

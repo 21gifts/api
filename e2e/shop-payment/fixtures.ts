@@ -5,7 +5,7 @@
  * run over Playwright's request context and the chain stand-in.
  *
  * The verified wallet is made the way a member makes one, over HTTP only:
- * the account is provisioned with the debug token, claimed with a passkey
+ * the account is provisioned with an operator key token, claimed with a passkey
  * (`POST /auth/passkey/register/begin` with its view key, then `/finish`
  * with a `none` attestation), given a Spark key (`PUT /me/wallet`), and
  * registered at the LNURL server (`POST /lnurlpay/:pubkey`), which marks
@@ -14,6 +14,7 @@
 
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { expect, type APIRequestContext } from '@playwright/test';
+import { operatorHeaders } from '../helpers/operator-keys';
 import type {
   Broadcast,
   ReplaceResult,
@@ -22,7 +23,7 @@ import type {
   TransferRequest,
   TransferResult,
 } from './stand-ins/control-types';
-import { CONTROL_URL, DEBUG_TOKEN, PUBLIC_BASE_URL, WEBAUTHN_ORIGIN } from './stand-ins/ports';
+import { CONTROL_URL, PUBLIC_BASE_URL, WEBAUTHN_ORIGIN } from './stand-ins/ports';
 import {
   OPEN_CRYPTO_PAY_RAILS,
   encodeLnurl,
@@ -39,9 +40,6 @@ import {
   type WalletBundler,
   type WalletHttp,
 } from './tether-client';
-
-/** `Authorization` header of the debug token for the operator routes. */
-export const DEBUG = { authorization: `Bearer ${DEBUG_TOKEN}` };
 
 // ---------------------------------------------------------------------------
 // CBOR (only what a `none` attestation needs).
@@ -159,7 +157,7 @@ export function freshUsername(prefix: string): string {
 }
 
 /**
- * Provision a shop over HTTP with the debug token and give it a verified
+ * Provision a shop over HTTP with an operator key token and give it a verified
  * wallet (passkey claim, `PUT /me/wallet`, `POST /lnurlpay/:pubkey`).
  *
  * @param request - Playwright request context of the api.
@@ -170,7 +168,7 @@ export async function verifiedShop(request: APIRequestContext, prefix = 'shop'):
   const username = freshUsername(prefix);
   const name = `Shop ${username.slice(-10)}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name, username }] },
   });
   expect(provision.status()).toBe(200);

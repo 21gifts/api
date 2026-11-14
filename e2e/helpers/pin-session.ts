@@ -1,8 +1,7 @@
 import { expect, type APIRequestContext } from '@playwright/test';
+import { operatorHeaders } from './operator-keys';
 
 /** Operator headers configured by the Playwright web server. */
-export const DEBUG = { authorization: 'Bearer e2e-debug-token' };
-
 /**
  * Create a moderator account and return its authenticated request headers and id.
  *
@@ -16,25 +15,29 @@ async function moderatorSession(
 ): Promise<{ auth: { authorization: string }; id: string }> {
   const name = `E2ePin${stamp}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name, username: `e2e-pin-${stamp}`.slice(0, 32) }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const account = accounts.find((row) => row.name === name);
   expect(account).toBeDefined();
   const id = account?.id ?? '';
-  const session = await request.post(`/debug/accounts/${id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   const auth = { authorization: `Bearer ${token}` };
   const agreed = await request.post('/me/rules-agreement', { headers: auth });
   expect(agreed.status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role: 'moderator' },
   });
   expect(promoted.status()).toBe(200);
@@ -59,7 +62,9 @@ export async function moderatorAboutNote(
   const { auth, id } = await moderatorSession(request, stamp);
   const saved = await request.put('/me/about', { headers: auth, data: { text } });
   expect(saved.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const row = (
     (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }

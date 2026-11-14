@@ -15581,7 +15581,7 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
 
 describe('GET /messages/hidden and GET /messages/:id/edits with an operator token', () => {
   const SHOP_ID = '11111111-1111-4111-8111-111111111111';
-  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
+  const TOKENS = { operatorLogin: OP_KEYS.operatorLogin };
 
   async function shopStore(): Promise<InMemoryMessageStore> {
     const messages = new InMemoryMessageStore();
@@ -15597,7 +15597,8 @@ describe('GET /messages/hidden and GET /messages/:id/edits with an operator toke
     return messages;
   }
 
-  it.each(['op-write', OP_READ])('reads both staff logs with %s and no session', async (token) => {
+  it('reads both staff logs with a read key token and no session', async () => {
+    const token = OP_READ;
     const app = mount(new InMemoryAuthStore(), await shopStore(), TOKENS);
     const headers = { authorization: `Bearer ${token}` };
     const hidden = await app.request('/messages/hidden', { headers });
@@ -15611,8 +15612,10 @@ describe('GET /messages/hidden and GET /messages/:id/edits with an operator toke
   it('keeps the session gate for a wrong bearer and a basis session', async () => {
     const app = mount(await seededStore(), await shopStore(), TOKENS);
     for (const path of ['/messages/hidden', '/messages/' + SHOP_ID + '/edits']) {
-      const wrong = await app.request(path, { headers: { authorization: 'Bearer op-other' } });
-      expect(wrong.status).toBe(401);
+      for (const bearer of ['op-other', 'e2e-debug-token']) {
+        const wrong = await app.request(path, { headers: { authorization: `Bearer ${bearer}` } });
+        expect(wrong.status).toBe(401);
+      }
       const basis = await app.request(path, { headers: AUTH });
       expect(basis.status).toBe(403);
     }

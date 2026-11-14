@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import {
   API_PORT,
   CONTROL_URL,
-  DEBUG_TOKEN,
   LNURL_PORT,
   ORCHESTRA_API_KEY,
   ORCHESTRA_PORT,
@@ -54,9 +53,15 @@ const selected = selectedProjects();
 const runDefault = selected.has('default');
 const runShop = selected.has('shop-payment');
 
-// Throwaway operator keys for the SSH key login of the default boot (made at
-// config load, never committed); `e2e/debug-auth.spec.ts` signs with them.
-const operatorKeys = runDefault ? e2eOperatorKeys() : undefined;
+// Throwaway operator keys for the SSH key login of both api boots (made at
+// config load, never committed). The specs log in with them through
+// `operatorHeaders` (`e2e/helpers/operator-keys.ts`); there is no static
+// operator token.
+const operatorKeys = runDefault || runShop ? e2eOperatorKeys() : undefined;
+const operatorLoginEnv = {
+  DEBUG_ALLOWED_SIGNERS_DIR: operatorKeys?.signersDir ?? '',
+  DEBUG_SIGNING_NAMESPACE: E2E_SIGNING_NAMESPACE,
+};
 
 const defaultServer = {
   command: 'bun src/index.ts',
@@ -69,9 +74,7 @@ const defaultServer = {
     ...DEFAULT_BOOT_ENV,
     BIND_ADDR: '127.0.0.1:3000',
     PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
-    DEBUG_TOKEN: 'e2e-debug-token',
-    DEBUG_ALLOWED_SIGNERS_DIR: operatorKeys?.signersDir ?? '',
-    DEBUG_SIGNING_NAMESPACE: E2E_SIGNING_NAMESPACE,
+    ...operatorLoginEnv,
     CORS_ALLOWED_ORIGINS: 'http://localhost:3000,http://127.0.0.1:3000',
     MEDIA_DIR: join(tmpdir(), '21gifts-e2e-media'),
   },
@@ -113,7 +116,7 @@ const shopServers = [
       BTC_FIAT_SPOT_URL: `${CONTROL_URL}/__spot`,
       // Test-only: the stand-ins serve TLS with a certificate made at start.
       NODE_TLS_REJECT_UNAUTHORIZED: '0',
-      DEBUG_TOKEN,
+      ...operatorLoginEnv,
       CORS_ALLOWED_ORIGINS: WEBAUTHN_ORIGIN,
       MEDIA_DIR: join(tmpdir(), '21gifts-e2e-shop-media'),
     },

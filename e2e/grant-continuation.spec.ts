@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { operatorHeaders } from './helpers/operator-keys';
 
 test('Function: measureGrantContinuation — GET /funding/goal without bearer is 401', async ({
   request,
@@ -15,11 +16,11 @@ test('Function: grantContinuationRoutes — GET /funding/goal without bearer is 
   expect(await res.json()).toEqual({ error: 'Unauthorized' });
 });
 
-test('Function: grantContinuationRoutes — GET /funding/goal with DEBUG_TOKEN is 200', async ({
+test('Function: grantContinuationRoutes — GET /funding/goal with a read key token is 200', async ({
   request,
 }) => {
   const res = await request.get('/funding/goal', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { days: unknown[]; qualifyingShops: number };

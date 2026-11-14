@@ -1,5 +1,4 @@
 import type { Context, MiddlewareHandler, Next } from 'hono';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import type { OperatorLogin } from '@/lib/operator-login';
 
 /** Operator level a debug route declares. A higher level includes the lower ones. */
@@ -11,12 +10,10 @@ export const OPERATOR_LEVELS: readonly OperatorLevel[] = ['read', 'write', 'admi
 /**
  * Operator credentials a route accepts.
  *
- * `debugToken` is `DEBUG_TOKEN` and grants `admin`. `operatorLogin` checks
- * the short-lived tokens of the SSH key login; each grants its own level.
+ * `operatorLogin` checks the short-lived tokens of the SSH key login; each
+ * grants its own level. It is the only operator credential.
  */
 export interface OperatorTokens {
-  /** Operator token, or `undefined` when unset. */
-  debugToken?: string | undefined;
   /** SSH key login, or `undefined` when the route does not accept key tokens. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -39,10 +36,9 @@ export const OPERATOR_LEVEL: unique symbol = Symbol('operatorLevel');
 /**
  * Whether an `Authorization` header passes the operator check for `level`.
  *
- * `DEBUG_TOKEN` (trimmed) is tried first and grants `admin`. A key token of
- * the SSH key login grants the level it was issued with, while its operator
- * is still listed at that level. Neither `DEBUG_TOKEN` nor a loaded key login
- * → `unconfigured`. A key token below `level` → `forbidden`. Any other bearer
+ * A key token of the SSH key login grants the level it was issued with,
+ * while its operator is still listed at that level. No loaded key login →
+ * `unconfigured`. A key token below `level` → `forbidden`. Any other bearer
  * → `unauthorized`.
  *
  * @param level - Required operator level.
@@ -55,15 +51,11 @@ export async function checkOperator(
   tokens: OperatorTokens,
   authorizationHeader: string | undefined,
 ): Promise<true | OperatorRefusal> {
-  const write = (tokens.debugToken ?? '').trim();
-  const login = tokens.operatorLogin?.configured === true ? tokens.operatorLogin : undefined;
-  if (write === '' && login === undefined) {
+  const login = tokens.operatorLogin;
+  if (login?.configured !== true) {
     return 'unconfigured';
   }
-  if (write !== '' && bearerMatchesDebugToken(write, authorizationHeader)) {
-    return true;
-  }
-  const grant = login === undefined ? null : await login.resolveBearer(authorizationHeader);
+  const grant = await login.resolveBearer(authorizationHeader);
   if (grant === null) {
     return 'unauthorized';
   }
@@ -76,7 +68,7 @@ export async function checkOperator(
  * Hono middleware that declares and enforces the operator level of a route.
  *
  * Checks `tokens` on every request. A pass calls `next`. Otherwise it answers
- * 503 `{ error: 'Debug is not configured' }` when no credential is
+ * 503 `{ error: 'Debug is not configured' }` when the SSH key login is not
  * configured, 403 `{ error: 'Forbidden' }` for a key token below `level`, and
  * 401 `{ error: 'Unauthorized' }` for any other bearer, or hands that answer
  * to `options.onRefused`.

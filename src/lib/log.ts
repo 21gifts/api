@@ -181,8 +181,6 @@ export interface RequestLogDeps {
   apiLogStore: ApiLogStore;
   /** Auth persistence for session classification. */
   authStore: AuthStore;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** Spend-worker shared secret, or `undefined` when spend auth is disabled. */
   spendApiToken: string | undefined;
   /** SSH key login whose key tokens are logged with their operator name. */
@@ -238,7 +236,6 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
   try {
     const auth = await resolveRequestAuth({
       authorizationHeader: captured.authorizationHeader,
-      debugToken: deps.debugToken,
       spendApiToken: deps.spendApiToken,
       operatorLogin: deps.operatorLogin,
       keyGrant: captured.keyGrant,

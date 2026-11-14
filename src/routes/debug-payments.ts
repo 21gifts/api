@@ -27,7 +27,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * Operator debug surface for `message_invoice` attempts (forum and
  * conversation invoices, including `conversationId` and
  * `conversationMessageId`) and zap ingest rows.
- * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  */
 
 /** Collaborators the debug payment routes need. */
@@ -61,8 +61,6 @@ export interface DebugPaymentsRouteDeps {
    * check of the welcome sweep dry-run.
    */
   giftStore: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
   /** Switch of the 15-minute welcome sweep that `GET` and `PUT /welcome-sweep` read and set. */
@@ -151,11 +149,11 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
 /**
  * Build the `/debug` payment debug routes.
  *
- * @param deps - Stores, clock, optional debug token, and optional `spendPing` /
+ * @param deps - Stores, clock, optional key login, and optional `spendPing` /
  *   `fundingStore` forwarded into `settleInvoiceManually` for platform-note
  *   compose (same `eligibleToday` gate as `POST /messages`) and used by
  *   `POST /spend-ping`; `conversationStore`, `trustStore`, and `giftStore`
- *   for the window replay. Does not take `postLimiter` or `replyLimiter`; DEBUG_TOKEN settle
+ *   for the window replay. Does not take `postLimiter` or `replyLimiter`; the operator settle
  *   is not the shared top-level or reply note limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
  *   successful settle resumed), zap-ingest list, and `POST /spend-ping`: with

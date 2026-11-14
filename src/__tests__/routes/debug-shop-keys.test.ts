@@ -6,6 +6,17 @@ import { publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import { logEvent } from '@/lib/log';
 import { debugShopKeyRoutes, type DebugShopKeyRouteDeps } from '@/routes/debug-shop-keys';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_ADMIN = OP_KEYS.tokens.admin;
+const UNCONFIGURED = new OperatorLogin({
+  signers: null,
+  store: new InMemoryOperatorLoginStore(),
+  now: Date.now,
+});
 
 const ADOPTED_ID = '0cc5c2eb-aaf1-4f36-be26-f1b967e7bbe5';
 const KEK = new Uint8Array(32).fill(7);
@@ -50,7 +61,7 @@ function mount(overrides: Partial<DebugShopKeyRouteDeps> = {}): {
       identities: store,
       messages,
       kek: KEK,
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
       ...overrides,
     }),
   );
@@ -64,11 +75,11 @@ async function post(app: Hono, body: string, token: string | undefined): Promise
 }
 
 describe('POST /debug/shop-keys', () => {
-  it('returns 503 before JSON when debug is unset or blank', async () => {
-    const unset = mount({ debugToken: undefined });
-    const blank = mount({ debugToken: '  ' });
-    expect((await post(unset.app, 'not-json', 'secret')).status).toBe(503);
-    expect(await (await post(blank.app, 'not-json', 'secret')).json()).toEqual({
+  it('returns 503 before JSON without a configured key login', async () => {
+    const unset = mount({ operatorLogin: undefined });
+    const blank = mount({ operatorLogin: UNCONFIGURED });
+    expect((await post(unset.app, 'not-json', OP_ADMIN)).status).toBe(503);
+    expect(await (await post(blank.app, 'not-json', OP_ADMIN)).json()).toEqual({
       error: 'Debug is not configured',
     });
   });
@@ -80,25 +91,32 @@ describe('POST /debug/shop-keys', () => {
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
+  it('returns 403 before JSON for a write key token', async () => {
+    const { app } = mount();
+    const res = await post(app, 'not-json', OP_KEYS.tokens.write);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
   it('returns 503 when the shop KEK is missing or short', async () => {
     const missing = mount({ kek: undefined });
     const short = mount({ kek: new Uint8Array(16) });
-    expect((await post(missing.app, 'not-json', 'secret')).status).toBe(503);
-    expect(await (await post(short.app, 'not-json', 'secret')).json()).toEqual({
+    expect((await post(missing.app, 'not-json', OP_ADMIN)).status).toBe(503);
+    expect(await (await post(short.app, 'not-json', OP_ADMIN)).json()).toEqual({
       error: 'Shop keys are not configured',
     });
   });
 
   it('returns 400 for a body that is not a known shop key', async () => {
     const { app } = mount();
-    expect((await post(app, 'not-json', 'secret')).status).toBe(400);
+    expect((await post(app, 'not-json', OP_ADMIN)).status).toBe(400);
     expect(
-      (await post(app, JSON.stringify({ messageId: ADOPTED_ID, secret: 'zz' }), 'secret')).status,
+      (await post(app, JSON.stringify({ messageId: ADOPTED_ID, secret: 'zz' }), OP_ADMIN)).status,
     ).toBe(400);
     const other = await post(
       app,
       JSON.stringify({ messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', secret: hex(secret(4)) }),
-      'secret',
+      OP_ADMIN,
     );
     expect(other.status).toBe(400);
     expect(await other.json()).toEqual({ error: 'Invalid shop key' });
@@ -111,7 +129,7 @@ describe('POST /debug/shop-keys', () => {
     const res = await post(
       app,
       JSON.stringify({ messageId: ADOPTED_ID.toUpperCase(), secret: secretHex.toUpperCase() }),
-      'secret',
+      OP_ADMIN,
     );
     expect(res.status).toBe(200);
     const pubkey = publicKeyHexFromSecret(secret(4));
@@ -125,7 +143,7 @@ describe('POST /debug/shop-keys', () => {
     const again = await post(
       app,
       JSON.stringify({ messageId: ADOPTED_ID, secret: secretHex }),
-      'secret',
+      OP_ADMIN,
     );
     expect(again.status).toBe(200);
     warn.mockRestore();
@@ -136,15 +154,15 @@ describe('POST /debug/shop-keys', () => {
     const gone = await post(
       missing.app,
       JSON.stringify({ messageId: ADOPTED_ID, secret: hex(secret(4)) }),
-      'secret',
+      OP_ADMIN,
     );
     expect(gone.status).toBe(404);
     const { app } = mount();
-    await post(app, JSON.stringify({ messageId: ADOPTED_ID, secret: hex(secret(4)) }), 'secret');
+    await post(app, JSON.stringify({ messageId: ADOPTED_ID, secret: hex(secret(4)) }), OP_ADMIN);
     const clash = await post(
       app,
       JSON.stringify({ messageId: ADOPTED_ID, secret: hex(secret(5)) }),
-      'secret',
+      OP_ADMIN,
     );
     expect(clash.status).toBe(409);
     expect(await clash.json()).toEqual({ error: 'Shop key already exists' });
@@ -155,7 +173,7 @@ describe('POST /debug/shop-keys', () => {
     const zero = await post(
       app,
       JSON.stringify({ messageId: ADOPTED_ID, secret: '00'.repeat(32) }),
-      'secret',
+      OP_ADMIN,
     );
     expect(zero.status).toBe(400);
     expect(await zero.json()).toEqual({ error: 'Invalid shop key' });
@@ -167,7 +185,7 @@ describe('POST /debug/shop-keys', () => {
     const res = await post(
       broken.app,
       JSON.stringify({ messageId: ADOPTED_ID, secret: hex(secret(4)) }),
-      'secret',
+      OP_ADMIN,
     );
     expect(res.status).toBe(400);
   });

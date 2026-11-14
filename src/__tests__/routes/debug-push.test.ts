@@ -3,6 +3,11 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { debugPushRoutes } from '@/routes/debug-push';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import type { OperatorLogin } from '@/lib/operator-login';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_WRITE = OP_KEYS.tokens.write;
 
 const now = (): number => 1_700_000_000_000;
 const LINKING_KEY = `02${'a'.repeat(64)}`;
@@ -10,7 +15,7 @@ const LINKING_KEY = `02${'a'.repeat(64)}`;
 function mount(args: {
   authStore?: InMemoryAuthStore;
   pushStore?: InMemoryPushStore;
-  debugToken?: string | undefined;
+  operatorLogin?: OperatorLogin | undefined;
   vapidPublicKey?: string | undefined;
 }): Hono {
   return new Hono().route(
@@ -19,7 +24,7 @@ function mount(args: {
       authStore: args.authStore ?? new InMemoryAuthStore(),
       pushStore: args.pushStore ?? new InMemoryPushStore(),
       now,
-      debugToken: args.debugToken,
+      operatorLogin: args.operatorLogin,
       vapidPublicKey: args.vapidPublicKey,
     }),
   );
@@ -43,7 +48,7 @@ async function seededStore(): Promise<InMemoryAuthStore> {
 
 describe('POST /debug/push-ping', () => {
   it('returns 503 before JSON when debug is not configured', async () => {
-    const res = await mount({ debugToken: '' }).request('/debug/push-ping', {
+    const res = await mount({}).request('/debug/push-ping', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: 'not-json',
@@ -53,7 +58,7 @@ describe('POST /debug/push-ping', () => {
   });
 
   it('returns 401 before JSON when the debug token is wrong', async () => {
-    const res = await mount({ debugToken: 'secret' }).request('/debug/push-ping', {
+    const res = await mount({ operatorLogin: OP_KEYS.operatorLogin }).request('/debug/push-ping', {
       method: 'POST',
       headers: {
         authorization: 'Bearer wrong',
@@ -65,14 +70,27 @@ describe('POST /debug/push-ping', () => {
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
+  it('returns 403 before JSON for a read key token', async () => {
+    const res = await mount({ operatorLogin: OP_KEYS.operatorLogin }).request('/debug/push-ping', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${OP_KEYS.tokens.read}`,
+        'content-type': 'application/json',
+      },
+      body: 'not-json',
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
   it('returns 503 when push is not configured', async () => {
     const res = await mount({
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
       vapidPublicKey: undefined,
     }).request('/debug/push-ping', {
       method: 'POST',
       headers: {
-        authorization: 'Bearer secret',
+        authorization: `Bearer ${OP_WRITE}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ accountId: 'acc' }),
@@ -83,12 +101,12 @@ describe('POST /debug/push-ping', () => {
 
   it('returns 400 when accountId is missing', async () => {
     const res = await mount({
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
       vapidPublicKey: 'pub',
     }).request('/debug/push-ping', {
       method: 'POST',
       headers: {
-        authorization: 'Bearer secret',
+        authorization: `Bearer ${OP_WRITE}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({}),
@@ -101,12 +119,12 @@ describe('POST /debug/push-ping', () => {
 
   it('returns 404 for an unknown account', async () => {
     const res = await mount({
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
       vapidPublicKey: 'pub',
     }).request('/debug/push-ping', {
       method: 'POST',
       headers: {
-        authorization: 'Bearer secret',
+        authorization: `Bearer ${OP_WRITE}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ accountId: 'missing' }),
@@ -121,12 +139,12 @@ describe('POST /debug/push-ping', () => {
     const none = await mount({
       authStore: auth,
       pushStore,
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
       vapidPublicKey: 'pub',
     }).request('/debug/push-ping', {
       method: 'POST',
       headers: {
-        authorization: 'Bearer secret',
+        authorization: `Bearer ${OP_WRITE}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ accountId: 'acc' }),
@@ -145,12 +163,12 @@ describe('POST /debug/push-ping', () => {
     const one = await mount({
       authStore: auth,
       pushStore,
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
       vapidPublicKey: 'pub',
     }).request('/debug/push-ping', {
       method: 'POST',
       headers: {
-        authorization: 'Bearer secret',
+        authorization: `Bearer ${OP_WRITE}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify({ accountId: 'acc' }),

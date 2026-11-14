@@ -96,8 +96,6 @@ export interface FundingRouteDeps {
   gifts: GiftStore;
   /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
   grantRound?: GrantRound;
-  /** `DEBUG_TOKEN` (every operator level), or unset. */
-  debugToken?: string;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -616,7 +614,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * (compare-and-set on the status read, log `funding.withdrawn`); any other
  * status is 409 `{ error: 'Conflict' }`. `basis` is 403 Forbidden.
  *
- * `GET /withdrawals` (operator `DEBUG_TOKEN` / operator key token only, like
+ * `GET /withdrawals` (operator key token only, like
  * `GET /daily-roster/links`; any session is 401) lists every
  * withdrawal ever written, newest first, from
  * {@link FundingStore.listWithdrawals}, with the live name and whether the

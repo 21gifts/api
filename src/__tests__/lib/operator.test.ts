@@ -12,7 +12,8 @@ import { OperatorLogin } from '@/lib/operator-login';
 import { createApp } from '@/server';
 import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
 
-const WRITE = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+/** A former static operator token value; no longer opens anything. */
+const FORMER_STATIC = 'e2e-debug-token';
 const STATIC_READ = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const keys = await seededOperatorLogin();
 const READ = keys.tokens.read;
@@ -51,11 +52,10 @@ async function refusedFetch(): Promise<Response> {
 }
 
 /** An app with every debug route mounted (the shop proof route needs the LNURL server). */
-function fullApp(debugToken: string, withKeys = true): Hono {
+function fullApp(withKeys = true): Hono {
   return createApp({
     env: { LNURL_SERVER_URL: 'https://lnurl.example', PUBLIC_BASE_URL: 'https://api.example' },
     fetchImpl: refusedFetch,
-    debugToken,
     operatorSigners: withKeys ? keys.operatorSigners : null,
     operatorLoginStore: keys.operatorLoginStore,
   });
@@ -115,9 +115,9 @@ async function expectPastGate(key: string, res: Response): Promise<void> {
 describe('checkOperator grants', () => {
   const login = keys.operatorLogin;
 
-  it('refuses as unconfigured when neither DEBUG_TOKEN nor a key login is configured', async () => {
-    expect(await checkOperator('read', {}, `Bearer ${WRITE}`)).toBe('unconfigured');
-    expect(await checkOperator('read', { debugToken: '  ' }, `Bearer ${WRITE}`)).toBe(
+  it('refuses as unconfigured when no key login is configured', async () => {
+    expect(await checkOperator('read', {}, `Bearer ${ADMIN_KEY}`)).toBe('unconfigured');
+    expect(await checkOperator('read', { operatorLogin: undefined }, undefined)).toBe(
       'unconfigured',
     );
     const unloaded = new OperatorLogin({
@@ -128,13 +128,6 @@ describe('checkOperator grants', () => {
     expect(await checkOperator('read', { operatorLogin: unloaded }, `Bearer ${READ}`)).toBe(
       'unconfigured',
     );
-  });
-
-  it('grants admin when the bearer matches DEBUG_TOKEN', async () => {
-    expect(await checkOperator('admin', { debugToken: WRITE }, `Bearer ${WRITE}`)).toBe(true);
-    expect(
-      await checkOperator('admin', { debugToken: WRITE, operatorLogin: login }, `Bearer ${WRITE}`),
-    ).toBe(true);
   });
 
   it('grants a key token its own level and the levels below it', async () => {
@@ -148,20 +141,25 @@ describe('checkOperator grants', () => {
   });
 
   it('refuses a key token below the required level as forbidden', async () => {
-    const tokens: OperatorTokens = { debugToken: WRITE, operatorLogin: login };
+    const tokens: OperatorTokens = { operatorLogin: login };
     expect(await checkOperator('write', tokens, `Bearer ${READ}`)).toBe('forbidden');
     expect(await checkOperator('admin', tokens, `Bearer ${READ}`)).toBe('forbidden');
     expect(await checkOperator('admin', tokens, `Bearer ${WRITE_KEY}`)).toBe('forbidden');
   });
 
-  it('refuses as unauthorized when the bearer matches no credential', async () => {
-    const tokens: OperatorTokens = { debugToken: WRITE, operatorLogin: login };
+  it('refuses as unauthorized when the bearer matches no key token', async () => {
+    const tokens: OperatorTokens = { operatorLogin: login };
     expect(await checkOperator('read', tokens, 'Bearer other')).toBe('unauthorized');
     expect(await checkOperator('read', tokens, `Bearer op_${'z'.repeat(43)}`)).toBe('unauthorized');
     expect(await checkOperator('read', tokens, undefined)).toBe('unauthorized');
-    expect(await checkOperator('read', { debugToken: WRITE }, `Bearer ${READ}`)).toBe(
-      'unauthorized',
-    );
+    expect(await checkOperator('read', tokens, READ)).toBe('unauthorized');
+  });
+
+  it('refuses a former static operator token as unauthorized at every level', async () => {
+    const tokens: OperatorTokens = { operatorLogin: login };
+    for (const level of ['read', 'write', 'admin'] as const) {
+      expect(await checkOperator(level, tokens, `Bearer ${FORMER_STATIC}`)).toBe('unauthorized');
+    }
   });
 });
 
@@ -170,52 +168,54 @@ describe('requireOperator', () => {
     return new Hono().get('/', requireOperator(level, tokens), (c) => c.json({ ok: true }, 200));
   }
 
-  it('answers 503 when no credential is configured', async () => {
-    const res = await app('read', { debugToken: ' ' }).request('/', {
-      headers: { authorization: `Bearer ${WRITE}` },
+  const tokens: OperatorTokens = { operatorLogin: keys.operatorLogin };
+
+  async function status(level: OperatorLevel, bearer: string | undefined): Promise<Response> {
+    return app(level, tokens).request('/', {
+      headers: bearer === undefined ? {} : { authorization: bearer },
+    });
+  }
+
+  it('answers 503 when no key login is configured', async () => {
+    const res = await app('read', {}).request('/', {
+      headers: { authorization: `Bearer ${ADMIN_KEY}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('answers 401 for a wrong bearer', async () => {
-    const res = await app('read', { debugToken: WRITE }).request('/', {
-      headers: { authorization: 'Bearer other' },
-    });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Unauthorized' });
-  });
-
-  it('lets DEBUG_TOKEN through at every level', async () => {
-    for (const level of ['read', 'write', 'admin'] as const) {
-      const res = await app(level, { debugToken: WRITE }).request('/', {
-        headers: { authorization: `Bearer ${WRITE}` },
-      });
-      expect(res.status).toBe(200);
+  it('answers 401 for a missing, unknown, or former static bearer', async () => {
+    for (const bearer of [undefined, 'Bearer other', `Bearer ${FORMER_STATIC}`]) {
+      const res = await status('read', bearer);
+      expect([bearer, res.status]).toEqual([bearer, 401]);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
     }
   });
 
-  it('answers 403 for a key token below the declared level', async () => {
-    const tokens = { debugToken: WRITE, operatorLogin: keys.operatorLogin };
-    expect(
-      (await app('read', tokens).request('/', { headers: { authorization: `Bearer ${READ}` } }))
-        .status,
-    ).toBe(200);
-    for (const level of ['write', 'admin'] as const) {
-      const res = await app(level, tokens).request('/', {
-        headers: { authorization: `Bearer ${READ}` },
-      });
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: 'Forbidden' });
-    }
+  it('passes a read key token on read and answers 403 on write', async () => {
+    expect((await status('read', `Bearer ${READ}`)).status).toBe(200);
+    const res = await status('write', `Bearer ${READ}`);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('passes a write key token on write and answers 403 on admin', async () => {
+    expect((await status('write', `Bearer ${WRITE_KEY}`)).status).toBe(200);
+    const res = await status('admin', `Bearer ${WRITE_KEY}`);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
+  it('passes an admin key token on admin', async () => {
+    expect((await status('admin', `Bearer ${ADMIN_KEY}`)).status).toBe(200);
   });
 
   it('reads the tokens on every request', async () => {
-    const tokens: OperatorTokens = { debugToken: undefined };
-    const route = app('read', tokens);
-    const headers = { authorization: `Bearer ${WRITE}` };
+    const late: OperatorTokens = {};
+    const route = app('read', late);
+    const headers = { authorization: `Bearer ${READ}` };
     expect((await route.request('/', { headers })).status).toBe(503);
-    tokens.debugToken = WRITE;
+    late.operatorLogin = keys.operatorLogin;
     expect((await route.request('/', { headers })).status).toBe(200);
   });
 
@@ -224,7 +224,7 @@ describe('requireOperator', () => {
       '/',
       requireOperator(
         'read',
-        { debugToken: WRITE },
+        { operatorLogin: keys.operatorLogin },
         {
           onRefused: async (c, next, refuse) => {
             if (c.req.header('x-pass') === '1') {
@@ -255,7 +255,7 @@ describe('OPERATOR_LEVEL', () => {
 });
 
 describe('debug route levels', () => {
-  const routes = debugRoutes(fullApp(WRITE));
+  const routes = debugRoutes(fullApp());
 
   it('finds the debug routes', () => {
     expect(routes.size).toBeGreaterThan(40);
@@ -286,15 +286,9 @@ describe('debug route levels', () => {
 });
 
 describe('operator tokens across the app', () => {
-  const app = fullApp(WRITE);
+  const app = fullApp();
   const routes = [...debugRoutes(app).keys()].filter((key) => !key.includes('/debug/auth'));
   const levels = debugRoutes(app);
-
-  it('lets DEBUG_TOKEN past the operator check of every debug route', async () => {
-    for (const key of routes) {
-      await expectPastGate(key, await call(app, key, WRITE));
-    }
-  });
 
   it('lets each key token past every route its level covers and answers 403 above it', async () => {
     const byLevel = { read: READ, write: WRITE_KEY, admin: ADMIN_KEY } as const;
@@ -322,7 +316,6 @@ describe('operator tokens across the app', () => {
     const withStore = createApp({
       env: { LNURL_SERVER_URL: 'https://lnurl.example', PUBLIC_BASE_URL: 'https://api.example' },
       fetchImpl: refusedFetch,
-      debugToken: WRITE,
       operatorSigners: keys.operatorSigners,
       operatorLoginStore: keys.operatorLoginStore,
       debugDbStore: store,
@@ -338,17 +331,17 @@ describe('operator tokens across the app', () => {
     expect((await call(withStore, 'HEAD /debug/db', 'other')).status).toBe(401);
   });
 
-  it('answers 401 on every debug route without DEBUG_TOKEN when the key login is loaded', async () => {
-    const keysOnly = fullApp('');
+  it('answers 401 on every debug route for a missing, unknown, or former static bearer', async () => {
     for (const key of routes) {
-      const res = await call(keysOnly, key, 'other');
-      expect([key, res.status]).toEqual([key, 401]);
-      await expectPastGate(key, await call(keysOnly, key, ADMIN_KEY));
+      for (const bearer of [undefined, 'other', FORMER_STATIC]) {
+        expect([key, bearer, (await call(app, key, bearer)).status]).toEqual([key, bearer, 401]);
+      }
+      await expectPastGate(key, await call(app, key, ADMIN_KEY));
     }
   });
 
-  it('answers 503 on every debug route without DEBUG_TOKEN and without the key login', async () => {
-    const off = fullApp('', false);
+  it('answers 503 on every debug route without the key login', async () => {
+    const off = fullApp(false);
     for (const key of routes) {
       expect([key, (await call(off, key, READ)).status]).toEqual([key, 503]);
     }
@@ -374,7 +367,6 @@ describe('operator tokens across the app', () => {
           DEBUG_READ_TOKEN: STATIC_READ,
         },
         fetchImpl: refusedFetch,
-        debugToken: WRITE,
         operatorSigners: keys.operatorSigners,
         operatorLoginStore: keys.operatorLoginStore,
       });

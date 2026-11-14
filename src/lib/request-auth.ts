@@ -1,8 +1,8 @@
 /**
  * Classify an Authorization header for the HTTP audit log.
  *
- * Debug and spend tokens are compared with the same constant-time helper as
- * the debug routes. Key tokens of the operator SSH key login go through
+ * The spend token is compared with {@link checkSpendAuth}, the check of the
+ * spend routes. Key tokens of the operator SSH key login go through
  * {@link OperatorLogin.resolveBearer}. Session tokens go through
  * {@link resolveSession}.
  */
@@ -10,8 +10,8 @@
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import type { ApiLogAuthKind } from '@/lib/api-log';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import type { OperatorKeyGrant, OperatorLogin } from '@/lib/operator-login';
+import { checkSpendAuth } from '@/lib/spend-auth';
 
 function sessionBearerToken(header: string | undefined): string | null {
   if (header === undefined || !header.startsWith('Bearer ')) {
@@ -34,29 +34,23 @@ export interface RequestAuth {
 /**
  * Classify `Authorization` as debug, spend, session, or none.
  *
- * `DEBUG_TOKEN` is `debug` without an operator. A valid key token of the SSH
- * key login is `debug` with the operator name. When `keyGrant` is given (the
+ * A valid key token of the SSH key login is `debug` with the operator name;
+ * it is the only bearer classed `debug`. When `keyGrant` is given (the
  * grant resolved when the request arrived, or `null` for no key token), it is
  * used as is and the token row is not looked up again.
  *
- * @param args - Header, stores, clock, configured tokens, the optional key login, and the optional `keyGrant` carried from the request start.
+ * @param args - Header, stores, clock, the spend token, the optional key login, and the optional `keyGrant` carried from the request start.
  * @returns Auth kind, optional account id, and the operator name of a key token. Never returns the token.
  */
 export async function resolveRequestAuth(args: {
   authorizationHeader: string | undefined;
   authStore: AuthStore;
   now: number;
-  debugToken: string | undefined;
   spendApiToken: string | undefined;
   operatorLogin?: OperatorLogin | undefined;
   keyGrant?: OperatorKeyGrant | null | undefined;
 }): Promise<RequestAuth> {
-  const debugToken = args.debugToken?.trim() ?? '';
-  if (debugToken !== '' && bearerMatchesDebugToken(debugToken, args.authorizationHeader)) {
-    return { accountId: null, authKind: 'debug', operator: null };
-  }
-  const spendToken = args.spendApiToken?.trim() ?? '';
-  if (spendToken !== '' && bearerMatchesDebugToken(spendToken, args.authorizationHeader)) {
+  if (checkSpendAuth(args.spendApiToken, args.authorizationHeader) === 'ok') {
     return { accountId: null, authKind: 'spend', operator: null };
   }
   const grant =

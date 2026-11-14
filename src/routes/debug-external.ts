@@ -11,8 +11,6 @@ import type { MessageStore } from '@/lib/message-store';
 export interface DebugExternalRouteDeps {
   /** Message persistence containing zapper and block rows. */
   store: MessageStore;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }

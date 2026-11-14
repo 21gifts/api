@@ -22,8 +22,6 @@ export interface GrantContinuationRouteDeps {
   messages: { listLiveAssignedShops(): Promise<ShopNoteRef[]> };
   /** POS charges in the UTC window, every status. */
   pos: { listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]> };
-  /** `DEBUG_TOKEN`, or `undefined` when unset. Reads the same body as a session. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -32,7 +30,7 @@ export interface GrantContinuationRouteDeps {
  * Build the `/funding/goal` route group.
  *
  * Mounted at `/funding/goal` so the public path is `GET /funding/goal`.
- * Any signed-in role may read it. `DEBUG_TOKEN` or an operator key token also
+ * Any signed-in role may read it. An operator key token of any level also
  * reads it without a session, because the body holds only counts.
  * This does not serve the public 30-day series.
  *

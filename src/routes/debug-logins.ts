@@ -1,6 +1,6 @@
 /**
  * Operator login controls: the login switch, its allowlist, and ending every
- * session. Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * session. Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  */
 
 import { Hono } from 'hono';
@@ -20,8 +20,6 @@ export interface DebugLoginsRouteDeps {
   loginGate: LoginGate;
   /** Clock returning epoch milliseconds. */
   now: () => number;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -65,7 +63,7 @@ async function loginsBody(gate: LoginGate): Promise<{
  * `POST /debug/logins/allowlist`, `DELETE /debug/logins/allowlist/:accountId`,
  * and `DELETE /debug/sessions`.
  *
- * @param deps - Auth store, login gate, clock, debug token.
+ * @param deps - Auth store, login gate, clock, key login.
  * @returns A Hono app exposing the five routes.
  */
 export function debugLoginsRoutes(deps: DebugLoginsRouteDeps): Hono {

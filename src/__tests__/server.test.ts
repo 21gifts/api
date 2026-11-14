@@ -29,6 +29,8 @@ import {
 import { PINNED, seedPinnedAccount, stagePendingRecovery } from '@/__tests__/helpers/recovery';
 import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
 
+const OP_KEYS = await seededOperatorLogin();
+
 function b64url(bytes: Uint8Array): string {
   return Buffer.from(bytes)
     .toString('base64')
@@ -224,10 +226,37 @@ describe('createApp', () => {
     expect(res.status).toBe(200);
   });
 
-  it('returns 503 on /debug/accounts when debugToken is blank', async () => {
-    const app = createApp({ debugToken: '' });
+  it('returns 503 on /debug/accounts when no operator key login is configured', async () => {
+    const app = createApp({ operatorSigners: null });
     const res = await app.request('/debug/accounts');
     expect(res.status).toBe(503);
+  });
+
+  it('does not open an operator route to a DEBUG_TOKEN set in the environment', async () => {
+    const saved = process.env['DEBUG_TOKEN'];
+    process.env['DEBUG_TOKEN'] = 'e2e-debug-token';
+    try {
+      const headers = { authorization: 'Bearer e2e-debug-token' };
+      const withLogin = createApp({
+        operatorSigners: OP_KEYS.operatorSigners,
+        operatorLoginStore: OP_KEYS.operatorLoginStore,
+      });
+      const refused = await withLogin.request('/debug/accounts', { headers });
+      expect(refused.status).toBe(401);
+      expect(await refused.json()).toEqual({ error: 'Unauthorized' });
+      const withoutLogin = createApp({ operatorSigners: null });
+      const off = await withoutLogin.request('/debug/accounts', { headers });
+      expect(off.status).toBe(503);
+      expect(await off.json()).toEqual({ error: 'Debug is not configured' });
+      const envOnly = createApp({ env: { DEBUG_TOKEN: 'e2e-debug-token' }, operatorSigners: null });
+      expect((await envOnly.request('/debug/accounts', { headers })).status).toBe(503);
+    } finally {
+      if (saved === undefined) {
+        delete process.env['DEBUG_TOKEN'];
+      } else {
+        process.env['DEBUG_TOKEN'] = saved;
+      }
+    }
   });
 
   it('mounts the read-only wallet route before the write-token debug group', async () => {
@@ -256,7 +285,6 @@ describe('createApp', () => {
     const app = createApp({
       authStore,
       walletStore,
-      debugToken: 'write-token',
       operatorSigners: keys.operatorSigners,
       operatorLoginStore: keys.operatorLoginStore,
     });
@@ -272,13 +300,15 @@ describe('createApp', () => {
   });
 
   it('dumps rate tables on GET /debug/dump', async () => {
+    const keys = await seededOperatorLogin();
     const app = createApp({
-      debugToken: 'secret',
+      operatorSigners: keys.operatorSigners,
+      operatorLoginStore: keys.operatorLoginStore,
       listDbChange: async () => [{ id: 1 }],
       btcUsdRates: { ensureDays: async () => new Map() },
     });
     const res = await app.request('/debug/dump', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${keys.tokens.read}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { tables: Record<string, unknown[]> };
@@ -320,35 +350,35 @@ describe('createApp', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 503 on POST /debug/push-ping when debugToken is blank', async () => {
-    const app = createApp({ debugToken: '' });
+  it('returns 503 on POST /debug/push-ping when no operator key login is configured', async () => {
+    const app = createApp({ operatorSigners: null });
     const res = await app.request('/debug/push-ping', { method: 'POST' });
     expect(res.status).toBe(503);
   });
 
-  it('mounts the push broadcast routes behind the debug token', async () => {
-    const app = createApp({ debugToken: '' });
+  it('mounts the push broadcast routes behind the operator check', async () => {
+    const app = createApp({ operatorSigners: null });
     const res = await app.request('/debug/push-broadcast', { method: 'POST' });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 on POST /debug/passkey-renew/reopen when debugToken is blank', async () => {
-    const app = createApp({ debugToken: '' });
+  it('returns 503 on POST /debug/passkey-renew/reopen when no operator key login is configured', async () => {
+    const app = createApp({ operatorSigners: null });
     const res = await app.request('/debug/passkey-renew/reopen', { method: 'POST' });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 on POST /debug/shop-keys when debugToken is blank', async () => {
-    const app = createApp({ debugToken: '' });
+  it('returns 503 on POST /debug/shop-keys when no operator key login is configured', async () => {
+    const app = createApp({ operatorSigners: null });
     const res = await app.request('/debug/shop-keys', { method: 'POST' });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 on POST /debug/shop-notes when debugToken is blank', async () => {
-    const app = createApp({ debugToken: '' });
+  it('returns 503 on POST /debug/shop-notes when no operator key login is configured', async () => {
+    const app = createApp({ operatorSigners: null });
     const res = await app.request('/debug/shop-notes', { method: 'POST' });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
@@ -766,14 +796,14 @@ describe('createApp', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 503 on /debug/contacts when debugToken is blank', async () => {
-    const app = createApp({ debugToken: '' });
+  it('returns 503 on /debug/contacts when no operator key login is configured', async () => {
+    const app = createApp({ operatorSigners: null });
     const res = await app.request('/debug/contacts');
     expect(res.status).toBe(503);
   });
 
-  it('returns 503 on /debug/api-log when debugToken is blank', async () => {
-    const app = createApp({ debugToken: '' });
+  it('returns 503 on /debug/api-log when no operator key login is configured', async () => {
+    const app = createApp({ operatorSigners: null });
     const res = await app.request('/debug/api-log');
     expect(res.status).toBe(503);
   });
@@ -1833,7 +1863,7 @@ describe('createApp shop payments in USDT and USDC', () => {
   }
 
   it('mounts no shop route without the LNURL server', () => {
-    const app = createApp({ env: {}, debugToken: 'debug-token' });
+    const app = createApp({ env: {} });
     const keys = routeKeys(app);
     for (const path of SHOP_PATHS) {
       expect(keys).not.toContain(path);
@@ -1848,7 +1878,8 @@ describe('createApp shop payments in USDT and USDC', () => {
       env: { LNURL_SERVER_URL: LNURL_SERVER.baseUrl, PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl },
       authStore,
       fetchImpl,
-      debugToken: 'debug-token',
+      operatorSigners: OP_KEYS.operatorSigners,
+      operatorLoginStore: OP_KEYS.operatorLoginStore,
     });
     expect(routeKeys(app)).toEqual(expect.arrayContaining(SHOP_PATHS));
     const res = await postPayment(app);
@@ -1860,7 +1891,7 @@ describe('createApp shop payments in USDT and USDC', () => {
     expect(seen.some((request) => request.url.startsWith('https://orchestra.example'))).toBe(false);
     const retry = await app.request(
       '/debug/shop-proofs/00000000-0000-4000-8000-000000000001/retry',
-      { method: 'POST', headers: { authorization: 'Bearer debug-token' } },
+      { method: 'POST', headers: { authorization: `Bearer ${OP_KEYS.tokens.write}` } },
     );
     expect(retry.status).toBe(404);
     expect(await retry.json()).toEqual({ error: 'Not found' });
@@ -2004,7 +2035,8 @@ describe('shop identity hooks', () => {
         messageStore: messages,
         shopIdentityStore: store,
         shopKek: SHOP_KEK,
-        debugToken: 'dbg',
+        operatorSigners: OP_KEYS.operatorSigners,
+        operatorLoginStore: OP_KEYS.operatorLoginStore,
       });
       expect(
         (
@@ -2029,7 +2061,7 @@ describe('shop identity hooks', () => {
         (
           await app.request(`/debug/messages/${SHOP_ID}/restore`, {
             method: 'POST',
-            headers: { authorization: 'Bearer dbg' },
+            headers: { authorization: `Bearer ${OP_KEYS.tokens.write}` },
           })
         ).status,
       ).toBe(204);

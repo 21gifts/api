@@ -1,6 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-
-const DEBUG = { authorization: 'Bearer e2e-debug-token' };
+import { operatorHeaders } from './helpers/operator-keys';
 
 /**
  * Provision one member through the debug route and mint a session.
@@ -16,17 +15,21 @@ async function memberSession(
   const name = `${prefix}${stamp.slice(0, 8)}`;
   const username = `${prefix.toLowerCase()}-${stamp}`.slice(0, 32);
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name, username }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const row = accounts.find((item) => item.name === name);
   expect(row).toBeDefined();
-  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   return { id: row!.id, name, username, auth: { authorization: `Bearer ${token}` } };
@@ -45,7 +48,7 @@ async function promote(
   role: 'verified' | 'moderator',
 ): Promise<void> {
   const promoted = await request.patch(`/debug/accounts/${accountId}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role },
   });
   expect(promoted.status()).toBe(200);
@@ -95,7 +98,7 @@ test('e2e: a member without a verified wallet reads the forum but cannot post', 
   expect(pay.status()).toBe(404);
 });
 
-test('Function: issueSession — POST /debug/accounts/:id/session with the e2e token is 200', async ({
+test('Function: issueSession — POST /debug/accounts/:id/session with an operator key token is 200', async ({
   request,
 }) => {
   const member = await memberSession(request, 'E2eSess');
@@ -123,7 +126,9 @@ async function aboutMeNote(
     data: { text: 'About me, to be hidden' },
   });
   expect(saved.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const row = (
     (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
@@ -189,12 +194,14 @@ test('Function: markUndeleted — POST /debug/messages/:id/restore restores a hi
   };
   expect(await hiddenIds()).toContain(noteId);
 
-  const restored = await request.post(`/debug/messages/${noteId}/restore`, { headers: DEBUG });
+  const restored = await request.post(`/debug/messages/${noteId}/restore`, {
+    headers: await operatorHeaders(request, 'write'),
+  });
   expect(restored.status()).toBe(204);
   expect(await hiddenIds()).not.toContain(noteId);
   const unknown = await request.post(
     '/debug/messages/00000000-0000-4000-8000-000000000000/restore',
-    { headers: DEBUG },
+    { headers: await operatorHeaders(request, 'write') },
   );
   expect(unknown.status()).toBe(404);
 });

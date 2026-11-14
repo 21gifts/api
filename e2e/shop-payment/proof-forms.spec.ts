@@ -7,11 +7,11 @@
 
 import { randomBytes } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import { operatorHeaders } from '../helpers/operator-keys';
 import { keccak256 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
   Control,
-  DEBUG,
   fetchDetail,
   openPayerPayment,
   paymentStatus,
@@ -155,12 +155,14 @@ test('a hex transfer to another address is refused and never broadcast', async (
   expect((await control.broadcasts()).filter((b) => b.hash === keccak256(raw))).toEqual([]);
 });
 
-test('POST /debug/shop-proofs/:id/retry needs the debug token and a stored proof', async ({
+test('POST /debug/shop-proofs/:id/retry needs a write key token and a stored proof', async ({
   request,
 }) => {
   const unknown = '00000000-0000-4000-8000-000000000000';
   expect((await request.post(`/debug/shop-proofs/${unknown}/retry`)).status()).toBe(401);
-  const missing = await request.post(`/debug/shop-proofs/${unknown}/retry`, { headers: DEBUG });
+  const missing = await request.post(`/debug/shop-proofs/${unknown}/retry`, {
+    headers: await operatorHeaders(request, 'write'),
+  });
   expect(missing.status()).toBe(404);
   expect(await missing.json()).toEqual({ error: 'Not found' });
 });

@@ -3,7 +3,7 @@
  * row (including soft-hidden notes and replies), serve hidden photo bytes,
  * restore a missing forum-video file for an already-existing message with
  * `hasVideo`, and unhide a soft-hidden row (`POST /:id/restore`). Authenticated
- * by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session. Does not create rows.
+ * by an operator key token of the SSH key login (Bearer), not by an end-user session. Does not create rows.
  * Video restore does not change DB. Unhide clears `deletedAt` / `deletedBy`
  * and removes the pubkey block tied to that message via
  * `unblockPubkeyByMessage`.
@@ -32,8 +32,6 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 export interface DebugMessagesRouteDeps {
   /** Message persistence port. */
   store: MessageStore;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
   /**
@@ -68,7 +66,7 @@ async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMes
  * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
  * `PUT /debug/messages/:id/video`, and `POST /debug/messages/:id/restore`.
  *
- * @param deps - Message store, optional debug token, and optional shop
+ * @param deps - Message store, optional key login, and optional shop
  *   identities and key encryption key (a restore that lists a shop creates
  *   its key; the store write queues the OpenCryptoPay outbox).
  * @returns A Hono app exposing the debug message GETs, `PUT /:id/video`,

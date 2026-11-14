@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
+import { operatorHeaders } from './helpers/operator-keys';
 
-const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 // Every test in this file gets its own 30 s cap.
 test.describe.configure({ timeout: 30_000 });
 
@@ -15,11 +15,13 @@ async function provisionedAccountId(request: APIRequestContext): Promise<string>
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eGate${stamp}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name, username: `e2e-gate-${stamp}`.slice(0, 32) }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const row = accounts.find((item) => item.name === name);
@@ -31,7 +33,9 @@ async function provisionedAccountId(request: APIRequestContext): Promise<string>
 // tests never close logins and never wipe sessions; Vitest covers those branches.
 
 test('GET /debug/logins reports an open switch on the default boot', async ({ request }) => {
-  const res = await request.get('/debug/logins', { headers: DEBUG });
+  const res = await request.get('/debug/logins', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as LoginsBody;
   expect(body.open).toBe(true);
@@ -40,10 +44,16 @@ test('GET /debug/logins reports an open switch on the default boot', async ({ re
 });
 
 test('PUT /debug/logins stores open and refuses a bad body', async ({ request }) => {
-  const res = await request.put('/debug/logins', { headers: DEBUG, data: { open: true } });
+  const res = await request.put('/debug/logins', {
+    headers: await operatorHeaders(request, 'write'),
+    data: { open: true },
+  });
   expect(res.status()).toBe(200);
   expect((await res.json()) as LoginsBody).toMatchObject({ open: true, source: 'stored' });
-  const bad = await request.put('/debug/logins', { headers: DEBUG, data: { open: 'no' } });
+  const bad = await request.put('/debug/logins', {
+    headers: await operatorHeaders(request, 'write'),
+    data: { open: 'no' },
+  });
   expect(bad.status()).toBe(400);
 });
 
@@ -52,7 +62,7 @@ test('POST /debug/logins/allowlist adds an account, 404 for an unknown one', asy
 }) => {
   const accountId = await provisionedAccountId(request);
   const res = await request.post('/debug/logins/allowlist', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accountId },
   });
   expect(res.status()).toBe(200);
@@ -60,18 +70,25 @@ test('POST /debug/logins/allowlist adds an account, 404 for an unknown one', asy
   expect(body.added).toBe(true);
   expect(body.allowlist.some((row) => row.accountId === accountId)).toBe(true);
   const unknown = await request.post('/debug/logins/allowlist', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accountId: '00000000-0000-4000-8000-0000000000ff' },
   });
   expect(unknown.status()).toBe(404);
 });
 
 test('DELETE /debug/logins/allowlist/:accountId removes an account', async ({ request }) => {
-  const notUuid = await request.delete('/debug/logins/allowlist/:accountId', { headers: DEBUG });
+  const notUuid = await request.delete('/debug/logins/allowlist/:accountId', {
+    headers: await operatorHeaders(request, 'write'),
+  });
   expect(notUuid.status()).toBe(404);
   const accountId = await provisionedAccountId(request);
-  await request.post('/debug/logins/allowlist', { headers: DEBUG, data: { accountId } });
-  const res = await request.delete(`/debug/logins/allowlist/${accountId}`, { headers: DEBUG });
+  await request.post('/debug/logins/allowlist', {
+    headers: await operatorHeaders(request, 'write'),
+    data: { accountId },
+  });
+  const res = await request.delete(`/debug/logins/allowlist/${accountId}`, {
+    headers: await operatorHeaders(request, 'write'),
+  });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as LoginsBody & { removed: boolean };
   expect(body.removed).toBe(true);
@@ -89,7 +106,7 @@ test('DELETE /debug/sessions without the operator bearer is 401', async ({ reque
 
 test('Function: resolveLoginsOpenDefault — boots open', async ({ request }) => {
   const body = (await (
-    await request.get('/debug/logins', { headers: DEBUG })
+    await request.get('/debug/logins', { headers: await operatorHeaders(request, 'read') })
   ).json()) as LoginsBody;
   expect(body.defaultOpen).toBe(true);
 });
@@ -116,17 +133,17 @@ test('Function: LoginGate — open lets register begin', async ({ request }) => 
 test('Function: InMemoryLoginGateStore — allowlist round trip', async ({ request }) => {
   const accountId = await provisionedAccountId(request);
   const added = await request.post('/debug/logins/allowlist', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accountId },
   });
   expect(((await added.json()) as { added: boolean }).added).toBe(true);
   const again = await request.post('/debug/logins/allowlist', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accountId },
   });
   expect(((await again.json()) as { added: boolean }).added).toBe(false);
   const removed = await request.delete(`/debug/logins/allowlist/${accountId}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
   });
   expect(((await removed.json()) as { removed: boolean }).removed).toBe(true);
 });
@@ -141,5 +158,9 @@ test('Function: migrateLoginGateSchema — no DATABASE_URL', async ({ request })
 
 test('Function: debugLoginsRoutes — operator bearer required', async ({ request }) => {
   expect((await request.get('/debug/logins')).status()).toBe(401);
-  expect((await request.get('/debug/logins', { headers: DEBUG })).status()).toBe(200);
+  expect(
+    (
+      await request.get('/debug/logins', { headers: await operatorHeaders(request, 'read') })
+    ).status(),
+  ).toBe(200);
 });

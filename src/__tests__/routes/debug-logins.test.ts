@@ -4,9 +4,22 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import { LoginGate } from '@/lib/login-gate';
 import { InMemoryLoginGateStore } from '@/lib/login-gate-store';
 import { debugLoginsRoutes } from '@/routes/debug-logins';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
 
-const TOKEN = 'logins-debug';
-const OPERATOR = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+const OP_KEYS = await seededOperatorLogin();
+const UNCONFIGURED = new OperatorLogin({
+  signers: null,
+  store: new InMemoryOperatorLoginStore(),
+  now: Date.now,
+});
+const READER = { authorization: `Bearer ${OP_KEYS.tokens.read}` };
+const OPERATOR = {
+  authorization: `Bearer ${OP_KEYS.tokens.write}`,
+  'content-type': 'application/json',
+};
+const ADMIN = { authorization: `Bearer ${OP_KEYS.tokens.admin}` };
 const ID = '00000000-0000-4000-8000-0000000000c1';
 const now = (): number => 1_700_000_000_000;
 
@@ -16,7 +29,9 @@ interface Mounted {
   gateStore: InMemoryLoginGateStore;
 }
 
-async function mount(debugToken: string | null = TOKEN): Promise<Mounted> {
+async function mount(
+  operatorLogin: OperatorLogin | null = OP_KEYS.operatorLogin,
+): Promise<Mounted> {
   const store = new InMemoryAuthStore();
   await store.createAccount({
     id: ID,
@@ -36,7 +51,7 @@ async function mount(debugToken: string | null = TOKEN): Promise<Mounted> {
       authStore: store,
       loginGate: new LoginGate(gateStore, true),
       now,
-      debugToken: debugToken ?? undefined,
+      ...(operatorLogin === null ? {} : { operatorLogin }),
     }),
   );
   return { app, store, gateStore };
@@ -54,7 +69,7 @@ describe('debug login routes', () => {
   });
 
   it('answers 503 on every route when debug is not configured', async () => {
-    const { app } = await mount('  ');
+    const { app } = await mount(UNCONFIGURED);
     for (const [method, path] of [
       ['GET', '/debug/logins'],
       ['PUT', '/debug/logins'],
@@ -88,9 +103,25 @@ describe('debug login routes', () => {
     expect(await store.listSessions()).toHaveLength(1);
   });
 
+  it('answers 403 for a key token below the route level', async () => {
+    const { app, store } = await mount();
+    await store.createSession({ token: 'member', accountId: ID, createdAt: now() });
+    for (const [method, path, headers] of [
+      ['PUT', '/debug/logins', READER],
+      ['POST', '/debug/logins/allowlist', READER],
+      ['DELETE', `/debug/logins/allowlist/${ID}`, READER],
+      ['DELETE', '/debug/sessions', OPERATOR],
+    ] as const) {
+      const res = await app.request(path, { method, headers });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Forbidden' });
+    }
+    expect(await store.listSessions()).toHaveLength(1);
+  });
+
   it('GET /debug/logins reports the default state and an empty allowlist', async () => {
     const { app } = await mount();
-    const res = await app.request('/debug/logins', { headers: OPERATOR });
+    const res = await app.request('/debug/logins', { headers: READER });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       open: true,
@@ -187,7 +218,7 @@ describe('debug login routes', () => {
     const { app, store } = await mount();
     await store.createSession({ token: 't1', accountId: ID, createdAt: now() });
     await store.createSession({ token: 't2', accountId: ID, createdAt: now() });
-    const res = await app.request('/debug/sessions', { method: 'DELETE', headers: OPERATOR });
+    const res = await app.request('/debug/sessions', { method: 'DELETE', headers: ADMIN });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ deleted: 2 });
     expect(await store.listSessions()).toEqual([]);
