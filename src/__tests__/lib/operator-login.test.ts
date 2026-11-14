@@ -381,6 +381,25 @@ describe('OperatorLogin', () => {
     }
   });
 
+  it('passes TZ to ssh-keygen when it is set', async () => {
+    const saved = process.env['TZ'];
+    process.env['TZ'] = 'UTC';
+    try {
+      const echo = fakeKeygen('env-keygen', 'printf "%s" "$TZ"');
+      expect(await signIn(makeLogin({ sshKeygenPath: echo }), alice)).toEqual({
+        ok: false,
+        reason: 'not_listed',
+      });
+      expect(lastAttempt()?.['operator']).toBe('UTC');
+    } finally {
+      if (saved === undefined) {
+        delete process.env['TZ'];
+      } else {
+        process.env['TZ'] = saved;
+      }
+    }
+  });
+
   it('removes its temporary directory in every outcome', async () => {
     const before = readdirSync(tmpdir()).filter((n) => n.startsWith('operator-login-'));
     await signIn(makeLogin(), alice);

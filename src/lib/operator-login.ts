@@ -155,7 +155,11 @@ function runSshKeygen(
     const child = spawn(path, [...args], {
       shell: false,
       stdio: ['pipe', 'pipe', 'ignore'],
-      env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin' },
+      // TZ, when set, keeps ssh-keygen's reading of a valid-before without Z equal to the loader's.
+      env: {
+        PATH: process.env['PATH'] ?? '/usr/bin:/bin',
+        ...(process.env['TZ'] === undefined ? {} : { TZ: process.env['TZ'] }),
+      },
     });
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
