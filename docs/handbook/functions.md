@@ -1507,7 +1507,7 @@
 
 ## Function: NoopGiftRecorder
 
-- **Purpose:** `GiftRecorder` that ignores the row — used when `DATABASE_URL` is unset so proof still returns 200.
+- **Purpose:** `GiftRecorder` that ignores the row — used when `DATABASE_URL` is unset, so a Fond payout still settles without a `gift` row.
 - **Inputs:** `recordOutbound(record)` with a `GiftRecord`.
 - **Returns / side effects:** Resolves immediately. No SQL.
 - **Used by:** `persistProvenGift` default when `giftRecorder` is omitted (the Fond paid worker's `settleProvenGift` path).
@@ -1516,7 +1516,7 @@
 
 - **Purpose:** Persist a proven outbound gift into Postgres `gift` for `GET /gifts` and `GET /gifts/stats`.
 - **Inputs:** Shared boot `SqlClient`. `recordOutbound` inserts `paid_at`, sats, recipient handle, BOLT11 `pr`, description, `kind` (`daily`, `welcome`, or `moderator`), `source_wallet`, and stored `fiat_usd` / `fiat_chf` / `fiat_eur` / `fiat_php` (null when the snapshot is null).
-- **Returns / side effects:** `INSERT … ON CONFLICT (lightning_invoice) DO NOTHING`. Errors propagate to the route, which logs and still returns 200.
+- **Returns / side effects:** `INSERT … ON CONFLICT (lightning_invoice) DO NOTHING`. Errors propagate to `persistProvenGift`, which logs `gifts.record_failed` and continues the settlement.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set; the api entry point (`src/index.ts`) for the Fond paid worker actions.
 
 ## Function: recipientHandleFromAddress
@@ -1590,7 +1590,7 @@
 - **Welcome sweep:** Optional `welcomeSweep` (`WelcomeSweepSwitch`, `{ enabled }`) defaults to a fresh switch that is off. `createApp` passes it, with `giftStore`, to `debugPaymentsRoutes`, whose `GET /debug/welcome-sweep` reads it and whose `PUT /debug/welcome-sweep` sets it. Boot (`src/index.ts`) creates one switch, off, and passes the same object to `createApp` and to the 15-minute `syncWelcomePing` sweep, so the operator route sets the switch the sweep reads.
 - **Shop payment:** When `resolveLnurlServerConfig` resolves, `createApp` uses `AppDeps.shopPayments` or builds one `ShopPayments` over an `InMemoryShopPaymentStore` on `posStore`, with `resolveShopPaymentConfig(env)` and an `OrchestraClient` when that resolves (`null` otherwise). It passes the service to `/pos`, `lnurlServerRoutes`, `/pay`, `/.well-known`, and mounts `debugShopProofsRoutes` at `/debug/shop-proofs`. Boot (`src/index.ts`) builds the service with `PostgresShopPaymentStore` when `DATABASE_URL` is set and shares it with `startPosPaidWorker`.
 - **Member data:** Optional `walletStore` (default `InMemoryWalletStore`) and `memberEventStore` (default `InMemoryMemberEventStore`); SQL boot injects `PostgresWalletStore` and `PostgresMemberEventStore`. Mounts `walletReportRoutes` (`POST /me/wallet/report`, with the message store, POS store, and LNURL server config when it resolves), `walletHeartRoutes` (`POST /me/wallet/hearts`, with the message store), `walletCounterpartyRoutes` (`POST /me/wallet/counterparties`, with the wallet store and `walletCounterparties`, the observed transfer store that SQL boot sets to the same `PostgresWalletTransferStore` as `walletTransferStore`), and `memberEventRoutes` (`POST /me/events`) at `/`. Also mounts `walletStatsRoutes` at `/wallets` (`GET /wallets/stats`) with the same `walletStore` and `now`.
-- **Free in-app payments:** When `resolveLnurlServerConfig` resolves, `lnurlServer` is passed to `/auth`, `/me`, `/view`, `/members`, `/messages`, `/conversations`, `/funding`, `/habits`, `/trust`, `/invoices`, `/pay`, `/pos`, `GET /me/loans` (`myLoansRoutes`), `/debug/accounts`, the debug payment routes, and `/debug/dump`, so each resolves the member's receiving address. When `resolveFreePaymentsConfig` also resolves, `sparkInvoices` (`AppDeps.sparkInvoiceStore`, default `InMemorySparkInvoiceStore`) is passed to `/messages` and `/conversations`, and to `/pay`, so `POST /pay/:username/invoice` returns a Spark invoice for an open till, or without a charge one for the posted amount that it stores for the Spark invoice worker; otherwise every invoice response has `sparkInvoice: null`.
+- **Free in-app payments:** When `resolveLnurlServerConfig` resolves, `lnurlServer` is passed to `/auth`, `/me`, `/view`, `/members`, `/messages`, `/conversations`, `/funding`, `/habits`, `/trust`, `/fond` (with its gift actions), `/pay`, `/pos`, `GET /me/loans` (`myLoansRoutes`), `/debug/accounts`, the debug payment routes, and `/debug/dump`, so each resolves the member's receiving address. When `resolveFreePaymentsConfig` also resolves, `sparkInvoices` (`AppDeps.sparkInvoiceStore`, default `InMemorySparkInvoiceStore`) is passed to `/messages` and `/conversations`, and to `/pay`, so `POST /pay/:username/invoice` returns a Spark invoice for an open till, or without a charge one for the posted amount that it stores for the Spark invoice worker; otherwise every invoice response has `sparkInvoice: null`.
 
 ## Function: healthRoute
 
