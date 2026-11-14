@@ -219,12 +219,15 @@ interface ListFixture {
   latest?: PosChargeRef[];
   rows?: MessageRow[];
   identities?: ShopIdentityRow[];
-  failing?: 'notes' | 'charges' | 'latest' | 'rows' | 'identities';
+  failing?: 'notes' | 'charges' | 'latest' | 'rows' | 'identities' | 'accounts';
 }
 
 function mountList(authStore: InMemoryAuthStore, fixture: ListFixture = {}): Hono {
   const fail = (key: ListFixture['failing']): Promise<never> | undefined =>
     fixture.failing === key ? Promise.reject(new Error('down')) : undefined;
+  if (fixture.failing === 'accounts') {
+    vi.spyOn(authStore, 'getAccounts').mockRejectedValue(new Error('down'));
+  }
   return new Hono().route(
     '/shops/activity',
     shopActivityRoutes({
@@ -372,7 +375,7 @@ describe('GET /shops/activity/shops', () => {
     expect(accountsSpy).toHaveBeenCalledWith(['till']);
   });
 
-  it.each(['notes', 'charges', 'latest', 'rows', 'identities'] as const)(
+  it.each(['notes', 'charges', 'latest', 'rows', 'identities', 'accounts'] as const)(
     'returns 503 when the %s read throws',
     async (failing) => {
       const app = mountList(await staffed(), {

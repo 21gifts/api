@@ -1239,7 +1239,7 @@
 - **Purpose:** Whether `text` contains a `#name` hashtag token. Match is case-insensitive and the token must not be followed by `[A-Za-z0-9_]`, so `#21GiftsShopper` does not match `21GiftsShop`.
 - **Inputs:** `text` string and `name` (token without the leading `#`).
 - **Returns / side effects:** `boolean`. No I/O. `#21giftsshop` matches `21GiftsShop`; `#21GiftsShopper` does not.
-- **Used by:** `messagesRoutes` (`PATCH /messages/:id/place`), `activeShopDays` (`GET /shops/activity`), `InMemoryMessageStore.listPlaces` (`shop` flag), `InMemoryShopIdentityStore.listCandidates`.
+- **Used by:** `messagesRoutes` (`PATCH /messages/:id/place`), `activeShops` (`GET /shops/activity`, `GET /shops/activity/shops`), `InMemoryMessageStore.listPlaces` (`shop` flag), `InMemoryShopIdentityStore.listCandidates`.
 
 ## Function: isPubkeyBlocked
 
@@ -5377,7 +5377,7 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Purpose:** NIP-19 npub of a stored shop key.
 - **Inputs:** `{ nostrPubkey }` (64 lowercase hex).
 - **Returns / side effects:** `npub1…`. No I/O.
-- **Used by:** `shopRoutes`, `messagesRoutes` (`shopNpub` in a write response), the shop kind 0 `website`, `InMemoryShopIdentityStore`.
+- **Used by:** `shopRoutes`, `messagesRoutes` (`shopNpub` in a write response), the shop kind 0 `website`, `InMemoryShopIdentityStore`, `shopActivityRoutes` (`npub` of `GET /shops/activity/shops`).
 
 ## Function: shopKeyMustBeAdopted
 
