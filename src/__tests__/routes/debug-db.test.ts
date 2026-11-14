@@ -113,7 +113,7 @@ describe('debugDbRoutes', () => {
     );
   });
 
-  it('lists tables when only the read token is configured and matches', async () => {
+  it('lists tables when only the key login is configured and a read key token matches', async () => {
     const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
@@ -124,7 +124,7 @@ describe('debugDbRoutes', () => {
     await expect(res.json()).resolves.toEqual({ tables });
   });
 
-  it('lists tables when the write token matches and a read token is also set', async () => {
+  it('lists tables when DEBUG_TOKEN matches while a key login is also loaded', async () => {
     const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
@@ -135,7 +135,7 @@ describe('debugDbRoutes', () => {
     await expect(res.json()).resolves.toEqual({ tables });
   });
 
-  it('lists tables when both tokens are set and the read bearer matches', async () => {
+  it('lists tables when DEBUG_TOKEN and a key login are configured and a read key token matches', async () => {
     const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
@@ -258,7 +258,7 @@ describe('debugDbRoutes', () => {
     expect(head.status).toBe(401);
   });
 
-  it('returns 401 when only the read token is set and the bearer does not match', async () => {
+  it('returns 401 when only the key login is configured and the bearer is no key token', async () => {
     const res = await app({
       store: store(),
       debugToken: undefined,

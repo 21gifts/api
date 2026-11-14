@@ -175,7 +175,7 @@ Public base URLs used in examples:
 | POST   | `/me/notification-level`                             | Bearer                                                            | Set owner fan-out filter (`all` / `active` / `mentions` / `none`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/me/rules-agreement`                                | Bearer                                                            | Record living-room rules agreement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/members/:accountId`                                | Bearer                                                            | Live member identity + profile note + `aboutMeHasPhoto` + counts + `trust`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| GET    | `/members/:accountId/activity`                       | Bearer or `DEBUG_*_TOKEN`                                         | Same activity payload as `/me/activity` for that member                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| GET    | `/members/:accountId/activity`                       | Bearer or `DEBUG_TOKEN` / operator key token                      | Same activity payload as `/me/activity` for that member                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/members/:accountId/posts`                          | Bearer                                                            | Live member top-level notes (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/members/:accountId/shops`                          | Bearer                                                            | Live member shop notes (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/members/:accountId/credits`                        | Bearer                                                            | Live member credit notes (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -185,20 +185,20 @@ Public base URLs used in examples:
 | GET    | `/trust-chain`                                       | Bearer                                                            | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | POST   | `/trust/verify`                                      | Bearer (moderator+)                                               | Staff: confirm a person in real life (`verified`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/trust/propose-moderator`                           | Bearer (moderator+)                                               | Staff: propose a verified member as moderator                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| GET    | `/trust/proposals`                                   | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff: list pending moderator proposals                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| GET    | `/trust/proposals`                                   | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff: list pending moderator proposals                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)                                               | Staff: second, independent confirmation → `moderator`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/trust/reject-moderator`                            | Bearer (moderator+)                                               | Staff: reject an open proposal (subject stays verified)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST   | `/trust/appoint-moderator`                           | Bearer (founder)                                                  | Founder: appoint a moderator directly                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/funding/apply`                                     | Bearer                                                            | Open to verified and above: 400 About me / photo / location, 409 already pending, trial, or admitted, 200 pending, 503. Basis 403.                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| GET    | `/funding/applications`                              | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff pending grant queue                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| GET    | `/funding/applications/:accountId`                   | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff grant review                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| GET    | `/funding/applications`                              | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff pending grant queue                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/funding/applications/:accountId`                   | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff grant review                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/funding/trial`                                     | Bearer (moderator+)                                               | One-UTC-day trial                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/funding/admit`                                     | Bearer (moderator+)                                               | Admit grant while the round has a free place; full round → 409 `All grant places are taken`                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/funding/places`                                    | none                                                              | Public: grant round places (`round`, `startsAt`, `places`, `admitted`, `placesLeft`, `nextGoalShops`)                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)                                               | Reject grant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/funding/withdraw`                                  | Bearer                                                            | Member leaves the grant program: pending, trial, or admitted → `withdrawn`; frees an admitted place. 409 otherwise. Basis 403                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/funding/withdrawals`                               | `DEBUG_TOKEN` or an operator key token                            | Operator: every withdrawal from the grant program, newest first, from `db_change`; any session → 401                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| GET    | `/funding/daily-roster`                              | At least initiator Bearer or `DEBUG_*_TOKEN`                      | Operator token skips the gate; else 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. 502 Daily roster is unavailable.                                                                                                                                 |
+| GET    | `/funding/daily-roster`                              | At least initiator Bearer or `DEBUG_TOKEN` / operator key token   | Operator token skips the gate; else 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. 502 Daily roster is unavailable.                                                                                                                                 |
 | GET    | `/funding/daily-roster/links`                        | `DEBUG_TOKEN` or an operator key token                            | Operator check of the roster account link: `{ rows, linked, unlinked: [{ bucket, address, amountUsd }], buckets: { daily, moderator } }`, each bucket `{ rows, linked, totalUsd, linkedUsd }`. 401 without an operator token. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                                                            |
 | POST   | `/funding/daily-roster/comment`                      | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
 | POST   | `/funding/daily-roster/payments`                     | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, username, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, username, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                              |
@@ -220,16 +220,16 @@ Public base URLs used in examples:
 | POST   | `/funding/daily-roster/worker/moderators/update`     | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ username, amountUsd }` or `{ address, amountUsd }` updates a stipend. A string key with a bad amount is 400 Invalid address or amount; otherwise, or no such account, Unknown address. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                   |
 | POST   | `/funding/daily-roster/worker/moderators/delete`     | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ username }` or `{ address }` deletes a stipend. A bad body or no such account is 400 Unknown address. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/funding/daily-roster/worker/moderators/payments`   | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ enabled: boolean }` sets moderatorPaymentsEnabled. Non-boolean enabled is 400 Invalid payments switch. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                                                   |
-| GET    | `/funding/payout-days`                               | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| GET    | `/funding/payout-days`                               | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/shops/activity`                                    | none                                                              | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| GET    | `/funding/goal`                                      | Bearer (any role) or `DEBUG_*_TOKEN`                              | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| GET    | `/funding/goal`                                      | Bearer (any role) or `DEBUG_TOKEN` / operator key token           | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/messages`                                          | none for active / Bearer                                          | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/messages/compose-target`                           | Bearer                                                            | Platform profile note `{ messageId, sats, firstPostFree }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/messages/places`                                   | Bearer                                                            | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/shops`                                             | Public                                                            | Public. shops of { npub, name, place }, optional nextCursor, limit default 20 max 100, 400 Invalid limit / Invalid cursor, 503 Shops are unavailable.                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/shops/:npub`                                       | Public                                                            | Public shop by npub; known hex redirects; a shop that is no longer public is 410                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | POST   | `/messages`                                          | Bearer                                                            | Post text/photo; 409 if rules/name/username/verified wallet missing; 403 text-only below verified, except the free first post and a reply on the own note                                                                                                                                                                                                                                                                                                                                                                                                 |
-| GET    | `/messages/hidden`                                   | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff log of soft-hidden notes (session or DEBUG_*_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/messages/hidden`                                   | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff log of soft-hidden notes (session or DEBUG_*_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+)                                        | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/messages/:id/external-shops`                       | none                                                              | Public external shop list                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/messages/:id/external-credits`                     | none                                                              | Public external credit list                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -242,7 +242,7 @@ Public base URLs used in examples:
 | PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)                                               | Set or replace the 21.gifts account on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | PATCH  | `/messages/:id/text`                                 | Bearer (moderator+)                                               | Replace the text of a live top-level shop note; the shop tag stays                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | PATCH  | `/messages/:id/photos`                               | Bearer (moderator+)                                               | Replace the stills of a live top-level shop note; a video stays; no edit history                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| GET    | `/messages/:id/edits`                                | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff edit history of a shop note, newest first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/messages/:id/edits`                                | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff edit history of a shop note, newest first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | POST   | `/messages/:id/invoice`                              | Bearer                                                            | NIP-57 zap / BOLT11 plus `sparkInvoice` (or `null`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/habits`                                            | none                                                              | Public member habits. A bearer includes private notes only on the caller's own rows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | POST   | `/habits`                                            | Bearer                                                            | Add, edit, archive, or log a habit; comment; delete a comment; or mint `{ pr, amountSats }` for a comment.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -4770,10 +4770,10 @@ count when summing.
 ### `GET /debug/accounts`
 
 Operator listing of every stored account. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not an end-user
 session. Session tokens are never returned.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -4917,7 +4917,7 @@ and `username`.
 Operator assignment of the account's forum display role, username, the
 official platform flag (`isPlatform`), and/or
 session refusal (`sessionRefused`). Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` (same gate as
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (same gate as
 `GET /debug/accounts`). Body is one or more of `role`, `username`, `platform`, and
 `sessionRefused`; any other key (including `lightningAddress`) is refused.
 `username` must be alone; send `role`, `platform`, or `sessionRefused` in a
@@ -4943,7 +4943,7 @@ here. This route does **not** write trust edges;
 use `POST /debug/trust-edges` to backfill stored grants without changing
 `role`.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -5012,7 +5012,7 @@ new handle.
 ### `POST /debug/accounts/:id/session`
 
 Operator mint of a member bearer for the given account id. Authenticated
-with `Authorization: Bearer` matching `DEBUG_TOKEN`. Response `{ "token": "<hex>" }`.
+with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. Response `{ "token": "<hex>" }`.
 Unknown account id → **404** `{ "error": "Not found" }`. An account with
 `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
@@ -5023,7 +5023,7 @@ for e2e and operator debugging.
 ### `POST /debug/accounts/merge`
 
 Operator merge of one account into another. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`. Not a member route.
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. Not a member route.
 Body is `{ "from": "<uuid>", "into": "<uuid>", "verify": "from" | "into" }`.
 `verify` defaults to `"into"`. Success is **200**
 `{ "into": "<uuid>", "deleted": "<uuid>", "messages": <count> }`.
@@ -5182,7 +5182,7 @@ Operator retry of a shop payment proof that is `stuck`
 ([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)).
 Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve;
 otherwise Hono's default 404. Authenticated with `Authorization: Bearer`
-matching `DEBUG_TOKEN`. No body.
+matching `DEBUG_TOKEN` or an operator key token. No body.
 
 The proof moves from `stuck` back to unresolved, `give_up_at` is set 24 h
 ahead, and `shop.proof.retried` is logged. A `hex` proof without a log
@@ -5194,7 +5194,7 @@ proof rows.
 
 **Response** `200`: `{ "id": "<uuid>", "result": null }`.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`
 `{ "error": "Debug is not configured" }`. Bearer mismatch →
 **Response** `401` `{ "error": "Unauthorized" }`. `:id` not a UUID, or no
 such proof → **Response** `404` `{ "error": "Not found" }`. A proof that is
@@ -5244,7 +5244,7 @@ Unknown table → **Response** `404` unless the path segment is one of
 ### `POST /debug/trust-edges`
 
 Operator backfill of a stored trust edge. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` (same 503/401 gate as the
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (same 503/401 gate as the
 other debug routes). Does **not** change `account.role`.
 
 **Request**:
@@ -5287,7 +5287,7 @@ Success logs `debug.trust_edges.inserted` `{ subjectId, actorId, kind }`.
 ### `DELETE /debug/trust-edges`
 
 Operator delete of a stored trust edge. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` (same 503/401 gate as the
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (same 503/401 gate as the
 other debug routes). Does **not** change `account.role`. Deletes the
 latest stored row of that `(subjectId, kind)` (`createdAt` desc, then
 `id` desc).
@@ -5334,7 +5334,7 @@ header. Paths pass through `requestLogPath` (`/view/<segment>` →
 Write failure on the request path logs `api_log.write.failed` and does not
 replace the response.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -5477,7 +5477,7 @@ When unset, the process uses an in-memory store.
 ### `GET /debug/diagnostics`
 
 Operator listing of diagnostic rows (`diagnostic_event`). Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not an end-user
 session. Rows are newest-first (`createdAt` descending, then `id`), capped
 at **200**. `source` is `server` or `client`. `fields` holds allowlisted
 scalars only. The same values excluded from `POST /diagnostics` are never
@@ -5495,7 +5495,7 @@ prints `"address": "[address]"` and no `addressRef`. In every other string
 field of the printed line, an email-shaped part (`local@domain.tld`, the `@` literal or written `%40`) is
 replaced by `[address]`. The request client fields are printed unchanged.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -5543,10 +5543,10 @@ Environment:
 ### `GET /debug/contacts`
 
 Operator listing of private in-app contact messages. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not an end-user
 session. Contacts are never listed on a member-facing route.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -5596,10 +5596,10 @@ Environment:
 
 Operator listing of all `message_invoice` attempts (forum
 `POST /messages/:id/invoice` and conversation `POST /conversations/:id/invoice`).
-Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not
+Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not
 an end-user session.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -5693,7 +5693,7 @@ or entitle an external payer. The request body is:
 string; when present it must be 32-byte hex whose SHA-256 equals
 `paymentHash`. The optional proof reflects production wallet behaviour:
 wallet-internal payments can display a “preimage” that does not hash to the
-invoice. In that case the matching `DEBUG_TOKEN` plus the durable operator
+invoice. In that case the matching operator credential plus the durable operator
 note is the settlement authority.
 
 Success → **Response** `200` (never includes the note or preimage):
@@ -5760,7 +5760,7 @@ Failures:
 - already indexed/settled payment → `409 { "error": "Already settled" }`
 - store failure, including the direct ingest write, or a thrown note-author lookup → `503 { "error": "Messages are unavailable" }`
 
-`DEBUG_TOKEN` unset/blank returns 503; a missing or bad Bearer returns 401.
+`DEBUG_TOKEN` unset/blank with the SSH key login not loaded returns 503; a missing or bad Bearer returns 401.
 Repayment ingest writes are outside their locked settlement boundary and are
 retryable; a normal credit's ingest is inside its atomic boundary. Post-credit
 effects run afterward, and their failures are logged and suppressed. The claim
@@ -5769,10 +5769,10 @@ remains the payment's tombstone.
 ### `GET /debug/zap-ingests`
 
 Operator listing of kind:9735 ingest decisions (`indexed` or `rejected`).
-Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN`. This is not
+Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not
 an end-user session.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -5825,7 +5825,7 @@ Environment:
 
 Operator listing of every persisted forum row (top-level **and** replies,
 live **and** soft-hidden). Authenticated with `Authorization: Bearer`
-matching `DEBUG_TOKEN`. Public hide does not apply. Cap 200, newest-first.
+matching `DEBUG_TOKEN` or an operator key token. Public hide does not apply. Cap 200, newest-first.
 JSON `{ "messages": [ … ] }` via `serializeDebugMessage`, including
 `nostrEvent`, `claimedUntil`, `contentFp`, photo MIME/byte lengths,
 stored `goalSats` (JSON `null` when unset), `goalRepayable: true` only when
@@ -5840,7 +5840,7 @@ stored (omitted on a legacy row; a snapshot may be null), and always-present
 (JSON `null` when unset). Never
 includes nsec or photo/video payloads.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -5921,11 +5921,11 @@ non-UUID id, or a file that does not match
 
 Operator restore of missing forum-video bytes for an **existing**
 `hasVideo` row. Authenticated with `Authorization: Bearer` matching
-`DEBUG_TOKEN`. This is not an end-user session. The raw body is
+`DEBUG_TOKEN` or an operator key token. This is not an end-user session. The raw body is
 `decodeForumVideo`'d and written under `MEDIA_DIR`; the handler does
 not insert a message row or change columns.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -5983,7 +5983,7 @@ Environment:
 ### `POST /debug/messages/:id/restore`
 
 Operator unhide of a soft-hidden forum note. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`. This is not an end-user
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. This is not an end-user
 session and not a moderator UNHIDE. Calls `markUndeleted`: the
 inverse of `markDeleted`'s cascade (clears `deletedAt` / `deletedBy` on
 the hidden target and stamp-matched **direct** children; already-live
@@ -5999,7 +5999,7 @@ hidden by its cascade. Those rows are restored individually.
 
 Same debug token gate as `GET /debug/messages`.
 
-`DEBUG_TOKEN` unset or blank → **Response** `503`:
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **Response** `503`:
 
 ```json
 { "error": "Debug is not configured" }
@@ -6032,7 +6032,7 @@ empty body. Public `GET /messages/:id` can then serve the note. Logs
 ### `GET /debug/external-pubkeys`
 
 Operator inspection of external Nostr identities. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`, using the same unset/blank
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token, using the same unset/blank
 **503** and missing/mismatched bearer **401** semantics as the other debug
 routes. This is the only HTTP response that intentionally exposes these
 external pubkeys.
@@ -6402,11 +6402,11 @@ after 30 batches from one account in 60 seconds; `413`
 ### `POST /debug/push-ping`
 
 Operator enqueue of a test notification. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (not an end-user session).
 JSON body `{ "accountId": "<uuid>" }`. Enqueues at most one outbox row
 when the account has a stored subscription.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 VAPID not configured → **503** `{ "error": "Push is not configured" }`.
 Missing `accountId` → **400** `{ "error": "Expected a JSON body with an \"accountId\" string" }`.
@@ -6423,7 +6423,7 @@ Success → **Response** `200`:
 ### `POST /debug/push-broadcast`
 
 Operator Web Push broadcast. Authenticated with `Authorization: Bearer`
-matching `DEBUG_TOKEN` (not an end-user session). JSON body (no other keys):
+matching `DEBUG_TOKEN` or an operator key token (not an end-user session). JSON body (no other keys):
 
 ```json
 {
@@ -6454,7 +6454,7 @@ broadcast reaches no one until members sign in again. Each recipient gets one `p
 batch, lease, and retry rules as every other notification. The payload is
 `{ "type": "zap", "title", "body", "url": link, "tag": "broadcast:<id>" }`.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 Invalid body → **400** `{ "error": "Expected a JSON body with \"title\" …" }`.
 A listed username without an account → **404**
@@ -6514,14 +6514,14 @@ subscription. Lengths count characters (code points).
 ### `POST /debug/passkey-renew/reopen`
 
 Operator reopen of the blocking passkey-renew dialog. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (not an end-user session).
 JSON body `{ "accountId": "<uuid>" }`. Deletes that account's failed
 `passkey_renew_attempt` rows, acknowledged or not. Succeeded and cancelled
 rows stay. The account row is unchanged. While `walletRequired` is not true,
 `passkeyRenewFailed` and `passkeyRenewClosed` are then both false, so the
 next signed-in app open starts again at the explanation.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 Missing, non-string, or non-UUID `accountId` → **400** `{ "error": "Invalid account" }`.
 Unknown account → **404** `{ "error": "Not found" }`.
@@ -6542,7 +6542,7 @@ Success → **Response** `200`:
 Operator read of the login switch (see Login controls). Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
 end-user session), or an operator key token of level `read` or higher; a lower key token → **403** `{ "error": "Forbidden" }`.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 
 Success → **Response** `200`:
@@ -6570,7 +6570,7 @@ JSON body `{ "open": <boolean> }` with no other keys. Stores the value in
 `app_setting` (`logins_open`), which wins over `LOGINS_OPEN_DEFAULT` from
 then on. Existing sessions are not touched. Logs `debug.logins.set`.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 Bad JSON, a non-boolean `open`, or another key → **400**
 `{ "error": "Expected a JSON body with an \"open\" boolean" }`.
@@ -6580,7 +6580,7 @@ Success → **Response** `200`: the same JSON as `GET /debug/logins`.
 ### `GET /debug/welcome-sweep`
 
 Operator dry-run of the 15-minute welcome sweep. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token (not an end-user session).
 Lists every account the sweep would welcome-ping now: non-platform, role exactly
 `verified`, a verified wallet with the LNURL server on, a live top-level photo or video
 (About me included), and not welcomed before (a platform `Welcome` reply, a
@@ -6603,14 +6603,14 @@ count.
 `SPEND_API_TOKEN` is unset, in which case the sweep pings nobody even when on.
 The wallet address is not returned.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 A store read that throws → **503** `{ "error": "Messages are unavailable" }`.
 
 ### `PUT /debug/welcome-sweep`
 
 Operator set of the welcome sweep switch. Authenticated with
-`Authorization: Bearer` matching `DEBUG_TOKEN`. JSON body
+`Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token. JSON body
 `{ "enabled": <boolean> }` with no other keys. The switch lives in process
 memory: every boot starts with it off, so the sweep pings nobody until an
 operator turns it on again. The sweep reads the switch again right before each
@@ -6620,7 +6620,7 @@ Single-account welcome pings (a new post, an
 About-me save, a verification) are not affected. Logs
 `debug.welcome_sweep.set`.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 Bad JSON, a non-boolean `enabled`, or another key → **400**
 `{ "error": "Expected a JSON body with an \"enabled\" boolean" }`.
@@ -6634,7 +6634,7 @@ end-user session), or an operator key token of level `write` or higher; a lower 
 JSON body `{ "accountId": "<uuid>" }` with no other keys (any case, stored
 lower case). Logs `debug.logins.allowlist.add`.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 Bad JSON, a missing or non-UUID `accountId`, or another key → **400**
 `{ "error": "Expected a JSON body with an \"accountId\" uuid" }`.
@@ -6650,7 +6650,7 @@ Operator removal of one account from the login allowlist. Authenticated with `Au
 end-user session), or an operator key token of level `write` or higher; a lower key token → **403** `{ "error": "Forbidden" }`.
 Does not end the account's sessions. Logs `debug.logins.allowlist.remove`.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 `:accountId` not a UUID → **404** `{ "error": "Not found" }`.
 
@@ -6666,7 +6666,7 @@ answers 401 on its next request. The existing `trg_db_change` row trigger
 records each deleted row with the token hashed. Logs `debug.sessions.deleted`
 with the count.
 
-`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+`DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 
 Success → **Response** `200`:

@@ -40,8 +40,9 @@
 #                        When set, every api request uses a 15-minute key token kept in
 #                        ${XDG_STATE_HOME:-~/.local/state}/21gifts/ (mode 600) and logs in
 #                        again by itself on 401. When unset, DEBUG_TOKEN is used as before.
-#   DEBUG_SSH_ADMIN_KEY  optional second key; on 403 the script logs in with it (ssh-keygen
-#                        may ask for its passphrase) and retries the request once.
+#   DEBUG_SSH_ADMIN_KEY  optional second key; on a 403 whose body is the gate's
+#                        {"error":"Forbidden"} (level too low) the script logs in with it
+#                        (ssh-keygen may ask for its passphrase) and retries the request once.
 #   DEBUG_SIGNING_NAMESPACE  default from DEBUG_API_URL: dev-api.21.gifts -> 21gifts-debug-dev,
 #                        api.21.gifts -> 21gifts-debug-prd; set it for any other host
 #                        (21gifts-debug-dev, 21gifts-debug-stg, or 21gifts-debug-prd).
