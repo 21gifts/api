@@ -251,6 +251,9 @@ function selectTillReceipts(
     ...rows.filter((row) => row.accountId === query.accountId).map((row) => row.walletPubkey),
   ]);
   const byId = new Map<string, TillReceipt>();
+  // A row that is not a payment from someone else, settled a charge, or is withheld marks its
+  // whole transfer id; only transfer ids without such a row are listed.
+  const excluded = new Set<string>();
   for (const row of rows) {
     const created = row.transferCreatedAt?.getTime();
     if (
@@ -259,21 +262,24 @@ function selectTillReceipts(
       row.status !== 'completed' ||
       (row.type !== 'preimage_swap' && row.type !== 'transfer') ||
       created === undefined ||
-      created < query.sinceMs ||
-      row.counterpartyPubkeys.some((key) => ownKeys.has(key)) ||
-      live.some((charge) => settles(row, charge))
+      created < query.sinceMs
     ) {
       continue;
     }
     if (
-      row.type === 'preimage_swap' &&
-      !reported.has(row.transferId) &&
-      unsettled.some((charge) => {
-        const first = Math.min(...charge.invoices.map((entry) => entry.createdAt.getTime()));
-        const end = charge.paidAt?.getTime() ?? query.nowMs;
-        return created >= first - query.clockAllowanceMs && created <= end + query.clockAllowanceMs;
-      })
+      row.counterpartyPubkeys.some((key) => ownKeys.has(key)) ||
+      live.some((charge) => settles(row, charge)) ||
+      (row.type === 'preimage_swap' &&
+        !reported.has(row.transferId) &&
+        unsettled.some((charge) => {
+          const first = Math.min(...charge.invoices.map((entry) => entry.createdAt.getTime()));
+          const end = charge.paidAt?.getTime() ?? query.nowMs;
+          return (
+            created >= first - query.clockAllowanceMs && created <= end + query.clockAllowanceMs
+          );
+        }))
     ) {
+      excluded.add(row.transferId);
       continue;
     }
     const seen = byId.get(row.transferId);
@@ -286,6 +292,7 @@ function selectTillReceipts(
     });
   }
   return [...byId.values()]
+    .filter((receipt) => !excluded.has(receipt.id))
     .sort(
       (left, right) =>
         right.receivedAt.getTime() - left.receivedAt.getTime() ||
@@ -1009,61 +1016,64 @@ export class PostgresWalletTransferStore
                 OR (status = 'paid' AND paid_at >= $2::timestamptz - $4 * interval '1 millisecond'))
        ),
        received AS (
-         SELECT t.transfer_id, t.type, t.amount_sats, t.transfer_created_at
+         -- A row that is not a payment from someone else, settled a charge, or is withheld
+         -- marks its whole transfer id; only transfer ids without such a row are listed.
+         SELECT t.transfer_id, t.type, t.amount_sats, t.transfer_created_at,
+                (NOT (t.counterparty_pubkeys && ARRAY(SELECT pubkey FROM own_key))
+                  AND NOT EXISTS (
+                    SELECT 1 FROM till_charge AS c
+                    WHERE t.spark_invoice IS NOT NULL AND c.spark_invoice = lower(btrim(t.spark_invoice))
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM wallet_payment AS p
+                    JOIN pos_charge_invoice AS i ON i.payment_hash = lower(btrim(p.payment_hash))
+                    JOIN till_charge AS c ON c.id = i.charge_id
+                    WHERE p.account_id = $1 AND p.payment_id = t.transfer_id AND p.direction = 'in'
+                  )
+                  AND NOT (
+                    t.type = 'preimage_swap'
+                    AND NOT EXISTS (
+                      SELECT 1 FROM wallet_payment AS p
+                      WHERE p.account_id = $1 AND p.payment_id = t.transfer_id AND p.direction = 'in'
+                        AND p.payment_hash IS NOT NULL
+                    )
+                    AND EXISTS (
+                      SELECT 1
+                      FROM till_charge AS c
+                      CROSS JOIN LATERAL (
+                        SELECT min(created_at) AS first_at FROM pos_charge_invoice WHERE charge_id = c.id
+                      ) AS issued
+                      WHERE issued.first_at IS NOT NULL
+                        AND t.transfer_created_at >= issued.first_at - $4 * interval '1 millisecond'
+                        AND t.transfer_created_at
+                            <= COALESCE(c.paid_at, $3::timestamptz) + $4 * interval '1 millisecond'
+                        AND NOT EXISTS (
+                          SELECT 1 FROM wallet_transfer AS s
+                          WHERE s.account_id = $1 AND s.direction = 'in' AND s.status = 'completed'
+                            AND c.spark_invoice IS NOT NULL
+                            AND lower(btrim(s.spark_invoice)) = c.spark_invoice
+                        )
+                        AND NOT EXISTS (
+                          SELECT 1
+                          FROM wallet_payment AS p
+                          JOIN pos_charge_invoice AS i ON i.payment_hash = lower(btrim(p.payment_hash))
+                          WHERE p.account_id = $1 AND p.direction = 'in' AND i.charge_id = c.id
+                        )
+                    )
+                  )) AS listed
          FROM wallet_transfer AS t
          WHERE t.account_id = $1
            AND t.direction = 'in'
            AND t.status = 'completed'
            AND t.type IN ('preimage_swap', 'transfer')
            AND t.transfer_created_at >= $2
-           AND NOT (t.counterparty_pubkeys && ARRAY(SELECT pubkey FROM own_key))
-           AND NOT EXISTS (
-             SELECT 1 FROM till_charge AS c
-             WHERE t.spark_invoice IS NOT NULL AND c.spark_invoice = lower(btrim(t.spark_invoice))
-           )
-           AND NOT EXISTS (
-             SELECT 1
-             FROM wallet_payment AS p
-             JOIN pos_charge_invoice AS i ON i.payment_hash = lower(btrim(p.payment_hash))
-             JOIN till_charge AS c ON c.id = i.charge_id
-             WHERE p.account_id = $1 AND p.payment_id = t.transfer_id AND p.direction = 'in'
-           )
-           AND NOT (
-             t.type = 'preimage_swap'
-             AND NOT EXISTS (
-               SELECT 1 FROM wallet_payment AS p
-               WHERE p.account_id = $1 AND p.payment_id = t.transfer_id AND p.direction = 'in'
-                 AND p.payment_hash IS NOT NULL
-             )
-             AND EXISTS (
-               SELECT 1
-               FROM till_charge AS c
-               CROSS JOIN LATERAL (
-                 SELECT min(created_at) AS first_at FROM pos_charge_invoice WHERE charge_id = c.id
-               ) AS issued
-               WHERE issued.first_at IS NOT NULL
-                 AND t.transfer_created_at >= issued.first_at - $4 * interval '1 millisecond'
-                 AND t.transfer_created_at
-                     <= COALESCE(c.paid_at, $3::timestamptz) + $4 * interval '1 millisecond'
-                 AND NOT EXISTS (
-                   SELECT 1 FROM wallet_transfer AS s
-                   WHERE s.account_id = $1 AND s.direction = 'in' AND s.status = 'completed'
-                     AND c.spark_invoice IS NOT NULL
-                     AND lower(btrim(s.spark_invoice)) = c.spark_invoice
-                 )
-                 AND NOT EXISTS (
-                   SELECT 1
-                   FROM wallet_payment AS p
-                   JOIN pos_charge_invoice AS i ON i.payment_hash = lower(btrim(p.payment_hash))
-                   WHERE p.account_id = $1 AND p.direction = 'in' AND i.charge_id = c.id
-                 )
-             )
-           )
        )
        SELECT transfer_id AS id, bool_or(type = 'preimage_swap') AS lightning,
               sum(amount_sats) AS amount_sats, min(transfer_created_at) AS received_at
        FROM received
        GROUP BY transfer_id
+       HAVING bool_and(listed)
        ORDER BY received_at DESC, id DESC
        LIMIT $5`,
       [

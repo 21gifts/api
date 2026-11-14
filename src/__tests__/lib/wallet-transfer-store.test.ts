@@ -898,6 +898,8 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
     const store = await storeWith(
       [
         receipt('spark-paid', 10, { type: 'transfer', sparkInvoice: ' SPARK1PAID ' }),
+        // A sibling row of the settling transfer without the invoice is not listed either.
+        receipt('spark-paid', 10, { walletPubkey: PREVIOUS }),
         receipt('spark-cancelled', 11, { type: 'transfer', sparkInvoice: 'spark1cancelled' }),
         receipt('spark-old-paid', 12, { type: 'transfer', sparkInvoice: 'spark1old' }),
         receipt('ln-pending', 13),
@@ -959,6 +961,9 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
       receipt('after', 24),
       receipt('spark-inside', 33, { type: 'transfer' }),
       receipt('reported-inside', 34),
+      // One transfer id in two wallets: the withheld Lightning row withholds the whole payment.
+      receipt('mixed-inside', 33, { walletPubkey: PREVIOUS, type: 'transfer' }),
+      receipt('mixed-inside', 33),
     ];
     const reports = [
       { paymentId: 'reported-inside', direction: 'in' as const, paymentHash: HASH_C },
@@ -989,6 +994,7 @@ describe('InMemoryWalletTransferStore.listTillReceipts', () => {
       'after',
       'last-edge',
       'spark-inside',
+      'mixed-inside',
       'inside',
       'reported-inside',
       'first-edge',

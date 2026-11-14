@@ -1964,7 +1964,9 @@ server-observed record.
   (`CLIENT_INSTANT_FUTURE_SKEW_MS`) between the Spark operator clock and this
   server's clock. A payment of an invoice of a `cancelled` or `expired` charge
   is listed, since the till does not show it as paid. Amount and time are
-  never used to match a payment to a charge.
+  never used to match a payment to a charge. These rules apply to each stored
+  row, and a transfer id is listed only when none of its rows (one per wallet
+  of the account) is excluded by them.
 - **Entry.** `{ "id", "amountSats", "receivedAt", "kind" }`: `id` is the Spark
   transfer id (the payment id the shop's own wallet shows), `amountSats` the
   received whole sats (one entry per transfer id, summed when one transfer

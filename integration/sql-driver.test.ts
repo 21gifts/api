@@ -3872,6 +3872,10 @@ describe('GET /pos received without a till charge in Postgres', () => {
         receipt('inside', 33),
         receipt('last-edge', 25),
         receipt('spark-inside', 34, { type: 'transfer' }),
+        // One transfer id in two wallets: one excluded row excludes the whole payment.
+        receipt('mixed-inside', 33, { walletPubkey: previousKey, type: 'transfer' }),
+        receipt('mixed-inside', 33),
+        receipt('spark-paid', 8, { walletPubkey: previousKey }),
       ]) {
         await transfers.upsertTransfer(row);
       }
@@ -3925,6 +3929,7 @@ describe('GET /pos received without a till charge in Postgres', () => {
         'spark',
         'both',
         'last-edge',
+        'mixed-inside',
         'inside',
         'spark-inside',
         'first-edge',
