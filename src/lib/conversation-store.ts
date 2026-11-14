@@ -113,9 +113,6 @@ export type ConversationThreadPageQuery = {
 };
 
 /**
- * Persistence port for conversation threads and messages.
- */
-/**
  * `app_setting.key` that records the one-time removal of `member_damus`
  * threads without a member message
  * ({@link ConversationStore.removeDamusThreadsWithoutMemberMessage}).
@@ -130,6 +127,9 @@ export interface RemovedDamusThreads {
   messages: number;
 }
 
+/**
+ * Persistence port for conversation threads and messages.
+ */
 export interface ConversationStore {
   /** One thread by id, or `undefined`. */
   getById(id: string): Promise<ConversationThread | undefined>;
@@ -1743,7 +1743,8 @@ export class PostgresConversationStore implements ConversationStore {
   /**
    * One-time removal of the `member_damus` threads without a member message.
    *
-   * In one transaction (when the client offers one): records the run in
+   * In one transaction (a client without `transaction` is refused before any
+   * statement, so the marker never commits without the deletes): records the run in
    * `app_setting` (`ON CONFLICT DO NOTHING`; an existing row means the run
    * already happened and nothing is removed), locks the threads in scope, and
    * deletes their `conversation` push outbox rows, the invoice attempts that
@@ -1753,8 +1754,8 @@ export class PostgresConversationStore implements ConversationStore {
    *
    * @param now - Time recorded in `app_setting`.
    * @returns The removed threads with their member and the removed message count.
-   * @throws Propagates SQL failures; the transaction then rolls back, so the
-   *   next boot runs it again.
+   * @throws When the client has no `transaction`, and on SQL failures; the
+   *   transaction then rolls back, so the next boot runs it again.
    */
   async removeDamusThreadsWithoutMemberMessage(now: Date): Promise<RemovedDamusThreads> {
     const run = async (tx: SqlClient): Promise<RemovedDamusThreads> => {
@@ -1822,7 +1823,10 @@ export class PostgresConversationStore implements ConversationStore {
         messages: messages.length,
       };
     };
-    return this.#sql.transaction === undefined ? run(this.#sql) : this.#sql.transaction(run);
+    if (this.#sql.transaction === undefined) {
+      throw new Error('conversation cleanup needs a transaction');
+    }
+    return this.#sql.transaction(run);
   }
 
   /**

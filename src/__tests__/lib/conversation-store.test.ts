@@ -42,6 +42,15 @@ class MockSql implements SqlClient {
   }
 }
 
+/** The same mock as one transaction client, for statements that need `transaction`. */
+function withTransaction(sql: MockSql): SqlClient {
+  return {
+    query: (text, params) => sql.query(text, params),
+    execute: (text, params) => sql.execute(text, params),
+    transaction: <T>(run: (tx: SqlClient) => Promise<T>): Promise<T> => run(sql),
+  };
+}
+
 const NOW = new Date('2026-08-29T12:00:00.000Z');
 const JPEG = {
   contentType: 'image/jpeg' as const,
@@ -1330,10 +1339,51 @@ describe('PostgresConversationStore', () => {
     expect(await store.memberWroteToDamus('acc', 'aa'.repeat(32))).toBe(false);
   });
 
+  it('removeDamusThreadsWithoutMemberMessage refuses a client without transaction before any statement', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ key: DAMUS_THREAD_CLEANUP_KEY }];
+    await expect(
+      new PostgresConversationStore(sql).removeDamusThreadsWithoutMemberMessage(NOW),
+    ).rejects.toThrow('conversation cleanup needs a transaction');
+    expect(sql.queries).toEqual([]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('removeDamusThreadsWithoutMemberMessage propagates a failed delete from inside the transaction', async () => {
+    const sql = new MockSql();
+    sql.queryImpl = (text) => {
+      if (text.includes('INSERT INTO app_setting')) {
+        return [{ key: DAMUS_THREAD_CLEANUP_KEY }];
+      }
+      if (text.includes('SELECT c.id, c.account_a')) {
+        return [{ id: '00000000-0000-4000-8000-000000000001', account_a: 'acc' }];
+      }
+      return undefined;
+    };
+    sql.executeError = new Error('delete failed');
+    let rolledBack = false;
+    const client: SqlClient = {
+      query: (text, params) => sql.query(text, params),
+      execute: (text, params) => sql.execute(text, params),
+      async transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T> {
+        try {
+          return await run(sql);
+        } catch (error) {
+          rolledBack = true;
+          throw error;
+        }
+      },
+    };
+    await expect(
+      new PostgresConversationStore(client).removeDamusThreadsWithoutMemberMessage(NOW),
+    ).rejects.toThrow('delete failed');
+    expect(rolledBack).toBe(true);
+  });
+
   it('removeDamusThreadsWithoutMemberMessage removes nothing once the run is recorded', async () => {
     const sql = new MockSql();
     sql.nextRows = [];
-    const store = new PostgresConversationStore(sql);
+    const store = new PostgresConversationStore(withTransaction(sql));
     expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
       threads: [],
       messages: 0,
@@ -1348,7 +1398,7 @@ describe('PostgresConversationStore', () => {
   it('removeDamusThreadsWithoutMemberMessage records the run when no thread is in scope', async () => {
     const sql = new MockSql();
     sql.queryImpl = (text) => (text.includes('INSERT INTO app_setting') ? [{ key: 'k' }] : []);
-    const store = new PostgresConversationStore(sql);
+    const store = new PostgresConversationStore(withTransaction(sql));
     expect(await store.removeDamusThreadsWithoutMemberMessage(NOW)).toEqual({
       threads: [],
       messages: 0,
