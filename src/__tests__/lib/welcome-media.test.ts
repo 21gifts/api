@@ -986,7 +986,7 @@ describe('accountWelcomed', () => {
     expect(await accountWelcomed({ auth, messages, account: { ...ada, id: 'other' } })).toBe(false);
   });
 
-  it('does not read the Fond account twice when it is also the platform account', async () => {
+  it('counts the platform reply once and does not treat the platform as Fond', async () => {
     const fondUsername = resolveFondUsername(process.env);
     const auth = new InMemoryAuthStore();
     await auth.createAccount(
@@ -998,10 +998,52 @@ describe('accountWelcomed', () => {
         viewKey: 'f'.repeat(64),
       }),
     );
+    const messages = await photoStore();
+    await messages.create({
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      accountId: 'plat',
+      name: '21.gifts',
+      text: 'Welcome',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
+    const hasWelcome = vi.spyOn(messages, 'accountHasWelcomeGift');
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(true);
+    expect(hasWelcome).toHaveBeenCalledTimes(1);
+    expect(hasWelcome).toHaveBeenCalledWith('acc', 'plat');
+  });
+
+  it('ignores a Fond Welcome reply from a role below fond', async () => {
+    const fondUsername = resolveFondUsername(process.env);
+    const auth = new InMemoryAuthStore();
     await auth.createAccount(
-      account({ id: 'nameless', role: 'basis', username: null, viewKey: 'c'.repeat(64) }),
+      account({ id: 'plat', role: 'basis', isPlatform: true, viewKey: 'f'.repeat(64) }),
+    );
+    await auth.createAccount(
+      account({
+        id: 'low-acc',
+        role: 'verified',
+        username: fondUsername,
+        viewKey: 'e'.repeat(64),
+      }),
     );
     const messages = await photoStore();
+    await messages.create({
+      id: 'ffffffff-ffff-4fff-8fff-fffffffffff0',
+      accountId: 'low-acc',
+      name: 'Low Role',
+      text: 'Welcome',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
     expect(await accountWelcomed({ auth, messages, account: ada })).toBe(false);
   });
 

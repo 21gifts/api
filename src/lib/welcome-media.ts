@@ -1,3 +1,4 @@
+import { canSignFondPayouts } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { resolveFondUsername, type LnurlServerConfig } from '@/lib/config';
 import { WELCOME_GIFT_DESCRIPTION } from '@/lib/gift';
@@ -61,8 +62,10 @@ type WelcomeGifts = Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountId
  * every welcome gift paid to a wallet address
  * ({@link WELCOME_GIFT_DESCRIPTION}, recorded under the member's username),
  * and the accounts whose legacy external address received a welcome gift.
- * The Fond account is found by `FOND_USERNAME` (trimmed, lower-case) among the
- * same accounts; it may be absent.
+ * The Fond account is the one account that passes {@link canSignFondPayouts}
+ * for `FOND_USERNAME` (at least `fond`, not the platform account); it may be
+ * absent, and a lower-role account or the platform account holding the
+ * username does not count.
  *
  * @param accounts - Every stored account.
  * @param gifts - Outbound gift store, or `undefined` (no gift records read).
@@ -83,9 +86,7 @@ async function loadWelcomeLedger(
           }));
   const legacy = (await gifts?.listLegacyWelcomeAccountIds?.()) ?? [];
   const fondUsername = resolveFondUsername(process.env);
-  const fondAccount = accounts.find(
-    (account) => account.username?.trim().toLowerCase() === fondUsername,
-  );
+  const fondAccount = accounts.find((account) => canSignFondPayouts(account, fondUsername));
   return {
     platformId: accounts.find((account) => account.isPlatform === true)?.id ?? null,
     fondId: fondAccount?.id ?? null,
@@ -131,9 +132,7 @@ async function welcomedBefore(
     return true;
   }
   return (
-    ledger.fondId !== null &&
-    ledger.fondId !== ledger.platformId &&
-    (await messages.accountHasWelcomeGift(account.id, ledger.fondId))
+    ledger.fondId !== null && (await messages.accountHasWelcomeGift(account.id, ledger.fondId))
   );
 }
 
