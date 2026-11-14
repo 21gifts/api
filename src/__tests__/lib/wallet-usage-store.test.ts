@@ -126,12 +126,38 @@ describe('InMemoryWalletUsageStore', () => {
     ).toMatchObject({ totals: { paymentCount: 1, volumeSats: 21 } });
   });
 
-  it('omits a platform-note compose fee from the forum series but keeps its heart', async () => {
+  it('returns merged incoming-only rows with their resolved member payer', async () => {
+    const store = new InMemoryWalletUsageStore({
+      payments: [
+        {
+          ...paymentFields(AT, 21),
+          payerAccountId: 'member-payer',
+          payerParty: 'members',
+          payeeAccountId: 'member-payee',
+          payeeParty: 'members',
+        },
+      ],
+      forumInvoices: [],
+      shopCharges: [],
+    });
+    await expect(store.payments(AT.getTime(), FAR_FUTURE)).resolves.toEqual([
+      {
+        ...paymentFields(AT, 21),
+        payerAccountId: 'member-payer',
+        payerParty: 'members',
+        payeeAccountId: 'member-payee',
+        payeeParty: 'members',
+        isForumGift: false,
+      },
+    ]);
+  });
+
+  it('omits a platform-profile-note compose fee but keeps its heart', async () => {
     const store = new InMemoryWalletUsageStore({
       payments: [],
       forumInvoices: [
-        { createdAt: AT, amountSats: 1, heart: false, platformNote: true },
-        { createdAt: AFTER, amountSats: 2, heart: true, platformNote: true },
+        { createdAt: AT, amountSats: 1, heart: false, platformProfileNote: true },
+        { createdAt: AFTER, amountSats: 2, heart: true, platformProfileNote: true },
         { createdAt: BEFORE, amountSats: 5, heart: false },
       ],
       shopCharges: [],
@@ -141,7 +167,7 @@ describe('InMemoryWalletUsageStore', () => {
       { createdAt: AFTER, amountSats: 2, heart: true },
       { createdAt: BEFORE, amountSats: 5, heart: false },
     ]);
-    expect(rows.some((row) => 'platformNote' in row)).toBe(false);
+    expect(rows.some((row) => 'platformProfileNote' in row)).toBe(false);
   });
 
   it('keeps only charges seeded for current shop accounts', async () => {
@@ -239,7 +265,12 @@ describe('PostgresWalletUsageStore', () => {
     expect(payments.text).not.toContain('FROM pair_matches outgoing');
     expect(payments.text).not.toContain('FROM pair_matches incoming');
     expect(payments.text).toContain('platform_fee.heart IS NOT TRUE');
-    expect(payments.text).toContain('platform_author.is_platform = true');
+    expect(payments.text).toContain('AND platform_author.is_platform\n');
+    expect(payments.text).toContain('AND platform_author.profile_message_id = platform_note.id');
+    expect(payments.text).toContain(
+      'coalesce(author.is_platform AND author.profile_message_id = note.id, false) = false',
+    );
+    expect(payments.text.match(/profile_message_id/g)).toHaveLength(2);
     expect(payments.text).toContain(
       'lower(platform_fee.payment_hash) = candidate_hashes.payment_hash',
     );
@@ -287,6 +318,15 @@ describe('PostgresWalletUsageStore', () => {
     expect(payments.text).toContain('note.deleted_at IS NULL');
     expect(payments.text).not.toContain('other_invoice.heart');
     expect(payments.text).toContain('other_invoice.conversation_id IS NOT NULL');
+    expect(payments.text).toContain(
+      'COALESCE(outs.payer_account_id, ins.counterparty_account_id) AS payer_account_id',
+    );
+    expect(payments.text).toContain(
+      'account_id AS payee_account_id,\n         counterparty_account_id',
+    );
+    expect(payments.text).toContain(
+      'LEFT JOIN account payer ON payer.id = COALESCE(outs.payer_account_id, ins.counterparty_account_id)',
+    );
     expect(forum.text).toContain('FROM message_invoice invoice');
     expect(forum.text).toContain("invoice.result = 'ok'");
     expect(forum.text).toContain('invoice.conversation_id IS NULL');
@@ -301,9 +341,13 @@ describe('PostgresWalletUsageStore', () => {
     expect(forum.text).toContain('JOIN message note ON note.id = invoice.message_id');
     expect(forum.text).toContain('note.deleted_at IS NULL');
     expect(forum.text).toContain('LEFT JOIN account author');
+    expect(forum.text).toContain('author.is_platform');
+    expect(forum.text).toContain('author.profile_message_id = note.id');
     expect(forum.text).toContain(
-      'AND (invoice.heart IS TRUE OR coalesce(author.is_platform, false) = false)',
+      'coalesce(author.is_platform AND author.profile_message_id = note.id, false) = false',
     );
+    expect(forum.text).toContain('invoice.heart IS TRUE');
+    expect(forum.text.match(/profile_message_id/g)).toHaveLength(1);
     expect(charges.text).toContain('pos_charge');
     expect(charges.text).toContain('account_id');
     expect(charges.text).toContain('created_at');
@@ -570,7 +614,7 @@ describe('PostgresWalletUsageStore', () => {
     ]);
   });
 
-  it('does not count a non-heart invoice on a platform-authored note as a forum gift', async () => {
+  it('counts a gift on an ordinary platform note but not on the profile note', async () => {
     const basePayment = paymentFields(AT, 1);
     const seed = (paymentHash: string | null, invoice: string | null) => ({
       ...basePayment,
@@ -578,7 +622,12 @@ describe('PostgresWalletUsageStore', () => {
       invoice,
     });
     const store = new InMemoryWalletUsageStore({
-      payments: [seed('AA11', null), seed('bb22', null), seed(null, 'compose-bolt')],
+      payments: [
+        seed('AA11', null),
+        seed('bb22', null),
+        seed(null, 'compose-bolt'),
+        seed('dd44', null),
+      ],
       forumInvoices: [],
       shopCharges: [],
       forumGiftInvoices: [
@@ -590,7 +639,7 @@ describe('PostgresWalletUsageStore', () => {
           hidden: false,
           claimed: false,
           heart: false,
-          platformNote: true,
+          platformProfileNote: true,
         },
         {
           paymentHash: 'cc33',
@@ -600,7 +649,7 @@ describe('PostgresWalletUsageStore', () => {
           hidden: false,
           claimed: false,
           heart: false,
-          platformNote: false,
+          platformProfileNote: false,
         },
         {
           paymentHash: 'aa11',
@@ -610,7 +659,7 @@ describe('PostgresWalletUsageStore', () => {
           hidden: false,
           claimed: true,
           heart: false,
-          platformNote: true,
+          platformProfileNote: true,
         },
         {
           paymentHash: 'bb22',
@@ -620,7 +669,7 @@ describe('PostgresWalletUsageStore', () => {
           hidden: false,
           claimed: true,
           heart: true,
-          platformNote: true,
+          platformProfileNote: true,
         },
         {
           paymentHash: null,
@@ -630,7 +679,17 @@ describe('PostgresWalletUsageStore', () => {
           hidden: false,
           claimed: true,
           heart: false,
-          platformNote: true,
+          platformProfileNote: true,
+        },
+        {
+          paymentHash: 'dd44',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+          heart: false,
+          platformProfileNote: false,
         },
       ],
     });
@@ -638,6 +697,7 @@ describe('PostgresWalletUsageStore', () => {
       false,
       true,
       false,
+      true,
     ]);
   });
 
@@ -645,7 +705,7 @@ describe('PostgresWalletUsageStore', () => {
     const basePayment = paymentFields(AT, 1);
     const seed = (paymentHash: string) => ({ ...basePayment, paymentHash, invoice: null });
     const store = new InMemoryWalletUsageStore({
-      payments: [seed('aa11'), seed('bb22')],
+      payments: [seed('aa11'), seed('bb22'), seed('cc33')],
       forumInvoices: [],
       shopCharges: [],
       forumGiftInvoices: [
@@ -657,7 +717,7 @@ describe('PostgresWalletUsageStore', () => {
           hidden: false,
           claimed: false,
           heart: false,
-          platformNote: true,
+          platformProfileNote: true,
         },
         {
           paymentHash: 'bb22',
@@ -667,16 +727,28 @@ describe('PostgresWalletUsageStore', () => {
           hidden: false,
           claimed: false,
           heart: true,
-          platformNote: true,
+          platformProfileNote: true,
+        },
+        {
+          paymentHash: 'cc33',
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: false,
+          heart: false,
+          platformProfileNote: false,
         },
       ],
       zapGifts: [
         { paymentHash: 'AA11', hidden: false },
         { paymentHash: 'bb22', hidden: false },
+        { paymentHash: 'cc33', hidden: false },
       ],
     });
     expect((await store.payments(0, FAR_FUTURE)).map((row) => row.isForumGift)).toEqual([
       false,
+      true,
       true,
     ]);
   });

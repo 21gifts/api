@@ -34,6 +34,10 @@ export interface WalletUsageStore {
    * read, so it cannot pair with an in-window row, make that row ambiguous, or
    * add its amount, fee, category, or account to the group.
    *
+   * The payer account is the outgoing account, otherwise the incoming row's
+   * counterparty account, otherwise null. The in-memory store receives merged
+   * rows whose payer is already resolved.
+   *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @param untilMs - Exclusive upper bound, epoch milliseconds. The route
    *   passes the start of the UTC day after its `now`.
@@ -42,8 +46,9 @@ export interface WalletUsageStore {
   payments(sinceMs: number, untilMs: number): Promise<WalletUsagePaymentRow[]>;
   /**
    * Successful forum invoices (`result = 'ok'`) created on or after `sinceMs`.
-   * A non-heart invoice on a note authored by the platform account is the
-   * compose fee and is omitted.
+   * A non-heart invoice on the platform account's profile note is the compose
+   * fee and is omitted. A non-heart invoice on any other note authored by the
+   * platform account is an ordinary forum gift and is included.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns Invoice rows. A null `heart` is false. Order is not significant.
@@ -94,15 +99,16 @@ interface MemoryForumInvoice {
   claimed: boolean;
   /**
    * True when the invoice is a heart (`message_invoice.heart = true`). Default
-   * false. A heart on a platform-authored note remains eligible.
+   * false. A heart on the platform profile note remains eligible.
    */
   heart?: boolean;
   /**
-   * True when the invoice's note author is the platform account. Default false.
-   * A non-heart invoice on such a note is the 1-sat compose fee: it cannot make
-   * a forum gift and it excludes a zap receipt with the same hash.
+   * True when the invoice's note is the platform account's profile note. Default
+   * false. A non-heart invoice on that note is the 1-sat compose fee: it cannot
+   * make a forum gift and it excludes a zap receipt with the same hash. A
+   * platform-authored note that is not the profile note is ordinary.
    */
-  platformNote?: boolean;
+  platformProfileNote?: boolean;
 }
 
 /**
@@ -110,8 +116,11 @@ interface MemoryForumInvoice {
  * compose-fee exclusion in memory.
  */
 interface MemoryForumRow extends WalletUsageForumRow {
-  /** True when the invoice's note author is the platform account. Default false. */
-  platformNote?: boolean;
+  /**
+   * True when the invoice's note is the platform account's profile note.
+   * Default false.
+   */
+  platformProfileNote?: boolean;
 }
 
 /**
@@ -144,8 +153,9 @@ interface WalletUsageSeed {
   /** Completed payments. */
   payments: readonly MemoryPaymentRow[];
   /**
-   * Successful forum invoices. A row with `platformNote: true` is omitted from
-   * {@link InMemoryWalletUsageStore.forumInvoices} unless `heart` is true.
+   * Successful forum invoices. A row with `platformProfileNote: true` is
+   * omitted from {@link InMemoryWalletUsageStore.forumInvoices} unless `heart`
+   * is true.
    */
   forumInvoices: readonly MemoryForumRow[];
   /** Point-of-sale charges. Omitted `shop` defaults to `true`. */
@@ -164,10 +174,10 @@ interface WalletUsageSeed {
  * Process-local usage reads for a boot without `DATABASE_URL`, and for tests.
  * The default seed is empty. `isForumGift` is derived from the seed's claimed
  * forum invoices, zap gifts, and `sparkInvoiceHashes` with the same rule as the
- * Postgres statement. Seeded forum-series rows with `platformNote: true` are
- * omitted unless they are hearts, matching the Postgres forum series. Seeded
- * charges are limited to current shop accounts by `shop` or `accountId` plus
- * `shopAccountIds`, matching the Postgres shop filter.
+ * Postgres statement. Seeded forum-series rows with `platformProfileNote: true`
+ * are omitted unless they are hearts, matching the Postgres forum series.
+ * Seeded charges are limited to current shop accounts by `shop` or `accountId`
+ * plus `shopAccountIds`, matching the Postgres shop filter.
  */
 export class InMemoryWalletUsageStore implements WalletUsageStore {
   readonly #payments: WalletUsagePaymentRow[];
@@ -217,8 +227,9 @@ export class InMemoryWalletUsageStore implements WalletUsageStore {
 
   /**
    * Forum invoices with `createdAt` on or after `sinceMs`, as copies.
-   * Non-heart invoices seeded on a platform-authored note are the compose fee
-   * and are not returned; hearts on that note are returned.
+   * Non-heart invoices seeded on the platform profile note are the compose fee
+   * and are not returned; hearts on that note are returned. Ordinary
+   * platform-authored notes are not the profile note and stay returned.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds.
    * @returns A new array. Mutating a returned `Date` does not change the store.
@@ -315,13 +326,15 @@ interface AssignedShopSqlRow {
  * note whose `deleted_at` is null, matching a candidate hash or any row's
  * `invoice`; or a claimed zap receipt gift or paid heart on such a note,
  * unless a conversation or repayment invoice owns a candidate hash or a
- * non-heart invoice on a platform-authored note owns it. A non-heart invoice
- * on a note authored by the official platform account is never a forum gift;
- * that is the 1-sat compose fee, a platform payment. A heart invoice on that
- * note still qualifies. `wallet_payment.category` alone is not enough, because
- * it also covers conversation invoices and credit repayments. A `gift` or
- * `platform` category does not decide the flag, and the counterparty may be
- * any account: the claimed living-note invoice or zap receipt decides it.
+ * non-heart invoice on the platform profile note owns it. A gift on an
+ * ordinary platform-authored note is a forum gift. A non-heart invoice on the
+ * official platform account's profile note (`author.is_platform` and
+ * `author.profile_message_id = note.id`) is never a forum gift; that is the
+ * 1-sat compose fee, a platform payment. A heart invoice on that note still
+ * qualifies. `wallet_payment.category` alone is not enough, because it also
+ * covers conversation invoices and credit repayments. A `gift` or `platform`
+ * category does not decide the flag, and the counterparty may be any account:
+ * the claimed living-note invoice or zap receipt decides it.
  */
 const PAYMENTS_SQL = `WITH completed_rows AS (
   SELECT wallet_payment.account_id,
@@ -454,7 +467,8 @@ outs AS (
 ins AS (
   SELECT DISTINCT ON (group_key)
          group_key,
-         account_id AS payee_account_id
+         account_id AS payee_account_id,
+         counterparty_account_id
   FROM completed
   WHERE direction = 'in'
   ORDER BY group_key, account_id
@@ -499,7 +513,10 @@ forum_gifts AS (
     SELECT 1 FROM nostr_zap_payment z
     WHERE z.payment_hash = lower(invoice.payment_hash)
   )
-  AND (invoice.heart IS TRUE OR coalesce(author.is_platform, false) = false)
+  AND (
+    invoice.heart IS TRUE
+    OR coalesce(author.is_platform AND author.profile_message_id = note.id, false) = false
+  )
   UNION
   SELECT DISTINCT completed.group_key
   FROM completed
@@ -517,7 +534,8 @@ forum_gifts AS (
       AND platform_fee.heart IS NOT TRUE
       AND platform_fee.payment_hash IS NOT NULL
       AND lower(platform_fee.payment_hash) = candidate_hashes.payment_hash
-      AND platform_author.is_platform = true
+      AND platform_author.is_platform
+      AND platform_author.profile_message_id = platform_note.id
   )
   AND NOT EXISTS (
     SELECT 1
@@ -542,10 +560,10 @@ SELECT bounds.paid_at,
            THEN fallback_category.fallback_category
          ELSE 'unknown'
        END AS category,
-       outs.payer_account_id,
+       COALESCE(outs.payer_account_id, ins.counterparty_account_id) AS payer_account_id,
        COALESCE(ins.payee_account_id, outs.counterparty_account_id) AS payee_account_id,
        CASE
-         WHEN outs.payer_account_id IS NULL THEN 'outside'
+         WHEN COALESCE(outs.payer_account_id, ins.counterparty_account_id) IS NULL THEN 'outside'
          WHEN payer.is_platform THEN 'platform'
          WHEN payer.role = 'fond' THEN 'fund'
          ELSE 'members'
@@ -565,7 +583,7 @@ LEFT JOIN ins ON ins.group_key = bounds.group_key
 LEFT JOIN fallback_category ON fallback_category.group_key = bounds.group_key
 LEFT JOIN fund_hits ON fund_hits.group_key = bounds.group_key
 LEFT JOIN forum_gifts ON forum_gifts.group_key = bounds.group_key
-LEFT JOIN account payer ON payer.id = outs.payer_account_id
+LEFT JOIN account payer ON payer.id = COALESCE(outs.payer_account_id, ins.counterparty_account_id)
 LEFT JOIN account payee
   ON payee.id = COALESCE(ins.payee_account_id, outs.counterparty_account_id)`;
 
@@ -580,9 +598,9 @@ LEFT JOIN account payee
  * living (`message.deleted_at IS NULL`), joined through
  * `message_invoice.message_id = message.id`; a gift or heart on a note hidden
  * by staff is not public application data.
- * A non-heart invoice whose note is authored by the platform account is the
- * 1-sat compose fee, not a forum gift; a heart on that note still follows the
- * heart rule.
+ * A non-heart invoice on the platform account's profile note is the 1-sat
+ * compose fee, not a forum gift; a heart on that note still follows the heart
+ * rule. A gift on an ordinary platform-authored note is a forum gift.
  */
 const FORUM_SQL = `SELECT invoice.created_at, invoice.amount_sats, COALESCE(invoice.heart, false) AS heart
 FROM message_invoice invoice
@@ -592,7 +610,10 @@ WHERE invoice.result = 'ok'
   AND invoice.conversation_id IS NULL
   AND coalesce(invoice.description, '') NOT LIKE 'repay:%'
   AND coalesce(invoice.description, '') NOT LIKE 'repayp:%'
-  AND (invoice.heart IS TRUE OR coalesce(author.is_platform, false) = false)
+  AND (
+    invoice.heart IS TRUE
+    OR coalesce(author.is_platform AND author.profile_message_id = note.id, false) = false
+  )
   AND invoice.created_at >= $1
   AND EXISTS (
     SELECT 1 FROM nostr_zap_payment z
@@ -629,6 +650,8 @@ export class PostgresWalletUsageStore implements WalletUsageStore {
    * `sinceMs` is still omitted, because its earliest `paid_at` is before the
    * bound. Rows at or after `untilMs` are excluded before pair matching, so a
    * future-dated row cannot pair with an in-window row or make it ambiguous.
+   * The payer is the outgoing account, otherwise the incoming row's
+   * `counterparty_account_id`, otherwise outside.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds (`$1`).
    * @param untilMs - Exclusive upper bound, epoch milliseconds (`$2`).
@@ -646,8 +669,9 @@ export class PostgresWalletUsageStore implements WalletUsageStore {
    * Read paid forum gifts and hearts created on or after `sinceMs`.
    *
    * Conversation invoices, credit repayments, unpaid mints, and non-heart
-   * invoices on notes authored by the platform account are omitted. Such a
-   * non-heart invoice is the compose fee; a heart on that note still counts.
+   * invoices on the platform account's profile note are omitted. Such a
+   * non-heart invoice is the compose fee; a heart on that note still counts. A
+   * non-heart invoice on an ordinary platform-authored note counts.
    *
    * @param sinceMs - Inclusive lower bound, epoch milliseconds (`$1`).
    * @returns Mapped rows. A null heart is false. Query failures throw.
@@ -706,14 +730,15 @@ function copyPayment(row: MemoryPaymentRow): WalletUsagePaymentRow {
  *
  * A payment is a forum gift when a claimed, successful, non-conversation,
  * non-repayment invoice on a living note matches one of its candidate hashes
- * or its invoice; a non-heart invoice on a note authored by the platform
- * account is the compose fee and does not qualify. A heart on such a note
- * still does. The rule also accepts a claimed zap receipt gift or paid heart
- * on a living note matching a candidate hash, unless a seeded conversation or
- * repayment invoice owns that hash, or a non-heart invoice on a
- * platform-authored note owns it, compared case-insensitively. A candidate
- * hash is the row's own `payment_hash`, plus every `sparkInvoiceHashes` value
- * for a Spark invoice equal to the row's `invoice` or `destination`.
+ * or its invoice; a non-heart invoice on the platform profile note is the
+ * compose fee and does not qualify. A heart on that note still does. A gift on
+ * an ordinary platform-authored note qualifies. The rule also accepts a
+ * claimed zap receipt gift or paid heart on a living note matching a candidate
+ * hash, unless a seeded conversation or repayment invoice owns that hash, or a
+ * non-heart invoice on the platform profile note owns it, compared
+ * case-insensitively. A candidate hash is the row's own `payment_hash`, plus
+ * every `sparkInvoiceHashes` value for a Spark invoice equal to the row's
+ * `invoice` or `destination`.
  *
  * @param row - Merged payment with its optional `paymentHash`, `invoice`, and
  *   `destination` details.
@@ -748,7 +773,10 @@ function memoryIsForumGift(
     if (candidate.conversation || candidate.repayment || candidate.hidden) {
       return false;
     }
-    if (!candidate.claimed || (candidate.platformNote === true && candidate.heart !== true)) {
+    if (
+      !candidate.claimed ||
+      (candidate.platformProfileNote === true && candidate.heart !== true)
+    ) {
       return false;
     }
     const hash = candidate.paymentHash === null ? null : candidate.paymentHash.toLowerCase();
@@ -769,7 +797,7 @@ function memoryIsForumGift(
       invoices.some(
         (candidate) =>
           candidate.paymentHash !== null &&
-          candidate.platformNote === true &&
+          candidate.platformProfileNote === true &&
           candidate.heart !== true &&
           candidate.paymentHash.toLowerCase() === hash,
       )
@@ -788,14 +816,15 @@ function memoryIsForumGift(
 /**
  * Whether a seeded forum-series row belongs in the public forum series.
  *
- * A non-heart invoice on a platform-authored note is the compose fee. A heart
- * on that note stays eligible, matching `FORUM_SQL`.
+ * A non-heart invoice on the platform profile note is the compose fee. A heart
+ * on that note stays eligible, matching `FORUM_SQL`. An ordinary
+ * platform-authored note is not excluded.
  *
  * @param row - Seeded successful forum invoice.
- * @returns `false` only for a non-heart platform-note invoice.
+ * @returns `false` only for a non-heart platform-profile-note invoice.
  */
 function memoryIsForumInvoice(row: MemoryForumRow): boolean {
-  return row.platformNote !== true || row.heart === true;
+  return row.platformProfileNote !== true || row.heart === true;
 }
 
 /**
