@@ -156,7 +156,8 @@ every catalog locale. This section is the full argument.
 
 v1 ships with a deliberately simplified account and custody model so the
 platform can go live and be dogfooded. It deviates from Core Principle 2 on
-the donor's **sending** side (custodial LNDHub spending) and from Core
+the donor's **sending** side (recurring payouts are sent from the Fond
+account's in-app wallet, not donor → receiver directly) and from Core
 Principle 5 for **all** v1 accounts (no client-side keys; each account's
 NOSTR identity is custodial, held and used for signing server-side — see
 "NOSTR in v1" below). Both deviations are transitional
