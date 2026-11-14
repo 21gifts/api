@@ -1,7 +1,7 @@
 /**
  * Operator Web Push broadcast to every account with a live subscription or
  * to listed usernames, queued on the push outbox. Authenticated by `DEBUG_TOKEN`
- * (Bearer), not by an end-user session.
+ * or an operator key token (Bearer), not by an end-user session.
  */
 
 import { Hono } from 'hono';
@@ -133,7 +133,7 @@ function splitTargets(
  * outbox row per recipient (or counts them on a dry run), and
  * `GET /debug/push-broadcast/:id` reports the delivery counts of a broadcast.
  *
- * @param deps - Auth store, push store, clock, debug token, VAPID public key.
+ * @param deps - Auth store, push store, clock, `DEBUG_TOKEN`, optional key login, VAPID public key.
  * @returns A Hono app exposing `POST /` and `GET /:id`.
  */
 export function debugPushBroadcastRoutes(deps: DebugPushBroadcastRouteDeps): Hono {

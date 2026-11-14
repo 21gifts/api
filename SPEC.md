@@ -4592,8 +4592,9 @@ Configuration (read once at boot; the api boots without it):
 
 Only `ssh-ed25519` lines are loaded; every other line is dropped and logged
 (`debug.auth.signers.line_dropped`). Accepted options are `namespaces` and
-`valid-before` (`YYYYMMDD`, `YYYYMMDDHHMM`, or `YYYYMMDDHHMMSS`, optional
-`Z`, read as UTC). A line whose `namespaces` pattern list (OpenSSH syntax,
+`valid-before` (`YYYYMMDD`, `YYYYMMDDHHMM`, or `YYYYMMDDHHMMSS`; read as
+OpenSSH reads it: a trailing `Z` is UTC, no `Z` is the host's local time; an
+out-of-range component drops the line). A line whose `namespaces` pattern list (OpenSSH syntax,
 `*`, `?`, and `!` negation) does not match this api's namespace belongs to
 another environment: it grants nothing here and is not handed to
 `ssh-keygen`. A key listed in more than one file gets the highest level among

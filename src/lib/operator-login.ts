@@ -310,15 +310,20 @@ export class OperatorLogin {
    * higher, and not past `valid-before`.
    *
    * @param authorizationHeader - Raw `Authorization` header, or `undefined`.
+   * @param at - Instant to check against (epoch milliseconds; default: the
+   *   login clock now). The audit log passes the request's start.
    * @returns The grant, or `null` when key login is off, the bearer is not a
    *   key token, or the token is refused.
    */
-  async resolveBearer(authorizationHeader: string | undefined): Promise<OperatorKeyGrant | null> {
+  async resolveBearer(
+    authorizationHeader: string | undefined,
+    at?: number,
+  ): Promise<OperatorKeyGrant | null> {
     const token = keyBearer(authorizationHeader);
     if (this.#signers === null || token === null) {
       return null;
     }
-    const now = this.#now();
+    const now = at ?? this.#now();
     const record = await this.#store.findToken(sha256Hex(token), now);
     if (record === null) {
       return null;

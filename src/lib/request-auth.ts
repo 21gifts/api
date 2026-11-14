@@ -38,7 +38,7 @@ export interface RequestAuth {
  * key login is `debug` with the operator name.
  *
  * @param args - Header, stores, clock, configured tokens, and the optional key login.
- * @returns Auth kind and optional account id. Never returns the token.
+ * @returns Auth kind, optional account id, and the operator name of a key token. Never returns the token.
  */
 export async function resolveRequestAuth(args: {
   authorizationHeader: string | undefined;
@@ -56,7 +56,8 @@ export async function resolveRequestAuth(args: {
   if (spendToken !== '' && bearerMatchesDebugToken(spendToken, args.authorizationHeader)) {
     return { accountId: null, authKind: 'spend', operator: null };
   }
-  const grant = (await args.operatorLogin?.resolveBearer(args.authorizationHeader)) ?? null;
+  const grant =
+    (await args.operatorLogin?.resolveBearer(args.authorizationHeader, args.now)) ?? null;
   if (grant !== null) {
     return { accountId: null, authKind: 'debug', operator: grant.operator };
   }

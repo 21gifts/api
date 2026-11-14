@@ -209,6 +209,8 @@ interface RequestLogCapture {
   ms: number;
   /** Authorization header, or `undefined`. */
   authorizationHeader: string | undefined;
+  /** Clock reading when the request arrived; the bearer is classified at this instant. */
+  requestAt: number;
   /** Validated client metadata. */
   meta: ReturnType<typeof readClientRequestMeta>;
 }
@@ -235,7 +237,7 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
       spendApiToken: deps.spendApiToken,
       operatorLogin: deps.operatorLogin,
       authStore: deps.authStore,
-      now: clock(),
+      now: captured.requestAt,
     });
     accountId = auth.accountId;
     authKind = auth.authKind;
@@ -285,6 +287,7 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
     const meta = readClientRequestMeta(c.req.raw.headers);
     return requestClientFields.run(presentClientFields(meta), async () => {
       const started = Date.now();
+      const requestAt = (deps.now ?? Date.now)();
       await next();
       if (c.req.method === 'OPTIONS' || c.req.path === '/healthz') {
         return;
@@ -296,6 +299,7 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
         status: c.res.status,
         ms,
         authorizationHeader: c.req.header('authorization'),
+        requestAt,
         meta,
       };
       logEvent('http.request', {

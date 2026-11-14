@@ -39,7 +39,7 @@ export interface OperatorSigner {
   level: OperatorLevel;
   /** `SHA256:` fingerprint of the public key, as `ssh-keygen -l` prints it. */
   fingerprint: string;
-  /** End of validity (epoch milliseconds, UTC), or `null` when the line has no `valid-before`. */
+  /** End of validity (epoch milliseconds), or `null` when the line has no `valid-before`. */
   validBefore: number | null;
   /** The line as read, passed to `ssh-keygen`. */
   line: string;
@@ -163,23 +163,45 @@ function splitOptions(field: string): string[] {
   return options;
 }
 
-/** Epoch milliseconds of a `valid-before` value (UTC), or `null` when malformed. */
+/**
+ * Epoch milliseconds of a `valid-before` value, read as OpenSSH reads it: a
+ * trailing `Z` is UTC, no `Z` is the host's local time. `null` when malformed
+ * or when a component is out of range (for example month 13 or minute 60).
+ */
 function parseValidBefore(value: string): number | null {
   const match = VALID_BEFORE_PATTERN.exec(value);
   if (match === null) {
     return null;
   }
   const [, y, mo, d, h, mi, s] = match;
-  const ms = Date.UTC(
+  const parts = [
     Number(y),
     Number(mo) - 1,
     Number(d),
     Number(h ?? '0'),
     Number(mi ?? '0'),
     Number(s ?? '0'),
-  );
-  const check = new Date(ms);
-  return check.getUTCDate() === Number(d) && check.getUTCMonth() === Number(mo) - 1 ? ms : null;
+  ] as const;
+  const utc = value.endsWith('Z');
+  const date = utc ? new Date(Date.UTC(...parts)) : new Date(...parts);
+  const read = utc
+    ? [
+        date.getUTCFullYear(),
+        date.getUTCMonth(),
+        date.getUTCDate(),
+        date.getUTCHours(),
+        date.getUTCMinutes(),
+        date.getUTCSeconds(),
+      ]
+    : [
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate(),
+        date.getHours(),
+        date.getMinutes(),
+        date.getSeconds(),
+      ];
+  return read.every((part, index) => part === parts[index]) ? date.getTime() : null;
 }
 
 /** Wire-format key type and key length of an ed25519 public key blob, or `null`. */

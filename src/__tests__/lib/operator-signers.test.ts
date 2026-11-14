@@ -151,6 +151,8 @@ describe('loadOperatorSigners', () => {
         signerLine('alice', alice, 'namespaces'),
         signerLine('alice', alice, 'Foo=bar'),
         signerLine('alice', alice, 'valid-before="soon"'),
+        signerLine('alice', alice, 'valid-before="203001021560"'),
+        signerLine('alice', alice, 'valid-before="20300102240000Z"'),
         `alice ssh-ed25519 ${blob(12, 'ssh-ed25519', 32)}`,
         `alice ssh-ed25519 ${blob(11, 'ssh-ed25518', 32)}`,
         `alice ssh-ed25519 ${blob(11, 'ssh-ed25519', 31)}`,
@@ -171,6 +173,8 @@ describe('loadOperatorSigners', () => {
       'key',
       'option',
       'option',
+      'valid_before',
+      'valid_before',
       'valid_before',
       'key',
       'key',
@@ -242,10 +246,12 @@ describe('OperatorSigners', () => {
     expect(signers?.levelFor('carol', alice.fingerprint, 0)).toBeNull();
   });
 
-  it('honours valid-before in every accepted form', () => {
+  it('honours valid-before in every accepted form, local time without Z and UTC with it', () => {
     const cases: [string, number][] = [
-      ['20300102', Date.UTC(2030, 0, 2)],
-      ['203001021530', Date.UTC(2030, 0, 2, 15, 30)],
+      ['20300102', new Date(2030, 0, 2).getTime()],
+      ['203001021530', new Date(2030, 0, 2, 15, 30).getTime()],
+      ['20300102153045', new Date(2030, 0, 2, 15, 30, 45).getTime()],
+      ['20300102Z', Date.UTC(2030, 0, 2)],
       ['20300102153045Z', Date.UTC(2030, 0, 2, 15, 30, 45)],
     ];
     for (const [value, end] of cases) {
