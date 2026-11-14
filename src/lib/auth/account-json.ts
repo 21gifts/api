@@ -92,7 +92,7 @@ export interface OwnerAccountResponse extends AccountResponse {
   missing: AccountMissingField[];
   /**
    * True when there is a live non-profile forum row or About me is a real bio
-   * (`aboutMe` non-null). Not the spend predicate.
+   * (`aboutMe` non-null). Not the payout predicate.
    */
   hasPosted: boolean;
   /**
