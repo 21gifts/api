@@ -51,7 +51,7 @@ function bearer(header: string | undefined): string | null {
  * No `table` returns `{ tables }`. `table` returns one page and omits
  * `nextCursor` when there is no further page. `cursor` without `table` is 400.
  *
- * @param deps - Optional store, optional write token, optional read token.
+ * @param deps - Optional store, `DEBUG_TOKEN`, optional key login, and the session store and clock of the software-developer path.
  * @returns A Hono app exposing `GET /`.
  */
 export function debugDbRoutes(deps: DebugDbRouteDeps): Hono {

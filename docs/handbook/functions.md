@@ -2514,7 +2514,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 - **Purpose:** Hono app for `GET /debug/db`.
 - **Inputs:** Optional `DebugDbStore`, optional `debugToken`, optional `operatorLogin` (key tokens of any level pass), optional `authStore` and `now` for the software-developer session path.
-- **Returns / side effects:** 503 `{ error: 'Debug is not configured' }` only when both tokens are empty after trim; 401 `{ error: 'Unauthorized' }` when the bearer matches no configured token. Write and read both continue into the existing handler: 400 if `cursor` has no `table`; 503 if the store is omitted; 200 `{ tables }` or one page; 404 for an unknown table; 400 on `DebugDbCursorError`; 503 `Database is unavailable` on any other throw. Omits `nextCursor` when it is null.
+- **Returns / side effects:** 503 `{ error: 'Debug is not configured' }` only when `DEBUG_TOKEN` is empty after trim and the SSH key login is not loaded; 401 `{ error: 'Unauthorized' }` when the bearer is neither `DEBUG_TOKEN` nor a valid key token. `DEBUG_TOKEN` and a key token of any level continue into the existing handler: 400 if `cursor` has no `table`; 503 if the store is omitted; 200 `{ tables }` or one page; 404 for an unknown table; 400 on `DebugDbCursorError`; 503 `Database is unavailable` on any other throw. Omits `nextCursor` when it is null.
 - **Used by:** `createApp` at `/debug/db`.
 
 ## Function: encodeWalletPaymentCursor

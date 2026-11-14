@@ -872,7 +872,7 @@ test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer i
   expect(wrong.status()).toBe(401);
 });
 
-test('Function: requireOperator — write token reaches GET /debug/db and an admin route, a wrong bearer is 401', async ({
+test('Function: requireOperator — DEBUG_TOKEN reaches GET /debug/db and an admin route, a wrong bearer is 401', async ({
   request,
 }) => {
   const ok = await request.get('/debug/db', {

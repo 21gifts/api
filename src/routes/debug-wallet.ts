@@ -173,7 +173,7 @@ export interface DebugWalletRouteDeps {
   walletStore: WalletStore;
   /** Shared auth persistence port, used to 404 an unknown account id. */
   authStore: AuthStore;
-  /** Configured operator write token, or `undefined` when debug is disabled. */
+  /** `DEBUG_TOKEN`, or `undefined` when unset. */
   debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;

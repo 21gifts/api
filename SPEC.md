@@ -4626,10 +4626,10 @@ Alternatively, a live member session whose role is at least
 other table is 404. The route passes this allowlist into the store, so catalog
 discovery, row counts, and page catalog checks for that session never inspect
 another table. Lower roles are 401. An admin session never opens writes or another debug route.
-Both operator tokens unset or blank and no live session at least
+`DEBUG_TOKEN` unset or blank, the SSH key login not loaded, and no live session at least
 `software_developer` → **Response** `503`
-`{ "error": "Debug is not configured" }`. A bearer that is neither a configured
-operator token nor such a session, including a lower-role session and a session
+`{ "error": "Debug is not configured" }`. A bearer that is neither `DEBUG_TOKEN`, a valid
+operator key token, nor such a session, including a lower-role session and a session
 `HEAD`, → **Response** `401` `{ "error": "Unauthorized" }`. Token matches but this
 process has no SQL client → **Response** `503`
 `{ "error": "Database is not configured" }`. No `table` returns

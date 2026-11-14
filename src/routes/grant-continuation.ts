@@ -22,7 +22,7 @@ export interface GrantContinuationRouteDeps {
   messages: { listLiveAssignedShops(): Promise<ShopNoteRef[]> };
   /** POS charges in the UTC window, every status. */
   pos: { listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]> };
-  /** Operator write token, or `undefined` when unset. Reads the same body as a session. */
+  /** `DEBUG_TOKEN`, or `undefined` when unset. Reads the same body as a session. */
   debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;

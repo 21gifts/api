@@ -255,9 +255,32 @@ key_token() {
   cat "$file"
 }
 
+# Whether the body file named after -o in these curl arguments is the operator
+# gate's level refusal ({"error":"Forbidden"}), not another 403.
+level_refused() {
+  local out=""
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "-o" ] && [ $# -ge 2 ]; then
+      out="$2"
+      break
+    fi
+    shift
+  done
+  [ -n "$out" ] && [ -f "$out" ] || return 1
+  python3 -c '
+import json, sys
+try:
+    body = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if body == {"error": "Forbidden"} else 1)
+' "$out"
+}
+
 # curl for every api request; prints the HTTP status (callers pass -o and -w).
 # With DEBUG_SSH_KEY: key token, one new login on 401, and on 403 one retry with
-# DEBUG_SSH_ADMIN_KEY when it is set. Without it: DEBUG_TOKEN as before.
+# DEBUG_SSH_ADMIN_KEY when it is set and the 403 is the gate's level refusal.
+# Without a key: DEBUG_TOKEN as before.
 op_curl() {
   local status token
   if [ -z "$DEBUG_SSH_KEY" ]; then
@@ -271,7 +294,7 @@ op_curl() {
     token=$(key_token operator "$DEBUG_SSH_KEY") || return 1
     status=$(curl -sS -H "Authorization: Bearer ${token}" "$@") || return 1
   fi
-  if [ "$status" = "403" ] && [ -n "$DEBUG_SSH_ADMIN_KEY" ]; then
+  if [ "$status" = "403" ] && [ -n "$DEBUG_SSH_ADMIN_KEY" ] && level_refused "$@"; then
     key_login "$DEBUG_SSH_ADMIN_KEY" admin || return 1
     token=$(key_token admin "$DEBUG_SSH_ADMIN_KEY") || return 1
     status=$(curl -sS -H "Authorization: Bearer ${token}" "$@") || return 1
