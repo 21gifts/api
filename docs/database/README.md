@@ -4,9 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 72
-- Columns: 674
-- Foreign keys: 66
+- Tables: 73
+- Columns: 677
+- Foreign keys: 67
 
 | Table                                                                            | Source                                                                   | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------- | ------------ |
@@ -28,6 +28,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`daily_roster_entry`](tables/daily_roster_entry.md)                             | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)     | 5       | 1            |
 | [`db_change`](tables/db_change.md)                                               | [src/lib/db-change.ts](../../src/lib/db-change.ts)                       | 7       | 0            |
 | [`diagnostic_event`](tables/diagnostic_event.md)                                 | [src/lib/diagnostic-log.ts](../../src/lib/diagnostic-log.ts)             | 5       | 0            |
+| [`fond_deposit_address`](tables/fond_deposit_address.md)                         | [src/lib/fond-payout-store.ts](../../src/lib/fond-payout-store.ts)       | 3       | 1            |
 | [`fond_payout`](tables/fond_payout.md)                                           | [src/lib/fond-payout-store.ts](../../src/lib/fond-payout-store.ts)       | 18      | 0            |
 | [`funding_grant`](tables/funding_grant.md)                                       | [src/lib/funding-store.ts](../../src/lib/funding-store.ts)               | 8       | 2            |
 | [`gift`](tables/gift.md)                                                         | [docs/schema/gift.sql](../../docs/schema/gift.sql)                       | 19      | 0            |

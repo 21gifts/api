@@ -1840,6 +1840,14 @@ test('POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async 
   expect(res.status()).toBe(404);
 });
 
+test('PUT /fond/deposit-address is 404 when PAYOUT_SIGNER is unset', async ({ request }) => {
+  const res = await request.put('/fond/deposit-address', {
+    data: { address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4' },
+  });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+});
+
 test('GET /pos lists payments received without a till charge as received', async ({ request }) => {
   const auth = await memberSession(request);
   const res = await request.get('/pos', { headers: auth });
