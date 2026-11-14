@@ -5510,7 +5510,7 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Purpose:** Gate for the one configured Fond payer. True only for an account at least `fond` (`roleAtLeast(role, 'fond')`), a username equal to `FOND_USERNAME` after trim and lower-case, and not the platform account. A `null` or missing username is explicitly false.
 - **Inputs:** `account` (`{ role, isPlatform?, username? }`) and `fondUsername`.
 - **Returns / side effects:** `true` only for the configured non-platform Fond account; otherwise `false`. No I/O.
-- **Used by:** `fondRoutes`.
+- **Used by:** `fondRoutes`, `resolveSpendReplyAuthor` in `src/routes/invoices.ts` (Fond reply and stipend author), and `loadWelcomeLedger` in `src/lib/welcome-media.ts` (Fond id of the welcome ledger).
 
 ## Function: resolvePayoutSigner
 
@@ -5524,7 +5524,7 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Purpose:** Read `FOND_USERNAME`, the one account allowed on `/fond/*`. Unset or blank uses `tondo-fond`. The value is trimmed and lower-cased.
 - **Inputs:** `env` (`Record<string, string | undefined>`).
 - **Returns / side effects:** The username string. No I/O.
-- **Used by:** `createApp`, `fondRoutes`, and the api entry point (`src/index.ts`) for the Fond paid worker.
+- **Used by:** `createApp`, `fondRoutes`, `loadWelcomeLedger` in `src/lib/welcome-media.ts`, and the api entry point (`src/index.ts`) for the Fond paid worker.
 
 ## Function: migrateFondPayoutSchema
 
