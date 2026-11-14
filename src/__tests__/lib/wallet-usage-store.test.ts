@@ -172,9 +172,20 @@ describe('PostgresWalletUsageStore', () => {
       'LEFT JOIN forum_gifts ON forum_gifts.group_key = bounds.group_key',
     );
     expect(payments.text).toContain('payment_hash');
+    expect(payments.text).toContain('destination');
+    expect(payments.text).toContain('spark_invoice');
+    expect(payments.text).toContain('candidate_hashes');
+    expect(payments.text).toContain('lower(spark_invoice.payment_hash)');
+    expect(payments.text).toContain('spark_invoice.invoice = completed.invoice');
+    expect(payments.text).toContain('spark_invoice.invoice = completed.destination');
+    expect(payments.text).toContain('lower(invoice.payment_hash) = candidate_hashes.payment_hash');
+    expect(payments.text).toContain('z.payment_hash = candidate_hashes.payment_hash');
+    expect(payments.text).toContain(
+      'lower(other_invoice.payment_hash) = candidate_hashes.payment_hash',
+    );
     expect(payments.text).toContain('AS is_forum_gift');
     expect(payments.text).not.toContain('invoice.heart IS FALSE');
-    expect(payments.text).toContain('lower(invoice.payment_hash) = lower(completed.payment_hash)');
+    expect(payments.text.match(/LEFT JOIN candidate_hashes/g)).toHaveLength(2);
     expect(payments.text).toContain('invoice.pr = completed.invoice');
     expect(payments.text).toContain('nostr_zap_receipt');
     expect(payments.text).toContain('receipt.event_id = z.receipt_event_id');
@@ -426,6 +437,75 @@ describe('PostgresWalletUsageStore', () => {
       false,
       true,
       false,
+    ]);
+  });
+
+  it('matches a forum gift paid by Spark invoice through invoice or destination', async () => {
+    const basePayment = paymentFields(AT, 1);
+    const invoiceHash = 'aa11'.repeat(16);
+    const destinationHash = 'bb22'.repeat(16);
+    const conversationHash = 'cc33'.repeat(16);
+    const unrelatedHash = 'dd44'.repeat(16);
+    const store = new InMemoryWalletUsageStore({
+      payments: [
+        { ...basePayment, paymentHash: null, invoice: 'spark-invoice', destination: null },
+        { ...basePayment, paymentHash: null, invoice: null, destination: 'spark-destination' },
+        { ...basePayment, paymentHash: null, invoice: 'spark-conversation', destination: null },
+        {
+          ...basePayment,
+          paymentHash: 'unrelated-raw',
+          invoice: 'spark-unrelated',
+          destination: null,
+        },
+      ],
+      forumInvoices: [],
+      shopCharges: [],
+      forumGiftInvoices: [
+        {
+          paymentHash: invoiceHash.toUpperCase(),
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+        {
+          paymentHash: destinationHash,
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+        {
+          paymentHash: conversationHash,
+          pr: null,
+          conversation: true,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+        {
+          paymentHash: unrelatedHash,
+          pr: null,
+          conversation: false,
+          repayment: false,
+          hidden: false,
+          claimed: true,
+        },
+      ],
+      sparkInvoiceHashes: new Map([
+        ['spark-invoice', invoiceHash],
+        ['spark-destination', destinationHash],
+        ['spark-conversation', conversationHash],
+        ['spark-unrelated', unrelatedHash],
+      ]),
+    });
+    expect((await store.payments(0)).map((row) => row.isForumGift)).toEqual([
+      true,
+      true,
+      false,
+      true,
     ]);
   });
 

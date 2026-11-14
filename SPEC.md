@@ -8534,6 +8534,10 @@ point-of-sale charges. The body contains only aggregates: no account id,
 username, name, payment id, payment hash, invoice, Lightning address, or node
 key. `GET /wallets/stats` is unchanged.
 
+The store reads `wallet_payment`, `account`, `spark_invoice`, `fond_payout`,
+`message_invoice`, `message`, `nostr_zap_payment`, `nostr_zap_receipt`, and
+`pos_charge`; it does not write.
+
 A payment id counts once only when it has exactly two rows overall, both
 completed, of opposite direction on two accounts; every other completed row
 counts on its own. A counted payment enters the totals only when its earliest
@@ -8553,15 +8557,20 @@ parties are `members` and `other` otherwise; `outside_lightning` or `onchain`
 is `deposit` when the payer is outside and `withdrawal` otherwise; anything
 else is `other`.
 
-A paid forum gift means the payment's hash, or its invoice, matches a
-`message_invoice` with `result = 'ok'`, no `conversation_id`, a description
-that does not start with `repay:` or `repayp:`, a claimed
+A paid forum gift means one of the payment's candidate hashes, or its invoice,
+matches a `message_invoice` with `result = 'ok'`, no `conversation_id`, a
+description that does not start with `repay:` or `repayp:`, a claimed
 `nostr_zap_payment` hash, and a note whose `message.deleted_at` is null; or a
-zap receipt gift or paid heart on such a note. A `gift` or `platform` category
-alone does not make a forum gift, and the counterparty does not decide it: a
-payment that matches a claimed forum gift or heart invoice on a note not hidden
-by staff is a forum gift, whoever the counterparty is. Conversation invoices
-and credit repayments are not forum gifts.
+zap receipt gift or paid heart on such a note. The candidate hashes are
+`lower(wallet_payment.payment_hash)` and every `lower(spark_invoice.payment_hash)`
+whose `spark_invoice.invoice` equals the row's `invoice` or `destination`. A
+Spark-invoice gift therefore counts even when the reported payment hash is null
+or unrelated; a conversation or repayment invoice that owns a candidate hash
+still excludes the zap-receipt branch. A `gift` or `platform` category alone
+does not make a forum gift, and the counterparty does not decide it: a payment
+that matches a claimed forum gift or heart invoice on a note not hidden by
+staff is a forum gift, whoever the counterparty is. Conversation invoices and
+credit repayments are not forum gifts.
 
 `days` has every UTC day from the release day through today, and every purpose
 key. `flows` keeps only directions that occurred and is sorted by day, from,
