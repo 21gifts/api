@@ -879,7 +879,7 @@ test('Function: assertDistinctDebugTokens — booted process stays up when the r
   expect(res.status()).toBe(200);
 });
 
-test('Function: classifyDebugDbBearer — write token reaches GET /debug/db and a wrong bearer is 401', async ({
+test('Function: requireOperator — write token reaches GET /debug/db and an admin route, a wrong bearer is 401', async ({
   request,
 }) => {
   const ok = await request.get('/debug/db', {
@@ -892,6 +892,16 @@ test('Function: classifyDebugDbBearer — write token reaches GET /debug/db and 
   });
   expect(wrong.status()).toBe(401);
   expect(((await wrong.json()) as { error: string }).error).toBe('Unauthorized');
+  const admin = await request.post('/debug/shop-keys', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: {},
+  });
+  expect(admin.status()).not.toBe(401);
+  const adminWrong = await request.post('/debug/shop-keys', {
+    headers: { authorization: 'Bearer wrong-token' },
+    data: {},
+  });
+  expect(adminWrong.status()).toBe(401);
 });
 
 test('Function: compareAccountsForList — debug listing is ordered by createdAt', async ({

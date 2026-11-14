@@ -16,6 +16,7 @@ import {
   paymentHashLockKey,
 } from '@/lib/payment-hash-claim';
 import type { PosCharge, PosChargeStatus, PosFiatCode } from '@/lib/pos-charge';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { UUID_PATTERN } from '@/lib/uuid';
 
 /** POS charge used to mark an account as active on a UTC day. */
@@ -160,6 +161,15 @@ export interface PosStore {
    * @returns Account id and created-at epoch ms.
    */
   listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]>;
+
+  /**
+   * Latest charge `created_at` of each account in `accountIds`, every status,
+   * over all time.
+   *
+   * @param accountIds - Account ids; duplicates allowed.
+   * @returns One ref per account that has a charge, in no particular order.
+   */
+  listLatestCreatedByAccount(accountIds: readonly string[]): Promise<PosChargeRef[]>;
 
   /**
    * Store `invoice` as the charge's Spark invoice unless it already has one.
@@ -495,6 +505,27 @@ export class InMemoryPosStore implements PosStore {
       }
     }
     return Promise.resolve(listed);
+  }
+
+  /**
+   * Latest `createdAt` of each account in `accountIds`, every status.
+   *
+   * @param accountIds - Account ids; duplicates allowed.
+   * @returns One ref per account that has a charge.
+   */
+  listLatestCreatedByAccount(accountIds: readonly string[]): Promise<PosChargeRef[]> {
+    const wanted = new Set(accountIds);
+    const latest = new Map<string, number>();
+    for (const row of this.#rows) {
+      const createdAtMs = row.createdAt.getTime();
+      const seen = latest.get(row.accountId);
+      if (wanted.has(row.accountId) && (seen === undefined || createdAtMs > seen)) {
+        latest.set(row.accountId, createdAtMs);
+      }
+    }
+    return Promise.resolve(
+      [...latest].map(([accountId, createdAtMs]) => ({ accountId, createdAtMs })),
+    );
   }
 
   /**
@@ -885,6 +916,33 @@ LIMIT $1`,
 FROM pos_charge
 WHERE created_at >= $1 AND created_at < $2`,
       [new Date(startMs).toISOString(), new Date(endMs).toISOString()],
+    );
+    return rows.map((row) => ({
+      accountId: row.account_id,
+      createdAtMs: asDate(row.created_at).getTime(),
+    }));
+  }
+
+  /**
+   * Latest `created_at` of each account in `accountIds`, every status, over
+   * all time (`pos_charge_account_created_idx`).
+   *
+   * @param accountIds - Account ids, bound as one uuid array literal `$1`.
+   * @returns One ref per account that has a charge; no query for an empty list.
+   */
+  async listLatestCreatedByAccount(accountIds: readonly string[]): Promise<PosChargeRef[]> {
+    if (accountIds.length === 0) {
+      return [];
+    }
+    const rows = await this.#sql.query<{
+      account_id: string;
+      created_at: Date | string;
+    }>(
+      `SELECT account_id, MAX(created_at) AS created_at
+FROM pos_charge
+WHERE account_id = ANY($1::uuid[])
+GROUP BY account_id`,
+      [postgresTextArrayLiteral([...new Set(accountIds)])],
     );
     return rows.map((row) => ({
       accountId: row.account_id,

@@ -19,7 +19,7 @@ import { pingTodayMedia } from '@/lib/funding-ping';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
-import { isOperatorBearer } from '@/lib/debug-token';
+import { checkOperator } from '@/lib/operator';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, messagePay, serializeMessage, type MessageRow } from '@/lib/message';
@@ -290,7 +290,7 @@ type RosterReply =
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
-  deps: FundingRouteDeps,
+  deps: Pick<FundingRouteDeps, 'authStore' | 'now'>,
   header: string | undefined,
 ): Promise<Account | null> {
   const token = bearerToken(header);
@@ -372,9 +372,17 @@ async function dropMissingVideoRow(
   return null;
 }
 
-/** Staff session or a 401/403 JSON response. */
-async function requireStaff(
-  deps: FundingRouteDeps,
+/**
+ * Staff session (`isStaffRole`) or a 401/403 JSON response.
+ *
+ * @param deps - Auth store and clock.
+ * @param header - Raw `Authorization` header.
+ * @returns The staff caller, or 401 `Unauthorized` without a valid session
+ *   and 403 `Forbidden` below moderator.
+ * @throws Whatever the auth store throws while resolving the session; not caught here.
+ */
+export async function requireStaff(
+  deps: Pick<FundingRouteDeps, 'authStore' | 'now'>,
   header: string | undefined,
 ): Promise<{ caller: Account } | { error: string; status: 401 | 403 }> {
   const caller = await authedAccount(deps, header);
@@ -399,7 +407,7 @@ async function staffOrOperatorRead(
   deps: FundingRouteDeps,
   header: string | undefined,
 ): Promise<{ viewerAccountId: string | null } | { error: string; status: 401 | 403 }> {
-  if (isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+  if (checkOperator('read', deps, header) === true) {
     return { viewerAccountId: null };
   }
   const staff = await requireStaff(deps, header);
@@ -727,7 +735,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/withdrawals', async (c) => {
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+      if (checkOperator('read', deps, c.req.header('authorization')) !== true) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       try {
@@ -1062,7 +1070,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
     })
     .get('/daily-roster', async (c) => {
       const header = c.req.header('authorization');
-      if (isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+      if (checkOperator('read', deps, header) === true) {
         return answerRoster(c, await callRoster(deps, null, 'read', () => rosterStore.get()));
       }
       const opened = await openDailyRoster(deps, header);
@@ -1073,7 +1081,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       return answerRoster(c, result);
     })
     .get('/daily-roster/links', async (c) => {
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+      if (checkOperator('read', deps, c.req.header('authorization')) !== true) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       try {

@@ -222,6 +222,7 @@ Public base URLs used in examples:
 | POST   | `/funding/daily-roster/worker/moderators/payments`   | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ enabled: boolean }` sets moderatorPaymentsEnabled. Non-boolean enabled is 400 Invalid payments switch. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/funding/payout-days`                               | Bearer (moderator+) or `DEBUG_*_TOKEN`                            | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/shops/activity`                                    | none                                                              | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/shops/activity/shops`                              | Bearer (moderator+)                                               | Staff-only per-shop activity list: the shops `/shops/activity` counts, zero-charge shops included (`shops`: `{ noteId, name, npub, accountId, username, activeDays, lastChargeDay }`)                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/funding/goal`                                      | Bearer (any role) or `DEBUG_*_TOKEN`                              | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/messages`                                          | none for active / Bearer                                          | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/messages/compose-target`                           | Bearer                                                            | Platform profile note `{ messageId, sats, firstPostFree }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -3812,6 +3813,53 @@ every past day. This is not a historical usage log. JSON
 not create a BOLT11 invoice. A store throw → **503**
 `{ "error": "Shop activity is unavailable" }` and log
 `shops.activity.failed` with no account, note, or charge ids.
+
+### `GET /shops/activity/shops`
+
+Staff only: a bearer session of at least `moderator` (`requireStaff`, the
+rule of the funding staff routes). A missing or invalid bearer is **401**
+`{ "error": "Unauthorized" }`, a lower role **403** `{ "error": "Forbidden" }`,
+both before the shop, charge, pin, identity, and account reads. A
+throw while resolving the session is not mapped to 503 and is not
+logged as `shops.activity.list.failed`, as on the funding staff routes.
+The public `GET /shops/activity` body is
+unchanged. The list holds exactly the notes that series counts (live,
+top-level, the `21GiftsShop` hashtag token, a set `shop_account_id`), each
+note id once, including a shop whose account never created a charge. JSON:
+
+```json
+{
+  "windowDays": 30,
+  "today": "YYYY-MM-DD",
+  "shops": [
+    {
+      "noteId": "uuid",
+      "name": "Shop",
+      "npub": "npub1… or null",
+      "accountId": "uuid",
+      "username": "till or null",
+      "activeDays": 0,
+      "lastChargeDay": "YYYY-MM-DD or null"
+    }
+  ]
+}
+```
+
+`activeDays` counts the UTC days of the same 30-day window ending on
+`today` (inclusive) on which the currently assigned account created at
+least one `pos_charge`, any status: the days on which that note counts
+in `shopCount` of `GET /shops/activity`. Over the window, the
+`activeDays` of all rows add up to the `shopCount` of all days. `lastChargeDay` is
+the UTC day of that account's latest `pos_charge` of any status over all
+time, not limited to the window, or null when it never created one.
+`name` is the public shop name ([docs/shop-identity.md](docs/shop-identity.md):
+the pin label when non-blank, else the first non-blank description line
+cut at 80 characters, else `Shop`). `npub` is the shop identity's npub, or
+null when the note has no identity. `username` is the till account's
+username, or null. Order: `lastChargeDay` ascending with null first, then
+`name`, then `noteId`. A throw of one of those reads → **503**
+`{ "error": "Shop activity is unavailable" }` and log
+`shops.activity.list.failed` with no account, note, or charge ids.
 
 ### `GET /shops`
 

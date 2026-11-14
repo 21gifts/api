@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import type { MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import {
   EMPTY_DEBUG_NOSTR,
@@ -14,7 +13,7 @@ import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { issueSession } from '@/lib/auth/service';
 import type { Account, AccountRole, AuthStore } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import type { LnurlServerConfig } from '@/lib/config';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
@@ -148,20 +147,6 @@ const mergeBody = z.object({
   verify: z.enum(['from', 'into']).default('into'),
 });
 
-/** Shared 503/401 gate for every `/debug/accounts` method. */
-function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
-  return async (c, next) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    await next();
-  };
-}
-
 /**
  * Build the `/debug/accounts` route group.
  *
@@ -170,8 +155,8 @@ function requireDebugToken(deps: DebugRouteDeps): MiddlewareHandler {
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {
   return new Hono()
-    .use('*', requireDebugToken(deps))
-    .post('/merge', async (c) => {
+    .use('*', requireOperator('read', deps))
+    .post('/merge', requireOperator('admin', deps), async (c) => {
       const parsed = mergeBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with "from" and "into"' }, 400);
@@ -214,7 +199,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         return c.json({ error: 'Merge is unavailable' }, 503);
       }
     })
-    .get('/', async (c) => {
+    .get('/', requireOperator('read', deps), async (c) => {
       const accounts = await deps.store.listAccounts();
       const nostrById = new Map(
         (await deps.store.listNostrKeys()).map((row) => [
@@ -232,7 +217,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         200,
       );
     })
-    .get('/:id', async (c) => {
+    .get('/:id', requireOperator('read', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
@@ -263,7 +248,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
         200,
       );
     })
-    .post('/', async (c) => {
+    .post('/', requireOperator('write', deps), async (c) => {
       const parsed = provisionBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with an "accounts" array' }, 400);
@@ -360,7 +345,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       logEvent('debug.accounts.provisioned', { created, updated });
       return c.json({ accounts: results }, 200);
     })
-    .patch('/:id', async (c) => {
+    .patch('/:id', requireOperator('admin', deps), async (c) => {
       const parsed = patchBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json(
@@ -465,7 +450,7 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       );
       return c.json(serializeDebugAccount(updated, nostr, deps.lnurlServer), 200);
     })
-    .post('/:id/session', async (c) => {
+    .post('/:id/session', requireOperator('admin', deps), async (c) => {
       const existing = await deps.store.getAccount(c.req.param('id'));
       if (existing === undefined) {
         return c.json({ error: 'Not found' }, 404);

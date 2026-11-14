@@ -6,7 +6,7 @@
 
 import { Hono } from 'hono';
 import type { MessageStore } from '@/lib/message-store';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { shopKeyMustBeAdopted, shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 
@@ -33,14 +33,7 @@ const HEX_SECRET = /^[0-9a-f]{64}$/;
  * @returns A Hono app exposing `POST /`.
  */
 export function debugShopKeyRoutes(deps: DebugShopKeyRouteDeps): Hono {
-  return new Hono().post('/', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().post('/', requireOperator('admin', deps), async (c) => {
     if (deps.kek === undefined || deps.kek.length !== 32) {
       return c.json({ error: 'Shop keys are not configured' }, 503);
     }
