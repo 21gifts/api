@@ -230,7 +230,12 @@ describe('GET /wallets/usage', () => {
   it('returns the public aggregate and caches it for 60 seconds', async () => {
     const nowMs = Date.parse('2026-11-12T15:51:00.000Z');
     const since = walletUsageReadSince();
-    const seen = { payments: 0, forumInvoices: 0, shopCharges: 0 };
+    const untilMs = Date.parse('2026-11-13T00:00:00.000Z');
+    const seen: {
+      payments: { sinceMs: number; untilMs: number } | undefined;
+      forumInvoices: number;
+      shopCharges: number;
+    } = { payments: undefined, forumInvoices: 0, shopCharges: 0 };
     const inner = new InMemoryWalletUsageStore({
       payments: [
         {
@@ -256,9 +261,9 @@ describe('GET /wallets/usage', () => {
       ],
     });
     const usageStore: WalletUsageStore = {
-      payments: (bound) => {
-        seen.payments = bound;
-        return inner.payments(bound);
+      payments: (sinceMs, until) => {
+        seen.payments = { sinceMs, untilMs: until };
+        return inner.payments(sinceMs, until);
       },
       forumInvoices: (bound) => {
         seen.forumInvoices = bound;
@@ -275,9 +280,13 @@ describe('GET /wallets/usage', () => {
     }).request('/wallets/usage');
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('public, max-age=60');
-    expect(seen).toEqual(since);
+    expect(seen).toEqual({
+      payments: { sinceMs: since.payments, untilMs },
+      forumInvoices: since.forumInvoices,
+      shopCharges: since.shopCharges,
+    });
     const filtered = {
-      payments: await inner.payments(since.payments),
+      payments: await inner.payments(since.payments, untilMs),
       forumInvoices: await inner.forumInvoices(since.forumInvoices),
       shopCharges: await inner.shopCharges(since.shopCharges),
     };

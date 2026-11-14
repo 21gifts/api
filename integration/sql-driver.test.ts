@@ -9996,6 +9996,37 @@ describe('PostgresWalletUsageStore', () => {
         paymentHash: null,
         invoice: null,
       });
+      // A current outgoing row and a future-dated incoming row share a hash.
+      // With the exclusive upper bound the future row is not read: the current
+      // row counts on its own instead of pairing and taking the future amount,
+      // fee, category, or account.
+      const futureHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-future-shared-current`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 74,
+        feeSats: 3,
+        paidAt: at(1000),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: futureHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: `${run}-future-shared-future`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 75,
+        feeSats: 9,
+        paidAt: at(2000),
+        category: 'shop',
+        counterpartyAccountId: memberA,
+        paymentHash: futureHash,
+        invoice: null,
+      });
       await insertPayment({
         accountId: memberA,
         paymentId: `${run}-unknown`,
@@ -10730,7 +10761,9 @@ describe('PostgresWalletUsageStore', () => {
       await insertCharge(fund, shopOldAt, 'paid');
 
       const store = new PostgresWalletUsageStore(client);
-      const payments = await store.payments(since.getTime());
+      // The exclusive bound sits after the one-day straddle row and before the
+      // future-dated row that shares `futureHash` with the current row.
+      const payments = await store.payments(since.getTime(), at(1441));
       const ours = payments.filter((row) => {
         const payer = row.payerAccountId;
         const payee = row.payeeAccountId;
@@ -10747,8 +10780,17 @@ describe('PostgresWalletUsageStore', () => {
         ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
       ).toEqual([
         1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 61, 62, 63, 64, 65, 66, 67, 68,
-        70, 71, 72, 150, 500, 1000, 12321, 69089, 293955,
+        70, 71, 72, 74, 150, 500, 1000, 12321, 69089, 293955,
       ]);
+      expect(byAmount(74)).toMatchObject({
+        feeSats: 3,
+        category: 'member',
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+        isFundPayout: false,
+        isForumGift: false,
+      });
+      expect(ours.some((row) => row.amountSats === 75)).toBe(false);
       const pair = ours.filter((row) => row.amountSats === 63);
       expect(pair).toHaveLength(1);
       expect(pair[0]?.feeSats).toBe(1);

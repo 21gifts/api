@@ -4708,7 +4708,10 @@ or the same `invoice` with both invoices non-null and non-empty. Each row must
 have exactly one such partner among completed rows paid at most one day before
 the read window start; an ambiguous match stays unpaired. A row whose matching
 side is older than that candidate window counts on its own, and a payment is
-counted only when its earliest row is in the window. The pair's key is
+counted only when its earliest row is in the window. A row at or after the start
+of the UTC day after `now()` is excluded before pairing, so it cannot pair with
+an in-window row, make it ambiguous, or add its amount, fee, category, or
+account to the group. The pair's key is
 `'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every other
 completed row keeps `'row:' || account_id::text || ':' || payment_id`. An
 internal Spark transfer has the same `payment_id` on both rows; pairing fills a
@@ -8572,7 +8575,11 @@ invoices non-null and non-empty. Each of the two rows must have exactly one such
 partner among completed rows paid at most one day before the read window start;
 an ambiguous match never merges. A row whose matching side is older than that
 candidate window counts on its own, and a payment is counted only when its
-earliest `paid_at` is in the window. A pair's group key is
+earliest `paid_at` is in the window. `GET /wallets/usage` passes an exclusive
+upper bound, the start of the UTC day after its `now()`, and the store excludes
+`paid_at >=` that bound before pair matching. A row after the current UTC day
+therefore cannot pair with an in-window row, make it ambiguous, or contribute
+its amount, fee, category, or account to the group. A pair's group key is
 `'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every
 other completed row keeps `'row:' || account_id::text || ':' || payment_id`.
 The pair key is deterministic and injective because the outgoing `(account_id,
@@ -8635,8 +8642,9 @@ not a shop charge.
 `totals.paidShopChargeCount` is the sum of the published daily
 `shopCharges[].paid` cells over the whole shop window, from
 `2026-10-26 11:17 UTC`, and is derivable from those daily cells. A payment
-whose `paid_at` is before the release instant and
-a row after the current UTC day are ignored. 200 sends
+whose `paid_at` is before the release instant is ignored. The store never reads a
+row at or after the start of the UTC day after `now()`, and the builder still
+ignores a payment whose UTC day is after the current UTC day. 200 sends
 `Cache-Control: public, max-age=60`.
 
 **Response** `503`: `{ "error": "Wallet usage is unavailable" }` when a read
