@@ -185,6 +185,7 @@ async function settleConfirmed(deps: FondPaidWorkerDeps, row: FondPayoutRow): Pr
       deps.fondUsername,
       fiat,
       claimed.kind,
+      deps.fondUsername,
     );
   } catch {
     await releaseAfterFailure(deps, claimed.id);

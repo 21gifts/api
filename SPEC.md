@@ -78,7 +78,13 @@ invoices (no LNDHub client). A matching proof inserts an outbound row into
 `gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
 `GET /gifts?day=` include the payment. Insert failure logs
 `gifts.record_failed` and still returns **200**. When the issued invoice stored a **top-level** `messageId`, proof inserts a
-platform-account gift-reply first, then `addSats` (idempotent). That path does
+gift-reply first, then `addSats` (idempotent). The author is the platform
+account for a `/invoices` payment and the configured Fond account
+(`FOND_USERNAME`, and only when that account passes the Fond role check
+`canSignFondPayouts`: at least `fond`, not the platform account) for a
+Fond-queue payout; an unknown Fond account, a lower-role account holding the
+handle, or the platform account holding it skips the attachment instead of
+posting as the platform. That path does
 not notify (no in-app rows, no Web Push). When that
 `messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
 under the reply, then `addSats` the reply (a live existing marker is hidden
@@ -6528,9 +6534,10 @@ Operator dry-run of the 15-minute welcome sweep. Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
 Lists every account the sweep would welcome-ping now: non-platform, role exactly
 `verified`, a verified wallet with the LNURL server on, a live top-level photo or video
-(About me included), and not welcomed before (a platform `Welcome` reply, a
-`welcome` gift paid to its legacy external address, or a `21gifts welcome`
-gift under its username at or after its wallet verification). Reads only:
+(About me included), and not welcomed before (a `Welcome` reply authored by
+the platform or the configured Fond account, a `welcome` gift paid to its
+legacy external address, or a `21gifts welcome` gift under its username at or
+after its wallet verification). Reads only:
 pings nobody and stores nothing. Logs `debug.welcome_sweep.listed` with the
 count.
 
@@ -6954,7 +6961,7 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
 address, or the account has no live top-level note other than a text-only profile note.
 `hasPosted` is still any live top-level note that is not the profile note, including text-only.
-A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes (live or hidden), a recorded `welcome` gift paid to its legacy external address, or a recorded `welcome` gift with description `21gifts welcome` under its username at or after its wallet verification) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
+A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a `Welcome` reply under one of its notes (live or hidden) authored by the platform account or the configured Fond account, a recorded `welcome` gift paid to its legacy external address, or a recorded `welcome` gift with description `21gifts welcome` under its username at or after its wallet verification) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
 top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
 post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
@@ -7026,8 +7033,9 @@ including the About-me profile note, **and** have a photo or video (else
 media requirement). Missing
 `isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
 (no LNURL). With `comment` exactly `Welcome` (with or without `messageId`),
-an account that already received the welcome gift (a platform `Welcome`
-reply under one of its notes, live or hidden, a recorded `welcome` gift paid
+an account that already received the welcome gift (a `Welcome`
+reply under one of its notes, live or hidden, authored by the platform account
+or the configured Fond account, a recorded `welcome` gift paid
 to its legacy external address, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification) → **409** `{ "error": "Welcome gift already paid" }`
 after the passkey and grant checks and before LNURL (with `groupMessageId`,
@@ -7172,23 +7180,31 @@ external address counts too), else `21gifts daily`,
 Insert errors log `gifts.record_failed` and do not change the HTTP
 response.
 
-When the invoice has `messageId`, the api inserts a platform-account
-gift-reply first (name trimmed or `21.gifts`, text = comment, `parentId` =
+When the invoice has `messageId`, the api inserts a gift-reply first
+(name trimmed or `21.gifts` on the platform, text = comment, `parentId` =
 `messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
-on that post. That path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply,
+on that post. The reply author is the platform account for a `/invoices`
+payment; a Fond-queue payout (`runFondPaidTick`) authors it as the configured
+Fond account (`FOND_USERNAME`, only when it passes `canSignFondPayouts`:
+display-name fallback that username, its id and
+Nostr key). That path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply,
 attach persists a deterministic `spendGiftReplyId` marker under that reply,
 `markDeleted` so live `listReplies` omits it, then `addSats`s the reply (a live
 existing marker is `markDeleted` only and does not `addSats`; no nested
 gift-reply and no `notifyForumReply`). Repeat proof with the same preimage is
-idempotent. Parent missing/deleted or platform missing: skip attach, log
+idempotent. Parent missing/deleted, platform missing, or a supplied Fond
+account missing or failing `canSignFondPayouts`: skip attach, log
 `invoice.gift_reply.failed`, still **200** + gift persist.
 
-When the invoice has `groupMessageId`, the api then inserts one platform
+When the invoice has `groupMessageId`, the api then inserts one
 conversation message in that closed `moderator_group` thread (name trimmed
-or `21.gifts`, `sats` = `floor(msat/1000)`, text = comment · recipient
-name, `giftForMessageId` set to the triggering message's id). Repeat proof
-with the same preimage is idempotent on the deterministic id. Triggering
-row missing, thread missing or not `moderator_group`, platform missing, or
+or `21.gifts` on the platform, `sats` = `floor(msat/1000)`, text = comment ·
+recipient name, `giftForMessageId` set to the triggering message's id). The
+sender is the platform account for a `/invoices` payment and the configured
+Fond account (only when it passes `canSignFondPayouts`) for a Fond-queue
+payout. Repeat proof with the same preimage is idempotent on the deterministic
+id. Triggering row missing, thread missing or not `moderator_group`, platform
+missing, a supplied Fond account missing or failing `canSignFondPayouts`, or
 store throw: skip attach, log `invoice.group_gift.failed`, still **200** +
 gift persist.
 
@@ -7753,8 +7769,8 @@ verification happened in either order. A process starts with the sweep off,
 so its run at boot pings nobody (`spend.ping.skipped` / `sweep_off`).
 `GET /debug/welcome-sweep` lists the accounts it would ping without pinging.
 The welcome gift is once per account, not once per address: an account that
-already has a platform reply with the text `Welcome` under one of its notes
-(live or hidden), a recorded `welcome` gift paid to its legacy external
+already has a reply with the text `Welcome` under one of its notes authored
+by the platform account or the configured Fond account (live or hidden), a recorded `welcome` gift paid to its legacy external
 address (the local part of `account.lightning_address` equals the gift's
 recipient handle), or a recorded `welcome` gift with description
 `21gifts welcome` under its username at or after its wallet verification, is
@@ -9179,10 +9195,13 @@ verified, basis and the platform account get **404**
 `{ "error": "Not found" }` on that id (no existence leak). A moderator
 (`isModeratorGroupMember`) gets **200**.
 
-A platform stipend row in `moderator_group` (`POST /invoices/proof` with
-`groupMessageId`) has no actor and the platform account as sender, so it is
-`fromMe: false` and inbound for every member. That row's `giftFor` is the
-triggering message id so the app can render it attached under that message.
+A stipend row in `moderator_group` (`POST /invoices/proof` with
+`groupMessageId`) has no actor and the platform account (or, for a Fond-queue
+payout, the Fond account) as sender, so it is `fromMe: false` and inbound for
+every viewer except that sender (the Fond account sees its own stipend row as
+`fromMe: true`; the platform account is not a group member). That row's
+`giftFor` is the triggering message id so the app can render it attached
+under that message.
 
 Optional query `sinceMessageId` (UUID): long-polls until that message id is in
 the thread (pay-sheet confirmation). Timeout still **200** with the current

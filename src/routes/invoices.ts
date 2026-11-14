@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { earnsModeratorGroupPay, isModeratorGroupMember } from '@/lib/auth/roles';
+import {
+  canSignFondPayouts,
+  earnsModeratorGroupPay,
+  isModeratorGroupMember,
+} from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
@@ -52,12 +56,13 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
  * with the member's 21.gifts recovery share (`loadPayoutEligibility`, which
  * applies `eligibleToday`), and a live top-level forum post, fetch a recipient
  * BOLT11 via LNURL-pay, then accept the payment preimage as proof. A proof
- * with `messageId` attaches a platform gift-reply when that message is a
- * top-level post. If `messageId` is already a reply, the proof persists a
- * deterministic `spendGiftReplyId` marker under that reply, `markDeleted`
- * so live `listReplies` omits it, then `addReceivedSats`s the reply. A live existing
- * marker is `markDeleted` only and does not `addReceivedSats`. Platform gift-replies
- * do not notify. The api does not pay.
+ * with `messageId` attaches a gift-reply (platform- or Fond-authored, per the
+ * caller) when that message is a top-level post. If `messageId` is already a
+ * reply, the proof persists a deterministic `spendGiftReplyId` marker under
+ * that reply, `markDeleted` so live `listReplies` omits it, then
+ * `addReceivedSats`s the reply. A live existing marker is `markDeleted` only
+ * and does not `addReceivedSats`. Gift replies do not notify. The api does not
+ * pay.
  */
 
 /** Collaborators the invoice routes need. */
@@ -115,7 +120,8 @@ export interface InvoiceRouteDeps {
    * Outbound house gifts. A `welcome` gift paid to the member's legacy
    * external address, or one with description `21gifts welcome` recorded under
    * the member's username at or after the wallet verification, counts as a
-   * paid welcome gift. Omitted → only the platform `Welcome` reply counts.
+   * paid welcome gift. Omitted → only the reply check counts (a platform or
+   * configured Fond `Welcome` reply).
    */
   giftStore?: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
   /**
@@ -449,7 +455,7 @@ export interface GiftActionDeps {
   gifts?: Pick<GiftStore, 'listOutbound'>;
   /**
    * House gifts for the once-per-account welcome check. Omitted → only the
-   * platform `Welcome` reply counts.
+   * reply check counts (a platform or configured Fond `Welcome` reply).
    */
   giftStore?: Pick<
     GiftStore,
@@ -574,18 +580,62 @@ export async function persistProvenGift(
 }
 
 /**
- * Attach the platform gift reply under the triggering post.
+ * Resolved author of a spend payout's gift reply and group stipend.
+ * `fallbackName` is used when the account has no display name.
+ */
+interface SpendReplyAuthor {
+  account: Account;
+  fallbackName: string;
+}
+
+/**
+ * Resolve the author of a spend payout's gift reply and group stipend. Without
+ * `replyAuthorUsername` this is the platform account, as before. With one, it
+ * is that account only, and only when it passes {@link canSignFondPayouts}
+ * (at least `fond`, not the platform account); an unknown account, a failed
+ * role check, or a failed lookup is `undefined` so the caller skips the
+ * attachment rather than posting as the platform.
+ *
+ * @param deps - Action collaborators (account listing and lookup).
+ * @param replyAuthorUsername - Configured Fond username, or `undefined` for the platform.
+ * @returns The author and its display-name fallback, or `undefined`.
+ */
+async function resolveSpendReplyAuthor(
+  deps: Pick<GiftActionDeps, 'authStore'>,
+  replyAuthorUsername: string | undefined,
+): Promise<SpendReplyAuthor | undefined> {
+  if (replyAuthorUsername === undefined) {
+    const accounts = await deps.authStore.listAccounts();
+    const platform = accounts.find((item) => item.isPlatform === true);
+    return platform === undefined ? undefined : { account: platform, fallbackName: '21.gifts' };
+  }
+  const username = replyAuthorUsername.trim().toLowerCase();
+  try {
+    const account = await deps.authStore.getAccountByUsername(username);
+    return account === undefined || !canSignFondPayouts(account, replyAuthorUsername)
+      ? undefined
+      : { account, fallbackName: username };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Attach the spend gift reply under the triggering post, authored by the
+ * platform account unless a Fond username is supplied.
  *
  * @param deps - Action collaborators.
  * @param invoice - Proven invoice.
  * @param paidAtMs - Proof clock.
  * @param fiat - Same snapshot as the gift row and forum credit.
+ * @param replyAuthorUsername - Fond author username, or `undefined` for the platform.
  */
 async function attachSpendGiftReply(
   deps: GiftActionDeps,
   invoice: GiftInvoice,
   paidAtMs: number,
   fiat: FiatAmounts | null,
+  replyAuthorUsername: string | undefined,
 ): Promise<void> {
   if (invoice.messageId === undefined) {
     return;
@@ -597,26 +647,25 @@ async function attachSpendGiftReply(
       return;
     }
     const parent = await deps.messageStore.getById(invoice.messageId);
-    const accounts = await deps.authStore.listAccounts();
-    const platform = accounts.find((item) => item.isPlatform === true);
-    if (parent === undefined || parent.deletedAt !== null || platform === undefined) {
+    const author = await resolveSpendReplyAuthor(deps, replyAuthorUsername);
+    if (parent === undefined || parent.deletedAt !== null || author === undefined) {
       logEvent('invoice.gift_reply.failed');
       return;
     }
     const sats = Math.floor(invoice.amountMsat / 1000);
-    const nameTrim = platform.name?.trim() ?? '';
-    const name = nameTrim !== '' ? nameTrim : '21.gifts';
+    const nameTrim = author.account.name?.trim() ?? '';
+    const name = nameTrim !== '' ? nameTrim : author.fallbackName;
     const text = invoice.comment ?? '';
-    const authorPubkey = (await deps.authStore.getNostrPublicKey(platform.id)) ?? null;
+    const authorPubkey = (await deps.authStore.getNostrPublicKey(author.account.id)) ?? null;
     if (parent.parentId !== null) {
       if (existing !== undefined) {
-        await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+        await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), author.account.id);
         return;
       }
       await deps.messageStore.create(
         {
           id: replyId,
-          accountId: platform.id,
+          accountId: author.account.id,
           name,
           text,
           createdAt: new Date(paidAtMs),
@@ -635,7 +684,7 @@ async function attachSpendGiftReply(
         undefined,
         fiat,
       );
-      await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+      await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), author.account.id);
       await deps.messageStore.addReceivedSats(invoice.messageId, sats, fiat);
       return;
     }
@@ -645,7 +694,7 @@ async function attachSpendGiftReply(
     await deps.messageStore.create(
       {
         id: replyId,
-        accountId: platform.id,
+        accountId: author.account.id,
         name,
         text,
         createdAt: new Date(paidAtMs),
@@ -671,20 +720,23 @@ async function attachSpendGiftReply(
 }
 
 /**
- * Insert a platform stipend message in the closed Moderators group after
- * the triggering group message. No-op without `groupMessageId` or a
- * conversation store. Idempotent on the deterministic message id.
+ * Insert a stipend message in the closed Moderators group after the
+ * triggering group message, authored by the platform account unless a Fond
+ * username is supplied. No-op without `groupMessageId` or a conversation
+ * store. Idempotent on the deterministic message id.
  *
  * @param deps - Action collaborators.
  * @param invoice - Proven gift invoice.
  * @param paidAtMs - Proof clock, epoch milliseconds.
  * @param fiat - Same snapshot as the gift row and forum credit.
+ * @param replyAuthorUsername - Fond author username, or `undefined` for the platform.
  */
 async function attachSpendGroupGift(
   deps: GiftActionDeps,
   invoice: GiftInvoice,
   paidAtMs: number,
   fiat: FiatAmounts | null,
+  replyAuthorUsername: string | undefined,
 ): Promise<void> {
   if (invoice.groupMessageId === undefined || deps.conversationStore === undefined) {
     return;
@@ -699,13 +751,12 @@ async function attachSpendGroupGift(
     const row = await conversationStore.getMessageById(invoice.groupMessageId);
     const thread =
       row === undefined ? undefined : await conversationStore.getById(row.conversationId);
-    const accounts = await deps.authStore.listAccounts();
-    const platform = accounts.find((item) => item.isPlatform === true);
+    const author = await resolveSpendReplyAuthor(deps, replyAuthorUsername);
     if (
       row === undefined ||
       thread === undefined ||
       thread.kind !== 'moderator_group' ||
-      platform === undefined
+      author === undefined
     ) {
       logEvent('invoice.group_gift.failed');
       return;
@@ -719,17 +770,17 @@ async function attachSpendGroupGift(
         : comment !== ''
           ? comment
           : recipientName;
-    const platformNameTrim = platform.name?.trim() ?? '';
-    const platformName = platformNameTrim !== '' ? platformNameTrim : '21.gifts';
+    const nameTrim = author.account.name?.trim() ?? '';
+    const authorName = nameTrim !== '' ? nameTrim : author.fallbackName;
     await conversationStore.appendMessage(
       {
         id,
         conversationId: thread.id,
         text,
         createdAt: new Date(paidAtMs),
-        senderAccountId: platform.id,
-        senderPubkey: (await deps.authStore.getNostrPublicKey(platform.id)) ?? null,
-        name: platformName,
+        senderAccountId: author.account.id,
+        senderPubkey: (await deps.authStore.getNostrPublicKey(author.account.id)) ?? null,
+        name: authorName,
         sats: Math.floor(invoice.amountMsat / 1000),
         eventId: null,
         nostrPublishState: 'skipped',
@@ -758,6 +809,7 @@ async function attachSpendGroupGift(
  * @param sourceWallet - Paying wallet label.
  * @param fiat - Payment-time snapshot shared by all three writes.
  * @param kindOverride - Durable payout kind when the caller stores one.
+ * @param replyAuthorUsername - Fond author username; omitted for the platform.
  */
 export async function settleProvenGift(
   deps: GiftActionDeps,
@@ -766,10 +818,11 @@ export async function settleProvenGift(
   sourceWallet: string,
   fiat: FiatAmounts | null,
   kindOverride?: GiftKind,
+  replyAuthorUsername?: string,
 ): Promise<void> {
   await persistProvenGift(deps, invoice, paidAtMs, fiat, sourceWallet, kindOverride);
-  await attachSpendGiftReply(deps, invoice, paidAtMs, fiat);
-  await attachSpendGroupGift(deps, invoice, paidAtMs, fiat);
+  await attachSpendGiftReply(deps, invoice, paidAtMs, fiat, replyAuthorUsername);
+  await attachSpendGroupGift(deps, invoice, paidAtMs, fiat, replyAuthorUsername);
 }
 
 /**

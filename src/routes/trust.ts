@@ -53,8 +53,10 @@ export interface TrustRouteDeps {
   lnurlServer?: LnurlServerConfig;
   /**
    * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the username at or
-   * after the wallet verification stops a second welcome ping. Omitted → only
-   * the platform `Welcome` reply counts.
+   * after the wallet verification stops a second welcome ping. Omitted → skips
+   * the gift-record checks; only the reply check counts (a `Welcome` reply from
+   * the platform account or the configured Fond account that passes
+   * `canSignFondPayouts`).
    */
   giftStore?: Pick<GiftStore, 'listOutbound'>;
   /** Operator write token. Unset → no operator read on the staff GET routes. */

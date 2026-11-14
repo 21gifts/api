@@ -10,7 +10,7 @@ import { unsignedNostrDefaults, type ForumPhoto } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
-import { invoiceRoutes, issueGiftInvoice } from '@/routes/invoices';
+import { invoiceRoutes, issueGiftInvoice, settleProvenGift } from '@/routes/invoices';
 import { createApp as createAppRaw } from '@/server';
 import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
@@ -4431,6 +4431,417 @@ describe('POST /invoices/proof', () => {
         fiat: null,
       },
     ]);
+  });
+});
+
+describe('settleProvenGift reply author', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  let invoiceStore: InMemoryInvoiceStore;
+
+  function invoice(overrides?: Partial<GiftInvoice>): GiftInvoice {
+    return {
+      id: 'ef'.repeat(16),
+      address: ADDRESS,
+      pr: PR,
+      paymentHash: MATCHING_HASH,
+      amountMsat: 1000,
+      createdAt: 1,
+      expiresAt: 1_000_000,
+      ...overrides,
+    };
+  }
+
+  async function fondAuth(name = 'Tondo Fond'): Promise<InMemoryAuthStore> {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    await authStore.createAccount({
+      id: 'fond',
+      username: 'tondo-fond',
+      walletRequired: false,
+      linkingKey: null,
+      role: 'fond',
+      name,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'f'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: null,
+    });
+    await authStore.setNostrKeyIfAbsent('fond', {
+      pubkey: 'cd'.repeat(32),
+      ciphertext: new Uint8Array(8),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    return authStore;
+  }
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    invoiceStore = new InMemoryInvoiceStore();
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('authors the fond gift reply with the Fond account id, name, and pubkey', async () => {
+    const authStore = await fondAuth();
+    const messageStore = uuidPostStore();
+    const target = invoice({ id: 'ef'.repeat(16), messageId: POST_ID, comment: 'thanks' });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+      },
+      target,
+      100,
+      'tondo-fond',
+      null,
+      'daily',
+      'tondo-fond',
+    );
+    const reply = await messageStore.getById(spendGiftReplyId(target.id));
+    expect(reply).toMatchObject({
+      accountId: 'fond',
+      name: 'Tondo Fond',
+      authorPubkey: 'cd'.repeat(32),
+      text: 'thanks',
+    });
+    expect(await messageStore.listReplies(POST_ID, 10)).toHaveLength(1);
+    expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
+  });
+
+  it('falls back to the Fond username when its display name is blank', async () => {
+    const authStore = await fondAuth('  ');
+    const messageStore = uuidPostStore();
+    const target = invoice({ id: 'fa'.repeat(16), messageId: POST_ID });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+      },
+      target,
+      100,
+      'tondo-fond',
+      null,
+      undefined,
+      '  Tondo-Fond ',
+    );
+    expect((await messageStore.getById(spendGiftReplyId(target.id)))?.name).toBe('tondo-fond');
+  });
+
+  it('hides the nested-reply marker as the Fond account', async () => {
+    const authStore = await fondAuth();
+    const messageStore = uuidReplyStore();
+    const target = invoice({ id: 'fb'.repeat(16), messageId: REPLY_ID, comment: 'gm' });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+      },
+      target,
+      100,
+      'tondo-fond',
+      null,
+      'daily',
+      'tondo-fond',
+    );
+    const marker = await messageStore.getById(spendGiftReplyId(target.id));
+    expect(marker).toMatchObject({ accountId: 'fond', deletedBy: 'fond' });
+    expect(marker?.deletedAt).not.toBeNull();
+    expect((await messageStore.getById(REPLY_ID))?.receivedSats).toBe(1);
+  });
+
+  it('authors the moderator stipend as the Fond account', async () => {
+    const authStore = await fondAuth();
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const target = invoice({ id: 'fc'.repeat(16), groupMessageId: GROUP_MSG_ID, comment: 'gm' });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore: uuidPostStore(),
+        conversationStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+      },
+      target,
+      100,
+      'tondo-fond',
+      null,
+      'moderator',
+      'tondo-fond',
+    );
+    expect(await conversationStore.getMessageById(spendGroupGiftId(target.id))).toMatchObject({
+      senderAccountId: 'fond',
+      senderPubkey: 'cd'.repeat(32),
+      name: 'Tondo Fond',
+      giftForMessageId: GROUP_MSG_ID,
+    });
+  });
+
+  it('falls back to the Fond username for a blank group-message display name', async () => {
+    const authStore = await fondAuth(' ');
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const target = invoice({ id: 'f0'.repeat(16), groupMessageId: GROUP_MSG_ID });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore: uuidPostStore(),
+        conversationStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+      },
+      target,
+      100,
+      'tondo-fond',
+      null,
+      'moderator',
+      'tondo-fond',
+    );
+    expect(await conversationStore.getMessageById(spendGroupGiftId(target.id))).toMatchObject({
+      senderAccountId: 'fond',
+      name: 'tondo-fond',
+    });
+  });
+
+  it('skips both attachments for an unknown Fond account without platform fallback', async () => {
+    const authStore = await fondAuth();
+    const messageStore = uuidPostStore();
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const recorded: GiftRecord[] = [];
+    const target = invoice({
+      id: 'fd'.repeat(16),
+      messageId: POST_ID,
+      groupMessageId: GROUP_MSG_ID,
+      comment: 'gm',
+    });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore,
+        conversationStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+        giftRecorder: {
+          recordOutbound: async (row) => {
+            recorded.push(row);
+          },
+        },
+      },
+      target,
+      100,
+      'missing-fond',
+      null,
+      'moderator',
+      'missing-fond',
+    );
+    expect(await messageStore.getById(spendGiftReplyId(target.id))).toBeUndefined();
+    expect(await messageStore.listReplies(POST_ID, 10)).toHaveLength(0);
+    expect((await messageStore.getById(POST_ID))?.sats).toBe(0);
+    expect(await conversationStore.getMessageById(spendGroupGiftId(target.id))).toBeUndefined();
+    expect(recorded).toHaveLength(1);
+    const events = parsedEvents(warn).map((event) => event['event']);
+    expect(events).toContain('invoice.gift_reply.failed');
+    expect(events).toContain('invoice.group_gift.failed');
+  });
+
+  it('skips both attachments when the Fond account lookup throws', async () => {
+    const inner = await fondAuth();
+    const authStore = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === 'getAccountByUsername') {
+          return async () => {
+            throw new Error('lookup down');
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const messageStore = uuidPostStore();
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const target = invoice({
+      id: 'fe'.repeat(16),
+      messageId: POST_ID,
+      groupMessageId: GROUP_MSG_ID,
+      comment: 'gm',
+    });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore,
+        conversationStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+      },
+      target,
+      100,
+      'tondo-fond',
+      null,
+      'moderator',
+      'tondo-fond',
+    );
+    expect(await messageStore.getById(spendGiftReplyId(target.id))).toBeUndefined();
+    expect(await conversationStore.getMessageById(spendGroupGiftId(target.id))).toBeUndefined();
+    const events = parsedEvents(warn).map((event) => event['event']);
+    expect(events).toContain('invoice.gift_reply.failed');
+    expect(events).toContain('invoice.group_gift.failed');
+  });
+
+  it('skips both attachments when the Fond username belongs to a role below fond', async () => {
+    const authStore = await fondAuth();
+    const fond = await authStore.getAccountByUsername('tondo-fond');
+    await authStore.updateAccount({ ...fond!, role: 'verified' });
+    const messageStore = uuidPostStore();
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const recorded: GiftRecord[] = [];
+    const target = invoice({
+      id: 'f1'.repeat(16),
+      messageId: POST_ID,
+      groupMessageId: GROUP_MSG_ID,
+      comment: 'gm',
+    });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore,
+        conversationStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+        giftRecorder: {
+          recordOutbound: async (row) => {
+            recorded.push(row);
+          },
+        },
+      },
+      target,
+      100,
+      'tondo-fond',
+      null,
+      'moderator',
+      'tondo-fond',
+    );
+    expect(await messageStore.getById(spendGiftReplyId(target.id))).toBeUndefined();
+    expect(await messageStore.listReplies(POST_ID, 10)).toHaveLength(0);
+    expect((await messageStore.getById(POST_ID))?.sats).toBe(0);
+    expect(await conversationStore.getMessageById(spendGroupGiftId(target.id))).toBeUndefined();
+    expect(recorded).toHaveLength(1);
+    const events = parsedEvents(warn).map((event) => event['event']);
+    expect(events).toContain('invoice.gift_reply.failed');
+    expect(events).toContain('invoice.group_gift.failed');
+  });
+
+  it('skips both attachments when the platform account holds the Fond username', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const platform = await authStore.getAccount('plat');
+    await authStore.updateAccount({ ...platform!, username: 'tondo-fond' });
+    const messageStore = uuidPostStore();
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const recorded: GiftRecord[] = [];
+    const target = invoice({
+      id: 'f2'.repeat(16),
+      messageId: POST_ID,
+      groupMessageId: GROUP_MSG_ID,
+      comment: 'gm',
+    });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore,
+        conversationStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+        giftRecorder: {
+          recordOutbound: async (row) => {
+            recorded.push(row);
+          },
+        },
+      },
+      target,
+      100,
+      'tondo-fond',
+      null,
+      'moderator',
+      'tondo-fond',
+    );
+    expect(await messageStore.getById(spendGiftReplyId(target.id))).toBeUndefined();
+    expect(await messageStore.listReplies(POST_ID, 10)).toHaveLength(0);
+    expect((await messageStore.getById(POST_ID))?.sats).toBe(0);
+    expect(await conversationStore.getMessageById(spendGroupGiftId(target.id))).toBeUndefined();
+    expect(recorded).toHaveLength(1);
+    const events = parsedEvents(warn).map((event) => event['event']);
+    expect(events).toContain('invoice.gift_reply.failed');
+    expect(events).toContain('invoice.group_gift.failed');
+  });
+
+  it('keeps the platform as author when no Fond username is passed', async () => {
+    const authStore = await fondAuth();
+    const messageStore = uuidPostStore();
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const target = invoice({
+      id: 'ff'.repeat(16),
+      messageId: POST_ID,
+      groupMessageId: GROUP_MSG_ID,
+      comment: 'gm',
+    });
+    await settleProvenGift(
+      {
+        store: invoiceStore,
+        authStore,
+        messageStore,
+        conversationStore,
+        now: () => 100,
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+      },
+      target,
+      100,
+      'lightning.space',
+      null,
+    );
+    expect(await messageStore.getById(spendGiftReplyId(target.id))).toMatchObject({
+      accountId: 'plat',
+      name: '21.gifts',
+    });
+    expect(await conversationStore.getMessageById(spendGroupGiftId(target.id))).toMatchObject({
+      senderAccountId: 'plat',
+      name: '21.gifts',
+    });
   });
 });
 

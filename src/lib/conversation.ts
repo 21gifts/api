@@ -303,8 +303,8 @@ function conversationPhotoCount(row: ConversationMessageRow): number {
  * Project a message row to its public JSON shape.
  *
  * Members always see the stored sender (`name` / `accountId` from
- * `senderAccountId`, typically 21.gifts on a platform send). Staff see the
- * actor when `actorAccountId` is set.
+ * `senderAccountId`: `21.gifts` on a platform send, or the Fond account on a
+ * Fond-authored send). Staff see the actor when `actorAccountId` is set.
  *
  * @param row - Persisted message.
  * @param fromMe - Whether this message was sent by the viewer.
