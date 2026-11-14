@@ -272,7 +272,6 @@ describe('requestLog', () => {
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
         debugToken: undefined,
-        spendApiToken: undefined,
         awaitWrite: true,
       }),
     );
@@ -412,7 +411,6 @@ describe('requestLog', () => {
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
         debugToken: undefined,
-        spendApiToken: undefined,
         operatorLogin: keys.operatorLogin,
         now: () => clock,
         awaitWrite: true,
@@ -442,7 +440,6 @@ describe('requestLog', () => {
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
         debugToken: undefined,
-        spendApiToken: undefined,
         operatorLogin: keys.operatorLogin,
         now: () => clock,
         awaitWrite: true,
@@ -479,7 +476,6 @@ describe('requestLog', () => {
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
         debugToken: undefined,
-        spendApiToken: undefined,
         operatorLogin: failing,
         awaitWrite: true,
       }),
@@ -506,7 +502,6 @@ describe('requestLog', () => {
         apiLogStore: store,
         authStore,
         debugToken: undefined,
-        spendApiToken: undefined,
         awaitWrite: true,
       }),
     );
@@ -543,7 +538,6 @@ describe('requestLog', () => {
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
         debugToken: undefined,
-        spendApiToken: undefined,
       }),
     );
     app.get('/info', (c) => c.text('info'));
@@ -575,7 +569,6 @@ describe('requestLog', () => {
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
         debugToken: undefined,
-        spendApiToken: undefined,
         awaitWrite: true,
       }),
     );
@@ -630,7 +623,6 @@ describe('requestLog', () => {
         apiLogStore: store,
         authStore,
         debugToken: undefined,
-        spendApiToken: undefined,
         awaitWrite: true,
         now: () => 1,
       }),

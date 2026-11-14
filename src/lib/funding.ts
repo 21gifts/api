@@ -124,7 +124,7 @@ export function effectiveStatus(
 }
 
 /**
- * Effective status as the member and the spend worker see it: a withdrawn
+ * Effective status as the member sees it: a withdrawn
  * grant reads exactly like no grant (`'none'`). Staff views keep
  * {@link effectiveStatus}, which reports `'withdrawn'`.
  *

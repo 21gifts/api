@@ -358,7 +358,7 @@ export function quoteFromLargestSibling(
 }
 
 /**
- * Normalize a spend-worker USD amount to two decimals.
+ * Normalize a decided payout USD amount to two decimals.
  *
  * Accepts `"5"` / `"5.1"` / `"5.00"` with value `> 0` and `<= 100000`.
  * Integer cents only — no IEEE float.
@@ -374,7 +374,7 @@ export function normalizeAmountUsd(raw: string): string | null {
   return usdCentsToString(cents);
 }
 
-/** Two-decimal shown CHF/EUR/PHP. Not capped at the spend-worker USD ceiling. */
+/** Two-decimal shown CHF/EUR/PHP. Not capped at the payout USD ceiling. */
 function normalizeShownCross(raw: string): string | null {
   const cents = centsFromAmount(raw);
   if (cents === null || cents <= 0 || !Number.isSafeInteger(cents)) {

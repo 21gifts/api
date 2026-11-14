@@ -227,7 +227,7 @@ any other domain keeps its provider's callback. This works without an account
 Public `GET /lightning-address` now resolves and caches LUD-16 metadata
 (callback, min/max sendable, optional commentAllowed). There is still no
 Donate button; for this guest path the api at most forwards a member wallet's
-callback and does not pay the gift invoice (spend-worker invoice fetch is §4 / `POST /invoices`).
+callback and does not pay the gift invoice (the Fond payout invoice fetch is §4 / `POST /fond/payouts/:id/invoice`).
 
 There is no campaign feed and no Donate button in the app today. Do not invent
 `/feed` or `/campaigns` paths.
@@ -247,33 +247,30 @@ Optional NIP-57 Zap receipts stay deferred (CONCEPT Out).
 
 ## 4. Recurring gifts — **Sketch**
 
-**Prerequisite**: paying is out of this process. The external spend
-worker holds lightning.space LNDHub credentials and calls:
+**Prerequisite**: this process does not pay. With `PAYOUT_SIGNER=fond` a
+decided payout is queued in `fond_payout`, and the Fond member pays it from
+its own in-app wallet:
 
-1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
-2. LNDHub `payinvoice` (spend, not this api)
-3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. This path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply). When the invoice has `groupMessageId`, the api also inserts a platform-account conversation message in the closed Moderators group (text + paid sats, name `21.gifts`) after the triggering group message, at payment time; a missing or mismatched group reference is ignored and does not block the 200. Recorded description is `21gifts moderator` when `groupMessageId` is stored, else `21gifts welcome` when the comment is exactly `Welcome`, else `21gifts daily`.
+1. `GET /fond/payouts` — the Fond member lists the open payouts
+2. `POST /fond/payouts/:id/invoice` — this api fetches the BOLT11 from the recipient via LNURL-pay
+3. The Fond member's wallet pays the invoice (not this api)
+4. The Fond paid worker sees the payment and settles the payout: the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the payout has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. This path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply, it hides a deterministic marker and `addSats`s that reply (no nested gift-reply). When the payout has `groupMessageId`, the api also inserts a platform-account conversation message in the closed Moderators group (text + paid sats, name `21.gifts`) after the triggering group message, at payment time; a missing or mismatched group reference is ignored. Recorded description is `21gifts moderator` when `groupMessageId` is stored, else `21gifts welcome` when the comment is exactly `Welcome`, else `21gifts daily`.
 
-Recurring **USD** gifts are paid by the external spend worker **when the
-recipient posts a top-level note with a photo or video**, not on a daily timer, and only when
-that recipient is funding-eligible today. `POST /invoices` with `messageId`
-requires that photo or video, and the About-me note counts when it has that
-media (else 403 `Forum post required`); omitted
-`messageId` (moderator stipend) stays any live top-level non-profile post.
-`GET /invoices/posted` returns additive `hasMedia` (`hasPosted` unchanged).
-`POST /invoices` 403s
-`Funding grant required` when not eligible. `GET /invoices/eligible?address=`
-is the spend lookup and returns 200 `{ eligible, status }` (`status` is
-`ownerFundingStatus`, so a withdrawn grant reads `none`; unknown/`basis` are
-`{ eligible: false, status: "none" }`).
-`POST /invoices/proof` does not check the grant.
-Every spend lookup and `POST /invoices` match `address` only as a member's
-wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive,
-verified wallet); any other domain is the not-found answer, and the invoice
-is fetched from the LNURL server internally.
+Without `PAYOUT_SIGNER` no payout is queued and the `/fond` routes answer 404.
+
+Recurring **USD** gifts are paid **when the recipient posts a top-level note
+with a photo or video**, not on a daily timer, and only when that recipient
+is funding-eligible today. Issuing the invoice for a daily payout requires
+that photo or video, and the About-me note counts when it has that media
+(else 403 `Forum post required`); a moderator stipend without `messageId`
+stays any live top-level non-profile post. Issuing refuses with 403
+`Funding grant required` when the recipient is not eligible. Every payout
+matches the recipient only as a member's wallet-backed
+`<username>@<host of PUBLIC_BASE_URL>` (case-insensitive, verified wallet),
+and the invoice is fetched from the LNURL server internally.
 Recurring donor UI is still a sketch. **Do not invent** `/me/donor`,
-`/me/recurring`, or scheduler paths. HTTP that exists today is the
-spend-worker invoice surface in `SPEC.md`.
+`/me/recurring`, or scheduler paths. HTTP that exists today is the `/fond`
+surface in `SPEC.md`.
 
 ---
 
@@ -283,8 +280,8 @@ Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
 (requires rules + name + username + a verified in-app wallet — missing requirements are
 **409** `missing_requirements`);
-a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
-`{ address, messageId }`, `address` being the author's wallet address, and Bearer `SPEND_API_TOKEN`) only when the author
+a **new top-level** persist pings the payout signer (with `PAYOUT_SIGNER=fond`
+it queues `{ address, messageId }` in `fond_payout`, `address` being the author's wallet address) only when the author
 is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
 `not_eligible` or `no_media` and still 200; when the author is an exactly `verified` non-platform account and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`

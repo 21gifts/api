@@ -183,7 +183,7 @@ async function verifiedRecipient(store: InMemoryAuthStore): Promise<void> {
 }
 
 interface AppOptions {
-  signer?: 'spend' | 'fond';
+  signer?: 'none' | 'fond';
   seedFond?: boolean;
   actionsStore?: InMemoryInvoiceStore;
   payoutStore?: InMemoryFondPayoutStore;
@@ -335,7 +335,7 @@ function captureEvents(): string[] {
 
 describe('fondRoutes switch and auth', () => {
   it('returns 404 on every route unless PAYOUT_SIGNER is fond', async () => {
-    const { app } = await makeApp({ signer: 'spend' });
+    const { app } = await makeApp({ signer: 'none' });
     expect((await app.request('/fond/health')).status).toBe(404);
     expect((await app.request('/fond/payouts', { headers: authHeader() })).status).toBe(404);
     expect(
@@ -617,7 +617,7 @@ describe('GET /fond/health', () => {
 
   it('is 404 when PAYOUT_SIGNER is not fond, and does not read the queue', async () => {
     const events = captureEvents();
-    const { app, payouts } = await makeApp({ signer: 'spend' });
+    const { app, payouts } = await makeApp({ signer: 'none' });
     await payouts.enqueue(rowInput());
     const listOpen = vi.spyOn(payouts, 'listOpen');
     const res = await app.request('/fond/health');
@@ -809,7 +809,7 @@ describe('GET /fond/summary', () => {
   }
 
   it('returns 404 unless PAYOUT_SIGNER is fond', async () => {
-    const { app } = await makeApp({ signer: 'spend' });
+    const { app } = await makeApp({ signer: 'none' });
     const res = await app.request('/fond/summary');
     expect(res.status).toBe(404);
     expect(res.headers.get('Cache-Control')).toBe('no-store');

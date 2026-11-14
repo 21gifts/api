@@ -350,14 +350,22 @@ describe('resolveShopPaymentConfig', () => {
 });
 
 describe('resolvePayoutSigner', () => {
-  it('defaults to spend when unset or blank', () => {
-    expect(resolvePayoutSigner({})).toBe('spend');
-    expect(resolvePayoutSigner({ PAYOUT_SIGNER: '   ' })).toBe('spend');
+  it('has no payout sink when unset or blank', () => {
+    expect(resolvePayoutSigner({})).toBe('none');
+    expect(resolvePayoutSigner({ PAYOUT_SIGNER: '' })).toBe('none');
+    expect(resolvePayoutSigner({ PAYOUT_SIGNER: '   ' })).toBe('none');
   });
 
-  it('accepts spend and fond case- and space-insensitively', () => {
-    expect(resolvePayoutSigner({ PAYOUT_SIGNER: 'spend' })).toBe('spend');
+  it('accepts fond case- and space-insensitively', () => {
+    expect(resolvePayoutSigner({ PAYOUT_SIGNER: 'fond' })).toBe('fond');
     expect(resolvePayoutSigner({ PAYOUT_SIGNER: ' FOND ' })).toBe('fond');
+  });
+
+  it('rejects spend like any other invalid value', () => {
+    expect(() => resolvePayoutSigner({ PAYOUT_SIGNER: 'spend' })).toThrow('Invalid PAYOUT_SIGNER');
+    expect(() => resolvePayoutSigner({ PAYOUT_SIGNER: ' Spend ' })).toThrow(
+      'Invalid PAYOUT_SIGNER',
+    );
   });
 
   it('throws Invalid PAYOUT_SIGNER for any other value', () => {

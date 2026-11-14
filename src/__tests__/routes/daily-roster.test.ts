@@ -5,7 +5,6 @@ import {
   DailyRosterRequestError,
   type DailyRoster,
   type DailyRosterDocument,
-  type DailyRosterPayoutDocument,
   type DailyRosterPublic,
 } from '@/lib/daily-roster';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
@@ -65,27 +64,6 @@ const POSTS = [
   '/funding/daily-roster/moderators/delete',
   '/funding/daily-roster/moderators/payments',
 ] as const;
-
-const WORKER_POSTS = [
-  '/funding/daily-roster/worker/comment',
-  '/funding/daily-roster/worker/payments',
-  '/funding/daily-roster/worker/recipients',
-  '/funding/daily-roster/worker/recipients/update',
-  '/funding/daily-roster/worker/recipients/delete',
-  '/funding/daily-roster/worker/moderators',
-  '/funding/daily-roster/worker/moderators/update',
-  '/funding/daily-roster/worker/moderators/delete',
-  '/funding/daily-roster/worker/moderators/payments',
-] as const;
-
-const EMPTY_DOCUMENT: DailyRosterDocument = {
-  comment: '',
-  paymentsEnabled: true,
-  moderatorPaymentsEnabled: true,
-  defaultAmountUsd: 1,
-  recipients: [],
-  moderators: [],
-};
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -172,7 +150,6 @@ function fakeStore(overrides: Partial<DailyRosterStore> = {}): DailyRosterStore 
 function mount(
   authStore: InMemoryAuthStore,
   rosterStore?: DailyRosterStore,
-  spendApiToken?: string,
   tokens: { debugToken?: string; operatorLogin?: OperatorLogin } = {},
 ): Hono {
   return new Hono().route(
@@ -185,7 +162,6 @@ function mount(
       gifts: new InMemoryGiftStore(),
       lnurlServer: LNURL_SERVER,
       ...(rosterStore === undefined ? {} : { rosterStore }),
-      ...(spendApiToken === undefined ? {} : { spendApiToken }),
       ...tokens,
     }),
   );
@@ -1189,691 +1165,6 @@ describe('daily payout roster routes', () => {
     expect(await badSwitch.json()).toEqual({ error: 'Invalid payments switch' });
     expect(called).toBe(false);
   });
-
-  it('returns 503 then 401 on the full document routes like invoices', async () => {
-    const authStore = await seeded();
-    const omitted = mount(authStore, fakeStore());
-    const unconfigured = await omitted.request('/funding/daily-roster/document');
-    expect(unconfigured.status).toBe(503);
-    expect(await unconfigured.json()).toEqual({ error: 'Spend invoices are not configured' });
-    const posted = await omitted.request('/funding/daily-roster/document', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
-    });
-    expect(posted.status).toBe(503);
-    const app = mount(authStore, fakeStore(), 'spend-secret');
-    const unauthorized = await app.request('/funding/daily-roster/document', {
-      headers: { authorization: 'Bearer nope' },
-    });
-    expect(unauthorized.status).toBe(401);
-    expect(await unauthorized.json()).toEqual({ error: 'Unauthorized' });
-    let bodyRead = false;
-    const body = new ReadableStream<Uint8Array>(
-      {
-        pull(controller) {
-          bodyRead = true;
-          controller.enqueue(new TextEncoder().encode('{}'));
-          controller.close();
-        },
-      },
-      { highWaterMark: 0 },
-    );
-    const refusedImport = await app.request(
-      new Request('http://localhost/funding/daily-roster/document', {
-        method: 'POST',
-        headers: { authorization: 'Bearer nope', 'content-type': 'application/json' },
-        body,
-        duplex: 'half',
-      } as RequestInit),
-    );
-    expect(refusedImport.status).toBe(401);
-    expect(bodyRead).toBe(false);
-  });
-
-  it('reads and imports the full document, then ignores a second import', async () => {
-    const authStore = await seeded();
-    const store = new InMemoryDailyRosterStore();
-    const app = mount(authStore, store, 'spend-secret');
-    const empty = await app.request('/funding/daily-roster/document', {
-      headers: { authorization: 'Bearer spend-secret' },
-    });
-    expect(empty.status).toBe(200);
-    expect(await empty.json()).toEqual({
-      comment: '',
-      paymentsEnabled: true,
-      moderatorPaymentsEnabled: true,
-      defaultAmountUsd: 1,
-      recipients: [],
-      moderators: [],
-    });
-    const imported = await app.request('/funding/daily-roster/document', {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer spend-secret',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        comment: 'thanks',
-        paymentsEnabled: false,
-        moderatorPaymentsEnabled: false,
-        defaultAmountUsd: 9,
-        recipients: [{ address: 'ada@example.com', amountUsd: 2 }],
-        moderators: [{ address: 'mod@example.com', amountUsd: 3 }],
-      }),
-    });
-    expect(imported.status).toBe(200);
-    const body = await imported.json();
-    expect(body).toEqual({
-      comment: 'thanks',
-      paymentsEnabled: false,
-      moderatorPaymentsEnabled: false,
-      defaultAmountUsd: 1,
-      recipients: [],
-      moderators: [],
-    });
-    expect((await store.linkReport()).unlinked).toEqual([
-      { bucket: 'daily', address: 'ada@example.com', amountUsd: 2 },
-      { bucket: 'moderator', address: 'mod@example.com', amountUsd: 3 },
-    ]);
-    const second = await app.request('/funding/daily-roster/document', {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer spend-secret',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ comment: 1, paymentsEnabled: true }),
-    });
-    expect(second.status).toBe(200);
-    expect(await second.json()).toEqual(body);
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('thanks');
-    expect(logged).not.toContain('ada@example.com');
-  });
-
-  it('returns 400 then 502 on the full document write', async () => {
-    const authStore = await seeded();
-    const bad = await mount(authStore, new InMemoryDailyRosterStore(), 'spend-secret').request(
-      '/funding/daily-roster/document',
-      {
-        method: 'POST',
-        headers: {
-          authorization: 'Bearer spend-secret',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ paymentsEnabled: 'on' }),
-      },
-    );
-    expect(bad.status).toBe(400);
-    expect(await bad.json()).toEqual({ error: 'Invalid payments switch' });
-    const app = mount(
-      authStore,
-      fakeStore({
-        get: async () => {
-          throw new DailyRosterRequestError(400, 'Invalid comment');
-        },
-        importDocument: async () => {
-          throw new Error('import leaked');
-        },
-      }),
-      'spend-secret',
-    );
-    const read400 = await app.request('/funding/daily-roster/document', {
-      headers: { authorization: 'Bearer spend-secret' },
-    });
-    expect(read400.status).toBe(400);
-    expect(await read400.json()).toEqual({ error: 'Invalid comment' });
-    const read502 = await mount(
-      authStore,
-      fakeStore({
-        get: async () => {
-          throw new Error('read leaked');
-        },
-      }),
-      'spend-secret',
-    ).request('/funding/daily-roster/document', {
-      headers: { authorization: 'Bearer spend-secret' },
-    });
-    expect(read502.status).toBe(502);
-    const malformed = await mount(
-      authStore,
-      new InMemoryDailyRosterStore(),
-      'spend-secret',
-    ).request('/funding/daily-roster/document', {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer spend-secret',
-        'content-type': 'application/json',
-      },
-      body: '{',
-    });
-    expect(malformed.status).toBe(400);
-    const failed = await app.request('/funding/daily-roster/document', {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer spend-secret',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({}),
-    });
-    expect(failed.status).toBe(502);
-    expect(await failed.json()).toEqual({ error: 'Daily roster is unavailable' });
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('import leaked');
-    expect(logged).not.toContain('spend-secret');
-  });
-
-  it('returns 503 then 401 on the worker write routes like invoices', async () => {
-    const authStore = await seeded();
-    const omitted = mount(authStore, fakeStore());
-    for (const path of WORKER_POSTS) {
-      const res = await omitted.request(path, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      expect(res.status).toBe(503);
-      expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
-    }
-    const app = mount(authStore, fakeStore(), 'spend-secret');
-    for (const path of WORKER_POSTS) {
-      const missing = await app.request(path, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      expect(missing.status).toBe(401);
-      expect(await missing.json()).toEqual({ error: 'Unauthorized' });
-      const bad = await app.request(path, {
-        method: 'POST',
-        headers: {
-          authorization: 'Bearer nope',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({}),
-      });
-      expect(bad.status).toBe(401);
-      expect(await bad.json()).toEqual({ error: 'Unauthorized' });
-    }
-  });
-
-  it('writes worker comment, payments, and moderator payments as the full document', async () => {
-    const authStore = await seeded();
-    const store = new InMemoryDailyRosterStore();
-    const app = mount(authStore, store, 'spend-secret');
-    const folded = await post(app, '/funding/daily-roster/worker/comment', 'spend-secret', {
-      comment: '  hush-comment\nthere  ',
-    });
-    expect(folded.status).toBe(200);
-    expect(await folded.json()).toEqual({
-      ...EMPTY_DOCUMENT,
-      comment: 'hush-comment there',
-    });
-    const empty = await post(app, '/funding/daily-roster/worker/comment', 'spend-secret', {
-      comment: ' \n\r ',
-    });
-    expect(empty.status).toBe(200);
-    expect(await empty.json()).toEqual(EMPTY_DOCUMENT);
-    const payments = await post(app, '/funding/daily-roster/worker/payments', 'spend-secret', {
-      enabled: false,
-    });
-    expect(payments.status).toBe(200);
-    expect(await payments.json()).toEqual({ ...EMPTY_DOCUMENT, paymentsEnabled: false });
-    const moderatorPayments = await post(
-      app,
-      '/funding/daily-roster/worker/moderators/payments',
-      'spend-secret',
-      { enabled: false },
-    );
-    expect(moderatorPayments.status).toBe(200);
-    const body = await moderatorPayments.json();
-    expect(body).toEqual({
-      ...EMPTY_DOCUMENT,
-      paymentsEnabled: false,
-      moderatorPaymentsEnabled: false,
-    });
-    expect(body).not.toHaveProperty('accountId');
-    expect(JSON.stringify(body)).not.toContain('"name"');
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('hush-comment');
-    expect(logged).not.toContain('ada@example.com');
-  });
-
-  it('returns 400 Invalid comment and Invalid payments switch on worker routes', async () => {
-    let called = false;
-    const authStore = await seeded();
-    const app = mount(
-      authStore,
-      fakeStore({
-        setComment: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        setPaymentsEnabled: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        setModeratorPaymentsEnabled: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-      }),
-      'spend-secret',
-    );
-    const comment = await post(app, '/funding/daily-roster/worker/comment', 'spend-secret', {
-      comment: 1,
-    });
-    expect(comment.status).toBe(400);
-    expect(await comment.json()).toEqual({ error: 'Invalid comment' });
-    const tooLong = await post(app, '/funding/daily-roster/worker/comment', 'spend-secret', {
-      comment: `  ${'a'.repeat(501)}\n`,
-    });
-    expect(tooLong.status).toBe(400);
-    expect(await tooLong.json()).toEqual({ error: 'Invalid comment' });
-    const payments = await post(app, '/funding/daily-roster/worker/payments', 'spend-secret', {
-      enabled: 'on',
-    });
-    expect(payments.status).toBe(400);
-    expect(await payments.json()).toEqual({ error: 'Invalid payments switch' });
-    const moderatorPayments = await post(
-      app,
-      '/funding/daily-roster/worker/moderators/payments',
-      'spend-secret',
-      { enabled: 1 },
-    );
-    expect(moderatorPayments.status).toBe(400);
-    expect(await moderatorPayments.json()).toEqual({ error: 'Invalid payments switch' });
-    expect(called).toBe(false);
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('a'.repeat(501));
-  });
-
-  it('adds, updates, and deletes worker recipients by account with the payout address', async () => {
-    const authStore = await seeded();
-    const adaId = '88888888-8888-4888-8888-888888888888';
-    await authStore.createAccount(
-      account({ id: adaId, role: 'verified', name: 'Ada', username: 'ada', walletRequired: true }),
-    );
-    await verifyWallet(authStore, adaId, 'ada');
-    const store = new InMemoryDailyRosterStore();
-    const app = mount(authStore, store, 'spend-secret');
-    const row = { accountId: adaId, username: 'ada', address: 'ada@example.test' };
-    const added = await post(app, '/funding/daily-roster/worker/recipients', 'spend-secret', {
-      address: '  Ada@Example.test  ',
-      amountUsd: 2,
-    });
-    expect(added.status).toBe(200);
-    expect(await added.json()).toEqual({
-      ...EMPTY_DOCUMENT,
-      recipients: [{ ...row, amountUsd: 2 }],
-    });
-    const duplicate = await post(app, '/funding/daily-roster/worker/recipients', 'spend-secret', {
-      username: 'ADA',
-      amountUsd: 3,
-    });
-    expect(duplicate.status).toBe(400);
-    expect(await duplicate.json()).toEqual({ error: 'Address already listed' });
-    const updated = await post(
-      app,
-      '/funding/daily-roster/worker/recipients/update',
-      'spend-secret',
-      { username: 'ada', amountUsd: 8 },
-    );
-    expect(updated.status).toBe(200);
-    expect(await updated.json()).toEqual({
-      ...EMPTY_DOCUMENT,
-      recipients: [{ ...row, amountUsd: 8 }],
-    });
-    const deleted = await post(
-      app,
-      '/funding/daily-roster/worker/recipients/delete',
-      'spend-secret',
-      { address: 'ada@example.test' },
-    );
-    expect(deleted.status).toBe(200);
-    expect(await deleted.json()).toEqual(EMPTY_DOCUMENT);
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('ada@example.test');
-  });
-
-  it('adds worker moderators without a wallet and gives their payout address once verified', async () => {
-    const authStore = await seeded();
-    const modId = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
-    await authStore.createAccount(
-      account({ id: modId, role: 'moderator', name: 'Mo', username: 'mo', walletRequired: true }),
-    );
-    const store = new InMemoryDailyRosterStore();
-    const app = mount(authStore, store, 'spend-secret');
-    const added = await post(app, '/funding/daily-roster/worker/moderators', 'spend-secret', {
-      username: 'mo',
-      amountUsd: 3,
-    });
-    expect(added.status).toBe(200);
-    expect(await added.json()).toEqual({
-      ...EMPTY_DOCUMENT,
-      moderators: [{ accountId: modId, username: 'mo', address: null, amountUsd: 3 }],
-    });
-    const duplicate = await post(app, '/funding/daily-roster/worker/moderators', 'spend-secret', {
-      address: 'mo@example.test',
-      amountUsd: 4,
-    });
-    expect(duplicate.status).toBe(400);
-    expect(await duplicate.json()).toEqual({ error: 'Address already listed' });
-    await verifyWallet(authStore, modId, 'mo');
-    const document = await app.request('/funding/daily-roster/document', {
-      headers: { authorization: 'Bearer spend-secret' },
-    });
-    expect(((await document.json()) as DailyRosterPayoutDocument).moderators).toEqual([
-      { accountId: modId, username: 'mo', address: 'mo@example.test', amountUsd: 3 },
-    ]);
-    const updated = await post(
-      app,
-      '/funding/daily-roster/worker/moderators/update',
-      'spend-secret',
-      { address: 'mo@example.test', amountUsd: 5 },
-    );
-    expect(updated.status).toBe(200);
-    expect(((await updated.json()) as DailyRosterPayoutDocument).moderators).toEqual([
-      { accountId: modId, username: 'mo', address: 'mo@example.test', amountUsd: 5 },
-    ]);
-    const deleted = await post(
-      app,
-      '/funding/daily-roster/worker/moderators/delete',
-      'spend-secret',
-      { username: 'mo' },
-    );
-    expect(deleted.status).toBe(200);
-    expect(await deleted.json()).toEqual(EMPTY_DOCUMENT);
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('mo@example.test');
-  });
-
-  it('returns 400 Invalid address or amount and Unknown address on worker list writes', async () => {
-    let called = false;
-    const authStore = await seeded();
-    const app = mount(
-      authStore,
-      fakeStore({
-        addRecipient: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        updateRecipient: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        deleteRecipient: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        addModerator: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        updateModerator: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        deleteModerator: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-      }),
-      'spend-secret',
-    );
-    const addCases = [
-      '/funding/daily-roster/worker/recipients',
-      '/funding/daily-roster/worker/moderators',
-    ] as const;
-    for (const path of addCases) {
-      for (const body of [
-        { address: 1, amountUsd: 1 },
-        { address: 'ada@example.com', amountUsd: '1' },
-        { address: 'ada@example.com' },
-        { amountUsd: 1 },
-      ]) {
-        const res = await post(app, path, 'spend-secret', body);
-        expect(res.status).toBe(400);
-        expect(await res.json()).toEqual({ error: 'Invalid address or amount' });
-      }
-    }
-    await authStore.createAccount(
-      account({ id: '88888888-8888-4888-8888-888888888888', role: 'verified', username: 'ada' }),
-    );
-    const store = new InMemoryDailyRosterStore();
-    const live = mount(authStore, store, 'spend-secret');
-    const zero = await post(live, '/funding/daily-roster/worker/recipients', 'spend-secret', {
-      address: 'ada@example.test',
-      amountUsd: 0,
-    });
-    expect(zero.status).toBe(400);
-    expect(await zero.json()).toEqual({ error: 'Invalid address or amount' });
-    for (const key of ['   ', 'ada@example.com']) {
-      const unknown = await post(live, '/funding/daily-roster/worker/moderators', 'spend-secret', {
-        address: key,
-        amountUsd: 1,
-      });
-      expect(unknown.status).toBe(400);
-      expect(await unknown.json()).toEqual({ error: 'Unknown address' });
-    }
-    const nan = await live.request('/funding/daily-roster/worker/recipients', {
-      method: 'POST',
-      headers: {
-        authorization: 'Bearer spend-secret',
-        'content-type': 'application/json',
-      },
-      body: '{"address":"ada@example.com","amountUsd":null}',
-    });
-    expect(nan.status).toBe(400);
-    expect(await nan.json()).toEqual({ error: 'Invalid address or amount' });
-    for (const path of [
-      '/funding/daily-roster/worker/recipients/update',
-      '/funding/daily-roster/worker/moderators/update',
-    ] as const) {
-      const badAmount = await post(app, path, 'spend-secret', {
-        address: 'ada@example.com',
-        amountUsd: '1',
-      });
-      expect(badAmount.status).toBe(400);
-      expect(await badAmount.json()).toEqual({ error: 'Invalid address or amount' });
-      for (const body of [{ address: 1, amountUsd: 1 }, { amountUsd: 1 }, {}]) {
-        const res = await post(app, path, 'spend-secret', body);
-        expect(res.status).toBe(400);
-        expect(await res.json()).toEqual({ error: 'Unknown address' });
-      }
-    }
-    for (const path of [
-      '/funding/daily-roster/worker/recipients/delete',
-      '/funding/daily-roster/worker/moderators/delete',
-    ] as const) {
-      const res = await post(app, path, 'spend-secret', {});
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: 'Unknown address' });
-    }
-    const unknownUpdate = await post(
-      live,
-      '/funding/daily-roster/worker/recipients/update',
-      'spend-secret',
-      { address: 'missing@example.com', amountUsd: 1 },
-    );
-    expect(unknownUpdate.status).toBe(400);
-    expect(await unknownUpdate.json()).toEqual({ error: 'Unknown address' });
-    const unknownDelete = await post(
-      live,
-      '/funding/daily-roster/worker/moderators/delete',
-      'spend-secret',
-      { address: 'missing@example.com' },
-    );
-    expect(unknownDelete.status).toBe(400);
-    expect(await unknownDelete.json()).toEqual({ error: 'Unknown address' });
-    expect(called).toBe(false);
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('ada@example.com');
-    expect(logged).not.toContain('missing@example.com');
-  });
-
-  it('returns 400 of the worker validation text for a non-JSON body', async () => {
-    let called = false;
-    const authStore = await seeded();
-    const app = mount(
-      authStore,
-      fakeStore({
-        setComment: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        setPaymentsEnabled: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        setModeratorPaymentsEnabled: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        addRecipient: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        updateRecipient: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        deleteRecipient: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        addModerator: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        updateModerator: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-        deleteModerator: async () => {
-          called = true;
-          return DOCUMENT;
-        },
-      }),
-      'spend-secret',
-    );
-    const cases = [
-      ['/funding/daily-roster/worker/comment', 'Invalid comment'],
-      ['/funding/daily-roster/worker/payments', 'Invalid payments switch'],
-      ['/funding/daily-roster/worker/recipients', 'Invalid address or amount'],
-      ['/funding/daily-roster/worker/recipients/update', 'Unknown address'],
-      ['/funding/daily-roster/worker/recipients/delete', 'Unknown address'],
-      ['/funding/daily-roster/worker/moderators', 'Invalid address or amount'],
-      ['/funding/daily-roster/worker/moderators/update', 'Unknown address'],
-      ['/funding/daily-roster/worker/moderators/delete', 'Unknown address'],
-      ['/funding/daily-roster/worker/moderators/payments', 'Invalid payments switch'],
-    ] as const;
-    for (const [path, error] of cases) {
-      const res = await app.request(path, {
-        method: 'POST',
-        headers: {
-          authorization: 'Bearer spend-secret',
-          'content-type': 'application/json',
-        },
-        body: '{',
-      });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error });
-    }
-    expect(called).toBe(false);
-  });
-
-  it('returns 502 when a worker store write throws and does not log secrets', async () => {
-    const authStore = await seeded();
-    const app = mount(
-      authStore,
-      fakeStore({
-        setComment: async () => {
-          throw new Error('comment leaked');
-        },
-        setPaymentsEnabled: async () => {
-          throw new Error('payments leaked');
-        },
-        setModeratorPaymentsEnabled: async () => {
-          throw new Error('moderator payments leaked');
-        },
-        addRecipient: async () => {
-          throw new Error('recipient leaked');
-        },
-        updateRecipient: async () => {
-          throw new DailyRosterRequestError(502, 'update leaked');
-        },
-        deleteRecipient: async () => {
-          throw new Error('delete leaked');
-        },
-        addModerator: async () => {
-          throw new Error('moderator leaked');
-        },
-        updateModerator: async () => {
-          throw new Error('moderator update leaked');
-        },
-        deleteModerator: async () => {
-          throw new Error('moderator delete leaked');
-        },
-      }),
-      'spend-secret',
-    );
-    const cases = [
-      ['/funding/daily-roster/worker/comment', { comment: 'hush-comment' }],
-      ['/funding/daily-roster/worker/payments', { enabled: true }],
-      ['/funding/daily-roster/worker/moderators/payments', { enabled: true }],
-      ['/funding/daily-roster/worker/recipients', { address: VERIFIED, amountUsd: 1 }],
-      ['/funding/daily-roster/worker/recipients/update', { address: VERIFIED, amountUsd: 1 }],
-      ['/funding/daily-roster/worker/recipients/delete', { address: VERIFIED }],
-      ['/funding/daily-roster/worker/moderators', { username: MOD, amountUsd: 3 }],
-      ['/funding/daily-roster/worker/moderators/update', { username: MOD, amountUsd: 3 }],
-      ['/funding/daily-roster/worker/moderators/delete', { username: MOD }],
-    ] as const;
-    for (const [path, body] of cases) {
-      const res = await post(app, path, 'spend-secret', body);
-      expect(res.status).toBe(502);
-      expect(await res.json()).toEqual({ error: 'Daily roster is unavailable' });
-    }
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('hush-comment');
-    expect(logged).not.toContain('ada@example.com');
-    expect(logged).not.toContain('mod@example.com');
-    expect(logged).not.toContain('leaked');
-  });
-
-  it('returns 502 when the account lookup of a keyed write throws', async () => {
-    const authStore = await seeded();
-    vi.spyOn(authStore, 'getAccountByUsername').mockRejectedValue(new Error('db down'));
-    const app = mount(authStore, fakeStore(), 'spend-secret');
-    for (const [path, body] of [
-      ['/funding/daily-roster/worker/recipients', { username: 'ada', amountUsd: 1 }],
-      ['/funding/daily-roster/worker/moderators/delete', { username: 'ada' }],
-    ] as const) {
-      const res = await post(app, path, 'spend-secret', body);
-      expect(res.status).toBe(502);
-      expect(await res.json()).toEqual({ error: 'Daily roster is unavailable' });
-    }
-    const session = await post(app, '/funding/daily-roster/recipients/update', 'founder', {
-      username: 'ada',
-      amountUsd: 1,
-    });
-    expect(session.status).toBe(502);
-    const add = await post(app, '/funding/daily-roster/moderators', 'founder', {
-      username: 'ada',
-      amountUsd: 1,
-    });
-    expect(add.status).toBe(502);
-    expect(parsedEvents(warn)).toContainEqual(
-      expect.objectContaining({ event: 'funding.daily_roster.failed', action: 'moderator-add' }),
-    );
-  });
 });
 
 describe('GET /funding/daily-roster with an operator token', () => {
@@ -1892,7 +1183,7 @@ describe('GET /funding/daily-roster with an operator token', () => {
     'reads the roster with %s and logs no account id',
     async (token) => {
       const res = await get(
-        mount(await seeded(), fakeStore(), undefined, TOKENS),
+        mount(await seeded(), fakeStore(), TOKENS),
         '/funding/daily-roster',
         token,
       );
@@ -1908,11 +1199,7 @@ describe('GET /funding/daily-roster with an operator token', () => {
 
   it('returns 502 and logs the operator when the roster store throws', async () => {
     const store = fakeStore({ get: () => Promise.reject(new Error('down')) });
-    const res = await get(
-      mount(await seeded(), store, undefined, TOKENS),
-      '/funding/daily-roster',
-      OP_READ,
-    );
+    const res = await get(mount(await seeded(), store, TOKENS), '/funding/daily-roster', OP_READ);
     expect(res.status).toBe(502);
     const failed = parsedEvents(warn).filter(
       (entry) => entry['event'] === 'funding.daily_roster.failed',
@@ -1922,7 +1209,7 @@ describe('GET /funding/daily-roster with an operator token', () => {
   });
 
   it('keeps the session gate for a wrong operator bearer and a moderator', async () => {
-    const app = mount(await seeded(), fakeStore(), undefined, TOKENS);
+    const app = mount(await seeded(), fakeStore(), TOKENS);
     expect((await get(app, '/funding/daily-roster', 'op-other')).status).toBe(401);
     expect((await get(app, '/funding/daily-roster', 'mod')).status).toBe(403);
     expect((await get(app, '/funding/daily-roster', 'founder')).status).toBe(200);
@@ -1949,7 +1236,7 @@ describe('GET /funding/daily-roster/links', () => {
       await store.addRecipient(VERIFIED, 2);
       await store.addModerator(MOD, 5);
       const res = await get(
-        mount(await seeded(), store, undefined, TOKENS),
+        mount(await seeded(), store, TOKENS),
         '/funding/daily-roster/links',
         token,
       );
@@ -1972,7 +1259,7 @@ describe('GET /funding/daily-roster/links', () => {
   );
 
   it('refuses a session, a wrong token, and no token', async () => {
-    const app = mount(await seeded(), fakeStore(), undefined, TOKENS);
+    const app = mount(await seeded(), fakeStore(), TOKENS);
     for (const token of ['founder', 'op-other', undefined]) {
       const res = await get(app, '/funding/daily-roster/links', token);
       expect(res.status).toBe(401);
@@ -1983,7 +1270,7 @@ describe('GET /funding/daily-roster/links', () => {
   it('returns 502 and logs the operator when the store throws', async () => {
     const store = fakeStore({ linkReport: () => Promise.reject(new Error('down')) });
     const res = await get(
-      mount(await seeded(), store, undefined, TOKENS),
+      mount(await seeded(), store, TOKENS),
       '/funding/daily-roster/links',
       OP_READ,
     );

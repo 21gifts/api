@@ -1,30 +1,29 @@
 /**
- * Daily payout roster types, 400 texts, comment folding, and the editor and
- * payout projections. Persistence lives in `daily-roster-store`. Never logs
+ * Daily payout roster types, 400 texts, comment folding, and the editor
+ * projection. Persistence lives in `daily-roster-store`. Never logs
  * the token, comment text, or Lightning addresses.
  */
 
 import type { Account } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
-import { receivingAddress } from '@/lib/receiving-address';
 
-/** Spend 400 text for a comment the roster will not store. */
+/** Roster 400 text for a comment the roster will not store. */
 export const DAILY_ROSTER_INVALID_COMMENT = 'Invalid comment';
 
-/** Spend 400 text for a payments switch the roster will not store. */
+/** Roster 400 text for a payments switch the roster will not store. */
 export const DAILY_ROSTER_INVALID_PAYMENTS = 'Invalid payments switch';
 
-/** Spend 400 text for an address or amount the roster will not store. */
+/** Roster 400 text for an address or amount the roster will not store. */
 export const DAILY_ROSTER_INVALID_ADDRESS = 'Invalid address or amount';
 
 /**
- * Spend 400 text when the account is already on the roster, or when an
+ * Roster 400 text when the account is already on the roster, or when an
  * import lists the same address twice in one list.
  */
 export const DAILY_ROSTER_ADDRESS_LISTED = 'Address already listed';
 
 /**
- * Spend 400 text when the account is not on the roster, or no account has
+ * Roster 400 text when the account is not on the roster, or no account has
  * that username, address, or account id.
  */
 export const DAILY_ROSTER_UNKNOWN_ADDRESS = 'Unknown address';
@@ -100,49 +99,13 @@ export interface DailyRosterRecipientPublic {
   name: string | null;
 }
 
-/**
- * One listed row of the spend document, with the address it is paid on.
- */
-export interface DailyRosterPayoutEntry {
-  /** Listed account id. */
-  accountId: string;
-  /** Trimmed lower-case username, or `null` when missing or blank. */
-  username: string | null;
-  /**
-   * The account's receiving address at read time (`receivingAddress`), or
-   * `null` when the account is missing, has no username or no verified
-   * wallet, or the LNURL server is off: the row is then not payable.
-   */
-  address: string | null;
-  /** USD amount for this account. */
-  amountUsd: number;
-}
-
-/**
- * Spend document: the stored roster with each row's payout address.
- */
-export interface DailyRosterPayoutDocument {
-  /** Payment comment stored with the roster. */
-  comment: string;
-  /** Whether daily payments are switched on. */
-  paymentsEnabled: boolean;
-  /** Whether moderator stipends are switched on. */
-  moderatorPaymentsEnabled: boolean;
-  /** Always 1 on every read; not stored. */
-  defaultAmountUsd: number;
-  /** Listed daily recipients. */
-  recipients: DailyRosterPayoutEntry[];
-  /** Listed moderators. */
-  moderators: DailyRosterPayoutEntry[];
-}
-
-/** Account fields the roster projections read. */
+/** Account fields the roster projection reads. */
 export type DailyRosterAccount = Pick<
   Account,
   'name' | 'username' | 'sparkPubkey' | 'sparkPubkeyVerifiedAt'
 >;
 
-/** Account lookup by id for the roster projections. */
+/** Account lookup by id for the roster projection. */
 export type DailyRosterAccountLookup = (
   accountId: string,
 ) => Promise<DailyRosterAccount | undefined>;
@@ -251,63 +214,6 @@ export async function withRecipientIdentities(
     defaultAmountUsd: roster.defaultAmountUsd,
     recipients,
     moderatorPaymentsEnabled: roster.moderatorPaymentsEnabled,
-    moderators,
-  };
-}
-
-/**
- * Attach username and payout address to one stored row.
- *
- * @param row - Stored account id and USD amount.
- * @param lookup - Account lookup by id.
- * @param lnurlServer - LNURL server config, or `undefined` when off.
- * @returns The payout row.
- */
-async function attachPayoutAddress(
-  row: DailyRosterEntry,
-  lookup: DailyRosterAccountLookup,
-  lnurlServer: LnurlServerConfig | undefined,
-): Promise<DailyRosterPayoutEntry> {
-  const account = await lookup(row.accountId);
-  return {
-    accountId: row.accountId,
-    username: rosterUsername(account),
-    address:
-      account === undefined ? null : (receivingAddress(account, lnurlServer)?.address ?? null),
-    amountUsd: row.amountUsd,
-  };
-}
-
-/**
- * Copy a stored roster for spend: each row gets the address it is paid on,
- * resolved now from the account's verified wallet through
- * `receivingAddress`, and its username.
- *
- * A missing account, an account without a username or a verified wallet,
- * or the LNURL server being off gives `address: null`. Lookup is called once per row, in
- * parallel. Order, account id, and amountUsd are unchanged. Lookup errors are
- * not caught.
- *
- * @param roster - Full stored document.
- * @param lookup - Account lookup by id.
- * @param lnurlServer - LNURL server config, or `undefined` when off.
- * @returns The spend document.
- */
-export async function withPayoutAddresses(
-  roster: DailyRosterDocument,
-  lookup: DailyRosterAccountLookup,
-  lnurlServer: LnurlServerConfig | undefined,
-): Promise<DailyRosterPayoutDocument> {
-  const [recipients, moderators] = await Promise.all([
-    Promise.all(roster.recipients.map((row) => attachPayoutAddress(row, lookup, lnurlServer))),
-    Promise.all(roster.moderators.map((row) => attachPayoutAddress(row, lookup, lnurlServer))),
-  ]);
-  return {
-    comment: roster.comment,
-    paymentsEnabled: roster.paymentsEnabled,
-    moderatorPaymentsEnabled: roster.moderatorPaymentsEnabled,
-    defaultAmountUsd: roster.defaultAmountUsd,
-    recipients,
     moderators,
   };
 }

@@ -250,15 +250,12 @@ Software Developer, Initiator, and Founder.
 
 Any account can additionally become a donor and spend money:
 
-- Recurring paying uses an **external spend worker** with a
-  `lightning.space` LNDHub wallet. This api does not store LNDHub
-  credentials and does not pay.
-- The api issues recipient BOLT11 invoices (`POST /invoices`) and verifies
-  the payment preimage (`POST /invoices/proof`). A matching proof records
-  the outbound gift for public `GET /gifts/stats`.
-- This remains a v1 custody compromise (the worker can spend), documented
-  because it contradicts the non-custodial target; that replacement retires
-  it.
+- Recurring paying is done by the Fond member from its own in-app wallet
+  (`PAYOUT_SIGNER=fond`). The api queues each decided payout in
+  `fond_payout`, issues the recipient BOLT11 invoice
+  (`POST /fond/payouts/:id/invoice`), and settles the payout once it is
+  paid. This api does not pay.
+- A settled payout records the outbound gift for public `GET /gifts/stats`.
 
 ### Receiving address
 
@@ -272,16 +269,15 @@ micro-payment proof of control, were removed on 2026-10-02.
 ### Recurring gifts (v1 feature)
 
 Donors can configure fixed USD amounts to a list of recipients. This api
-does not pay. Invoice HTTP (`POST /invoices` / `POST /invoices/proof`) is
-unchanged: the api issues BOLT11 invoices (LNURL-pay to the recipient) and
-verifies the payment preimage. A matching proof records the outbound gift
-for public `GET /gifts/stats`. An external worker holds lightning.space
-LNDHub credentials and pays **when the recipient posts a top-level forum
-note** (ping from this api); **replies do not pay**. Payout semantics on
-that worker are fail-closed: ambiguous outcomes quarantined as
-"uncertain", balance preflight before the first payment, and a per-donor
-cap. Recurring donor UI and an in-process scheduler are not HTTP yet. Do
-not invent `/me/recurring`.
+does not pay. A payout is decided **when the recipient posts a top-level
+forum note** (ping from this api); **replies do not pay**. With
+`PAYOUT_SIGNER=fond` the decided payout is queued in `fond_payout`; the
+Fond member pays it from its own in-app wallet through the `/fond` routes,
+for which the api issues the BOLT11 invoice (LNURL-pay to the recipient)
+and settles the payout, recording the outbound gift for public
+`GET /gifts/stats`. Without `PAYOUT_SIGNER` no payout is queued.
+Recurring donor UI and an in-process scheduler are not HTTP yet. Do not
+invent `/me/recurring`.
 
 ### NOSTR in v1
 
@@ -413,8 +409,8 @@ non-custodial phase (this table, like the rest of this section, is post-v1).
   it never pays the invoice and never holds the funds (an address on any other
   domain keeps its provider's callback, and the api is not involved)
 - **v1 addition** (see "v1 Transitional Model"): recurring gifts are paid by
-  an external spend worker via lightning.space LNDHub. This api only fetches
-  the invoice and verifies the preimage — it is not in the LNDHub pay path.
+  the Fond member from its own in-app wallet. This api queues the payout,
+  fetches the invoice, and settles the paid payout — it does not pay.
   The browser flow above remains for guests and one-off gifts.
 - Optional: **NIP-57 Zap receipts** published to NOSTR for transparent acknowledgements
 
@@ -563,14 +559,14 @@ the same endpoints later.
 - **Anti-abuse signals** — rate-limiting, spam scoring, suspicious-pattern
   detection at the edge
 - **v1 additions** (see "v1 Transitional Model"): passkey register/authenticate
-  and sessions; spend-worker invoice HTTP (`POST /invoices`,
-  `POST /invoices/proof`); receiving address = verified in-app wallet;
+  and sessions; the Fond payout queue and its invoice HTTP
+  (`/fond/*`); receiving address = verified in-app wallet;
   custodial per-account NOSTR identities (`nsec` encrypted at rest)
   with server-side event signing
 
 **Non-responsibilities** (stay client-side; target state — the v1 additions
 above temporarily move key generation/custody and event signing server-side;
-recurring paying stays in the external spend worker):
+recurring paying stays with the Fond member's wallet):
 
 - Passkey ceremonies, PRF evaluation, key derivation
 - Event signing (the api never sees the nsec)
@@ -578,8 +574,8 @@ recurring paying stays in the external spend worker):
   itself; for a member's wallet address the api only forwards the LNURL
   metadata and invoice callback, so it sees the amount and the invoice but
   never pays or holds funds; an address on any other domain keeps its
-  provider's callback and the api takes no part). Recurring spend-worker
-  invoices are the exception (`POST /invoices`).
+  provider's callback and the api takes no part). Fond payout invoices are
+  the exception (`POST /fond/payouts/:id/invoice`).
 - Client-side decryption of NIP-17 sealed DMs (v1 custodial unwrap is on
   the api for `/conversations`)
 
@@ -627,8 +623,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Public campaign feed (rendered from api response)
 - _Donate_ button → LNURL-pay (browser flow, works without an account)
 - Recurring gifts: configure USD amounts per recipient (paid by the
-  external spend worker when the recipient posts a top-level note, not
-  on a daily timer; replies do not pay)
+  Fond member when the recipient posts a top-level note, not on a daily
+  timer; replies do not pay)
 - Public comment composer (POST to api; signed server-side with the
   account's custodial key)
 - Moderation actions on campaigns/comments (Moderator role)
@@ -642,8 +638,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   `GET /me/previous-wallets`, `DELETE /me/previous-wallets/:sparkPubkey`, and
   the holder's encrypted boxes `GET /me/held-shares`,
   `PUT /me/held-shares/:id`, and `DELETE /me/held-shares/:id`
-- Spend-worker invoice HTTP: `POST /invoices` / `POST /invoices/proof`
-  (paying and LNDHub stay in the external worker)
+- Fond payout queue and invoice HTTP: `/fond/*` (paying stays in the Fond
+  member's wallet)
 - Receiving address: verified in-app wallet only
 - Custodial NOSTR identities: per-account keypair generated on sign-up,
   `nsec` stored encrypted at rest, events signed server-side
@@ -659,8 +655,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   unchanged); PATCH /debug/accounts/:id may still set role and does not
   write edges
 - USD → sats conversion for recurring-gift amounts via an exchange-rate
-  source (fail-closed on a missing or implausible rate; paying stays in
-  the spend worker)
+  source (fail-closed on a missing or implausible rate; paying stays with
+  the Fond member)
 - Custodial PN channel on `GET/POST /conversations` (NIP-17 + kind:4;
   official platform account; `Account.isPlatform`; `moderator_group` is a
   closed HTTP group for moderators with no Nostr)
@@ -675,7 +671,7 @@ Encryption: AES-GCM 256, with two key-derivation paths:
   passkey comes back only with the 12 words or with social recovery
   ([`docs/social-recovery.md`](./docs/social-recovery.md)).
 - Linking multiple LNURL-auth wallets to one account
-- Non-custodial donor spending (replaces the v1 spend worker)
+- Non-custodial donor spending (replaces the v1 Fond payout path)
 - Non-custodial client-side DMs (v1 ships a custodial PN channel on
   `/conversations`: NIP-17 + kind:4, official platform account;
   `moderator_group` is a closed HTTP group for moderators with
@@ -776,7 +772,7 @@ app, and operational simplicity.
 | Framework      | **[Hono](https://hono.dev)**                                                                                                                            | TypeScript-first, runs natively on Bun, tiny surface, ergonomic test ergonomics |
 | Validation     | `zod`                                                                                                                                                   | Same as app; shared schemas down the line                                       |
 | NOSTR client   | `nostr-tools` (subscriptions, encoding, signature verification; v1 additionally: key generation + server-side event signing for custodial identities)   | Same lib as the app; one mental model                                           |
-| Lightning      | LUD-16 JSON resolution via `fetch`; LNURL-pay invoice fetch + `light-bolt11-decoder` for spend-worker invoices; LNDHub pay stays in the external worker | LN node not required                                                            |
+| Lightning      | LUD-16 JSON resolution via `fetch`; LNURL-pay invoice fetch + `light-bolt11-decoder` for Fond payout invoices; paying stays in the Fond member's wallet | LN node not required                                                            |
 | Storage        | TBD (Postgres for relational; potentially Redis for relay-event cache)                                                                                  | Decision deferred until indexer surface stabilizes                              |
 | Relay endpoint | Shared `wss://relay.nostr.space` (PRD), `wss://dev-relay.nostr.space` (DEV)                                                                             | Operated as separate infrastructure; configured via env var                     |
 | Test           | **Vitest** + `@vitest/coverage-v8`                                                                                                                      | Explicit `coverage.thresholds: { lines, branches, functions, statements: 100 }` |
@@ -1166,6 +1162,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-10-16 | Wallet of Satoshi is removed with the in-app wallet release. Every daily grant and moderator stipend is paid only to `<username>@<host>`. There is no intermediate stage: the API change and the app change ship through the release pull requests `staging → develop` and `develop → main` of each repository, and both go live together. At boot, roster rows on a legacy address are linked to that member's account, and each payout address is resolved from the account's verified wallet when it is paid. The production check of 2026-10-16 is in docs/wallet-release-payouts.md.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | 2026-10-17 | The shop payment in USDT and USDC specified in docs/shop-stablecoin-payment.md is implemented. `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, together with the shop payment cases of `GET /.well-known/lnurlp/:username` and `/pos` and the watcher tick next to the charge watch. Stablecoin rows are offered only when `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, and `SHOP_REFUND_ADDRESS` also resolve. They stay off in production until the document's release checks pass on staging. SPEC.md lists the routes. **Supersedes** the "not implemented" status of the 2026-10-01, 2026-10-13, and 2026-10-14 shop payment rows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 2026-10-27 | A Web Push subscription belongs to the login that registered it. `POST /me/push-subscriptions` records the session; a re-POST from another session rebinds the endpoint. When that session expires, is removed, or its account is refused sessions, the worker stops sending to the endpoint and deletes it (also hourly, without a send). Subscriptions stored before this rule have no session and are deleted; a still logged-in device registers again on its next app start. Sent and failed outbox rows are deleted 7 days after they finished; pending rows stay.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 2026-11-14 | The api no longer delivers payout instructions to an external spend worker. `PAYOUT_SIGNER=fond` queues them in `fond_payout` as before; unset or blank `PAYOUT_SIGNER` means no payout sink; `spend` is rejected at boot like any other invalid value. The routes only that worker called are removed: `GET /invoices/passkey`, `GET /invoices/eligible`, `GET /invoices/posted`, `POST /invoices`, `POST /invoices/proof`, `POST /spend/daily-instruction`, `GET` and `POST /funding/daily-roster/document`, and `POST /funding/daily-roster/worker/*`. `SPEND_URL` is no longer read. `SPEND_API_TOKEN` authenticates nothing and stays the key for `addressRef` on log lines. **Supersedes** the spend-worker parts of the 2026-08-23, 2026-08-24, and 2026-09-14 entries.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 ## Next Steps
 

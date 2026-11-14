@@ -8,7 +8,7 @@
  *
  * Settlement goes to the member's receiving address (`receivingAddress`):
  * their verified wallet, resolved internally against the LNURL server. A
- * member without one is not found. No spend token. An unexpired pending point-of-sale
+ * member without one is not found. No bearer token. An unexpired pending point-of-sale
  * charge pins both returned sat bounds to that amount; provider metadata
  * used for the millisatoshi check is not mutated. Every BOLT11 minted while
  * that charge is open is recorded against it, so the paid watcher can see it

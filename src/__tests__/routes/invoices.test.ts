@@ -1,23 +1,26 @@
 import { createHash } from 'node:crypto';
-import { Hono } from 'hono';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { GIFT_INVOICE_MAX_MSAT, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { InMemoryDiagnosticStore } from '@/lib/diagnostic-log';
 import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import { unsignedNostrDefaults, type ForumPhoto } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
-import { InMemoryNotificationStore } from '@/lib/notification-store';
-import { InMemoryPushStore } from '@/lib/push-store';
-import { invoiceRoutes, issueGiftInvoice } from '@/routes/invoices';
-import { createApp as createAppRaw } from '@/server';
+import {
+  issueGiftInvoice,
+  persistProvenGift,
+  settleProvenGift,
+  type GiftActionDeps,
+  type IssueGiftInvoiceResult,
+} from '@/routes/invoices';
 import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore } from '@/lib/gift-store';
-import type { GiftRecord } from '@/lib/gift-recorder';
-import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
+import type { GiftRecord, GiftRecorder } from '@/lib/gift-recorder';
+import { setAddressRefKey, setDiagnosticSink } from '@/lib/log';
+import type { FiatAmounts } from '@/lib/money';
+import { InMemoryWelcomeInvoiceReservationStore } from '@/lib/welcome-reservation';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
@@ -74,25 +77,75 @@ function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
   };
 }
 
-function createApp(deps: Parameters<typeof createAppRaw>[0] = {}): ReturnType<typeof createAppRaw> {
-  return createAppRaw({
+/** Fetch that fails the test when a path reaches LNURL-pay unexpectedly. */
+const unexpectedFetch: FetchFn = async () => {
+  throw new Error('unexpected fetch');
+};
+
+/**
+ * Gift action collaborators wired from in-memory stores the way `createApp`
+ * wires the `/fond` actions: one gift store backs both `gifts` and
+ * `giftStore`, the welcome reservations are explicit, the LNURL server makes
+ * `alice@example.test` a wallet address, and no gift recorder is set.
+ *
+ * @param overrides - Per-test collaborators; `giftStore` also becomes `gifts`
+ *   unless `gifts` is given.
+ * @returns Action dependencies.
+ */
+function actionDeps(overrides: Partial<GiftActionDeps> = {}): GiftActionDeps {
+  const giftStore = overrides.giftStore ?? new InMemoryGiftStore();
+  return {
+    store: new InMemoryInvoiceStore(),
+    welcomeReservations: new InMemoryWelcomeInvoiceReservationStore(),
+    walletTransfers: fakeWalletTransferStore(),
+    authStore: new InMemoryAuthStore(),
+    messageStore: new InMemoryMessageStore(),
+    now: Date.now,
+    fetchImpl: unexpectedFetch,
+    lnurlServer: LNURL_SERVER,
+    conversationStore: new InMemoryConversationStore(),
     fundingStore: admittedStore(),
-    walletTransferStore: fakeWalletTransferStore(),
-    env: { ...process.env, ...LNURL_ENV },
-    ...deps,
-  });
+    recoveryShareRequiredFrom: null,
+    gifts: giftStore,
+    giftStore,
+    ...overrides,
+  };
 }
 
-/** Env that resolves the LNURL server, so `alice@example.test` is a wallet address. */
-const LNURL_ENV = {
-  LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
-  PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
-};
+/** Gift recorder that keeps every recorded row. */
+function capturingRecorder(): { giftRecorder: GiftRecorder; recorded: GiftRecord[] } {
+  const recorded: GiftRecord[] = [];
+  return {
+    recorded,
+    giftRecorder: {
+      recordOutbound: async (row) => {
+        recorded.push(row);
+      },
+    },
+  };
+}
+
+/**
+ * The issued invoice of a successful issue result.
+ *
+ * @throws Error when the action refused.
+ */
+function issuedInvoice(result: IssueGiftInvoiceResult): GiftInvoice {
+  if (!result.ok) {
+    throw new Error(`expected an invoice, got ${result.status} ${result.error}`);
+  }
+  return result.invoice;
+}
+
+/** USD-only fiat snapshot, as the Fond paid worker passes it. */
+function usdFiat(usd: string | null): FiatAmounts {
+  return { usd, chf: null, eur: null, php: null };
+}
 
 /**
  * Claim and verify the wallet of `acc-alice` (username `alice`) and, unless
  * `share` is false, store the 21.gifts recovery share that payouts need from
- * `RECOVERY_SHARE_REQUIRED_FROM` on.
+ * `recoveryShareRequiredFrom` on.
  */
 async function verifyWallet(
   authStore: InMemoryAuthStore,
@@ -107,7 +160,6 @@ async function verifyWallet(
   }
 }
 
-const spendApp = createApp;
 const NOW_MS = Date.parse('2026-09-20T12:00:00.000Z');
 const GATE_MS = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
 const TOKEN = 'spend-secret-token';
@@ -115,12 +167,12 @@ const ADDRESS = 'alice@example.test';
 const ADDRESS_REF = expectedAddressRef(ADDRESS, TOKEN);
 const PR = 'lnbc1issued';
 const HASH = 'aa'.repeat(32);
-const PREIMAGE = '11'.repeat(32);
-const MATCHING_HASH = createHash('sha256').update(Buffer.from(PREIMAGE, 'hex')).digest('hex');
 const MAX_SENDABLE = 100_000_000_000;
 const ONE_USD_AT_100K_MSAT = 1_000_000;
+/** Paying wallet label the Fond paid worker passes (the Fond username). */
+const SOURCE_WALLET = 'fond';
+const PAID_AT_MS = 100;
 const POST_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-const NEWER_POST_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const OTHER_POST_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const REPLY_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const PROFILE_NOTE_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
@@ -152,17 +204,6 @@ function happyFetch(): FetchFn {
   };
 }
 
-function auth(init?: RequestInit): RequestInit {
-  return {
-    ...init,
-    headers: {
-      authorization: `Bearer ${TOKEN}`,
-      'content-type': 'application/json',
-      ...init?.headers,
-    },
-  };
-}
-
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
     .map((call) => call[0])
@@ -172,7 +213,7 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 
 /**
  * Seed `acc-alice` (wallet `alice@example.test`) with a passkey credential so
- * POST /invoices can reach LNURL / 200. `share: false` leaves out the 21.gifts
+ * `issueGiftInvoice` can reach LNURL. `share: false` leaves out the 21.gifts
  * recovery share.
  */
 async function seedPasskeyAccount(
@@ -202,9 +243,6 @@ async function seedPasskeyAccount(
   });
 }
 
-/**
- * Seed one live non-profile top-level forum row for `accountId` (EARLY-shaped).
- */
 function expiredTrialGrant(accountId = 'acc-alice'): FundingGrant {
   return {
     accountId,
@@ -218,6 +256,9 @@ function expiredTrialGrant(accountId = 'acc-alice'): FundingGrant {
   };
 }
 
+/**
+ * Seed one live non-profile top-level forum row for `accountId`.
+ */
 function livePostStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
   return new InMemoryMessageStore([
     {
@@ -255,6 +296,84 @@ async function seedPasskeyAndPlatform(
   options: { share?: boolean } = {},
 ): Promise<void> {
   await seedPasskeyAccount(authStore, options);
+  await authStore.createAccount({
+    id: 'plat',
+    linkingKey: null,
+    role: 'founder',
+    name: '21.gifts',
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'b'.repeat(64),
+    createdAt: 2,
+    rulesAgreedAt: null,
+    isPlatform: true,
+  });
+}
+
+/** Seed `acc-alice` with a profile note, wallet, passkey, and the platform account. */
+async function seedProfileAccountAndPlatform(authStore: InMemoryAuthStore): Promise<void> {
+  await authStore.createAccount({
+    id: 'acc-alice',
+    username: 'alice',
+    walletRequired: true,
+    linkingKey: null,
+    role: 'verified',
+    name: 'Ada',
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'a'.repeat(64),
+    createdAt: 1,
+    rulesAgreedAt: null,
+    profileMessageId: PROFILE_NOTE_ID,
+  });
+  await verifyWallet(authStore);
+  await authStore.createPasskeyCredential({
+    credentialId: 'cred-alice',
+    publicKey: new Uint8Array([1]),
+    signCount: 0,
+    accountId: 'acc-alice',
+    createdAt: 1,
+  });
+  await authStore.createAccount({
+    id: 'plat',
+    linkingKey: null,
+    role: 'founder',
+    name: '21.gifts',
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'b'.repeat(64),
+    createdAt: 2,
+    rulesAgreedAt: null,
+    isPlatform: true,
+  });
+}
+
+/** Seed `acc-alice` (basis, with `name`), wallet, passkey, and the platform account. */
+async function seedNamedRecipientAndPlatform(
+  authStore: InMemoryAuthStore,
+  name: string | null,
+): Promise<void> {
+  await authStore.createAccount({
+    id: 'acc-alice',
+    username: 'alice',
+    walletRequired: true,
+    linkingKey: null,
+    role: 'basis',
+    name,
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'a'.repeat(64),
+    createdAt: 1,
+    rulesAgreedAt: null,
+  });
+  await verifyWallet(authStore);
+  await authStore.createPasskeyCredential({
+    credentialId: 'cred-alice',
+    publicKey: new Uint8Array([1]),
+    signCount: 0,
+    accountId: 'acc-alice',
+    createdAt: 1,
+  });
   await authStore.createAccount({
     id: 'plat',
     linkingKey: null,
@@ -326,23 +445,6 @@ function closedCreditStore(): InMemoryMessageStore {
   ]);
 }
 
-async function liveMediaPostStore(accountId: string = 'acc-alice'): Promise<InMemoryMessageStore> {
-  const store = new InMemoryMessageStore();
-  await store.create(
-    {
-      id: 'post-alice',
-      accountId,
-      name: 'Ada',
-      text: 'first',
-      createdAt: new Date('2026-08-01T00:00:00.000Z'),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-    },
-    JPEG,
-  );
-  return store;
-}
-
 /** Same derivation as production `spendGiftReplyId` (not exported). */
 function spendGiftReplyId(invoiceId: string): string {
   const hex = createHash('sha256').update(`21gifts-spend-gift:${invoiceId}`).digest('hex');
@@ -380,6 +482,25 @@ async function seedGroupTrigger(
   return thread.id;
 }
 
+/** Seed a member-platform thread whose message has the group trigger id. */
+async function seedNonGroupTrigger(conversations: InMemoryConversationStore): Promise<void> {
+  const thread = await conversations.openMemberPlatform('acc-alice', 'plat', new Date(1));
+  await conversations.appendMessage({
+    id: GROUP_MSG_ID,
+    conversationId: thread.id,
+    text: 'mod note',
+    createdAt: new Date(1),
+    senderAccountId: 'acc-alice',
+    senderPubkey: null,
+    name: 'Ada',
+    sats: 0,
+    eventId: null,
+    nostrPublishState: 'skipped',
+    nostrEvent: null,
+    claimedUntil: null,
+  });
+}
+
 function uuidReplyStore(): InMemoryMessageStore {
   return new InMemoryMessageStore([
     {
@@ -404,677 +525,29 @@ function uuidReplyStore(): InMemoryMessageStore {
   ]);
 }
 
-describe('GET /invoices/passkey', () => {
-  it('returns 503 when the spend token is not configured', async () => {
-    const res = await createApp({ spendApiToken: '' }).request(
-      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
-    );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
-  });
+/** A welcome gift row already paid to `alice`. */
+const PAID_WELCOME: GiftRow = {
+  paidAt: new Date(5),
+  amountSats: 1,
+  recipientWosUser: 'alice',
+  kind: 'welcome',
+  description: '21gifts welcome',
+};
 
-  it('returns 401 when the bearer is missing', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
-    );
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Unauthorized' });
-  });
+/** A welcome gift paid to `Alice` earlier on the UTC day of {@link NOW_MS}. */
+const WELCOME_TODAY: GiftRow = {
+  paidAt: new Date('2026-09-20T08:00:00.000Z'),
+  amountSats: 1000,
+  recipientWosUser: 'Alice',
+  kind: 'welcome',
+};
 
-  it('returns 400 when address is missing', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request('/invoices/passkey', auth());
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Not a valid Lightning Address (expected name@domain)',
-    });
-  });
-
-  it('returns 400 on a bad Lightning Address', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      '/invoices/passkey?address=nope',
-      auth(),
-    );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Not a valid Lightning Address (expected name@domain)',
-    });
-  });
-
-  it('returns hasPasskey false for an unknown address', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPasskey: false });
-  });
-
-  it('returns hasPasskey false for an account without a credential', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const res = await createApp({ spendApiToken: TOKEN, authStore }).request(
-      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPasskey: false });
-  });
-
-  it('returns hasPasskey true when the account has a credential', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const res = await createApp({ spendApiToken: TOKEN, authStore }).request(
-      `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ hasPasskey: true });
-  });
-});
-
-describe('GET /invoices/posted', () => {
-  it('returns 503 when the spend token is not configured', async () => {
-    const res = await createApp({ spendApiToken: '' }).request(
-      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
-    );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
-  });
-
-  it('returns 401 when the bearer is missing', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
-    );
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Unauthorized' });
-  });
-
-  it('returns 400 when address is missing', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request('/invoices/posted', auth());
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Not a valid Lightning Address (expected name@domain)',
-    });
-  });
-
-  it('returns 400 on a bad Lightning Address', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      '/invoices/posted?address=nope',
-      auth(),
-    );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Not a valid Lightning Address (expected name@domain)',
-    });
-  });
-
-  it('returns hasPosted false for an unknown address', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: false,
-      messageId: null,
-      postedAt: null,
-      hasMedia: false,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('returns hasPosted false for an account without messages', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const res = await createApp({ spendApiToken: TOKEN, authStore }).request(
-      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: false,
-      messageId: null,
-      postedAt: null,
-      hasMedia: false,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('returns hasPosted true when the account has a live top-level non-profile message', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: true,
-      messageId: 'post-alice',
-      postedAt: '2026-08-01T00:00:00.000Z',
-      hasMedia: false,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('returns hasPosted true with messageId null when the list has no non-profile row', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const inner = livePostStore();
-    const messageStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'listPostsByAccount') {
-          return async () => [];
-        }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
-      },
-    });
-    const res = await createApp({ spendApiToken: TOKEN, authStore, messageStore }).request(
-      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: true,
-      messageId: null,
-      postedAt: null,
-      hasMedia: false,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('returns hasPosted false when the account has only a profile note', async () => {
-    const authStore = new InMemoryAuthStore();
-    const profileId = 'prof-alice';
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-      profileMessageId: profileId,
-    });
-    await verifyWallet(authStore);
-    const messageStore = new InMemoryMessageStore([
-      {
-        id: profileId,
-        accountId: 'acc-alice',
-        name: 'Ada',
-        text: 'Ada',
-        createdAt: new Date('2026-08-01T00:00:00.000Z'),
-        hasPhoto: false,
-        ...unsignedNostrDefaults(),
-      },
-    ]);
-    const res = await createApp({ spendApiToken: TOKEN, authStore, messageStore }).request(
-      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: false,
-      messageId: null,
-      postedAt: null,
-      hasMedia: false,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('returns hasPosted false when the account has only a live reply', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: liveReplyStore(),
-    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: false,
-      messageId: null,
-      postedAt: null,
-      hasMedia: false,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('returns the live top-level post id as messageId', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: true,
-      messageId: POST_ID,
-      postedAt: '2026-08-01T00:00:00.000Z',
-      hasMedia: false,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('returns the newest live top-level post id as messageId', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const messageStore = new InMemoryMessageStore([
-      {
-        id: POST_ID,
-        accountId: 'acc-alice',
-        name: 'Ada',
-        text: 'first',
-        createdAt: new Date('2026-08-01T00:00:00.000Z'),
-        hasPhoto: false,
-        ...unsignedNostrDefaults(),
-      },
-      {
-        id: NEWER_POST_ID,
-        accountId: 'acc-alice',
-        name: 'Ada',
-        text: 'second',
-        createdAt: new Date('2026-08-02T00:00:00.000Z'),
-        hasPhoto: false,
-        ...unsignedNostrDefaults(),
-      },
-    ]);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: true,
-      messageId: NEWER_POST_ID,
-      postedAt: '2026-08-02T00:00:00.000Z',
-      hasMedia: false,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('returns hasPosted true and hasMedia true when the account has a live top-level photo post', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: await liveMediaPostStore(),
-    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: true,
-      messageId: 'post-alice',
-      postedAt: '2026-08-01T00:00:00.000Z',
-      hasMedia: true,
-      welcomeHasMedia: true,
-      welcomeMessageId: 'post-alice',
-    });
-  });
-  it('reports no welcome media once the account received the welcome gift', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    await authStore.createAccount({
-      id: 'plat',
-      linkingKey: null,
-      role: 'founder',
-      name: '21.gifts',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-      isPlatform: true,
-    });
-    const messageStore = await liveMediaPostStore();
-    await messageStore.create({
-      id: 'welcome-reply',
-      accountId: 'plat',
-      name: '21.gifts',
-      text: 'Welcome',
-      createdAt: new Date('2026-08-02T00:00:00.000Z'),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-      parentId: 'post-alice',
-    });
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: true,
-      messageId: 'post-alice',
-      postedAt: '2026-08-01T00:00:00.000Z',
-      hasMedia: true,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-  it('reports no welcome media when a welcome gift is recorded under the username', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    const messageStore = await liveMediaPostStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      giftStore: new InMemoryGiftStore([
-        {
-          paidAt: new Date(5),
-          amountSats: 1,
-          recipientWosUser: 'alice',
-          kind: 'welcome',
-          description: '21gifts welcome',
-        },
-      ]),
-    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      hasPosted: true,
-      messageId: 'post-alice',
-      postedAt: '2026-08-01T00:00:00.000Z',
-      hasMedia: true,
-      welcomeHasMedia: false,
-      welcomeMessageId: null,
-    });
-  });
-
-  it('reports welcome media on an About-me photo and ignores a note that is not that photo', async () => {
-    const authStore = new InMemoryAuthStore();
-    const profileId = 'prof-alice';
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-      profileMessageId: profileId,
-    });
-    await verifyWallet(authStore);
-    const profile = {
-      id: profileId,
-      accountId: 'acc-alice',
-      deletedAt: null,
-      parentId: null,
-      hasPhoto: true,
-      hasVideo: false,
-      photoCount: 1,
-    };
-    const cases: Array<{
-      posts: Array<{ id: string; hasPhoto: boolean; hasVideo: boolean; photoCount: number }>;
-      profile: typeof profile | undefined;
-      profileMessageId?: string | null;
-      welcomeMessageId: string | null;
-    }> = [
-      {
-        posts: [
-          { id: 'text-row', hasPhoto: false, hasVideo: false, photoCount: 0 },
-          { id: 'photo-row', hasPhoto: true, hasVideo: false, photoCount: 1 },
-        ],
-        profile,
-        welcomeMessageId: 'photo-row',
-      },
-      {
-        posts: [{ id: 'video-row', hasPhoto: false, hasVideo: true, photoCount: 0 }],
-        profile,
-        welcomeMessageId: 'video-row',
-      },
-      {
-        posts: [{ id: 'stills-row', hasPhoto: false, hasVideo: false, photoCount: 2 }],
-        profile,
-        welcomeMessageId: 'stills-row',
-      },
-      { posts: [], profile, welcomeMessageId: profileId },
-      {
-        posts: [],
-        profile: { ...profile, hasPhoto: false, hasVideo: true, photoCount: 0 },
-        welcomeMessageId: profileId,
-      },
-      {
-        posts: [],
-        profile: { ...profile, hasPhoto: false, hasVideo: false, photoCount: 3 },
-        welcomeMessageId: profileId,
-      },
-      { posts: [], profile: undefined, welcomeMessageId: null },
-      {
-        posts: [],
-        profile: { ...profile, deletedAt: new Date(1) as unknown as null },
-        welcomeMessageId: null,
-      },
-      {
-        posts: [],
-        profile: { ...profile, parentId: 'parent' as unknown as null },
-        welcomeMessageId: null,
-      },
-      {
-        posts: [],
-        profile: { ...profile, accountId: 'other' },
-        welcomeMessageId: null,
-      },
-      {
-        posts: [],
-        profile: { ...profile, hasPhoto: false, hasVideo: false, photoCount: 0 },
-        welcomeMessageId: null,
-      },
-      { posts: [], profile, profileMessageId: '   ', welcomeMessageId: null },
-      { posts: [], profile, profileMessageId: null, welcomeMessageId: null },
-    ];
-    for (const item of cases) {
-      if (item.profileMessageId !== undefined) {
-        const current = await authStore.getAccount('acc-alice');
-        expect(current).toBeDefined();
-        if (current !== undefined) {
-          await authStore.updateAccount({ ...current, profileMessageId: item.profileMessageId });
-        }
-      } else {
-        const current = await authStore.getAccount('acc-alice');
-        if (current !== undefined && current.profileMessageId !== profileId) {
-          await authStore.updateAccount({ ...current, profileMessageId: profileId });
-        }
-      }
-      const inner = new InMemoryMessageStore();
-      const messageStore = new Proxy(inner, {
-        get(target, prop, receiver) {
-          if (prop === 'accountHasLiveTopLevelMediaPost') {
-            return async () => true;
-          }
-          if (prop === 'accountHasLiveTopLevelPost') {
-            return async () => false;
-          }
-          if (prop === 'listPostsByAccount') {
-            return async () => item.posts;
-          }
-          if (prop === 'getById') {
-            return async () => item.profile;
-          }
-          if (prop === 'latestLiveTopLevelMediaId') {
-            return async () => item.welcomeMessageId;
-          }
-          const value = Reflect.get(target, prop, receiver) as unknown;
-          return typeof value === 'function'
-            ? (value as (...args: never[]) => unknown).bind(target)
-            : value;
-        },
-      });
-      const res = await createApp({ spendApiToken: TOKEN, authStore, messageStore }).request(
-        `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
-        auth(),
-      );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({
-        hasPosted: false,
-        messageId: null,
-        postedAt: null,
-        hasMedia: false,
-        welcomeHasMedia: item.welcomeMessageId !== null,
-        welcomeMessageId: item.welcomeMessageId,
-      });
-    }
-  });
-});
-
-describe('POST /invoices', () => {
+describe('issueGiftInvoice', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
     mockedDecode.mockReset();
     mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 1000 });
     mockedSpot.mockReset();
@@ -1084,78 +557,46 @@ describe('POST /invoices', () => {
   afterEach(() => {
     expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
-  });
-
-  it('returns 503 when the spend token is not configured', async () => {
-    const res = await createApp({ spendApiToken: '' }).request('/invoices', {
-      method: 'POST',
-      body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }),
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
-  });
-
-  it('returns 401 when the bearer is missing', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request('/invoices', {
-      method: 'POST',
-      body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }),
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('returns 400 on invalid JSON', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      '/invoices',
-      auth({ method: 'POST', body: 'not-json' }),
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it('returns 400 on a bad body', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
-    );
-    expect(res.status).toBe(400);
+    setAddressRefKey(null);
+    setDiagnosticSink(null);
   });
 
   it('returns 400 on a bad Lightning Address', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: 'nope', amountMsat: 1000 }) }),
-    );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
+    const result = await issueGiftInvoice(actionDeps(), { address: 'nope', amountMsat: 1000 });
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
       error: 'Not a valid Lightning Address (expected name@domain)',
     });
   });
 
   it('returns 400 when amountMsat is below the api minimum', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1 }) }),
-    );
-    expect(res.status).toBe(400);
+    const result = await issueGiftInvoice(actionDeps(), { address: ADDRESS, amountMsat: 1 });
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      error: 'Expected a JSON body with address and amountMsat',
+    });
   });
 
   it('returns 400 when amountMsat is above the api maximum', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: GIFT_INVOICE_MAX_MSAT + 1 }),
-      }),
-    );
-    expect(res.status).toBe(400);
+    const result = await issueGiftInvoice(actionDeps(), {
+      address: ADDRESS,
+      amountMsat: GIFT_INVOICE_MAX_MSAT + 1,
+    });
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      error: 'Expected a JSON body with address and amountMsat',
+    });
   });
 
   it('returns 403 when there is no account for the address', async () => {
-    const res = await createApp({ spendApiToken: TOKEN, fetchImpl: happyFetch() }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Passkey required' });
+    const result = await issueGiftInvoice(actionDeps({ fetchImpl: happyFetch() }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Passkey required' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
   });
 
@@ -1175,90 +616,68 @@ describe('POST /invoices', () => {
       rulesAgreedAt: null,
     });
     await verifyWallet(authStore);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      fetchImpl: happyFetch(),
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Passkey required' });
+    const result = await issueGiftInvoice(actionDeps({ authStore, fetchImpl: happyFetch() }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Passkey required' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.passkey_required')).toBe(true);
   });
 
   it('returns 403 when the account has a passkey but no funding grant', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('LNURL must not be called');
-    };
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      fundingStore: new InMemoryFundingStore(),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        fundingStore: new InMemoryFundingStore(),
+        now: () => GATE_MS,
+      }),
+      { address: ADDRESS, amountMsat: 1000 },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.funding_required')).toBe(true);
   });
 
   it('returns 403 when the account has a passkey but no live forum post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('LNURL must not be called');
-    };
-    const res = await createApp({ spendApiToken: TOKEN, authStore, fetchImpl }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    const result = await issueGiftInvoice(actionDeps({ authStore }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Forum post required' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
   });
 
   it('returns 403 when the account has a passkey but only a live reply', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('LNURL must not be called');
-    };
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: liveReplyStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: liveReplyStore() }),
+      { address: ADDRESS, amountMsat: 1000 },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Forum post required' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.forum_post_required')).toBe(true);
   });
 
   it('returns 502 when LNURL-pay cannot issue an invoice', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const fetchImpl: FetchFn = async () => jsonResponse({}, 500);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        fetchImpl: async () => jsonResponse({}, 500),
+      }),
+      { address: ADDRESS, amountMsat: 1000 },
     );
-    expect(res.status).toBe(502);
+    expect(result).toEqual({
+      ok: false,
+      status: 502,
+      error: 'Lightning Address did not issue an invoice',
+    });
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issue_failed')).toBe(true);
   });
 
@@ -1266,85 +685,69 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     mockedDecode.mockReturnValue(null);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl: happyFetch(),
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl: happyFetch() }),
+      { address: ADDRESS, amountMsat: 1000 },
     );
-    expect(res.status).toBe(502);
+    expect(result).toEqual({
+      ok: false,
+      status: 502,
+      error: 'Lightning Address did not issue an invoice',
+    });
   });
 
   it('returns 502 when the invoice amount does not match', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 999 });
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl: happyFetch(),
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl: happyFetch() }),
+      { address: ADDRESS, amountMsat: 1000 },
     );
-    expect(res.status).toBe(502);
+    expect(result).toEqual({
+      ok: false,
+      status: 502,
+      error: 'Lightning Address did not issue an invoice',
+    });
   });
 
-  it('returns 200 with id, pr, paymentHash, amountMsat', async () => {
+  it('returns the issued invoice with id, pr, paymentHash, amountMsat and stores it', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl: happyFetch(),
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' }),
-      }),
+    const store = new InMemoryInvoiceStore();
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(
+        actionDeps({ authStore, store, messageStore: livePostStore(), fetchImpl: happyFetch() }),
+        { address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' },
+      ),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      id: string;
-      pr: string;
-      paymentHash: string;
-      amountMsat: number;
-    };
-    expect(body.pr).toBe(PR);
-    expect(body.paymentHash).toBe(HASH);
-    expect(body.amountMsat).toBe(1000);
-    expect(body.id).toMatch(/^[0-9a-f]{32}$/);
+    expect(invoice.pr).toBe(PR);
+    expect(invoice.paymentHash).toBe(HASH);
+    expect(invoice.amountMsat).toBe(1000);
+    expect(invoice.id).toMatch(/^[0-9a-f]{32}$/);
+    expect(invoice.address).toBe(ADDRESS);
+    expect(invoice.comment).toBe('21gifts daily');
+    expect(store.get(invoice.id)).toEqual(invoice);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
   });
 
   it('prints invoice.issued with addressRef and no address, and the sink keeps the address', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const diagnosticStore = new InMemoryDiagnosticStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      diagnosticStore,
-      messageStore: livePostStore(),
-      fetchImpl: happyFetch(),
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    const sunk: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    setDiagnosticSink((event, fields) => {
+      sunk.push({ event, fields: { ...fields } });
+    });
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl: happyFetch() }),
+      { address: ADDRESS, amountMsat: 1000 },
     );
-    expect(res.status).toBe(200);
+    expect(result.ok).toBe(true);
     const line = parsedEvents(warn).find((e) => e['event'] === 'invoice.issued');
     expect(line?.['addressRef']).toBe(ADDRESS_REF);
     expect(line?.['amountMsat']).toBe(1000);
     expect('address' in (line ?? {})).toBe(false);
-    const stored = (await diagnosticStore.listLatest(50)).find(
-      (row) => row.event === 'invoice.issued',
-    );
+    const stored = sunk.find((row) => row.event === 'invoice.issued');
     expect(stored?.fields['address']).toBe(ADDRESS);
     expect('addressRef' in (stored?.fields ?? {})).toBe(false);
   });
@@ -1352,30 +755,20 @@ describe('POST /invoices', () => {
   it('stores messageId and comment when issuing against a UUID post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: await uuidMediaPostStore(),
-      invoiceStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-          comment: 'gm',
+    const store = new InMemoryInvoiceStore();
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(
+        actionDeps({
+          authStore,
+          messageStore: await uuidMediaPostStore(),
+          store,
+          fetchImpl: happyFetch(),
         }),
-      }),
+        { address: ADDRESS, amountMsat: 1000, messageId: POST_ID, comment: 'gm' },
+      ),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
-    expect(invoiceStore.get(body.id)?.comment).toBe('gm');
+    expect(store.get(invoice.id)?.messageId).toBe(POST_ID);
+    expect(store.get(invoice.id)?.comment).toBe('gm');
   });
 
   it('refuses a closed credit before the LNURL invoice is minted', async () => {
@@ -1399,32 +792,16 @@ describe('POST /invoices', () => {
       },
       JPEG,
     );
-    const invoiceStore = new InMemoryInvoiceStore();
-    const fetchImpl = vi.fn<FetchFn>(async () => {
-      throw new Error('LNURL must not be called');
+    const fetchImpl = vi.fn<FetchFn>(unexpectedFetch);
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: POST_ID,
+      comment: 'gm',
     });
-
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      invoiceStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-          comment: 'gm',
-        }),
-      }),
-    );
-
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
       error: 'This credit no longer collects',
       code: 'credit_closed',
     });
@@ -1448,22 +825,13 @@ describe('POST /invoices', () => {
     });
     await verifyWallet(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: closedCreditStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: closedCreditStore(), fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000, messageId: POST_ID },
     );
-
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
       error: 'This credit no longer collects',
       code: 'credit_closed',
     });
@@ -1474,24 +842,19 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: closedCreditStore(),
-      fundingStore: new InMemoryFundingStore(),
-      fetchImpl,
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: closedCreditStore(),
+        fundingStore: new InMemoryFundingStore(),
+        fetchImpl,
+        now: () => GATE_MS,
       }),
+      { address: ADDRESS, amountMsat: 1000, messageId: POST_ID },
     );
-
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
       error: 'This credit no longer collects',
       code: 'credit_closed',
     });
@@ -1502,22 +865,13 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: closedCreditStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: closedCreditStore(), fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000, messageId: POST_ID },
     );
-
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
       error: 'This credit no longer collects',
       code: 'credit_closed',
     });
@@ -1544,7 +898,7 @@ describe('POST /invoices', () => {
       },
       JPEG,
     );
-    const invoiceStore = new InMemoryInvoiceStore();
+    const store = new InMemoryInvoiceStore();
     let entered = (): void => undefined;
     const mintStarted = new Promise<void>((resolve) => {
       entered = resolve;
@@ -1566,24 +920,11 @@ describe('POST /invoices', () => {
       await mintGate;
       return jsonResponse({ pr: PR });
     };
-    const app = createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      invoiceStore,
-      fetchImpl,
+    const issue = issueGiftInvoice(actionDeps({ authStore, messageStore, store, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: POST_ID.toUpperCase(),
     });
-    const issue = app.request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID.toUpperCase(),
-        }),
-      }),
-    );
     await mintStarted;
     let closeFinished = false;
     const close = messageStore
@@ -1595,263 +936,177 @@ describe('POST /invoices', () => {
     await Promise.resolve();
     expect(closeFinished).toBe(false);
     release();
-    const issued = await issue;
-    expect(issued.status).toBe(200);
-    const body = (await issued.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
+    const invoice = issuedInvoice(await issue);
+    expect(store.get(invoice.id)?.messageId).toBe(POST_ID);
     expect((await close)?.closedAt).toEqual(new Date('2026-11-11T12:00:00.000Z'));
   });
 
   it('stores an empty comment when messageId is set and comment is omitted', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: await uuidMediaPostStore(),
-      invoiceStore,
-      fetchImpl: happyFetch(),
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
-      }),
+    const store = new InMemoryInvoiceStore();
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(
+        actionDeps({
+          authStore,
+          messageStore: await uuidMediaPostStore(),
+          store,
+          fetchImpl: happyFetch(),
+        }),
+        { address: ADDRESS, amountMsat: 1000, messageId: POST_ID },
+      ),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
-    expect(invoiceStore.get(body.id)?.comment).toBe('');
+    expect(store.get(invoice.id)?.messageId).toBe(POST_ID);
+    expect(store.get(invoice.id)?.comment).toBe('');
   });
 
   it('returns 200 when messageId is a live top-level photo post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
+    const store = new InMemoryInvoiceStore();
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: await uuidMediaPostStore(),
-      invoiceStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-        }),
-      }),
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(
+        actionDeps({ authStore, messageStore: await uuidMediaPostStore(), store, fetchImpl }),
+        { address: ADDRESS, amountMsat: 1000, messageId: POST_ID },
+      ),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
     expect(fetchImpl).toHaveBeenCalled();
-    expect(invoiceStore.get(body.id)?.messageId).toBe(POST_ID);
+    expect(store.get(invoice.id)?.messageId).toBe(POST_ID);
   });
 
   it('returns 200 when messageId has extra stills only', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const inner = await uuidMediaPostStore();
-    const originalGet = inner.getById.bind(inner);
-    inner.getById = async (id: string) => {
+    const messageStore = await uuidMediaPostStore();
+    const originalGet = messageStore.getById.bind(messageStore);
+    messageStore.getById = async (id: string) => {
       const row = await originalGet(id);
       if (row === undefined) {
         return undefined;
       }
       return { ...row, hasPhoto: false, hasVideo: false, photoCount: 2 };
     };
-    const messageStore = inner;
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      invoiceStore,
-      fetchImpl: happyFetch(),
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-        }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore, fetchImpl: happyFetch() }),
+      { address: ADDRESS, amountMsat: 1000, messageId: POST_ID },
     );
-    expect(res.status).toBe(200);
+    expect(result.ok).toBe(true);
   });
 
-  it('records a welcome gift sent without messageId as welcome and refuses a second one', async () => {
-    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+  it('records a welcome gift issued without messageId as welcome and refuses a second one', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const recorded: GiftRecord[] = [];
-    const deps = {
-      spendApiToken: TOKEN,
+    const store = new InMemoryInvoiceStore();
+    const { giftRecorder, recorded } = capturingRecorder();
+    const deps = actionDeps({
       authStore,
       messageStore: livePostStore(),
-      invoiceStore,
+      store,
       fetchImpl: happyFetch(),
       now: () => NOW_MS,
-      giftRecorder: {
-        recordOutbound: async (row: GiftRecord): Promise<void> => {
-          recorded.push(row);
-        },
-      },
-    };
-    const welcome = JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' });
-    const issued = await createApp(deps).request(
-      '/invoices',
-      auth({ method: 'POST', body: welcome }),
-    );
-    expect(issued.status).toBe(200);
-    const body = (await issued.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.comment).toBe('Welcome');
-    expect(invoiceStore.get(body.id)?.messageId).toBeUndefined();
-    const proved = await createApp(deps).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: body.id, preimage: PREIMAGE }) }),
-    );
-    expect(proved.status).toBe(200);
+      giftRecorder,
+    });
+    const welcome = { address: ADDRESS, amountMsat: 1000, comment: 'Welcome' };
+    const invoice = issuedInvoice(await issueGiftInvoice(deps, welcome));
+    expect(store.get(invoice.id)?.comment).toBe('Welcome');
+    expect(store.get(invoice.id)?.messageId).toBeUndefined();
+    await settleProvenGift(deps, invoice, NOW_MS, SOURCE_WALLET, null);
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
       recipientWosUser: 'alice',
       kind: 'welcome',
       description: '21gifts welcome',
     });
-    const again = await createApp({
-      ...deps,
-      giftStore: new InMemoryGiftStore(
-        recorded.map((row) => ({
-          paidAt: row.paidAt,
-          amountSats: row.amountSats,
-          recipientWosUser: row.recipientWosUser,
-          kind: row.kind,
-          description: row.description,
-        })),
-      ),
-    }).request('/invoices', auth({ method: 'POST', body: welcome }));
-    expect(again.status).toBe(409);
-    expect(await again.json()).toEqual({ error: 'Welcome gift already paid' });
+    const again = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        fetchImpl: happyFetch(),
+        now: () => NOW_MS,
+        giftStore: new InMemoryGiftStore(
+          recorded.map((row) => ({
+            paidAt: row.paidAt,
+            amountSats: row.amountSats,
+            recipientWosUser: row.recipientWosUser,
+            kind: row.kind,
+            description: row.description,
+          })),
+        ),
+      }),
+      welcome,
+    );
+    expect(again).toEqual({ ok: false, status: 409, error: 'Welcome gift already paid' });
   });
 
   it('pays a moderator payout with comment Welcome after the welcome gift, but not an ignored group id', async () => {
-    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const recorded: GiftRecord[] = [];
-    const app = createApp({
-      spendApiToken: TOKEN,
+    const { giftRecorder, recorded } = capturingRecorder();
+    const deps = actionDeps({
       authStore,
       messageStore: livePostStore(),
-      invoiceStore,
       conversationStore,
       fetchImpl: happyFetch(),
       now: () => NOW_MS,
-      giftStore: new InMemoryGiftStore([
-        {
-          paidAt: new Date(5),
-          amountSats: 1,
-          recipientWosUser: 'alice',
-          kind: 'welcome',
-          description: '21gifts welcome',
-        },
-      ]),
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
+      giftStore: new InMemoryGiftStore([PAID_WELCOME]),
+      giftRecorder,
     });
-    const issue = async (groupMessageId: string): Promise<Response> =>
-      app.request(
-        '/invoices',
-        auth({
-          method: 'POST',
-          body: JSON.stringify({
-            address: ADDRESS,
-            amountMsat: 1000,
-            comment: 'Welcome',
-            groupMessageId,
-          }),
-        }),
-      );
-    const moderator = await issue(GROUP_MSG_ID);
-    expect(moderator.status).toBe(200);
-    const body = (await moderator.json()) as { id: string };
-    const proved = await app.request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: body.id, preimage: PREIMAGE }) }),
-    );
-    expect(proved.status).toBe(200);
+    const issue = (groupMessageId: string): Promise<IssueGiftInvoiceResult> =>
+      issueGiftInvoice(deps, {
+        address: ADDRESS,
+        amountMsat: 1000,
+        comment: 'Welcome',
+        groupMessageId,
+      });
+    const invoice = issuedInvoice(await issue(GROUP_MSG_ID));
+    await settleProvenGift(deps, invoice, NOW_MS, SOURCE_WALLET, null);
     expect(recorded[0]).toMatchObject({ kind: 'moderator', description: '21gifts moderator' });
-    const ignored = await issue('99999999-9999-4999-8999-999999999999');
-    expect(ignored.status).toBe(409);
-    expect(await ignored.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(await issue('99999999-9999-4999-8999-999999999999')).toEqual({
+      ok: false,
+      status: 409,
+      error: 'Welcome gift already paid',
+    });
   });
 
-  it('stores normalized amountUsd and freezes that USD on the proven gift', async () => {
-    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+  it('stores normalized amountUsd and writes the passed USD snapshot on the proven moderator gift', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
+    const store = new InMemoryInvoiceStore();
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    const recorded: GiftRecord[] = [];
+    const { giftRecorder, recorded } = capturingRecorder();
     const paidAt = Date.parse('2026-09-22T15:00:00.000Z');
-    const app = createApp({
-      spendApiToken: TOKEN,
+    const deps = actionDeps({
       authStore,
       messageStore: livePostStore(),
-      invoiceStore,
+      store,
       conversationStore,
       fetchImpl: happyFetch(),
       now: () => paidAt,
-      fiatRates: new InMemoryFiatStore({
-        '2026-09-22': { CHF: '0.80', EUR: '0.90', PHP: '50' },
-      }),
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
+      giftRecorder,
     });
-    const issued = await app.request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          amountUsd: '5',
-          groupMessageId: GROUP_MSG_ID,
-        }),
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(deps, {
+        address: ADDRESS,
+        amountMsat: 1000,
+        amountUsd: '5',
+        groupMessageId: GROUP_MSG_ID,
       }),
     );
-    expect(issued.status).toBe(200);
-    const body = (await issued.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.amountUsd).toBe('5.00');
-    const proved = await app.request(
-      '/invoices/proof',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ id: body.id, preimage: PREIMAGE }),
-      }),
+    expect(store.get(invoice.id)?.amountUsd).toBe('5.00');
+    await settleProvenGift(
+      deps,
+      invoice,
+      paidAt,
+      SOURCE_WALLET,
+      usdFiat(store.get(invoice.id)?.amountUsd ?? null),
     );
-    expect(proved.status).toBe(200);
     expect(recorded[0]?.fiat?.usd).toBe('5.00');
     expect(recorded[0]?.fiat?.chf).toBeNull();
-    const attached = await conversationStore.getMessageById(spendGroupGiftId(body.id));
+    const attached = await conversationStore.getMessageById(spendGroupGiftId(invoice.id));
     expect(attached?.amountUsd).toBe('5.00');
     expect(attached?.amountChf).toBeNull();
   });
@@ -1860,20 +1115,13 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, amountUsd: 'nope' }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000, amountUsd: 'nope' },
     );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
       error: 'Expected a JSON body with address and amountMsat',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -1883,24 +1131,13 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: 'nope',
-        }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: uuidPostStore(), fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000, messageId: 'nope' },
     );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
       error: 'Expected a JSON body with address and amountMsat',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -1910,24 +1147,11 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: UNKNOWN_POST_ID,
-        }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: uuidPostStore(), fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000, messageId: UNKNOWN_POST_ID },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Forum post required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -1957,63 +1181,18 @@ describe('POST /invoices', () => {
         goalClosedAt: new Date('2026-08-03T00:00:00.000Z'),
       },
     ]);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: REPLY_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: REPLY_ID,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Forum post required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('returns 403 when messageId is the account profile note', async () => {
     const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'verified',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-      profileMessageId: PROFILE_NOTE_ID,
-    });
-    await verifyWallet(authStore);
-    await authStore.createPasskeyCredential({
-      credentialId: 'cred-alice',
-      publicKey: new Uint8Array([1]),
-      signCount: 0,
-      accountId: 'acc-alice',
-      createdAt: 1,
-    });
-    await authStore.createAccount({
-      id: 'plat',
-      linkingKey: null,
-      role: 'founder',
-      name: '21.gifts',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-      isPlatform: true,
-    });
+    await seedProfileAccountAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const messageStore = new InMemoryMessageStore([
       {
@@ -2035,63 +1214,18 @@ describe('POST /invoices', () => {
         ...unsignedNostrDefaults(),
       },
     ]);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: PROFILE_NOTE_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: PROFILE_NOTE_ID,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Forum post required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('returns 200 when messageId is a profile note that has a photo', async () => {
     const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'verified',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-      profileMessageId: PROFILE_NOTE_ID,
-    });
-    await verifyWallet(authStore);
-    await authStore.createPasskeyCredential({
-      credentialId: 'cred-alice',
-      publicKey: new Uint8Array([1]),
-      signCount: 0,
-      accountId: 'acc-alice',
-      createdAt: 1,
-    });
-    await authStore.createAccount({
-      id: 'plat',
-      linkingKey: null,
-      role: 'founder',
-      name: '21.gifts',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-      isPlatform: true,
-    });
+    await seedProfileAccountAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const messageStore = new InMemoryMessageStore([
       {
@@ -2104,62 +1238,19 @@ describe('POST /invoices', () => {
         ...unsignedNostrDefaults(),
       },
     ]);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: PROFILE_NOTE_ID,
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: PROFILE_NOTE_ID,
+      comment: 'Welcome',
+    });
+    expect(result.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalled();
   });
+
   it('returns 409 for a welcome invoice when the account already received the welcome gift', async () => {
     const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'verified',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-      profileMessageId: PROFILE_NOTE_ID,
-    });
-    await verifyWallet(authStore);
-    await authStore.createPasskeyCredential({
-      credentialId: 'cred-alice',
-      publicKey: new Uint8Array([1]),
-      signCount: 0,
-      accountId: 'acc-alice',
-      createdAt: 1,
-    });
-    await authStore.createAccount({
-      id: 'plat',
-      linkingKey: null,
-      role: 'founder',
-      name: '21.gifts',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-      isPlatform: true,
-    });
+    await seedProfileAccountAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const messageStore = new InMemoryMessageStore([
       {
@@ -2182,63 +1273,19 @@ describe('POST /invoices', () => {
         parentId: PROFILE_NOTE_ID,
       },
     ]);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: PROFILE_NOTE_ID,
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: PROFILE_NOTE_ID,
+      comment: 'Welcome',
+    });
+    expect(result).toEqual({ ok: false, status: 409, error: 'Welcome gift already paid' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
   it('returns 409 for a welcome invoice without messageId after a platform Welcome reply', async () => {
     const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'verified',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-      profileMessageId: PROFILE_NOTE_ID,
-    });
-    await verifyWallet(authStore);
-    await authStore.createPasskeyCredential({
-      credentialId: 'cred-alice',
-      publicKey: new Uint8Array([1]),
-      signCount: 0,
-      accountId: 'acc-alice',
-      createdAt: 1,
-    });
-    await authStore.createAccount({
-      id: 'plat',
-      linkingKey: null,
-      role: 'founder',
-      name: '21.gifts',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-      isPlatform: true,
-    });
+    await seedProfileAccountAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const messageStore = new InMemoryMessageStore([
       {
@@ -2261,24 +1308,12 @@ describe('POST /invoices', () => {
         parentId: PROFILE_NOTE_ID,
       },
     ]);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      comment: 'Welcome',
+    });
+    expect(result).toEqual({ ok: false, status: 409, error: 'Welcome gift already paid' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -2318,24 +1353,14 @@ describe('POST /invoices', () => {
         goalClosedAt: new Date('2026-08-03T00:00:00.000Z'),
       },
     ]);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: OTHER_POST_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: OTHER_POST_ID,
+    });
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
       error: 'This credit no longer collects',
       code: 'credit_closed',
     });
@@ -2358,24 +1383,14 @@ describe('POST /invoices', () => {
         goalClosedAt: new Date('2026-08-03T00:00:00.000Z'),
       },
     ]);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: POST_ID,
+    });
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
       error: 'This credit no longer collects',
       code: 'credit_closed',
     });
@@ -2389,50 +1404,30 @@ describe('POST /invoices', () => {
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const messageStore = closedCreditStore();
     await messageStore.markDeleted(POST_ID, new Date('2026-08-04T00:00:00.000Z'), 'moderator');
-
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, messageId: POST_ID }),
-      }),
-    );
-
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    const result = await issueGiftInvoice(actionDeps({ authStore, messageStore, fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      messageId: POST_ID,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Forum post required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('returns 503 when messageId is set and the platform account is missing', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const putSpy = vi.spyOn(invoiceStore, 'put');
+    const store = new InMemoryInvoiceStore();
+    const putSpy = vi.spyOn(store, 'put');
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: await uuidMediaPostStore(),
-      invoiceStore,
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-        }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: await uuidMediaPostStore(), store, fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000, messageId: POST_ID },
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Platform account is not configured' });
+    expect(result).toEqual({
+      ok: false,
+      status: 503,
+      error: 'Platform account is not configured',
+    });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(putSpy).not.toHaveBeenCalled();
   });
@@ -2441,16 +1436,12 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const app = (gifts: InMemoryGiftStore): ReturnType<typeof createAppRaw> =>
-      createApp({
-        spendApiToken: TOKEN,
-        authStore,
-        messageStore: livePostStore(),
-        giftStore: gifts,
-        fetchImpl,
-      });
-    const welcome = JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' });
-    const refused = await app(
+    const issue = (giftStore: InMemoryGiftStore): Promise<IssueGiftInvoiceResult> =>
+      issueGiftInvoice(
+        actionDeps({ authStore, messageStore: livePostStore(), giftStore, fetchImpl }),
+        { address: ADDRESS, amountMsat: 1000, comment: 'Welcome' },
+      );
+    const refused = await issue(
       new InMemoryGiftStore([
         {
           paidAt: new Date(5),
@@ -2460,11 +1451,10 @@ describe('POST /invoices', () => {
           description: '21gifts welcome',
         },
       ]),
-    ).request('/invoices', auth({ method: 'POST', body: welcome }));
-    expect(refused.status).toBe(409);
-    expect(await refused.json()).toEqual({ error: 'Welcome gift already paid' });
+    );
+    expect(refused).toEqual({ ok: false, status: 409, error: 'Welcome gift already paid' });
     expect(fetchImpl).not.toHaveBeenCalled();
-    const first = await app(
+    const first = await issue(
       new InMemoryGiftStore([
         { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'alice', kind: 'daily' },
         {
@@ -2483,85 +1473,53 @@ describe('POST /invoices', () => {
           description: '21gifts daily',
         },
       ]),
-    ).request('/invoices', auth({ method: 'POST', body: welcome }));
-    expect(first.status).toBe(200);
+    );
+    expect(first.ok).toBe(true);
   });
 
   it('returns 409 for a welcome invoice when the legacy external address got the welcome gift', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const app = createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      giftStore: new InMemoryGiftStore([], ['acc-alice']),
-      fetchImpl,
-    });
-    const refused = await app.request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        giftStore: new InMemoryGiftStore([], ['acc-alice']),
+        fetchImpl,
       }),
+      { address: ADDRESS, amountMsat: 1000, comment: 'Welcome' },
     );
-    expect(refused.status).toBe(409);
-    expect(await refused.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(result).toEqual({ ok: false, status: 409, error: 'Welcome gift already paid' });
     expect(fetchImpl).not.toHaveBeenCalled();
-    const posted = await app.request(
-      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(await posted.json()).toMatchObject({ welcomeHasMedia: false, welcomeMessageId: null });
   });
 
   it('checks the funding grant before the welcome gift', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      giftStore: new InMemoryGiftStore([
-        {
-          paidAt: new Date(5),
-          amountSats: 1,
-          recipientWosUser: 'alice',
-          kind: 'welcome',
-          description: '21gifts welcome',
-        },
-      ]),
-      fetchImpl: happyFetch(),
-      fundingStore: new InMemoryFundingStore(),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        giftStore: new InMemoryGiftStore([PAID_WELCOME]),
+        fetchImpl: happyFetch(),
+        fundingStore: new InMemoryFundingStore(),
+        now: () => GATE_MS,
       }),
+      { address: ADDRESS, amountMsat: 1000, comment: 'Welcome' },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
   });
 
   it('returns 200 when messageId is omitted even without a platform account', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000 },
     );
-    expect(res.status).toBe(200);
+    expect(result.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalled();
   });
 
@@ -2570,34 +1528,29 @@ describe('POST /invoices', () => {
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      invoiceStore,
-      fetchImpl: happyFetch(),
-      conversationStore,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
+    const store = new InMemoryInvoiceStore();
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(
+        actionDeps({
+          authStore,
+          messageStore: uuidPostStore(),
+          store,
+          fetchImpl: happyFetch(),
+          conversationStore,
+        }),
+        {
           address: ADDRESS,
           amountMsat: 1000,
           groupMessageId: GROUP_MSG_ID,
           comment: '21gifts moderator',
-        }),
-      }),
+        },
+      ),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBe(GROUP_MSG_ID);
-    expect(invoiceStore.get(body.id)?.comment).toBe('21gifts moderator');
+    expect(store.get(invoice.id)?.groupMessageId).toBe(GROUP_MSG_ID);
+    expect(store.get(invoice.id)?.comment).toBe('21gifts moderator');
   });
 
   it('ignores a software developer groupMessageId and never records a moderator payout', async () => {
-    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const sender = await authStore.getAccount('acc-alice');
@@ -2607,65 +1560,39 @@ describe('POST /invoices', () => {
     await authStore.updateAccount({ ...sender, role: 'software_developer' });
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const recorded: GiftRecord[] = [];
-    const deps = {
-      spendApiToken: TOKEN,
+    const store = new InMemoryInvoiceStore();
+    const { giftRecorder, recorded } = capturingRecorder();
+    const overrides: Partial<GiftActionDeps> = {
       authStore,
       messageStore: uuidPostStore(),
-      invoiceStore,
       fetchImpl: happyFetch(),
       conversationStore,
       now: () => NOW_MS,
-      giftRecorder: {
-        recordOutbound: async (row: GiftRecord): Promise<void> => {
-          recorded.push(row);
-        },
-      },
+      giftRecorder,
     };
-    const app = createApp(deps);
-    const body = JSON.stringify({
+    const deps = actionDeps({ ...overrides, store });
+    const input = {
       address: ADDRESS,
       amountMsat: 1000,
       groupMessageId: GROUP_MSG_ID,
       comment: 'Welcome',
-    });
-    const issued = await app.request('/invoices', auth({ method: 'POST', body }));
-    expect(issued.status).toBe(200);
-    const issuedBody = (await issued.json()) as { id: string };
-    expect(invoiceStore.get(issuedBody.id)?.groupMessageId).toBeUndefined();
+    };
+    const invoice = issuedInvoice(await issueGiftInvoice(deps, input));
+    expect(store.get(invoice.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
-    const proved = await app.request(
-      '/invoices/proof',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ id: issuedBody.id, preimage: PREIMAGE }),
-      }),
-    );
-    expect(proved.status).toBe(200);
+    await settleProvenGift(deps, invoice, NOW_MS, SOURCE_WALLET, null);
     expect(recorded[0]?.kind).toBe('welcome');
     expect(recorded.some((row) => row.kind === 'moderator')).toBe(false);
 
-    const welcomePaidApp = createApp({
-      ...deps,
-      invoiceStore: new InMemoryInvoiceStore(),
-      giftStore: new InMemoryGiftStore([
-        {
-          paidAt: new Date(5),
-          amountSats: 1,
-          recipientWosUser: 'alice',
-          kind: 'welcome',
-          description: '21gifts welcome',
-        },
-      ]),
-    });
-    const refused = await welcomePaidApp.request('/invoices', auth({ method: 'POST', body }));
-    expect(refused.status).toBe(409);
-    expect(await refused.json()).toEqual({ error: 'Welcome gift already paid' });
+    const refused = await issueGiftInvoice(
+      actionDeps({ ...overrides, giftStore: new InMemoryGiftStore([PAID_WELCOME]) }),
+      input,
+    );
+    expect(refused).toEqual({ ok: false, status: 409, error: 'Welcome gift already paid' });
     expect(recorded.some((row) => row.kind === 'moderator')).toBe(false);
   });
 
@@ -2674,53 +1601,34 @@ describe('POST /invoices', () => {
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      invoiceStore,
-      fetchImpl: happyFetch(),
-      conversationStore,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
+    const store = new InMemoryInvoiceStore();
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(
+        actionDeps({
+          authStore,
+          messageStore: uuidPostStore(),
+          store,
+          fetchImpl: happyFetch(),
+          conversationStore,
         }),
-      }),
+        { address: ADDRESS, amountMsat: 1000, groupMessageId: GROUP_MSG_ID },
+      ),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBe(GROUP_MSG_ID);
-    expect(invoiceStore.get(body.id)?.comment).toBe('');
+    expect(store.get(invoice.id)?.groupMessageId).toBe(GROUP_MSG_ID);
+    expect(store.get(invoice.id)?.comment).toBe('');
   });
 
   it('returns 400 when groupMessageId is not a UUID', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: 'nope',
-        }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: uuidPostStore(), fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000, groupMessageId: 'nope' },
     );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
       error: 'Expected a JSON body with address and amountMsat',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -2730,269 +1638,95 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-          groupMessageId: GROUP_MSG_ID,
-        }),
-      }),
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: uuidPostStore(), fetchImpl }),
+      { address: ADDRESS, amountMsat: 1000, messageId: POST_ID, groupMessageId: GROUP_MSG_ID },
     );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
       error: 'Expected a JSON body with address and amountMsat',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('returns 200 and ignores an unknown groupMessageId', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(authStore);
-    const conversationStore = new InMemoryConversationStore();
-    await seedGroupTrigger(conversationStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      invoiceStore,
-      fetchImpl: happyFetch(),
-      conversationStore,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
+  describe('an unresolved groupMessageId', () => {
+    async function issueIgnored(
+      overrides: Partial<GiftActionDeps>,
+      seedPlatform = true,
+    ): Promise<void> {
+      const authStore = new InMemoryAuthStore();
+      if (seedPlatform) {
+        await seedPasskeyAndPlatform(authStore);
+      } else {
+        await seedPasskeyAccount(authStore);
+      }
+      const store = new InMemoryInvoiceStore();
+      const deps = actionDeps({
+        authStore,
+        messageStore: uuidPostStore(),
+        store,
+        fetchImpl: happyFetch(),
+        ...overrides,
+      });
+      if (!('conversationStore' in overrides)) {
+        delete deps.conversationStore;
+      }
+      const invoice = issuedInvoice(
+        await issueGiftInvoice(deps, {
           address: ADDRESS,
           amountMsat: 1000,
-          groupMessageId: OTHER_GROUP_MSG_ID,
+          groupMessageId: GROUP_MSG_ID,
         }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)).toBeDefined();
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
+      );
+      expect(store.get(invoice.id)).toBeDefined();
+      expect(store.get(invoice.id)?.groupMessageId).toBeUndefined();
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
+        ),
+      ).toBe(true);
+    }
 
-  it('returns 200 and ignores a groupMessageId outside the moderator group', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(authStore);
-    const conversationStore = new InMemoryConversationStore();
-    const thread = await conversationStore.openMemberPlatform('acc-alice', 'plat', new Date(1));
-    await conversationStore.appendMessage({
-      id: GROUP_MSG_ID,
-      conversationId: thread.id,
-      text: 'mod note',
-      createdAt: new Date(1),
-      senderAccountId: 'acc-alice',
-      senderPubkey: null,
-      name: 'Ada',
-      sats: 0,
-      eventId: null,
-      nostrPublishState: 'skipped',
-      nostrEvent: null,
-      claimedUntil: null,
+    it('returns 200 and ignores an unknown groupMessageId', async () => {
+      const conversationStore = new InMemoryConversationStore();
+      await seedGroupTrigger(conversationStore, 'acc-alice', OTHER_GROUP_MSG_ID);
+      await issueIgnored({ conversationStore });
     });
-    const invoiceStore = new InMemoryInvoiceStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      invoiceStore,
-      fetchImpl: happyFetch(),
-      conversationStore,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)).toBeDefined();
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
 
-  it('returns 200 and ignores a groupMessageId from another sender', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(authStore);
-    const conversationStore = new InMemoryConversationStore();
-    await seedGroupTrigger(conversationStore, 'someone-else');
-    const invoiceStore = new InMemoryInvoiceStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      invoiceStore,
-      fetchImpl: happyFetch(),
-      conversationStore,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)).toBeDefined();
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
+    it('returns 200 and ignores a groupMessageId outside the moderator group', async () => {
+      const conversationStore = new InMemoryConversationStore();
+      await seedNonGroupTrigger(conversationStore);
+      await issueIgnored({ conversationStore });
+    });
 
-  it('returns 200 and ignores groupMessageId when no conversation store is wired', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const app = new Hono().route(
-      '/invoices',
-      invoiceRoutes({
-        spendApiToken: TOKEN,
-        store: invoiceStore,
-        authStore,
-        messageStore: uuidPostStore(),
-        fundingStore: admittedStore(),
-        now: () => 1,
-        fetchImpl: happyFetch(),
-        lnurlServer: LNURL_SERVER,
-      }),
-    );
-    const res = await app.request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)).toBeDefined();
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
+    it('returns 200 and ignores a groupMessageId from another sender', async () => {
+      const conversationStore = new InMemoryConversationStore();
+      await seedGroupTrigger(conversationStore, 'someone-else');
+      await issueIgnored({ conversationStore });
+    });
 
-  it('returns 200 and ignores groupMessageId when the conversation lookup throws', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const conversationStore: Pick<
-      ConversationStore,
-      'getById' | 'getMessageById' | 'appendMessage'
-    > = {
-      getById: () => Promise.resolve(undefined),
-      getMessageById: () => Promise.reject(new Error('db')),
-      appendMessage: () => Promise.reject(new Error('db')),
-    };
-    const app = new Hono().route(
-      '/invoices',
-      invoiceRoutes({
-        spendApiToken: TOKEN,
-        store: invoiceStore,
-        authStore,
-        messageStore: uuidPostStore(),
-        conversationStore,
-        fundingStore: admittedStore(),
-        now: () => 1,
-        fetchImpl: happyFetch(),
-        lnurlServer: LNURL_SERVER,
-      }),
-    );
-    const res = await app.request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)).toBeDefined();
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
+    it('returns 200 and ignores groupMessageId when no conversation store is wired', async () => {
+      await issueIgnored({ now: () => 1 });
+    });
 
-  it('returns 200 and ignores groupMessageId when the platform account is missing', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const conversationStore = new InMemoryConversationStore();
-    await seedGroupTrigger(conversationStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      invoiceStore,
-      fetchImpl: happyFetch(),
-      conversationStore,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)).toBeDefined();
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
+    it('returns 200 and ignores groupMessageId when the conversation lookup throws', async () => {
+      const conversationStore: Pick<
+        ConversationStore,
+        'getById' | 'getMessageById' | 'appendMessage'
+      > = {
+        getById: () => Promise.resolve(undefined),
+        getMessageById: () => Promise.reject(new Error('db')),
+        appendMessage: () => Promise.reject(new Error('db')),
+      };
+      await issueIgnored({ conversationStore, now: () => 1 });
+    });
+
+    it('returns 200 and ignores groupMessageId when the platform account is missing', async () => {
+      const conversationStore = new InMemoryConversationStore();
+      await seedGroupTrigger(conversationStore);
+      await issueIgnored({ conversationStore }, false);
+    });
   });
 
   it('returns 403 when groupMessageId is set but the account has no live forum post', async () => {
@@ -3001,25 +1735,16 @@ describe('POST /invoices', () => {
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: new InMemoryMessageStore([]),
-      fetchImpl,
-      conversationStore,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-        }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: new InMemoryMessageStore([]),
+        fetchImpl,
+        conversationStore,
       }),
+      { address: ADDRESS, amountMsat: 1000, groupMessageId: GROUP_MSG_ID },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Forum post required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -3027,28 +1752,17 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const welcomeToday: GiftRow = {
-      paidAt: new Date('2026-09-20T08:00:00.000Z'),
-      amountSats: 1000,
-      recipientWosUser: 'Alice',
-      kind: 'welcome',
-    };
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      giftStore: new InMemoryGiftStore([welcomeToday]),
-      now: () => NOW_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        fetchImpl,
+        giftStore: new InMemoryGiftStore([WELCOME_TODAY]),
+        now: () => NOW_MS,
       }),
+      { address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Welcome gift already paid' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
@@ -3061,77 +1775,42 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const welcomeToday: GiftRow = {
-      paidAt: new Date('2026-09-20T08:00:00.000Z'),
-      amountSats: 1000,
-      recipientWosUser: 'Alice',
-      kind: 'welcome',
-    };
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      giftStore: new InMemoryGiftStore([welcomeToday]),
-      now: () => NOW_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        fetchImpl,
+        giftStore: new InMemoryGiftStore([WELCOME_TODAY]),
+        now: () => NOW_MS,
       }),
+      { address: ADDRESS, amountMsat: 1000, comment: 'Welcome' },
     );
-    expect(res.status).toBe(200);
+    expect(result.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalled();
   });
 
   it('stores comment Welcome without messageId or groupMessageId and records kind welcome', async () => {
-    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const recorded: GiftRecord[] = [];
-    const welcomeToday: GiftRow = {
-      paidAt: new Date('2026-09-20T08:00:00.000Z'),
-      amountSats: 1000,
-      recipientWosUser: 'Alice',
-      kind: 'welcome',
-    };
-    const app = createApp({
-      spendApiToken: TOKEN,
+    const store = new InMemoryInvoiceStore();
+    const { giftRecorder, recorded } = capturingRecorder();
+    const deps = actionDeps({
       authStore,
       messageStore: livePostStore(),
-      invoiceStore,
+      store,
       fetchImpl: happyFetch(),
-      giftStore: new InMemoryGiftStore([welcomeToday]),
+      giftStore: new InMemoryGiftStore([WELCOME_TODAY]),
       now: () => NOW_MS,
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
+      giftRecorder,
     });
-    const issued = await app.request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
-      }),
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(deps, { address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
     );
-    expect(issued.status).toBe(200);
-    const body = (await issued.json()) as { id: string };
-    const row = invoiceStore.get(body.id);
+    const row = store.get(invoice.id);
     expect(row?.comment).toBe('Welcome');
     expect(row?.messageId).toBeUndefined();
     expect(row?.groupMessageId).toBeUndefined();
-    const proved = await app.request(
-      '/invoices/proof',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ id: body.id, preimage: PREIMAGE }),
-      }),
-    );
-    expect(proved.status).toBe(200);
+    await settleProvenGift(deps, invoice, NOW_MS, SOURCE_WALLET, null);
     expect(recorded[0]?.kind).toBe('welcome');
   });
 
@@ -3140,31 +1819,22 @@ describe('POST /invoices', () => {
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    const invoiceStore = new InMemoryInvoiceStore();
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      invoiceStore,
-      fetchImpl: happyFetch(),
-      conversationStore,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-          comment: 'Welcome',
+    const store = new InMemoryInvoiceStore();
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(
+        actionDeps({
+          authStore,
+          messageStore: uuidPostStore(),
+          store,
+          fetchImpl: happyFetch(),
+          conversationStore,
         }),
-      }),
+        { address: ADDRESS, amountMsat: 1000, groupMessageId: GROUP_MSG_ID, comment: 'Welcome' },
+      ),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.groupMessageId).toBe(GROUP_MSG_ID);
-    expect(invoiceStore.get(body.id)?.comment).toBe('Welcome');
-    expect(invoiceStore.get(body.id)?.messageId).toBeUndefined();
+    expect(store.get(invoice.id)?.groupMessageId).toBe(GROUP_MSG_ID);
+    expect(store.get(invoice.id)?.comment).toBe('Welcome');
+    expect(store.get(invoice.id)?.messageId).toBeUndefined();
   });
 
   it('returns 200 when groupMessageId is set even if a welcome gift was paid today', async () => {
@@ -3173,34 +1843,23 @@ describe('POST /invoices', () => {
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const welcomeToday: GiftRow = {
-      paidAt: new Date('2026-09-20T08:00:00.000Z'),
-      amountSats: 1000,
-      recipientWosUser: 'Alice',
-      kind: 'welcome',
-    };
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      fetchImpl,
-      conversationStore,
-      giftStore: new InMemoryGiftStore([welcomeToday]),
-      now: () => NOW_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-          comment: '21gifts moderator',
-        }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: uuidPostStore(),
+        fetchImpl,
+        conversationStore,
+        giftStore: new InMemoryGiftStore([WELCOME_TODAY]),
+        now: () => NOW_MS,
       }),
+      {
+        address: ADDRESS,
+        amountMsat: 1000,
+        groupMessageId: GROUP_MSG_ID,
+        comment: '21gifts moderator',
+      },
     );
-    expect(res.status).toBe(200);
-    expect(await res.json()).not.toEqual({ error: 'Welcome gift already paid' });
+    expect(result.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalled();
   });
 
@@ -3210,34 +1869,23 @@ describe('POST /invoices', () => {
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const welcomeToday: GiftRow = {
-      paidAt: new Date('2026-09-20T08:00:00.000Z'),
-      amountSats: 1000,
-      recipientWosUser: 'Alice',
-      kind: 'welcome',
-    };
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      fetchImpl,
-      conversationStore,
-      giftStore: new InMemoryGiftStore([welcomeToday]),
-      now: () => NOW_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: OTHER_GROUP_MSG_ID,
-          comment: '21gifts daily',
-        }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: uuidPostStore(),
+        fetchImpl,
+        conversationStore,
+        giftStore: new InMemoryGiftStore([WELCOME_TODAY]),
+        now: () => NOW_MS,
       }),
+      {
+        address: ADDRESS,
+        amountMsat: 1000,
+        groupMessageId: OTHER_GROUP_MSG_ID,
+        comment: '21gifts daily',
+      },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Welcome gift already paid' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
@@ -3250,27 +1898,19 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const welcomeYesterday: GiftRow = {
-      paidAt: new Date('2026-09-19T08:00:00.000Z'),
-      amountSats: 1000,
-      recipientWosUser: 'Alice',
-      kind: 'welcome',
-    };
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      giftStore: new InMemoryGiftStore([welcomeYesterday]),
-      now: () => NOW_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        fetchImpl,
+        giftStore: new InMemoryGiftStore([
+          { ...WELCOME_TODAY, paidAt: new Date('2026-09-19T08:00:00.000Z') },
+        ]),
+        now: () => NOW_MS,
       }),
+      { address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' },
     );
-    expect(res.status).toBe(200);
+    expect(result.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalled();
   });
 
@@ -3278,39 +1918,30 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const giftStore = {
-      listOutbound: () => Promise.reject(new Error('ledger down')),
-    };
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      giftStore,
-      now: () => NOW_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' }),
+    const result = await issueGiftInvoice(
+      actionDeps({
+        authStore,
+        messageStore: livePostStore(),
+        fetchImpl,
+        gifts: { listOutbound: () => Promise.reject(new Error('ledger down')) },
+        now: () => NOW_MS,
       }),
+      { address: ADDRESS, amountMsat: 1000, comment: '21gifts daily' },
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift ledger unreadable' });
+    expect(result).toEqual({ ok: false, status: 503, error: 'Gift ledger unreadable' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
-describe('POST /invoices/proof', () => {
+describe('settleProvenGift', () => {
   let warn: ReturnType<typeof vi.spyOn>;
-  let store: InMemoryInvoiceStore;
 
   function unpaid(overrides?: Partial<GiftInvoice>): GiftInvoice {
     return {
       id: 'ab'.repeat(16),
       address: ADDRESS,
       pr: PR,
-      paymentHash: MATCHING_HASH,
+      paymentHash: HASH,
       amountMsat: 1000,
       createdAt: 1,
       expiresAt: 1_000_000,
@@ -3318,9 +1949,27 @@ describe('POST /invoices/proof', () => {
     };
   }
 
+  /** A message store whose `method` is replaced and every other method is bound to `inner`. */
+  function overriding<K extends keyof InMemoryMessageStore>(
+    inner: InMemoryMessageStore,
+    method: K,
+    replacement: InMemoryMessageStore[K],
+  ): InMemoryMessageStore {
+    return new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === method) {
+          return replacement;
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === 'function'
+          ? (value as (...args: never[]) => unknown).bind(target)
+          : value;
+      },
+    });
+  }
+
   beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    store = new InMemoryInvoiceStore();
   });
 
   afterEach(() => {
@@ -3328,284 +1977,190 @@ describe('POST /invoices/proof', () => {
     warn.mockRestore();
   });
 
-  it('returns 503 when unconfigured', async () => {
-    const res = await createApp({ spendApiToken: '' }).request('/invoices/proof', {
-      method: 'POST',
-      body: JSON.stringify({ id: 'x', preimage: PREIMAGE }),
-    });
-    expect(res.status).toBe(503);
-  });
-
-  it('returns 401 when unauthorized', async () => {
-    const res = await createApp({ spendApiToken: TOKEN }).request('/invoices/proof', {
-      method: 'POST',
-      body: JSON.stringify({ id: 'x', preimage: PREIMAGE }),
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('returns 400 on invalid JSON', async () => {
-    const res = await createApp({ spendApiToken: TOKEN, invoiceStore: store }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: 'nope' }),
+  it('records a daily gift row with the paying wallet and the passed fiat', async () => {
+    const { giftRecorder, recorded } = capturingRecorder();
+    await settleProvenGift(
+      actionDeps({ giftRecorder }),
+      unpaid(),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      usdFiat('0.50'),
     );
-    expect(res.status).toBe(400);
-  });
-
-  it('returns 400 on a bad body', async () => {
-    const res = await createApp({ spendApiToken: TOKEN, invoiceStore: store }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it('returns 404 for an unknown id', async () => {
-    const res = await createApp({ spendApiToken: TOKEN, invoiceStore: store }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: 'missing', preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(404);
-  });
-
-  it('accepts a matching preimage after store TTL', async () => {
-    store.put(unpaid({ expiresAt: 10 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      now: () => 11,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      status: 'paid',
-      id: unpaid().id,
-      paymentHash: MATCHING_HASH,
-    });
-  });
-
-  it('returns 409 when expired unpaid and the preimage does not match', async () => {
-    const release = vi.fn(async () => undefined);
-    store.put(
-      unpaid({ expiresAt: 10, welcomeReservationAccountId: 'welcome-reservation-account' }),
-    );
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      welcomeInvoiceReservationStore: { reserve: async () => false, release },
-      now: () => 11,
-    }).request(
-      '/invoices/proof',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ id: unpaid().id, preimage: '22'.repeat(32) }),
-      }),
-    );
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Invoice expired' });
-    expect(release).toHaveBeenCalledWith('welcome-reservation-account', unpaid().id);
-  });
-
-  it('returns 400 when the preimage does not match', async () => {
-    store.put(unpaid());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ id: unpaid().id, preimage: '22'.repeat(32) }),
-      }),
-    );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Proof does not match invoice' });
-  });
-
-  it('returns 200 and stores the preimage on a matching proof', async () => {
-    store.put(unpaid());
-    const recorded: unknown[] = [];
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      now: () => 100,
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      status: 'paid',
-      id: unpaid().id,
-      paymentHash: MATCHING_HASH,
-    });
-    expect(store.get(unpaid().id)?.paidAt).toBe(100);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.paid')).toBe(true);
     expect(recorded).toEqual([
       {
-        paidAt: new Date(100),
+        paidAt: new Date(PAID_AT_MS),
         amountSats: 1,
         feeSats: 0,
         recipientWosUser: 'alice',
         lightningInvoice: PR,
         description: '21gifts daily',
         kind: 'daily',
-        sourceWallet: 'lightning.space',
-        fiat: null,
+        sourceWallet: SOURCE_WALLET,
+        fiat: usdFiat('0.50'),
       },
     ]);
   });
 
   it('records kind welcome when the comment is Welcome and groupMessageId is unset', async () => {
-    store.put(unpaid({ comment: 'Welcome' }));
-    const recorded: unknown[] = [];
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      now: () => 100,
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    const { giftRecorder, recorded } = capturingRecorder();
+    await settleProvenGift(
+      actionDeps({ giftRecorder }),
+      unpaid({ comment: 'Welcome' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(recorded).toEqual([
       {
-        paidAt: new Date(100),
+        paidAt: new Date(PAID_AT_MS),
         amountSats: 1,
         feeSats: 0,
         recipientWosUser: 'alice',
         lightningInvoice: PR,
         description: '21gifts welcome',
         kind: 'welcome',
-        sourceWallet: 'lightning.space',
+        sourceWallet: SOURCE_WALLET,
         fiat: null,
       },
     ]);
   });
 
-  it('returns 200 when gift recording fails', async () => {
-    store.put(unpaid());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      now: () => 100,
-      giftRecorder: {
-        recordOutbound: async () => {
-          throw new Error('db');
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+  it('records 21gifts moderator as the gift description when groupMessageId is set', async () => {
+    const { giftRecorder, recorded } = capturingRecorder();
+    await settleProvenGift(
+      actionDeps({ giftRecorder }),
+      unpaid({ groupMessageId: GROUP_MSG_ID }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.record_failed')).toBe(true);
-  });
-
-  it('returns 200 idempotently for the same preimage', async () => {
-    store.put(unpaid({ paidAt: 5, preimage: PREIMAGE }));
-    const recorded: unknown[] = [];
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      now: () => 100,
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
     expect(recorded).toEqual([
       {
-        paidAt: new Date(5),
+        paidAt: new Date(PAID_AT_MS),
         amountSats: 1,
         feeSats: 0,
         recipientWosUser: 'alice',
         lightningInvoice: PR,
-        description: '21gifts daily',
-        kind: 'daily',
-        sourceWallet: 'lightning.space',
+        description: '21gifts moderator',
+        kind: 'moderator',
+        sourceWallet: SOURCE_WALLET,
         fiat: null,
       },
     ]);
   });
 
-  it('returns 409 when already paid with a different preimage', async () => {
-    store.put(unpaid({ paidAt: 5, preimage: '22'.repeat(32) }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+  it('records the decided kind when a kind override is passed', async () => {
+    const { giftRecorder, recorded } = capturingRecorder();
+    await settleProvenGift(
+      actionDeps({ giftRecorder }),
+      unpaid({ comment: '21gifts daily' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
+      'welcome',
     );
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Invoice already paid' });
+    expect(recorded[0]).toMatchObject({ kind: 'welcome', description: '21gifts welcome' });
+  });
+
+  it('settles without a gift recorder', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = uuidPostStore();
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, comment: 'gm' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
+    );
+    expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
+  });
+
+  it('logs gifts.record_failed and still settles when gift recording fails', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = uuidPostStore();
+    await settleProvenGift(
+      actionDeps({
+        authStore,
+        messageStore,
+        giftRecorder: {
+          recordOutbound: async () => {
+            throw new Error('db');
+          },
+        },
+      }),
+      unpaid({ messageId: POST_ID, comment: 'gm' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
+    );
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'gifts.record_failed', id: unpaid().id }),
+    );
+    expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
   });
 
   it('attaches a platform gift-reply and addSats when the invoice has messageId', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidPostStore();
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
     const replies = await messageStore.listReplies(POST_ID, 200);
     expect(replies).toHaveLength(1);
+    expect(replies[0]?.id).toBe(spendGiftReplyId(unpaid().id));
     expect(replies[0]?.accountId).toBe('plat');
     expect(replies[0]?.name).toBe('21.gifts');
     expect(replies[0]?.parentId).toBe(POST_ID);
     expect(replies[0]?.sats).toBe(1);
     expect(replies[0]?.text).toBe('gm');
+    expect(replies[0]?.createdAt.getTime()).toBe(PAID_AT_MS);
     expect(replies[0]?.nostrPublishState).toBe('pending');
+  });
+
+  it('writes the fiat snapshot to the gift row, the gift-reply, and the post credit', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = uuidPostStore();
+    const { giftRecorder, recorded } = capturingRecorder();
+    const fiat: FiatAmounts = { usd: '5.00', chf: '4.00', eur: '4.50', php: '250' };
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore, giftRecorder }),
+      unpaid({ messageId: POST_ID, comment: 'gm' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      fiat,
+    );
+    expect(recorded[0]?.fiat).toEqual(fiat);
+    const reply = await messageStore.getById(spendGiftReplyId(unpaid().id));
+    expect(reply?.amountUsd).toBe('5.00');
+    expect(reply?.amountChf).toBe('4.00');
+    const post = await messageStore.getById(POST_ID);
+    expect(post?.amountUsd).toBe('5.00');
+    expect(post?.amountEur).toBe('4.50');
   });
 
   it('addReceivedSats a reply invoice without creating a nested gift-reply', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidReplyStore();
-    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      usdFiat('0.50'),
     );
-    expect(res.status).toBe(200);
     expect((await messageStore.getById(REPLY_ID))?.sats).toBe(0);
     expect((await messageStore.getById(REPLY_ID))?.receivedSats).toBe(1);
+    expect((await messageStore.getById(REPLY_ID))?.receivedAmountUsd).toBe('0.50');
     expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
     const marker = await messageStore.getById(spendGiftReplyId(unpaid().id));
@@ -3616,48 +2171,28 @@ describe('POST /invoices/proof', () => {
     expect(marker?.nostrPublishState).toBe('skipped');
   });
 
-  it('does not double addSats or create a second gift-reply on the same preimage', async () => {
+  it('does not double addSats or create a second gift-reply when settled twice', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidPostStore();
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const app = createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    });
-    const body = auth({
-      method: 'POST',
-      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
-    });
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    const deps = actionDeps({ authStore, messageStore });
+    const invoice = unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 });
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
   });
 
-  it('does not double addSats or create a second gift-reply on a reply invoice with the same preimage', async () => {
+  it('does not double addReceivedSats or create a gift-reply when a reply invoice is settled twice', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidReplyStore();
-    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
-    const app = createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    });
-    const body = auth({
-      method: 'POST',
-      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
-    });
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    const deps = actionDeps({ authStore, messageStore });
+    const invoice = unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 });
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await messageStore.getById(REPLY_ID))?.sats).toBe(0);
     expect((await messageStore.getById(REPLY_ID))?.receivedSats).toBe(1);
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await messageStore.getById(REPLY_ID))?.sats).toBe(0);
     expect((await messageStore.getById(REPLY_ID))?.receivedSats).toBe(1);
     expect(await messageStore.listReplies(REPLY_ID, 200)).toEqual([]);
@@ -3668,54 +2203,46 @@ describe('POST /invoices/proof', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidPostStore();
-    store.put(unpaid({ messageId: POST_ID, comment: '', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, comment: '', amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     const replies = await messageStore.listReplies(POST_ID, 200);
     expect(replies).toHaveLength(1);
     expect(replies[0]?.text).toBe('');
     expect(replies[0]?.nostrPublishState).toBe('skipped');
   });
 
-  it('publishes a pending gift-reply when the comment is non-empty', async () => {
+  it('treats a missing invoice comment as empty gift-reply text', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidPostStore();
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     const replies = await messageStore.listReplies(POST_ID, 200);
-    expect(replies).toHaveLength(1);
-    expect(replies[0]?.text).toBe('gm');
-    expect(replies[0]?.nostrPublishState).toBe('pending');
+    expect(replies[0]?.text).toBe('');
+    expect(replies[0]?.nostrPublishState).toBe('skipped');
   });
 
-  it('names the gift-reply 21.gifts when the platform name is null', async () => {
+  it.each([
+    ['null', null],
+    ['blank', '   '],
+  ])('names the gift-reply 21.gifts when the platform name is %s', async (_label, name) => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     await authStore.createAccount({
       id: 'plat',
       linkingKey: null,
       role: 'founder',
-      name: null,
+      name,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3724,109 +2251,58 @@ describe('POST /invoices/proof', () => {
       isPlatform: true,
     });
     const messageStore = uuidPostStore();
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect((await messageStore.listReplies(POST_ID, 200))[0]?.name).toBe('21.gifts');
   });
 
-  it('names the gift-reply 21.gifts when the platform name is blank', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    await authStore.createAccount({
-      id: 'plat',
-      linkingKey: null,
-      role: 'founder',
-      name: '   ',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-      isPlatform: true,
-    });
-    const messageStore = uuidPostStore();
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect((await messageStore.listReplies(POST_ID, 200))[0]?.name).toBe('21.gifts');
-  });
-
-  it('returns 200 and logs invoice.gift_reply.failed when the parent is missing', async () => {
+  it('logs invoice.gift_reply.failed when the parent is missing', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = new InMemoryMessageStore();
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.gift_reply.failed')).toBe(true);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(0);
   });
 
-  it('returns 200 and logs invoice.gift_reply.failed when the parent is deleted', async () => {
+  it('logs invoice.gift_reply.failed when the parent is deleted', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidPostStore();
     await messageStore.markDeleted(POST_ID, new Date(50), 'mod');
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.gift_reply.failed')).toBe(true);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(0);
   });
 
-  it('returns 200 and logs invoice.gift_reply.failed when the platform is missing at proof', async () => {
+  it('logs invoice.gift_reply.failed when the platform is missing at settlement', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const messageStore = uuidPostStore();
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.gift_reply.failed')).toBe(true);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(0);
     expect((await messageStore.getById(POST_ID))?.sats).toBe(0);
@@ -3836,51 +2312,31 @@ describe('POST /invoices/proof', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const messageStore = uuidPostStore();
-    store.put(unpaid());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid(),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(0);
     expect((await messageStore.getById(POST_ID))?.sats).toBe(0);
   });
 
-  it('returns 200 and logs invoice.gift_reply.failed when addSats throws', async () => {
+  it('logs invoice.gift_reply.failed when addSats throws', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const inner = uuidPostStore();
-    const messageStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'addSats') {
-          return async () => {
-            throw new Error('addSats');
-          };
-        }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
-      },
+    const messageStore = overriding(inner, 'addSats', async () => {
+      throw new Error('addSats');
     });
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, messageStore }),
+      unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.gift_reply.failed')).toBe(true);
     expect(await inner.listReplies(POST_ID, 200)).toHaveLength(1);
     expect((await inner.getById(POST_ID))?.sats).toBe(0);
@@ -3891,38 +2347,22 @@ describe('POST /invoices/proof', () => {
     await seedPasskeyAndPlatform(authStore);
     const inner = uuidPostStore();
     let createCalls = 0;
-    const messageStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'create') {
-          return async (row: Parameters<InMemoryMessageStore['create']>[0]) => {
-            createCalls += 1;
-            if (createCalls === 1) {
-              throw new Error('create');
-            }
-            return target.create(row);
-          };
+    const messageStore = overriding(
+      inner,
+      'create',
+      async (row: Parameters<InMemoryMessageStore['create']>[0]) => {
+        createCalls += 1;
+        if (createCalls === 1) {
+          throw new Error('create');
         }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
+        return inner.create(row);
       },
-    });
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const app = createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    });
-    const body = auth({
-      method: 'POST',
-      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
-    });
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    );
+    const deps = actionDeps({ authStore, messageStore });
+    const invoice = unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 });
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await inner.getById(POST_ID))?.sats).toBe(0);
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await inner.getById(POST_ID))?.sats).toBe(1);
     expect(await inner.listReplies(POST_ID, 200)).toHaveLength(1);
   });
@@ -3932,43 +2372,27 @@ describe('POST /invoices/proof', () => {
     await seedPasskeyAndPlatform(authStore);
     const inner = uuidReplyStore();
     let createCalls = 0;
-    const messageStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'create') {
-          return async (row: Parameters<InMemoryMessageStore['create']>[0]) => {
-            createCalls += 1;
-            if (createCalls === 1) {
-              throw new Error('create');
-            }
-            return target.create(row);
-          };
+    const messageStore = overriding(
+      inner,
+      'create',
+      async (row: Parameters<InMemoryMessageStore['create']>[0]) => {
+        createCalls += 1;
+        if (createCalls === 1) {
+          throw new Error('create');
         }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
+        return inner.create(row);
       },
-    });
-    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
-    const app = createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    });
-    const body = auth({
-      method: 'POST',
-      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
-    });
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    );
+    const deps = actionDeps({ authStore, messageStore });
+    const invoice = unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 });
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
     expect((await inner.getById(REPLY_ID))?.receivedSats).toBe(0);
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
     expect((await inner.getById(REPLY_ID))?.receivedSats).toBe(1);
     expect(await inner.listReplies(REPLY_ID, 200)).toEqual([]);
-    const marker = await inner.getById(spendGiftReplyId(unpaid().id));
+    const marker = await inner.getById(spendGiftReplyId(invoice.id));
     expect(marker).toBeDefined();
     expect(marker?.deletedAt).not.toBeNull();
   });
@@ -3978,103 +2402,33 @@ describe('POST /invoices/proof', () => {
     await seedPasskeyAndPlatform(authStore);
     const inner = uuidReplyStore();
     let markDeletedCalls = 0;
-    const messageStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'markDeleted') {
-          return async (id: string, at: Date, byAccountId: string) => {
-            markDeletedCalls += 1;
-            if (markDeletedCalls === 1) {
-              throw new Error('markDeleted');
-            }
-            return target.markDeleted(id, at, byAccountId);
-          };
+    const messageStore = overriding(
+      inner,
+      'markDeleted',
+      async (id: string, at: Date, byAccountId: string) => {
+        markDeletedCalls += 1;
+        if (markDeletedCalls === 1) {
+          throw new Error('markDeleted');
         }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
+        return inner.markDeleted(id, at, byAccountId);
       },
-    });
-    store.put(unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 }));
-    const app = createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    });
-    const body = auth({
-      method: 'POST',
-      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
-    });
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    );
+    const deps = actionDeps({ authStore, messageStore });
+    const invoice = unpaid({ messageId: REPLY_ID, comment: 'gm', amountMsat: 1000 });
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
-    const markerId = spendGiftReplyId(unpaid().id);
+    const markerId = spendGiftReplyId(invoice.id);
     const liveMarker = await inner.getById(markerId);
     expect(liveMarker).toBeDefined();
     expect(liveMarker?.deletedAt).toBeNull();
     expect(await inner.listReplies(REPLY_ID, 200)).toHaveLength(1);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.gift_reply.failed')).toBe(true);
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     expect((await inner.getById(REPLY_ID))?.sats).toBe(0);
+    expect((await inner.getById(REPLY_ID))?.receivedSats).toBe(0);
     expect(await inner.listReplies(REPLY_ID, 200)).toEqual([]);
     const hidden = await inner.getById(markerId);
     expect(hidden?.deletedAt).not.toBeNull();
-  });
-
-  it('returns 200 with a gift-reply and writes no in-app or push rows for the platform actor', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(authStore);
-    const messageStore = uuidPostStore();
-    const notifications = new InMemoryNotificationStore();
-    const pushStore = new InMemoryPushStore();
-    await pushStore.upsertSubscription({
-      endpoint: 'https://push.example/alice',
-      accountId: 'acc-alice',
-      p256dh: 'p',
-      auth: 'a',
-      createdAt: new Date(1),
-      sessionToken: null,
-    });
-    store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      notificationStore: notifications,
-      pushStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(1);
-    expect((await messageStore.getById(POST_ID))?.sats).toBe(1);
-    expect(await notifications.listByRecipient('acc-alice', 10)).toEqual([]);
-    expect(await pushStore.claimPending(10, 100, 60_000)).toEqual([]);
-  });
-
-  it('treats a missing invoice comment as empty gift-reply text', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(authStore);
-    const messageStore = uuidPostStore();
-    store.put(unpaid({ messageId: POST_ID, amountMsat: 1000 }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      messageStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    const replies = await messageStore.listReplies(POST_ID, 200);
-    expect(replies[0]?.text).toBe('');
-    expect(replies[0]?.nostrPublishState).toBe('skipped');
   });
 
   it('attaches a platform group stipend with comment and recipient name', async () => {
@@ -4082,18 +2436,13 @@ describe('POST /invoices/proof', () => {
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
     const threadId = await seedGroupTrigger(conversationStore);
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, conversationStore }),
+      unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
     expect(attached).toBeDefined();
     expect(attached?.conversationId).toBe(threadId);
@@ -4101,7 +2450,7 @@ describe('POST /invoices/proof', () => {
     expect(attached?.name).toBe('21.gifts');
     expect(attached?.sats).toBe(Math.floor(unpaid().amountMsat / 1000));
     expect(attached?.text).toBe('21gifts moderator · Ada');
-    expect(attached?.createdAt.getTime()).toBe(100);
+    expect(attached?.createdAt.getTime()).toBe(PAID_AT_MS);
     expect(attached?.nostrPublishState).toBe('skipped');
     expect(attached?.eventId).toBeNull();
     expect(attached?.nostrEvent).toBeNull();
@@ -4131,347 +2480,228 @@ describe('POST /invoices/proof', () => {
         groupMessageId: GROUP_MSG_ID,
         comment: '21gifts moderator',
       });
-      store.put(invoice);
-      const res = await createApp({
-        spendApiToken: TOKEN,
-        invoiceStore: store,
-        authStore,
-        conversationStore,
-        now: () => 100,
-      }).request(
-        '/invoices/proof',
-        auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
+      await settleProvenGift(
+        actionDeps({ authStore, conversationStore }),
+        invoice,
+        PAID_AT_MS,
+        SOURCE_WALLET,
+        null,
       );
-      expect(res.status).toBe(200);
       const attached = await conversationStore.getMessageById(spendGroupGiftId(invoice.id));
       expect(attached?.name).toBe('21.gifts');
     }
   });
 
-  it('attaches a group stipend with comment-only text when the recipient name is empty', async () => {
+  it.each([
+    [
+      'comment-only text when the recipient name is empty',
+      null,
+      '21gifts moderator',
+      '21gifts moderator',
+    ],
+    ['recipient-name-only text when comment is empty', 'Ada', undefined, 'Ada'],
+    ['empty text when comment and recipient name are empty', '  ', undefined, ''],
+  ])('attaches a group stipend with %s', async (_label, recipientName, comment, text) => {
     const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: null,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    await authStore.createPasskeyCredential({
-      credentialId: 'cred-alice',
-      publicKey: new Uint8Array([1]),
-      signCount: 0,
-      accountId: 'acc-alice',
-      createdAt: 1,
-    });
-    await authStore.createAccount({
-      id: 'plat',
-      linkingKey: null,
-      role: 'founder',
-      name: '21.gifts',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-      isPlatform: true,
-    });
+    await seedNamedRecipientAndPlatform(authStore, recipientName);
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, conversationStore }),
+      unpaid({
+        groupMessageId: GROUP_MSG_ID,
+        ...(comment === undefined ? {} : { comment }),
+      }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
-    expect(attached?.text).toBe('21gifts moderator');
+    expect(attached?.text).toBe(text);
     expect(attached?.giftForMessageId).toBe(GROUP_MSG_ID);
   });
 
-  it('attaches a group stipend with recipient-name-only text when comment is empty', async () => {
+  it('attaches the group stipend without a recipient on another domain', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, conversationStore }),
+      unpaid({
+        address: 'alice@other.test',
+        groupMessageId: GROUP_MSG_ID,
+        comment: '21gifts moderator',
+      }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
-    expect(attached?.text).toBe('Ada');
-    expect(attached?.giftForMessageId).toBe(GROUP_MSG_ID);
+    expect(attached?.text).toBe('21gifts moderator');
   });
 
-  it('attaches a group stipend with empty text when comment and recipient name are empty', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: '  ',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await verifyWallet(authStore);
-    await authStore.createPasskeyCredential({
-      credentialId: 'cred-alice',
-      publicKey: new Uint8Array([1]),
-      signCount: 0,
-      accountId: 'acc-alice',
-      createdAt: 1,
-    });
-    await authStore.createAccount({
-      id: 'plat',
-      linkingKey: null,
-      role: 'founder',
-      name: '21.gifts',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 2,
-      rulesAgreedAt: null,
-      isPlatform: true,
-    });
-    const conversationStore = new InMemoryConversationStore();
-    await seedGroupTrigger(conversationStore);
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
-    expect(attached?.text).toBe('');
-    expect(attached?.giftForMessageId).toBe(GROUP_MSG_ID);
-  });
-
-  it('does not attach a second group stipend on the same preimage', async () => {
+  it('does not attach a second group stipend when settled twice', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
     const threadId = await seedGroupTrigger(conversationStore);
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
-    const app = createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    });
-    const body = auth({
-      method: 'POST',
-      body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }),
-    });
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
-    expect((await app.request('/invoices/proof', body)).status).toBe(200);
+    const deps = actionDeps({ authStore, conversationStore });
+    const invoice = unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' });
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
+    await settleProvenGift(deps, invoice, PAID_AT_MS, SOURCE_WALLET, null);
     const messages = await conversationStore.listMessages(threadId, 200);
     expect(messages).toHaveLength(2);
-    expect(messages.filter((row) => row.id === spendGroupGiftId(unpaid().id))).toHaveLength(1);
+    expect(messages.filter((row) => row.id === spendGroupGiftId(invoice.id))).toHaveLength(1);
   });
 
-  it('returns 200 and logs invoice.group_gift.failed when the triggering group message is missing', async () => {
+  it('writes the fiat snapshot to the group stipend', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await seedGroupTrigger(conversationStore);
+    await settleProvenGift(
+      actionDeps({ authStore, conversationStore }),
+      unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      { usd: '5.00', chf: '4.00', eur: null, php: null },
     );
-    expect(res.status).toBe(200);
+    const attached = await conversationStore.getMessageById(spendGroupGiftId(unpaid().id));
+    expect(attached?.amountUsd).toBe('5.00');
+    expect(attached?.amountChf).toBe('4.00');
+  });
+
+  it('attaches no group stipend without a conversation store', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const { giftRecorder, recorded } = capturingRecorder();
+    const deps = actionDeps({ authStore, giftRecorder });
+    delete deps.conversationStore;
+    await settleProvenGift(
+      deps,
+      unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
+    );
+    expect(recorded[0]?.kind).toBe('moderator');
+    expect(
+      parsedEvents(warn).some((e) => String(e['event']).startsWith('invoice.group_gift')),
+    ).toBe(false);
+  });
+
+  it('logs invoice.group_gift.failed when the triggering group message is missing', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await settleProvenGift(
+      actionDeps({ authStore, conversationStore }),
+      unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
+    );
     expect(await conversationStore.getMessageById(spendGroupGiftId(unpaid().id))).toBeUndefined();
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.group_gift.failed')).toBe(true);
   });
 
-  it('returns 200 and logs invoice.group_gift.failed when the thread is not moderator_group', async () => {
+  it('logs invoice.group_gift.failed when the thread is not moderator_group', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
     const conversationStore = new InMemoryConversationStore();
-    const thread = await conversationStore.openMemberPlatform('acc-alice', 'plat', new Date(1));
-    await conversationStore.appendMessage({
-      id: GROUP_MSG_ID,
-      conversationId: thread.id,
-      text: 'mod note',
-      createdAt: new Date(1),
-      senderAccountId: 'acc-alice',
-      senderPubkey: null,
-      name: 'Ada',
-      sats: 0,
-      eventId: null,
-      nostrPublishState: 'skipped',
-      nostrEvent: null,
-      claimedUntil: null,
-    });
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await seedNonGroupTrigger(conversationStore);
+    await settleProvenGift(
+      actionDeps({ authStore, conversationStore }),
+      unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(await conversationStore.getMessageById(spendGroupGiftId(unpaid().id))).toBeUndefined();
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.group_gift.failed')).toBe(true);
   });
 
-  it('returns 200 and logs invoice.group_gift.failed when the platform is missing at proof', async () => {
+  it('logs invoice.group_gift.failed when the platform is missing at settlement', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    await settleProvenGift(
+      actionDeps({ authStore, conversationStore }),
+      unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(await conversationStore.getMessageById(spendGroupGiftId(unpaid().id))).toBeUndefined();
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.group_gift.failed')).toBe(true);
   });
 
-  it('returns 200 and logs invoice.group_gift.failed when the conversation store throws', async () => {
+  it('logs invoice.group_gift.failed when the conversation store throws', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
-    const conversationStore = {
+    const conversationStore: Pick<
+      ConversationStore,
+      'getById' | 'getMessageById' | 'appendMessage'
+    > = {
       getById: () => Promise.resolve(undefined),
       getMessageById: () => Promise.reject(new Error('db')),
       appendMessage: () => Promise.reject(new Error('db')),
-    } as unknown as ConversationStore;
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }));
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      authStore,
-      conversationStore,
-      now: () => 100,
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+    };
+    await settleProvenGift(
+      actionDeps({ authStore, conversationStore }),
+      unpaid({ groupMessageId: GROUP_MSG_ID, comment: '21gifts moderator' }),
+      PAID_AT_MS,
+      SOURCE_WALLET,
+      null,
     );
-    expect(res.status).toBe(200);
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.group_gift.failed')).toBe(true);
   });
+});
 
-  it('records 21gifts moderator as the gift description when groupMessageId is set', async () => {
-    store.put(unpaid({ groupMessageId: GROUP_MSG_ID }));
-    const recorded: unknown[] = [];
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore: store,
-      now: () => 100,
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
+describe('persistProvenGift', () => {
+  it('records only the gift row with the override kind', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const messageStore = uuidPostStore();
+    const { giftRecorder, recorded } = capturingRecorder();
+    await persistProvenGift(
+      actionDeps({ authStore, messageStore, giftRecorder }),
+      {
+        id: 'ab'.repeat(16),
+        address: ADDRESS,
+        pr: PR,
+        paymentHash: HASH,
+        amountMsat: 2500,
+        createdAt: 1,
+        expiresAt: 2,
+        messageId: POST_ID,
+        comment: 'gm',
       },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: unpaid().id, preimage: PREIMAGE }) }),
+      PAID_AT_MS,
+      usdFiat('1.00'),
+      SOURCE_WALLET,
+      'moderator',
     );
-    expect(res.status).toBe(200);
     expect(recorded).toEqual([
       {
-        paidAt: new Date(100),
-        amountSats: 1,
+        paidAt: new Date(PAID_AT_MS),
+        amountSats: 2,
         feeSats: 0,
         recipientWosUser: 'alice',
         lightningInvoice: PR,
         description: '21gifts moderator',
         kind: 'moderator',
-        sourceWallet: 'lightning.space',
-        fiat: null,
+        sourceWallet: SOURCE_WALLET,
+        fiat: usdFiat('1.00'),
       },
     ]);
+    expect(await messageStore.listReplies(POST_ID, 200)).toHaveLength(0);
   });
 });
 
-describe('invoiceRoutes funding store fallback', () => {
-  function directApp(fundingStore?: InMemoryFundingStore): Hono {
-    return new Hono().route(
-      '/invoices',
-      invoiceRoutes({
-        spendApiToken: TOKEN,
-        store: new InMemoryInvoiceStore(),
-        authStore: new InMemoryAuthStore(),
-        messageStore: new InMemoryMessageStore(),
-        now: () => 1,
-        fetchImpl: happyFetch(),
-        ...(fundingStore === undefined ? {} : { fundingStore }),
-      }),
-    );
-  }
-
-  async function callBothRoutes(app: Hono): Promise<{ issued: number; proved: number }> {
-    const issued = await app.request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
-    );
-    const proved = await app.request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: 'missing', preimage: PREIMAGE }) }),
-    );
-    return { issued: issued.status, proved: proved.status };
-  }
-
-  it('uses the route default for both POST routes when none is injected', async () => {
-    expect(await callBothRoutes(directApp())).toEqual({ issued: 403, proved: 404 });
-  });
-
-  it('uses the injected funding store for both POST routes', async () => {
-    expect(await callBothRoutes(directApp(admittedStore()))).toEqual({ issued: 403, proved: 404 });
-  });
-});
-
-describe('GET /invoices/eligible', () => {
+describe('issueGiftInvoice welcome exception and funding gate', () => {
   beforeEach(() => {
     mockedDecode.mockReset();
     mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 1000 });
@@ -4479,701 +2709,231 @@ describe('GET /invoices/eligible', () => {
     mockedSpot.mockResolvedValue(null);
   });
 
-  it('returns 503 when the spend token is not configured', async () => {
-    const res = await spendApp({ spendApiToken: '' }).request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-    );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
-  });
+  /** One-dollar canonical welcome request at the 100k USD spot. */
+  const ONE_DOLLAR_WELCOME = {
+    address: ADDRESS,
+    amountMsat: ONE_USD_AT_100K_MSAT,
+    amountUsd: '1.00',
+    comment: 'Welcome',
+  };
 
-  it('returns 401 when the bearer is missing', async () => {
-    const res = await spendApp({ spendApiToken: TOKEN }).request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it('returns 400 on a bad Lightning Address', async () => {
-    const res = await spendApp({ spendApiToken: TOKEN }).request(
-      '/invoices/eligible?address=nope',
-      auth(),
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it('returns 400 when the address query is omitted', async () => {
-    const res = await spendApp({ spendApiToken: TOKEN }).request('/invoices/eligible', auth());
-    expect(res.status).toBe(400);
-  });
-
-  it('uses the default empty funding store when none is injected', async () => {
-    const res = await invoiceRoutes({
-      spendApiToken: TOKEN,
-      store: new InMemoryInvoiceStore(),
-      authStore: new InMemoryAuthStore(),
-      messageStore: new InMemoryMessageStore(),
-      now: () => 1,
-      fetchImpl: happyFetch(),
-    }).request(`/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
-  });
-
-  it('returns eligible false for an unknown address', async () => {
-    const res = await spendApp({ spendApiToken: TOKEN }).request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
-  });
-
-  it('returns eligible true when admitted today', async () => {
+  /** Deps for `acc-alice` with an admitted grant at {@link GATE_MS}, no shop payment unless set. */
+  async function gateDeps(
+    overrides: Partial<GiftActionDeps> = {},
+    shopPayment = false,
+  ): Promise<GiftActionDeps> {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const account = await authStore.getAccount('acc-alice');
-    if (account !== undefined) {
-      await authStore.updateAccount({ ...account, role: 'verified' });
-    }
-    const fundingStore = new InMemoryFundingStore([
-      {
-        accountId: 'acc-alice',
-        status: 'admitted',
-        appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
-        decidedAt: Date.parse('2026-09-10T08:00:00.000Z'),
-        decidedBy: 'staff',
-        trialUtcDate: null,
-        admittedAt: Date.parse('2026-09-15T18:00:00.000Z'),
-        note: null,
-      },
-    ]);
-    const res = await spendApp({ spendApiToken: TOKEN, authStore, fundingStore }).request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
-  });
-
-  it('reports a withdrawn grant as not eligible with status none', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const fundingStore = new InMemoryFundingStore([
-      {
-        accountId: 'acc-alice',
-        status: 'withdrawn',
-        appliedAt: Date.parse('2026-09-01T00:00:00.000Z'),
-        decidedAt: GATE_MS - 1,
-        decidedBy: 'acc-alice',
-        trialUtcDate: null,
-        admittedAt: null,
-        note: null,
-      },
-    ]);
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      fundingStore,
-      walletTransferStore: fakeWalletTransferStore(),
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
-  });
-
-  it('keeps an unwelcomed verified member eligible for the welcome preflight without a shop payment', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    mockedSpot.mockResolvedValueOnce('100000');
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
-    expect(mockedSpot).toHaveBeenCalled();
-  });
-
-  it('does not give a moderator the welcome preflight exception', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const account = await authStore.getAccount('acc-alice');
-    if (account === undefined) throw new Error('missing seeded account');
-    await authStore.updateAccount({ ...account, role: 'moderator' });
-    mockedSpot.mockResolvedValueOnce('100000');
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
-    expect(mockedSpot).not.toHaveBeenCalled();
-  });
-
-  it('does not give the platform account the welcome preflight exception', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const account = await authStore.getAccount('acc-alice');
-    if (account === undefined) throw new Error('missing seeded account');
-    await authStore.updateAccount({ ...account, role: 'verified', isPlatform: true });
-    mockedSpot.mockResolvedValueOnce('100000');
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
-    expect(mockedSpot).not.toHaveBeenCalled();
-  });
-
-  it('requires a shop payment in the welcome preflight when the spot is unavailable', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
-  });
-
-  it('requires a shop payment in the welcome preflight when the spot lookup throws', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    mockedSpot.mockRejectedValueOnce(new Error('down'));
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
-  });
-
-  it('still requires a shop payment in eligible after the account received its welcome gift', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      giftStore: new InMemoryGiftStore([
-        {
-          paidAt: new Date(3),
-          amountSats: 1,
-          recipientWosUser: 'alice',
-          kind: 'welcome',
-          description: '21gifts welcome',
-        },
-      ]),
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
-  });
-
-  it('refuses invoice issue when an admitted member has no recent verified shop payment', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await spendApp({
-      spendApiToken: TOKEN,
+    return actionDeps({
       authStore,
       messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
+      walletTransfers: fakeWalletTransferStore(shopPayment),
       now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+      ...overrides,
+    });
+  }
+
+  /** Make `acc-alice` of `deps` a moderator, a basis account, or the platform account. */
+  async function reshape(
+    deps: GiftActionDeps,
+    patch: { role?: 'moderator' | 'basis' | 'verified'; isPlatform?: boolean },
+  ): Promise<void> {
+    const authStore = deps.authStore as InMemoryAuthStore;
+    const account = await authStore.getAccount('acc-alice');
+    if (account === undefined) throw new Error('missing seeded account');
+    await authStore.updateAccount({ ...account, ...patch });
+  }
+
+  it('refuses invoice issue when an admitted member has no recent verified shop payment', async () => {
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const result = await issueGiftInvoice(await gateDeps({ fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('still requires a shop payment when Welcome has another normalized amount', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          amountUsd: '2.00',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const result = await issueGiftInvoice(await gateDeps({ fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      amountUsd: '2.00',
+      comment: 'Welcome',
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('issues the one-dollar welcome on the spend route without a shop payment', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
+  it('issues the one-dollar welcome without a shop payment', async () => {
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     mockedSpot.mockResolvedValueOnce('100000');
-    mockedDecode.mockReturnValueOnce({
-      paymentHash: HASH,
-      amountMsat: ONE_USD_AT_100K_MSAT,
+    mockedDecode.mockReturnValueOnce({ paymentHash: HASH, amountMsat: ONE_USD_AT_100K_MSAT });
+    const result = await issueGiftInvoice(await gateDeps({ fetchImpl }), {
+      ...ONE_DOLLAR_WELCOME,
+      amountUsd: '1',
     });
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: ONE_USD_AT_100K_MSAT,
-          amountUsd: '1',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
+    const invoice = issuedInvoice(result);
+    expect(invoice.welcomeReservationAccountId).toBe('acc-alice');
+    expect(invoice.createdAt).toBe(GATE_MS);
     expect(mockedSpot).toHaveBeenCalledWith(fetchImpl);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('returns 409 for a second live welcome lease even with a qualifying shop payment', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     mockedSpot.mockResolvedValue('100000');
-    mockedDecode.mockReturnValue({
-      paymentHash: HASH,
-      amountMsat: ONE_USD_AT_100K_MSAT,
-    });
-    const app = spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(true),
-      now: () => GATE_MS,
-    });
-    const request = () =>
-      app.request(
-        '/invoices',
-        auth({
-          method: 'POST',
-          body: JSON.stringify({
-            address: ADDRESS,
-            amountMsat: ONE_USD_AT_100K_MSAT,
-            amountUsd: '1.00',
-            comment: 'Welcome',
-          }),
-        }),
-      );
-
-    const first = await request();
-    expect(first.status).toBe(200);
+    mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: ONE_USD_AT_100K_MSAT });
+    const deps = await gateDeps({ fetchImpl }, true);
+    expect((await issueGiftInvoice(deps, ONE_DOLLAR_WELCOME)).ok).toBe(true);
     const fetchCallsAfterFirst = fetchImpl.mock.calls.length;
-    const second = await request();
-    expect(second.status).toBe(409);
-    expect(await second.json()).toEqual({ error: 'Welcome invoice already open' });
+    expect(await issueGiftInvoice(deps, ONE_DOLLAR_WELCOME)).toEqual({
+      ok: false,
+      status: 409,
+      error: 'Welcome invoice already open',
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(fetchCallsAfterFirst);
   });
 
   it('reuses the fallback welcome reservation store for the same invoice store', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     mockedSpot.mockResolvedValue('100000');
-    mockedDecode.mockReturnValue({
-      paymentHash: HASH,
-      amountMsat: ONE_USD_AT_100K_MSAT,
-    });
-    const app = new Hono().route(
-      '/invoices',
-      invoiceRoutes({
-        spendApiToken: TOKEN,
-        store: new InMemoryInvoiceStore(),
-        authStore,
-        messageStore: livePostStore(),
-        fundingStore: admittedStore(),
-        walletTransfers: fakeWalletTransferStore(false),
-        now: () => GATE_MS,
-        fetchImpl,
-        lnurlServer: LNURL_SERVER,
-      }),
-    );
-    const request = () =>
-      app.request(
-        '/invoices',
-        auth({
-          method: 'POST',
-          body: JSON.stringify({
-            address: ADDRESS,
-            amountMsat: ONE_USD_AT_100K_MSAT,
-            amountUsd: '1.00',
-            comment: 'Welcome',
-          }),
-        }),
-      );
-
-    const first = await request();
-    expect(first.status).toBe(200);
+    mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: ONE_USD_AT_100K_MSAT });
+    const deps = await gateDeps({ fetchImpl });
+    delete deps.welcomeReservations;
+    expect((await issueGiftInvoice(deps, ONE_DOLLAR_WELCOME)).ok).toBe(true);
     const fetchCallsAfterFirst = fetchImpl.mock.calls.length;
-    const second = await request();
-    expect(second.status).toBe(409);
-    expect(await second.json()).toEqual({ error: 'Welcome invoice already open' });
+    expect(await issueGiftInvoice({ ...deps }, ONE_DOLLAR_WELCOME)).toEqual({
+      ok: false,
+      status: 409,
+      error: 'Welcome invoice already open',
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(fetchCallsAfterFirst);
   });
 
   it('releases a welcome reservation when a later issue gate fails', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const release = vi.fn(async () => undefined);
     mockedSpot.mockResolvedValueOnce('100000');
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: new InMemoryMessageStore(),
-      welcomeInvoiceReservationStore: { reserve: async () => true, release },
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: ONE_USD_AT_100K_MSAT,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
+    const result = await issueGiftInvoice(
+      await gateDeps({
+        messageStore: new InMemoryMessageStore(),
+        welcomeReservations: { reserve: async () => true, release },
       }),
+      ONE_DOLLAR_WELCOME,
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Forum post required' });
     expect(release).toHaveBeenCalledWith('acc-alice', expect.stringMatching(/^[0-9a-f]{32}$/));
   });
 
   it('returns 503 when durable welcome reservation fails despite a shop payment', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     mockedSpot.mockResolvedValueOnce('100000');
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      welcomeInvoiceReservationStore: {
-        reserve: async () => Promise.reject(new Error('unavailable')),
-        release: async () => undefined,
-      },
-      walletTransferStore: fakeWalletTransferStore(true),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: ONE_USD_AT_100K_MSAT,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
-      }),
+    const result = await issueGiftInvoice(
+      await gateDeps(
+        {
+          welcomeReservations: {
+            reserve: async () => Promise.reject(new Error('unavailable')),
+            release: async () => undefined,
+          },
+        },
+        true,
+      ),
+      ONE_DOLLAR_WELCOME,
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Welcome invoice reservation unavailable' });
+    expect(result).toEqual({
+      ok: false,
+      status: 503,
+      error: 'Welcome invoice reservation unavailable',
+    });
   });
 
   it('allows the one-dollar welcome at exactly ten percent above the server conversion', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const amountMsat = 1_100_000;
     mockedSpot.mockResolvedValueOnce('100000');
     mockedDecode.mockReturnValueOnce({ paymentHash: HASH, amountMsat });
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(200);
+    const result = await issueGiftInvoice(await gateDeps({ fetchImpl }), {
+      ...ONE_DOLLAR_WELCOME,
+      amountMsat,
+    });
+    expect(result.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('requires a shop payment above the one-dollar spot tolerance', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     mockedSpot.mockResolvedValueOnce('100000');
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 10_000_000_000,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const result = await issueGiftInvoice(await gateDeps({ fetchImpl }), {
+      ...ONE_DOLLAR_WELCOME,
+      amountMsat: 10_000_000_000,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('requires a shop payment when the one-dollar spot is unavailable', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: ONE_USD_AT_100K_MSAT,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const result = await issueGiftInvoice(await gateDeps({ fetchImpl }), ONE_DOLLAR_WELCOME);
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('fails the welcome exception closed when the spot lookup unexpectedly throws', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     mockedSpot.mockRejectedValueOnce(new Error('down'));
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: ONE_USD_AT_100K_MSAT,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const result = await issueGiftInvoice(await gateDeps({ fetchImpl }), ONE_DOLLAR_WELCOME);
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('requires a shop payment for a second canonical welcome request', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      giftStore: new InMemoryGiftStore([
-        {
-          paidAt: new Date(3),
-          amountSats: 1,
-          recipientWosUser: 'alice',
-          kind: 'welcome',
-          description: '21gifts welcome',
-        },
-      ]),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
+    const result = await issueGiftInvoice(
+      await gateDeps({
+        fetchImpl,
+        giftStore: new InMemoryGiftStore([{ ...PAID_WELCOME, paidAt: new Date(3) }]),
       }),
+      { ...ONE_DOLLAR_WELCOME, amountMsat: 1000 },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('does not treat a basis account as the server welcome exception', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const account = await authStore.getAccount('acc-alice');
-    await authStore.updateAccount({ ...account!, role: 'basis' });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const deps = await gateDeps({ fetchImpl });
+    await reshape(deps, { role: 'basis' });
+    const result = await issueGiftInvoice(deps, { ...ONE_DOLLAR_WELCOME, amountMsat: 1000 });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('does not give a moderator the server welcome exception', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const account = await authStore.getAccount('acc-alice');
-    if (account === undefined) throw new Error('missing seeded account');
-    await authStore.updateAccount({ ...account, role: 'moderator' });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const deps = await gateDeps({ fetchImpl });
+    await reshape(deps, { role: 'moderator' });
     mockedSpot.mockResolvedValueOnce('100000');
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: ONE_USD_AT_100K_MSAT,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const result = await issueGiftInvoice(deps, ONE_DOLLAR_WELCOME);
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(mockedSpot).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('does not treat the platform account as the server welcome exception', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const account = await authStore.getAccount('acc-alice');
-    if (account === undefined) throw new Error('missing seeded account');
-    await authStore.updateAccount({ ...account, role: 'verified', isPlatform: true });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const deps = await gateDeps({ fetchImpl });
+    await reshape(deps, { role: 'verified', isPlatform: true });
     mockedSpot.mockResolvedValueOnce('100000');
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      walletTransferStore: fakeWalletTransferStore(false),
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: ONE_USD_AT_100K_MSAT,
-          amountUsd: '1.00',
-          comment: 'Welcome',
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const result = await issueGiftInvoice(deps, ONE_DOLLAR_WELCOME);
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(mockedSpot).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("does not let a daily roster comment 'Welcome' bypass the shop payment", async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const result = await issueGiftInvoice(
-      {
-        walletTransfers: fakeWalletTransferStore(false),
-        store: new InMemoryInvoiceStore(),
-        authStore,
-        messageStore: livePostStore(),
-        now: () => GATE_MS,
-        fetchImpl,
-        lnurlServer: LNURL_SERVER,
-        fundingStore: admittedStore(),
-        giftStore: new InMemoryGiftStore(),
-        recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
-      },
+      await gateDeps({ fetchImpl, recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC }),
       {
         address: ADDRESS,
         amountMsat: 1000,
@@ -5187,402 +2947,32 @@ describe('GET /invoices/eligible', () => {
   });
 
   it('keeps internal welcome provenance compatible with the same server-side facts', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     mockedSpot.mockResolvedValueOnce('100000');
-    mockedDecode.mockReturnValueOnce({
-      paymentHash: HASH,
-      amountMsat: ONE_USD_AT_100K_MSAT,
-    });
+    mockedDecode.mockReturnValueOnce({ paymentHash: HASH, amountMsat: ONE_USD_AT_100K_MSAT });
     const result = await issueGiftInvoice(
-      {
-        walletTransfers: fakeWalletTransferStore(false),
-        store: new InMemoryInvoiceStore(),
-        authStore,
-        messageStore: livePostStore(),
-        now: () => GATE_MS,
-        fetchImpl,
-        lnurlServer: LNURL_SERVER,
-        fundingStore: admittedStore(),
-        giftStore: new InMemoryGiftStore(),
-        recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
-      },
-      {
-        address: ADDRESS,
-        amountMsat: ONE_USD_AT_100K_MSAT,
-        amountUsd: '1.00',
-        comment: 'Welcome',
-        serverPayoutKind: 'welcome',
-      },
+      await gateDeps({ fetchImpl, recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC }),
+      { ...ONE_DOLLAR_WELCOME, serverPayoutKind: 'welcome' },
     );
     expect(result.ok).toBe(true);
     // LNURL-pay first discovers the callback, then requests the invoice from it.
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it('returns eligible false when there is no grant', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      fundingStore: new InMemoryFundingStore(),
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
-  });
-
-  it('returns eligible true without a grant before the gate day', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      fundingStore: new InMemoryFundingStore(),
-      now: () => NOW_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: true, status: 'none' });
-  });
-
-  it('does not persist when GET /eligible sees an expired trial', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
+  it('does not persist when issueGiftInvoice sees an expired trial', async () => {
     const stored = expiredTrialGrant();
     const fundingStore = new InMemoryFundingStore([stored]);
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      fundingStore,
-      now: () => GATE_MS,
-    }).request(`/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`, auth());
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'pending' });
-    expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
-    expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
-  });
-
-  it('returns eligible false and status none for a basis account', async () => {
-    const authStore = new InMemoryAuthStore();
-    await authStore.createAccount({
-      id: 'acc-alice',
-      username: 'alice',
-      walletRequired: true,
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
+    const result = await issueGiftInvoice(await gateDeps({ fundingStore }, true), {
+      address: ADDRESS,
+      amountMsat: 1000,
     });
-    await verifyWallet(authStore);
-    const fundingStore = admittedStore();
-    const res = await spendApp({ spendApiToken: TOKEN, authStore, fundingStore }).request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
-  });
-
-  it('does not persist when POST /invoices sees an expired trial', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore);
-    const stored = expiredTrialGrant();
-    const fundingStore = new InMemoryFundingStore([stored]);
-    const fetchImpl: FetchFn = async () => {
-      throw new Error('LNURL must not be called');
-    };
-    const res = await spendApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      fundingStore,
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
     expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
   });
 });
 
-describe('POST /invoices/proof payment fiat', () => {
-  let warn: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    mockedSpot.mockReset();
-    mockedSpot.mockResolvedValue(null);
-  });
-
-  afterEach(() => {
-    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
-    warn.mockRestore();
-  });
-
-  it('stays 200 when ensureDays throws and still keeps the sent USD', async () => {
-    const invoice: GiftInvoice = {
-      id: 'cd'.repeat(16),
-      address: ADDRESS,
-      pr: PR,
-      paymentHash: MATCHING_HASH,
-      amountMsat: 1000,
-      createdAt: 1,
-      expiresAt: 1_000_000,
-      amountUsd: '5.00',
-    };
-    const recorded: GiftRecord[] = [];
-    const ensureDays = vi.fn(async (_days: readonly string[], _nowMs: number) => {
-      throw new Error('frankfurter down');
-    });
-    const invoiceStore = new InMemoryInvoiceStore();
-    invoiceStore.put(invoice);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore,
-      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: { ensureDays },
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(
-      false,
-    );
-    expect(ensureDays).not.toHaveBeenCalled();
-    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: null, eur: null, php: null });
-  });
-
-  it('uses an earlier stored rate when loading the payment day throws', async () => {
-    const invoice: GiftInvoice = {
-      id: 'd0'.repeat(16),
-      address: ADDRESS,
-      pr: PR,
-      paymentHash: MATCHING_HASH,
-      amountMsat: 1000,
-      createdAt: 1,
-      expiresAt: 1_000_000,
-      amountUsd: '5.00',
-    };
-    const recorded: GiftRecord[] = [];
-    const calls: string[][] = [];
-    const invoiceStore = new InMemoryInvoiceStore();
-    invoiceStore.put(invoice);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore,
-      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: {
-        ensureDays: async (days) => {
-          calls.push([...days]);
-          if (days.includes('2026-06-01')) {
-            throw new Error('today unpublished');
-          }
-          return new Map([['2026-05-31', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
-        },
-      },
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(
-      false,
-    );
-    expect(calls).toEqual([]);
-    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: null, eur: null, php: null });
-  });
-
-  it('stores null fiat when amountUsd is not normalized', async () => {
-    const invoice: GiftInvoice = {
-      id: 'ce'.repeat(16),
-      address: ADDRESS,
-      pr: PR,
-      paymentHash: MATCHING_HASH,
-      amountMsat: 1000,
-      createdAt: 1,
-      expiresAt: 1_000_000,
-      amountUsd: 'nope',
-    };
-    const recorded: GiftRecord[] = [];
-    const invoiceStore = new InMemoryInvoiceStore();
-    invoiceStore.put(invoice);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore,
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(recorded[0]?.fiat).toBeNull();
-  });
-
-  it('stores null fiat when the invoice has no sats and no USD amount', async () => {
-    const invoice: GiftInvoice = {
-      id: 'cf'.repeat(16),
-      address: ADDRESS,
-      pr: PR,
-      paymentHash: MATCHING_HASH,
-      amountMsat: 0,
-      createdAt: 1,
-      expiresAt: 1_000_000,
-    };
-    const recorded: GiftRecord[] = [];
-    const invoiceStore = new InMemoryInvoiceStore();
-    invoiceStore.put(invoice);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore,
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(recorded[0]?.fiat).toBeNull();
-    expect(mockedSpot).not.toHaveBeenCalled();
-  });
-
-  it('the omitted snapshot stays null when the invoice has no amountUsd', async () => {
-    mockedSpot.mockResolvedValueOnce('100000');
-    const ensureDays = vi.fn(async (_days: readonly string[], _nowMs: number) => {
-      return new Map([['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
-    });
-    const invoice: GiftInvoice = {
-      id: 'd0'.repeat(16),
-      address: ADDRESS,
-      pr: PR,
-      paymentHash: MATCHING_HASH,
-      amountMsat: 1_000_000,
-      createdAt: 1,
-      expiresAt: 1_000_000,
-    };
-    const recorded: GiftRecord[] = [];
-    const invoiceStore = new InMemoryInvoiceStore();
-    invoiceStore.put(invoice);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore,
-      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: { ensureDays },
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(recorded[0]?.fiat).toBeNull();
-    expect(mockedSpot).not.toHaveBeenCalled();
-    expect(ensureDays).not.toHaveBeenCalled();
-  });
-
-  it('fills a quote the payment day has not published yet from the previous day', async () => {
-    const invoice: GiftInvoice = {
-      id: 'd2'.repeat(16),
-      address: ADDRESS,
-      pr: PR,
-      paymentHash: MATCHING_HASH,
-      amountMsat: 1_000_000,
-      createdAt: 1,
-      expiresAt: 1_000_000,
-      amountUsd: '5.00',
-    };
-    const recorded: GiftRecord[] = [];
-    const invoiceStore = new InMemoryInvoiceStore();
-    invoiceStore.put(invoice);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore,
-      now: () => Date.parse('2026-06-02T00:08:00.000Z'),
-      fiatRates: new InMemoryFiatStore({
-        '2026-06-02': { CHF: '0.80' },
-        '2026-06-01': { EUR: '0.90', PHP: '50' },
-      }),
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(recorded[0]?.fiat).toEqual({
-      usd: '5.00',
-      chf: null,
-      eur: null,
-      php: null,
-    });
-  });
-
-  it('stores null fiat when the spot text cannot be priced', async () => {
-    mockedSpot.mockResolvedValueOnce('1e2');
-    const invoice: GiftInvoice = {
-      id: 'd1'.repeat(16),
-      address: ADDRESS,
-      pr: PR,
-      paymentHash: MATCHING_HASH,
-      amountMsat: 1_000_000,
-      createdAt: 1,
-      expiresAt: 1_000_000,
-    };
-    const recorded: GiftRecord[] = [];
-    const invoiceStore = new InMemoryInvoiceStore();
-    invoiceStore.put(invoice);
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      invoiceStore,
-      now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      giftRecorder: {
-        recordOutbound: async (row) => {
-          recorded.push(row);
-        },
-      },
-    }).request(
-      '/invoices/proof',
-      auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
-    );
-    expect(res.status).toBe(200);
-    expect(recorded[0]?.fiat).toBeNull();
-  });
-});
-
-describe('spend lookups by wallet address', () => {
+describe('issueGiftInvoice by wallet address', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -5596,16 +2986,7 @@ describe('spend lookups by wallet address', () => {
     warn.mockRestore();
   });
 
-  const EMPTY_POSTED = {
-    hasPosted: false,
-    messageId: null,
-    postedAt: null,
-    hasMedia: false,
-    welcomeHasMedia: false,
-    welcomeMessageId: null,
-  };
-
-  /** `acc-alice` with a passkey, an admitted grant, and a live post, but no verified wallet. */
+  /** `acc-alice` with a passkey (unless `withPasskey` is false) but no verified wallet. */
   async function seedWithoutWallet(
     authStore: InMemoryAuthStore,
     withPasskey = true,
@@ -5635,56 +3016,25 @@ describe('spend lookups by wallet address', () => {
     });
   }
 
-  async function lookups(
-    app: ReturnType<typeof createAppRaw>,
-    address: string,
-  ): Promise<{ passkey: unknown; eligible: unknown; posted: unknown; post: Response }> {
-    const query = encodeURIComponent(address);
-    const passkey = await (await app.request(`/invoices/passkey?address=${query}`, auth())).json();
-    const eligible = await (
-      await app.request(`/invoices/eligible?address=${query}`, auth())
-    ).json();
-    const posted = await (await app.request(`/invoices/posted?address=${query}`, auth())).json();
-    const post = await app.request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address, amountMsat: 1000 }) }),
-    );
-    return { passkey, eligible, posted, post };
-  }
-
   it('resolves the wallet address case-insensitively and fetches the invoice internally', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    const invoiceStore = new InMemoryInvoiceStore();
     const { fetchImpl, seen } = walletLnurlFetch('alice');
-    const app = createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      invoiceStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      now: () => NOW_MS,
-    });
-    const result = await lookups(app, ' ALICE@Example.Test ');
-    expect(result.passkey).toEqual({ hasPasskey: true });
-    expect(result.eligible).toEqual({ eligible: true, status: 'admitted' });
-    expect(result.posted).toMatchObject({ hasPosted: true, messageId: 'post-alice' });
-    expect(result.post.status).toBe(200);
-    const body = (await result.post.json()) as { id: string };
-    expect(invoiceStore.get(body.id)?.address).toBe('alice@example.test');
+    const invoice = issuedInvoice(
+      await issueGiftInvoice(
+        actionDeps({ authStore, messageStore: livePostStore(), fetchImpl, now: () => NOW_MS }),
+        { address: ' ALICE@Example.Test ', amountMsat: 1000 },
+      ),
+    );
+    expect(invoice.address).toBe('alice@example.test');
     expect(allInternal(seen)).toBe(true);
   });
 
   it('accepts a wallet address whose public host carries a port or is an IP address', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
-    /** App whose `PUBLIC_BASE_URL` is `https://<host>`, with a fake internal LNURL server. */
-    function hostApp(host: string): {
-      app: ReturnType<typeof createAppRaw>;
-      invoiceStore: InMemoryInvoiceStore;
-      seen: string[];
-    } {
-      const invoiceStore = new InMemoryInvoiceStore();
+    /** Deps whose LNURL server is public at `https://<host>`, with a fake internal LNURL server. */
+    function hostDeps(host: string): { deps: GiftActionDeps; seen: string[] } {
       const seen: string[] = [];
       const fetchImpl: FetchFn = async (input) => {
         const url = String(input);
@@ -5703,35 +3053,35 @@ describe('spend lookups by wallet address', () => {
         }
         return new Response('unexpected', { status: 500 });
       };
-      const app = createApp({
-        spendApiToken: TOKEN,
+      const publicBaseUrl = `https://${host}`;
+      const lnurlServer: LnurlServerConfig = {
+        baseUrl: LNURL_SERVER.baseUrl,
+        publicBaseUrl,
+        host: new URL(publicBaseUrl).host,
+      };
+      const deps = actionDeps({
         authStore,
-        invoiceStore,
         messageStore: livePostStore(),
         fetchImpl,
+        lnurlServer,
         now: () => NOW_MS,
-        env: { ...process.env, ...LNURL_ENV, PUBLIC_BASE_URL: `https://${host}` },
       });
-      return { app, invoiceStore, seen };
+      return { deps, seen };
     }
     for (const host of ['example.test:8443', '127.0.0.1', '[::1]:3000']) {
-      const { app, invoiceStore, seen } = hostApp(host);
-      const result = await lookups(app, `Alice@${host.toUpperCase()}`);
-      expect(result.passkey).toEqual({ hasPasskey: true });
-      expect(result.eligible).toEqual({ eligible: true, status: 'admitted' });
-      expect(result.posted).toMatchObject({ hasPosted: true, messageId: 'post-alice' });
-      expect(result.post.status).toBe(200);
-      const body = (await result.post.json()) as { id: string };
-      expect(invoiceStore.get(body.id)?.address).toBe(`alice@${host}`);
+      const { deps, seen } = hostDeps(host);
+      const invoice = issuedInvoice(
+        await issueGiftInvoice(deps, { address: `Alice@${host.toUpperCase()}`, amountMsat: 1000 }),
+      );
+      expect(invoice.address).toBe(`alice@${host}`);
       expect(seen.length).toBeGreaterThan(0);
       expect(seen.every((url) => url.startsWith('http://lnurl.test/'))).toBe(true);
-      const bare = await app.request(
-        `/invoices/passkey?address=${encodeURIComponent(host)}`,
-        auth(),
-      );
-      expect(bare.status).toBe(400);
+      expect(await issueGiftInvoice(deps, { address: host, amountMsat: 1000 })).toMatchObject({
+        ok: false,
+        status: 400,
+      });
     }
-    const { app } = hostApp('example.test:8443');
+    const { deps } = hostDeps('example.test:8443');
     for (const address of [
       'alice@other.test:8443',
       '@example.test:8443',
@@ -5739,40 +3089,28 @@ describe('spend lookups by wallet address', () => {
       'al ice@example.test:8443',
       `${'a'.repeat(250)}@example.test:8443`,
     ]) {
-      const refused = await app.request(
-        `/invoices/passkey?address=${encodeURIComponent(address)}`,
-        auth(),
-      );
-      expect(refused.status).toBe(400);
+      expect(await issueGiftInvoice(deps, { address, amountMsat: 1000 })).toEqual({
+        ok: false,
+        status: 400,
+        error: 'Not a valid Lightning Address (expected name@domain)',
+      });
     }
-    const off = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      env: { ...process.env, LNURL_SERVER_URL: '', PUBLIC_BASE_URL: '' },
-    }).request(
-      `/invoices/passkey?address=${encodeURIComponent('alice@example.test:8443')}`,
-      auth(),
-    );
-    expect(off.status).toBe(400);
+    const off = actionDeps({ authStore });
+    delete off.lnurlServer;
+    expect(
+      await issueGiftInvoice(off, { address: 'alice@example.test:8443', amountMsat: 1000 }),
+    ).toMatchObject({ ok: false, status: 400 });
   });
 
   it('does not find a foreign domain', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const app = createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      now: () => NOW_MS,
-    });
-    const result = await lookups(app, 'alice@example.com');
-    expect(result.passkey).toEqual({ hasPasskey: false });
-    expect(result.eligible).toEqual({ eligible: false, status: 'none' });
-    expect(result.posted).toEqual(EMPTY_POSTED);
-    expect(result.post.status).toBe(403);
-    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl, now: () => NOW_MS }),
+      { address: 'alice@example.com', amountMsat: 1000 },
+    );
+    expect(result).toEqual({ ok: false, status: 403, error: 'Passkey required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -5780,19 +3118,11 @@ describe('spend lookups by wallet address', () => {
     const authStore = new InMemoryAuthStore();
     await seedWithoutWallet(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const app = createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      now: () => NOW_MS,
-    });
-    const result = await lookups(app, ADDRESS);
-    expect(result.passkey).toEqual({ hasPasskey: false });
-    expect(result.eligible).toEqual({ eligible: false, status: 'none' });
-    expect(result.posted).toEqual(EMPTY_POSTED);
-    expect(result.post.status).toBe(403);
-    expect(await result.post.json()).toEqual({ error: 'Wallet required' });
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl, now: () => NOW_MS }),
+      { address: ADDRESS, amountMsat: 1000 },
+    );
+    expect(result).toEqual({ ok: false, status: 403, error: 'Wallet required' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.wallet_required')).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -5801,16 +3131,11 @@ describe('spend lookups by wallet address', () => {
     const authStore = new InMemoryAuthStore();
     await seedWithoutWallet(authStore, false);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const app = createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      now: () => NOW_MS,
-    });
-    const result = await lookups(app, ADDRESS);
-    expect(result.post.status).toBe(403);
-    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl, now: () => NOW_MS }),
+      { address: ADDRESS, amountMsat: 1000 },
+    );
+    expect(result).toEqual({ ok: false, status: 403, error: 'Passkey required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -5818,16 +3143,11 @@ describe('spend lookups by wallet address', () => {
     const authStore = new InMemoryAuthStore();
     await seedWithoutWallet(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const app = createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      now: () => NOW_MS,
-    });
-    const result = await lookups(app, 'alice@other.test');
-    expect(result.post.status).toBe(403);
-    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    const result = await issueGiftInvoice(
+      actionDeps({ authStore, messageStore: livePostStore(), fetchImpl, now: () => NOW_MS }),
+      { address: 'alice@other.test', amountMsat: 1000 },
+    );
+    expect(result).toEqual({ ok: false, status: 403, error: 'Passkey required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -5835,208 +3155,116 @@ describe('spend lookups by wallet address', () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const app = createApp({
-      spendApiToken: TOKEN,
+    const deps = actionDeps({
       authStore,
       messageStore: livePostStore(),
       fetchImpl,
       now: () => NOW_MS,
-      env: {},
     });
-    const result = await lookups(app, ADDRESS);
-    expect(result.passkey).toEqual({ hasPasskey: false });
-    expect(result.eligible).toEqual({ eligible: false, status: 'none' });
-    expect(result.posted).toEqual(EMPTY_POSTED);
-    expect(result.post.status).toBe(403);
-    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    delete deps.lnurlServer;
+    const result = await issueGiftInvoice(deps, { address: ADDRESS, amountMsat: 1000 });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Passkey required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
-describe('payout gate: the 21.gifts recovery share', () => {
+describe('issueGiftInvoice payout gate: the 21.gifts recovery share', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.stubEnv('RECOVERY_SHARE_REQUIRED_FROM', FUNDING_REQUIRED_FROM_UTC);
+    setAddressRefKey(TOKEN);
+    mockedDecode.mockReset();
+    mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 1000 });
   });
 
   afterEach(() => {
     warn.mockRestore();
-    vi.unstubAllEnvs();
+    setAddressRefKey(null);
   });
 
-  it('throws at createApp for an invalid RECOVERY_SHARE_REQUIRED_FROM', () => {
-    vi.stubEnv('RECOVERY_SHARE_REQUIRED_FROM', '2026-02-30');
-    expect(() => createApp({ spendApiToken: TOKEN })).toThrow(
-      'RECOVERY_SHARE_REQUIRED_FROM must be an ISO date (YYYY-MM-DD)',
-    );
-  });
-
-  it.each([
-    ['the day before the start day', '2026-10-02'],
-    ['an unset start day', ''],
-  ])(
-    'issues to and reports eligible an admitted member without a share on %s',
-    async (_label, day) => {
-      vi.stubEnv('RECOVERY_SHARE_REQUIRED_FROM', day);
-      const authStore = new InMemoryAuthStore();
-      await seedPasskeyAccount(authStore, { share: false });
-      const app = createApp({
-        spendApiToken: TOKEN,
-        authStore,
-        messageStore: livePostStore(),
-        fetchImpl: vi.fn<FetchFn>(happyFetch()),
-        now: () => GATE_MS,
-      });
-      const eligible = await app.request(
-        `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-        auth(),
-      );
-      expect(await eligible.json()).toEqual({ eligible: true, status: 'admitted' });
-      const issued = await app.request(
-        '/invoices',
-        auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
-      );
-      expect(issued.status).toBe(200);
-    },
-  );
-
-  it('keeps the passkey and grant gates of POST /invoices while the share is not required', async () => {
-    vi.stubEnv('RECOVERY_SHARE_REQUIRED_FROM', '');
+  /** Deps for `acc-alice` without a share at {@link GATE_MS}, the share required from the gate day. */
+  async function shareDeps(overrides: Partial<GiftActionDeps> = {}): Promise<GiftActionDeps> {
     const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore, { share: false });
-    const res = await createApp({
-      spendApiToken: TOKEN,
+    await seedPasskeyAndPlatform(authStore, { share: false });
+    return actionDeps({
       authStore,
-      fundingStore: new InMemoryFundingStore(),
       messageStore: livePostStore(),
       fetchImpl: vi.fn<FetchFn>(happyFetch()),
       now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+      recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
+      ...overrides,
+    });
+  }
+
+  it.each([
+    ['the day before the start day', '2026-10-02'],
+    ['an unset start day', null],
+  ])('issues to an admitted member without a share on %s', async (_label, day) => {
+    const result = await issueGiftInvoice(await shareDeps({ recoveryShareRequiredFrom: day }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('keeps the passkey and grant gates while the share is not required', async () => {
+    const result = await issueGiftInvoice(
+      await shareDeps({
+        recoveryShareRequiredFrom: null,
+        fundingStore: new InMemoryFundingStore(),
+      }),
+      { address: ADDRESS, amountMsat: 1000 },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
   });
 
   it('refuses an admitted member without a share like a missing grant', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore, { share: false });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const result = await issueGiftInvoice(await shareDeps({ fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'invoice.funding_required', addressRef: ADDRESS_REF }),
     );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('answers eligible false with the admitted status without a share', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore, { share: false });
-    const res = await createApp({ spendApiToken: TOKEN, authStore, now: () => GATE_MS }).request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
-  });
-
-  it("answers eligible false with the trial status for today's trial without a share", async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore, { share: false });
-    const fundingStore = new InMemoryFundingStore([
-      { ...expiredTrialGrant(), trialUtcDate: FUNDING_REQUIRED_FROM_UTC },
-    ]);
-    const app = createApp({ spendApiToken: TOKEN, authStore, fundingStore, now: () => GATE_MS });
-    const before = await app.request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(await before.json()).toEqual({ eligible: false, status: 'trial' });
-    await storeRecoveryShare(authStore, 'acc-alice', WALLET_PUBKEY);
-    const after = await app.request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(await after.json()).toEqual({ eligible: true, status: 'trial' });
-  });
-
   it('refuses the welcome gift without a share', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore, { share: false });
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: livePostStore(),
-      fetchImpl,
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    const result = await issueGiftInvoice(await shareDeps({ fetchImpl }), {
+      address: ADDRESS,
+      amountMsat: 1000,
+      comment: 'Welcome',
+    });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('refuses the moderator stipend without a share', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(authStore, { share: false });
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
-    const invoiceStore = new InMemoryInvoiceStore();
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      invoiceStore,
-      fetchImpl,
-      conversationStore,
-      now: () => GATE_MS,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          groupMessageId: GROUP_MSG_ID,
-          comment: '21gifts moderator',
-        }),
-      }),
+    const result = await issueGiftInvoice(
+      await shareDeps({ messageStore: uuidPostStore(), fetchImpl, conversationStore }),
+      {
+        address: ADDRESS,
+        amountMsat: 1000,
+        groupMessageId: GROUP_MSG_ID,
+        comment: '21gifts moderator',
+      },
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('does not read the share before the gate day', async () => {
-    const authStore = new InMemoryAuthStore();
-    await seedPasskeyAccount(authStore, { share: false });
-    const shareRead = vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet');
-    const res = await createApp({ spendApiToken: TOKEN, authStore, now: () => NOW_MS }).request(
-      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
-      auth(),
-    );
-    expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
+    const deps = await shareDeps({ now: () => NOW_MS });
+    const shareRead = vi.spyOn(deps.authStore, 'hasRecoveryShareForVerifiedWallet');
+    const result = await issueGiftInvoice(deps, { address: ADDRESS, amountMsat: 1000 });
+    expect(result.ok).toBe(true);
     expect(shareRead).not.toHaveBeenCalled();
   });
 });

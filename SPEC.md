@@ -16,7 +16,7 @@ daily-rate proportions are not a repayment pricing source. An open invoice and
 a settled part keep their stored sats. An unavailable spot leaves read-path sat
 fields null; an invoice path that needs those units answers 503.
 
-**Status**: living document. Last revised 2026-11-13 (`POST /funding/withdraw`: a member leaves the grant program on their own; the stored status `withdrawn` frees an admitted place at once, ends every payout from the moment of the write, reads as `none` on the owner wire and on `GET /invoices/eligible`, shows as `withdrawn` on the staff detail, and may apply again; operator-only `GET /funding/withdrawals` lists every withdrawal from `db_change`, also after a new application). Also 2026-11-13 (account merges and gift invoice issuance use account advisory locks before message locks and row locks; repayment settlement re-reads invoice identity under the message lock; account merges preserve immutable repayment part indexes, refuse remaining key collisions, and refuse every historical repayment invoice on a dual-giver credit; terminal receiver-edge status, bounded/queued token-owner enrichment, independent catch-up retry, monotone viewer upserts, atomic welcome-invoice entitlement reservations, input-owned token direction and amounts, token invoice attachments, verified-only current-wallet counterparty ownership, and one About-me-inclusive daily-media definition). Before that, 2026-11-12 (encrypted deployment Spark viewer, direct current/previous-wallet transfer sync, admin wallet-table reads, the server-verified shop-payment grant condition, and the owner-facing single reason for today's grant payout). Earlier decisions remain documented in the Decisions Log and the endpoint sections below.
+**Status**: living document. Last revised 2026-11-14 (the external spend worker path is removed: `PAYOUT_SIGNER=fond` queues payouts in `fond_payout` as before, unset or blank means no payout sink, and `spend` is rejected at boot; `GET /invoices/passkey`, `GET /invoices/eligible`, `GET /invoices/posted`, `POST /invoices`, `POST /invoices/proof`, `POST /spend/daily-instruction`, `GET` and `POST /funding/daily-roster/document`, and `POST /funding/daily-roster/worker/*` are removed; `SPEND_URL` is no longer read and `SPEND_API_TOKEN` is only the log reference key).
 
 ---
 
@@ -65,25 +65,10 @@ and in the already-paid check of the `POST /debug/spend-ping` window replay
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
 does not fetch or pay invoices.
 
-Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
-report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `ownerFundingStatus`, the effective status with a withdrawn grant read as `none`; grant required from UTC 2026-10-01, a 21.gifts recovery share for the current verified wallet from `RECOVERY_SHARE_REQUIRED_FROM`, and a completed server-verified shop payment today or yesterday UTC);
-its preflight omits only that shop-payment condition while server-owned facts satisfy the welcome path's recipient rule (role exactly `verified`, not the platform account) and show that account has not received its welcome gift; this does not make any other invoice payable. `POST /invoices` requires passkey and those same `eligibleToday` conditions, then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver. The one-time welcome gift bypasses only the new shop-payment condition when those same recipient facts hold, the account has not received its welcome gift, the normalized instruction is exactly USD `1.00` with comment `Welcome`, neither `messageId` nor `groupMessageId` is set, and `amountMsat` is no more than the server's own USD 1.00 spot conversion plus the fixed 10% tolerance. A missing or unusable spot fails closed and requires the shop payment. `serverPayoutKind` remains internal and is never accepted from the HTTP body. These are exactly the welcome gift's own conditions, so even a caller that submits them can obtain at most the single welcome gift the account is entitled to; a later identical request is shop-payment-gated and then refused as already welcomed after that gate passes.
-Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
-When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
-When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
-`POST /invoices/proof` accepts a preimage without re-checking the grant. Replies do not count. They require `SPEND_API_TOKEN`;
-when it is unset the
-routes return **503** and the process still boots. This service does not pay
-invoices (no LNDHub client). A matching proof inserts an outbound row into
-`gift` when `DATABASE_URL` is set (no-op without it) so `GET /gifts/stats` and
-`GET /gifts?day=` include the payment. Insert failure logs
-`gifts.record_failed` and still returns **200**. When the issued invoice stored a **top-level** `messageId`, proof inserts a
-platform-account gift-reply first, then `addSats` (idempotent). That path does
-not notify (no in-app rows, no Web Push). When that
-`messageId` is a reply, proof persists a hidden `spendGiftReplyId` marker
-under the reply, then `addSats` the reply (a live existing marker is hidden
-only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
-`POST /invoices`. `GET /invoices/posted` returns `{ hasPosted, messageId, postedAt, hasMedia, welcomeHasMedia, welcomeMessageId }`.
+Payouts: with `PAYOUT_SIGNER=fond` decided payout instructions are queued in
+`fond_payout` and paid by the Fond member from its own in-app wallet (see
+[Fond payouts](#fond-payouts-fond)). This service does not pay invoices (no
+LNDHub client).
 
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://staging.21.gifts`, `https://app.21.gifts`,
@@ -209,17 +194,6 @@ Public base URLs used in examples:
 | POST   | `/funding/daily-roster/moderators/update`            | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ username, amountUsd }` (or `{ address, amountUsd }` with the row's edit key) updates a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. String key + bad amount → Invalid address or amount; otherwise, or no such account, Unknown address.                                                                                                                                                                                                                                                  |
 | POST   | `/funding/daily-roster/moderators/delete`            | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ username }` (or `{ address }` with the row's edit key) deletes a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Local bad body or no such account → Unknown address.                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/funding/daily-roster/moderators/payments`          | Bearer, at least initiator (moderator and software developer 403) | 401 no session, then 403, then `{ enabled: boolean }` sets `moderatorPaymentsEnabled` only. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Non-boolean enabled → Invalid payments switch.                                                                                                                                                                                                                                                                                                                                              |
-| GET    | `/funding/daily-roster/document`                     | Spend Bearer (invoices)                                           | 503 if the token env is unset; 401 wrong/missing Bearer. Success 200 is the full document including `moderators` and `moderatorPaymentsEnabled`; each row is `{ accountId, username, address, amountUsd }` with `address` the receiving address now, or `null` when the account has none (missing account, username, or verified wallet, or the LNURL server off). `defaultAmountUsd` is always 1.                                                                                                                                                        |
-| POST   | `/funding/daily-roster/document`                     | Spend Bearer (invoices)                                           | Import of the full document. 503 if the token env is unset; 401 wrong/missing Bearer. Writes only while the store is still the empty start document; a saved empty roster is already written; a second import returns 200 with the stored document. `defaultAmountUsd` in the body is ignored.                                                                                                                                                                                                                                                            |
-| POST   | `/funding/daily-roster/worker/comment`               | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ comment: string }`. Newlines become spaces, then trim. Empty after trim is valid. Longer than 500 is 400 Invalid comment and is not cut. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                 |
-| POST   | `/funding/daily-roster/worker/payments`              | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ enabled: boolean }` sets paymentsEnabled. Non-boolean enabled is 400 Invalid payments switch. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                                                            |
-| POST   | `/funding/daily-roster/worker/recipients`            | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ username, amountUsd }` or `{ address, amountUsd }` (`<username>@<host>`, a bare username, or an account id) adds a daily recipient. 400 Invalid address or amount, Unknown address (no such account), or Address already listed. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                         |
-| POST   | `/funding/daily-roster/worker/recipients/update`     | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ username, amountUsd }` or `{ address, amountUsd }` updates a daily amount. A string key with a bad amount is 400 Invalid address or amount; otherwise, or no such account, Unknown address. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                              |
-| POST   | `/funding/daily-roster/worker/recipients/delete`     | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ username }` or `{ address }` deletes a daily recipient. A bad body or no such account is 400 Unknown address. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                                            |
-| POST   | `/funding/daily-roster/worker/moderators`            | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ username, amountUsd }` or `{ address, amountUsd }` (`<username>@<host>`, a bare username, or an account id) adds a moderator stipend. 400 Invalid address or amount, Unknown address (no such account), or Address already listed. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                       |
-| POST   | `/funding/daily-roster/worker/moderators/update`     | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ username, amountUsd }` or `{ address, amountUsd }` updates a stipend. A string key with a bad amount is 400 Invalid address or amount; otherwise, or no such account, Unknown address. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                   |
-| POST   | `/funding/daily-roster/worker/moderators/delete`     | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ username }` or `{ address }` deletes a stipend. A bad body or no such account is 400 Unknown address. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                                                    |
-| POST   | `/funding/daily-roster/worker/moderators/payments`   | Spend Bearer (invoices)                                           | Spend Bearer. Body `{ enabled: boolean }` sets moderatorPaymentsEnabled. Non-boolean enabled is 400 Invalid payments switch. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/funding/payout-days`                               | Bearer (moderator+) or `DEBUG_TOKEN` / operator key token         | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/shops/activity`                                    | none                                                              | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/shops/activity/shops`                              | Bearer (moderator+)                                               | Staff-only per-shop activity list: the shops `/shops/activity` counts, zero-charge shops included (`shops`: `{ noteId, name, npub, accountId, username, activeDays, lastChargeDay }`)                                                                                                                                                                                                                                                                                                                                                                     |
@@ -323,12 +297,6 @@ Public base URLs used in examples:
 | GET    | `/wallets/stats`                                     | none                                                              | Public member-wallet totals by UTC day, with carry-forward balances and funded-wallet counts                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/fx/spot`                                           | none                                                              | Current BTC price in USD, CHF, EUR, PHP (stored quote, refreshed every 5 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/messages/stats`                                    | none                                                              | Living forum notes and replies counted together, by UTC day                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`                                          | Whether a wallet address has a passkey-backed account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`                                          | Live top-level post flag plus welcome media (`welcomeHasMedia` includes About me)                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`                                          | Whether the address is funding-eligible today, plus effective grant `status`                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`                                          | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, from `RECOVERY_SHARE_REQUIRED_FROM` the 21.gifts recovery share, and forum post required)                                                                                                                                                                                                                                                                                                                                                                                                    |
-| POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`                                          | Accept payment preimage as proof                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| POST   | `/spend/daily-instruction`                           | Bearer `SPEND_API_TOKEN`                                          | Spend Bearer. Body `{ address }`. The kind is always daily. 503 if the token env is unset; 401 wrong/missing Bearer. Pay requires today's live top-level photo/video, including the About-me profile note, and returns it as `messageId`; success 200 is `{ action: skip, reason }` or `{ action: pay, amountUsd, comment, messageId }`.                                                                                                                                                                                                                  |
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
@@ -2823,7 +2791,7 @@ stays `null`)).
 | `rulesAgreedAt`              | number \| null  | Epoch ms of first living-room rules agreement, or `null`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `setup`                      | string \| null  | Next wizard step: `name`, `username`, `lightning-address` (the receiving-wallet step, done once the wallet is verified), `rules`, or `null` when complete. The union still includes `wallet` for older clients; the api never returns it. Skip timestamps count as done except username, which cannot be skipped. Wallet backup is not a setup step. Clients must not invent a parallel sequence.                                                                                                                                                                        |
 | `missing`                    | string[]        | Factually unset fields (`name`, `username`, `lightning-address`, `rules`) even when skipped. Only a verified wallet clears `lightning-address`. Never includes `wallet`. Does not include `profileMessageId`.                                                                                                                                                                                                                                                                                                                                                            |
-| hasPosted                    | boolean         | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count. Not the same predicate as GET /invoices/posted (that stays top-level non-profile only).                                                                                                                                                                                                                          |
+| hasPosted                    | boolean         | True when there is a live forum row that is not the profile note (replies still count) OR when `aboutMe` is non-null. A profile note that is only the display-name copy, a photo without bio text, a missing note, and a soft-hidden note do not count.                                                                                                                                                                                                                                                                                                                  |
 | `aboutMe`                    | string \| null  | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                                                                                                                                                                                                                                              |
 | `aboutMeHasPhoto`            | boolean         | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                                                                                                                                                                                                                                                       |
 | `aboutMessageId`             | string \| null  | Id of the stored About me note when `aboutMe` is non-null. `null` when `aboutMe` is `null` (including a name-copy note). Not a display name.                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -3590,8 +3558,8 @@ status before the write. Store throw → **503**
 
 From the moment of the write the member is out of the grant program:
 `inGrantProgramToday` is false, so from the grant gate day (UTC 2026-10-01,
-already passed) `eligibleToday` is false too: no daily ping, no spend
-invoice, and `GET /invoices/eligible` answers `eligible: false`. An
+already passed) `eligibleToday` is false too: no daily ping, no payout
+invoice. An
 admitted place is free at once (`GET /funding/places`). A row on the daily
 payout roster is not changed; being listed lifts no payout condition, so a
 listed withdrawn member is not paid. The member may apply again
@@ -3727,50 +3695,6 @@ Operator only: Bearer `DEBUG_TOKEN` or an operator key token; anything else, inc
 ```
 
 `unlinked` lists the rows without an account in `id` order (stored order on a memory boot) with their stored legacy address (or `null`) and amount; they are in no document and are never paid. `totalUsd` sums every row of the bucket, `linkedUsd` only the linked rows. Logs `funding.daily_roster` `{ operator: true, action: "links" }`. A store throw → 502 `{ "error": "Daily roster is unavailable" }` (`funding.daily_roster.failed`). Never logs an address.
-
-### `GET /funding/daily-roster/document`
-
-Spend Bearer, same as the invoices. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Success 200 is the full document `{ comment, paymentsEnabled, moderatorPaymentsEnabled, defaultAmountUsd, recipients, moderators }`. `defaultAmountUsd` is always 1. A never-written store is empty defaults and two empty lists. Each row is `{ accountId, username, address, amountUsd }` for a listed account: `address` is the account's receiving address resolved at read time (`receivingAddress`: `<username>@<host of PUBLIC_BASE_URL>` with a verified wallet and the LNURL server on), or `null` when there is none (the account is missing, has no username or no verified wallet, or the LNURL server is off); such a row is not payable. Rows not linked to an account are left out. Every successful roster response on the Spend Bearer (this read, the import, and the worker writes) has this row shape. A store 400 keeps its `{ "error" }`. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/document`
-
-Same Spend Bearer as GET. Body `{ comment, paymentsEnabled, moderatorPaymentsEnabled, recipients, moderators }` with rows `{ address, amountUsd }`. A missing switch is `true`. The rows are stored with their address and linked to an account the same way as at boot (`linkDailyRosterAccounts`: the legacy `lightning_address`, or `<username>@<host>`); a row that matches no account stays without one and is left out of the document. `defaultAmountUsd` in the body is ignored. Writes only while the store is still the empty start document. A second import, including an invalid body, does not insert the body, links any row still without an account the same way, and returns 200 with the stored document. Success 200 is the full document with `defaultAmountUsd` always 1. First-write 400 texts are the same five. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/comment`
-
-Spend Bearer, same as the invoices. Body `{ comment: string }`. Newlines (`\n`, `\r`, `\r\n`) become spaces, then trim. Empty after trim is valid. Longer than 500 characters after that is 400 `{ "error": "Invalid comment" }` and is not cut. A body that is not `{ comment: string }`, including a non-JSON body, is that same 400, not 502. Success 200 is the full stored document `{ comment, paymentsEnabled, moderatorPaymentsEnabled, defaultAmountUsd, recipients, moderators }` with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Store 400 `{ "error": "Invalid comment" }` stays 400. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/payments`
-
-Spend Bearer, same as the invoices. Body `{ enabled: boolean }` is passed to `setPaymentsEnabled`. A non-boolean `enabled`, including a non-JSON body, is 400 `{ "error": "Invalid payments switch" }`, not 502. Success 200 is the full stored document `{ comment, paymentsEnabled, moderatorPaymentsEnabled, defaultAmountUsd, recipients, moderators }` with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Store 400 of that text stays 400. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/recipients`
-
-Spend Bearer, same as the invoices. Body `{ username: string, amountUsd: number }` or `{ address: string, amountUsd: number }` adds a daily recipient. The row is named by `username`, or by `address`: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username; a body with both is 400. The wallet does not matter. The account id goes to `addRecipient`. A missing key, a non-number or non-finite amount, or an amount that is not greater than zero is 400 `{ "error": "Invalid address or amount" }`. No such account is 400 `{ "error": "Unknown address" }`. An account already in the bucket is 400 `{ "error": "Address already listed" }`. A non-JSON body is 400 `Invalid address or amount`, not 502. Success 200 is the full stored document with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/recipients/update`
-
-Spend Bearer, same as the invoices. Body `{ username, amountUsd }` or `{ address, amountUsd }` uses the same key/amount split as the member update route. The row is named by `username`, or by `address`: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username; a body with both is 400. The wallet does not matter. When `username` or `address` is a string and the amount is bad → 400 `{ "error": "Invalid address or amount" }`. When neither is a string, or no account matches → 400 `{ "error": "Unknown address" }`. The account id goes to `updateRecipient`. A non-JSON body is 400 `Unknown address`, not 502. Success 200 is the full stored document with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Store 400 of those texts stays 400. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/recipients/delete`
-
-Spend Bearer, same as the invoices. Body `{ username: string }` or `{ address: string }`. The row is named by `username`, or by `address`: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username; a body with both is 400. The wallet does not matter. The account id goes to `deleteRecipient`. A body without a string `username` or `address`, including a non-JSON body, or no account for the key, is 400 `{ "error": "Unknown address" }`, not 502. Success 200 is the full stored document with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Store 400 `{ "error": "Unknown address" }` stays 400. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/moderators`
-
-Spend Bearer, same as the invoices. Body `{ username: string, amountUsd: number }` or `{ address: string, amountUsd: number }` adds a moderator stipend. The row is named by `username`, or by `address`: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username; a body with both is 400. The wallet does not matter. The account id goes to `addModerator`. A missing key, a non-number or non-finite amount, or an amount that is not greater than zero is 400 `{ "error": "Invalid address or amount" }`. No such account is 400 `{ "error": "Unknown address" }`. An account already in the bucket is 400 `{ "error": "Address already listed" }`. A non-JSON body is 400 `Invalid address or amount`, not 502. Success 200 is the full stored document with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/moderators/update`
-
-Spend Bearer, same as the invoices. Body `{ username, amountUsd }` or `{ address, amountUsd }` uses the same key/amount split as the member update route. The row is named by `username`, or by `address`: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username; a body with both is 400. The wallet does not matter. When `username` or `address` is a string and the amount is bad → 400 `{ "error": "Invalid address or amount" }`. When neither is a string, or no account matches → 400 `{ "error": "Unknown address" }`. The account id goes to `updateModerator`. A non-JSON body is 400 `Unknown address`, not 502. Success 200 is the full stored document with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Store 400 of those texts stays 400. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/moderators/delete`
-
-Spend Bearer, same as the invoices. Body `{ username: string }` or `{ address: string }`. The row is named by `username`, or by `address`: `<username>@<host of PUBLIC_BASE_URL>` (any other domain names no account), a bare username, or an account id when no account has that username; a body with both is 400. The wallet does not matter. The account id goes to `deleteModerator`. A body without a string `username` or `address`, including a non-JSON body, or no account for the key, is 400 `{ "error": "Unknown address" }`, not 502. Success 200 is the full stored document with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Store 400 `{ "error": "Unknown address" }` stays 400. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
-
-### `POST /funding/daily-roster/worker/moderators/payments`
-
-Spend Bearer, same as the invoices. Body `{ enabled: boolean }` is passed to `setModeratorPaymentsEnabled`. A non-boolean `enabled`, including a non-JSON body, is 400 `{ "error": "Invalid payments switch" }`, not 502. Success 200 is the full stored document `{ comment, paymentsEnabled, moderatorPaymentsEnabled, defaultAmountUsd, recipients, moderators }` with `defaultAmountUsd` always 1 and the row shape of `GET /funding/daily-roster/document`. Unset or blank token → 503 `{ "error": "Spend invoices are not configured" }`. Wrong or missing Bearer → 401 `{ "error": "Unauthorized" }`. Store 400 of that text stays 400. Any other store throw → 502 `{ "error": "Daily roster is unavailable" }`. Never logs the token, a comment, or a Lightning address.
 
 ### `GET /funding/goal`
 
@@ -5450,7 +5374,7 @@ Success → **Response** `200`:
 }
 ```
 
-`authKind` is `session`, `debug`, `spend`, or `none`. `accountId` is the
+`authKind` is `session`, `debug`, or `none` (older rows may hold `spend`; a Bearer equal to `SPEND_API_TOKEN` is now `none`). `accountId` is the
 session account when `authKind` is `session`; otherwise JSON `null`.
 `operator` is the operator name when the request carried a key token of the
 operator login with SSH keys (`authKind` `debug`); `DEBUG_TOKEN` requests and
@@ -5543,12 +5467,12 @@ stored. Rows are kept with no TTL and no DELETE.
 
 A `server` row holds the fields as the code passed them, including the
 recipient `address` of `spend.ping.ok`, `spend.ping.skipped`,
-`spend.ping.failed`, the `invoice.*` events of `POST /invoices`,
+`spend.ping.failed`, the `invoice.*` events of the gift invoice issue,
 `lightning_address.resolved`, and `lightning_address.resolve_failed`. The
 JSON line the process prints for the same event does not carry the address.
 There `address` is replaced by `addressRef`: the first 12 lower-case hex
 characters of HMAC-SHA256 over the lower-cased address, keyed with the
-trimmed `SPEND_API_TOKEN`. While `SPEND_API_TOKEN` is unset or blank the line
+trimmed `SPEND_API_TOKEN` (it authenticates no request; it is read only as this log reference key). While `SPEND_API_TOKEN` is unset or blank the line
 prints `"address": "[address]"` and no `addressRef`. In every other string
 field of the printed line, an email-shaped part (`local@domain.tld`, the `@` literal or written `%40`) is
 replaced by `[address]`. The request client fields are printed unchanged.
@@ -6375,7 +6299,7 @@ configuration, a `wallet_transfer` for that member with direction `out`, type
 `transfer`, status `completed`, and at least one external recipient that
 resolves to the till account of a live top-level `#21GiftsShop` note. Its updated time
 (creation time fallback) must be the payout UTC day or the day before. This
-condition applies to posts, zap-paid notes, spend daily runs, spend invoices,
+condition applies to posts, zap-paid notes, spend pings, Fond gift invoices,
 operator replay, and moderator stipends. The one-time welcome gift is exempt
 only when server-owned facts show an exactly `verified` non-platform account with no stored
 welcome, comment exactly `Welcome`, neither `messageId` nor `groupMessageId`,
@@ -6671,8 +6595,8 @@ count.
 }
 ```
 
-`enabled` is the sweep switch. `spendPing` is false when `SPEND_URL` or
-`SPEND_API_TOKEN` is unset, in which case the sweep pings nobody even when on.
+`enabled` is the sweep switch. `spendPing` is false when `PAYOUT_SIGNER` is
+unset or blank, in which case the sweep pings nobody even when on.
 The wallet address is not returned.
 
 `DEBUG_TOKEN` unset or blank and the SSH key login not loaded → **503** `{ "error": "Debug is not configured" }`.
@@ -6987,382 +6911,107 @@ Coinbase or Frankfurter call. The rate books are not read.
 503 is a store failure only. A missing stored amount is JSON
 `null`, never 503.
 
-### `GET /invoices/passkey`
-
-Spend-worker eligibility check. Query `address=name@domain.tld`. Same
-`SPEND_API_TOKEN` Bearer as `POST /invoices` (503 unconfigured / 401
-unauthorized).
-
-The address is matched only as a member's wallet-backed
-`<username>@<host of PUBLIC_BASE_URL>` (trimmed, case-insensitive, verified
-wallet; see [Receiving address](#receiving-address)). Any other domain, a
-member without a verified wallet, or the LNURL server being off is treated as
-no account for the address.
-
-Missing or invalid Lightning Address → **400**
-`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
-
-Success is always **200** (never 404 for an unknown address):
-
-```json
-{ "hasPasskey": true }
-```
-
-or `{ "hasPasskey": false }` when there is no account for the address or the
-account has no passkey credential.
-
-### `GET /invoices/eligible`
-
-Spend-worker funding-grant check. Query `address=name@domain.tld`. Same
-`SPEND_API_TOKEN` Bearer as `GET /invoices/passkey` (503 unconfigured /
-401 unauthorized / 400 invalid address).
-
-The address is matched only as a member's wallet-backed
-`<username>@<host of PUBLIC_BASE_URL>` (trimmed, case-insensitive, verified
-wallet; see [Receiving address](#receiving-address)). Any other domain, a
-member without a verified wallet, or the LNURL server being off is treated as
-no account for the address.
-
-Success is always **200** (never 404 for an unknown address):
-
-```json
-{ "eligible": true, "status": "admitted" }
-```
-
-`status` is `ownerFundingStatus`: `none`, `pending`, `trial`, `admitted`, or
-`rejected`. It is `effectiveStatus`, except that a withdrawn grant is
-reported as `none` (and, from the grant gate day, `eligible: false`), so this answer keeps its five values. Unknown address and `basis` are always
-`{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
-2026-10-01 a missing/pending/rejected/withdrawn grant on a non-`basis` account is
-`eligible: true` with `status` still from `ownerFundingStatus`; from that day
-`eligible` is false unless admitted or trial-today **and**, from the UTC day
-`RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts
-recovery share is stored for the member's current verified wallet
-([docs/social-recovery.md](docs/social-recovery.md)). From that day a member in the grant
-program without that share is `{ "eligible": false, "status": "admitted" }`
-(or `"trial"`): `status` stays the grant status (`ownerFundingStatus`).
-Eligibility also requires a completed server-verified shop payment today or
-yesterday UTC. This preflight omits only that shop-payment condition while
-server-owned facts show an exactly `verified` non-platform account that has not received
-its welcome gift; it does not make any other invoice payable. `POST /invoices`
-still omits the condition only for normalized USD `1.00`, comment `Welcome`, no
-`messageId` or `groupMessageId`, and `amountMsat` no greater than the server's
-USD 1.00 spot conversion plus 10%. A missing or unusable spot fails closed and
-keeps the shop-payment condition.
-
-### `GET /invoices/posted`
-
-Spend-worker eligibility check. Query `address=name@domain.tld`. Same
-`SPEND_API_TOKEN` Bearer as `POST /invoices` (503 unconfigured / 401
-unauthorized).
-
-The address is matched only as a member's wallet-backed
-`<username>@<host of PUBLIC_BASE_URL>` (trimmed, case-insensitive, verified
-wallet; see [Receiving address](#receiving-address)). Any other domain, a
-member without a verified wallet, or the LNURL server being off is treated as
-no account for the address.
-
-Missing or invalid Lightning Address → **400**
-`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
-
-Success is always **200** (never 404 for an unknown address):
-
-```json
-{
-  "hasPosted": true,
-  "messageId": "<uuid>",
-  "postedAt": "<iso-8601>",
-  "hasMedia": false,
-  "welcomeHasMedia": false,
-  "welcomeMessageId": null
-}
-```
-
-or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
-address, or the account has no live top-level note other than a text-only profile note.
-`hasPosted` is still any live top-level note that is not the profile note, including text-only.
-A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes (live or hidden), a recorded `welcome` gift paid to its legacy external address, or a recorded `welcome` gift with description `21gifts welcome` under its username at or after its wallet verification) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
-top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
-post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
-the newest live top-level non-profile post id; it can still be `null` if
-`listPostsByAccount` yields no non-profile row. `postedAt` is that row's
-`createdAt` (ISO-8601) or `null` when `messageId` is null. Replies and the auto profile
-note never become `messageId`. A text-only newest row can still pair with
-`hasMedia: true` when an older live top-level media post exists.
-
-### `POST /invoices`
-
-Spend-worker invoice fetch. After id, address, and amount validation, the api
-loads a supplied `messageId` under that message's lock. A live note whose
-`goalClosedAt` is set is refused immediately with **409** `credit_closed`,
-before recipient address, passkey, funding, welcome, media, account-association,
-and platform-account gates. Otherwise the api requires a 21.gifts member whose wallet-backed address is `address`
-(`<username>@<host of PUBLIC_BASE_URL>`, case-insensitive, verified wallet;
-a member there with a passkey but no verified wallet is **403**
-`Wallet required`; any other domain or no such member is **403**
-`Passkey required`) that already has a passkey
-credential and `eligibleToday` (grant required from UTC 2026-10-01, and
-from `RECOVERY_SHARE_REQUIRED_FROM` a 21.gifts recovery share for the current verified wallet).
-When `messageId` is omitted, it also requires at least one live **top-level**
-forum message that is not the auto-created profile note. When `messageId` is
-set, that note must be this address's live top-level note, including About me,
-and have a photo or video. Replies do not unlock an invoice. It then resolves
-the canonical lower-case wallet address through the internal LNURL-server
-resolver (`lnurlServerFetch`; never over the public URL), GETs the LNURL-pay
-callback, decodes the BOLT11, and stores `{ id, pr, paymentHash }` in memory
-under that address. It does not pay.
-
-**Body:**
-
-```json
-{
-  "address": "ada@21.gifts",
-  "amountMsat": 100000,
-  "amountUsd": "5.00",
-  "comment": "optional",
-  "messageId": "<uuid>"
-}
-```
-
-Moderator stipend form (never together with `messageId`):
-
-```json
-{
-  "address": "ada@21.gifts",
-  "amountMsat": 100000,
-  "amountUsd": "5.00",
-  "comment": "optional",
-  "groupMessageId": "<uuid>"
-}
-```
-
-`amountUsd` is optional. When present it is a positive decimal with at most
-two fractional digits and at most 100000, normalized to two decimals (`"5"`
-becomes `"5.00"`) and stored as that payment's USD. A present value that
-cannot be normalized is the same **400** as a bad body. An absent key stays
-unset and proof stores null for USD, CHF, EUR, and PHP. `comment` is optional and at most 255 characters. `amountMsat` must be an
-integer in `1000..10000000000`. `messageId` is optional (current spend without
-the field still works). `groupMessageId` is optional and mutually exclusive
-with `messageId` (both set → **400**). Invalid UUID on either field → **400**
-`{ "error": "Expected a JSON body with address and amountMsat" }`. When
-`messageId` is set, the post must be that address's live top-level note,
-including the About-me profile note, **and** have a photo or video (else
-**403** `Forum post required` before LNURL). A text-only profile note stays
-**403**, unless it is a live closed credit, which was already refused with
-`credit_closed`. Omitted `messageId` stays any live top-level non-profile post (no
-media requirement). Missing
-`isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
-(no LNURL). With `comment` exactly `Welcome` (with or without `messageId`),
-an account that already received the welcome gift (a platform `Welcome`
-reply under one of its notes, live or hidden, a recorded `welcome` gift paid
-to its legacy external address, or a recorded `welcome` gift with description `21gifts welcome`
-under its username at or after its wallet verification) → **409** `{ "error": "Welcome gift already paid" }`
-after the passkey and grant checks and before LNURL (with `groupMessageId`,
-after that id is resolved: a resolved moderator payout is recorded as
-`moderator` and is not refused; an ignored id is); the welcome gift is once
-per account, whichever address it went to. Stores `comment` on the invoice whenever it is sent, so a `Welcome` invoice without `messageId` is still recorded as a welcome gift on proof; with `messageId` it stores `messageId` and `comment` (or `''`).
-The shop-payment exception first atomically reserves one active durable
-entitlement row for the account. Concurrent or sequential requests before
-settlement cannot both use the exception. Issue failure and unpaid expiry
-release the reservation; all changes are covered by `db_change`.
-When `groupMessageId` is set (no `messageId`), the living-room post gate
-still applies. The id is display-only: it is stored only when it is that
-address's message in the closed `moderator_group` thread, the sender is not a
-moderator-group member who does not earn the group payout (the software
-developer), and an `isPlatform` account exists; otherwise the invoice is still
-issued, the field is omitted, and `invoice.group_message_ignored` is logged. A
-group message of a moderator-group member who does not earn the group payout
-(the software developer) is therefore never resolved and cannot be paid a
-moderator stipend. A missing
-conversation store or a failing lookup never blocks the **200**.
-
-When `SPEND_API_TOKEN` is unset or blank:
-
-**Response** `503`:
-
-```json
-{ "error": "Spend invoices are not configured" }
-```
-
-Missing or wrong `Authorization: Bearer` → **401** `{ "error": "Unauthorized" }`.
-
-Bad JSON, `amountMsat` outside `1000..10000000000`, `comment` longer than
-255, invalid `messageId` or `groupMessageId` UUID, or both `messageId` and
-`groupMessageId` set → **400**
-`{ "error": "Expected a JSON body with address and amountMsat" }`.
-
-Invalid Lightning Address → **400**
-`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
-
-A supplied `messageId` resolves under its message lock to a live note whose
-`goalClosedAt` is set → **409** before recipient address, passkey, funding,
-welcome, media, account-association, and platform-account checks (no LNURL fetch;
-no invoice is stored):
-
-```json
-{ "error": "This credit no longer collects", "code": "credit_closed" }
-```
-
-`address` is the wallet-backed address of a member who has a passkey but no
-verified wallet yet → **403** (checked first; before any LNURL fetch; no
-invoice is stored; logs `invoice.wallet_required`):
-
-```json
-{ "error": "Wallet required" }
-```
-
-Any other address that finds no member with a verified wallet (another
-domain, an unknown username, the LNURL server off, or a member with neither a
-passkey nor a verified wallet), or a member with a verified wallet but no
-passkey credential → **403** (before any LNURL fetch; no invoice is stored):
-
-```json
-{ "error": "Passkey required" }
-```
-
-The account has a passkey but is not funding-eligible today (`eligibleToday`,
-from `RECOVERY_SHARE_REQUIRED_FROM` also for a member in the grant program without a 21.gifts recovery share)
-→ **403** (after the passkey check, before the forum-post check; no invoice
-is stored):
-
-```json
-{ "error": "Funding grant required" }
-```
-
-When `messageId` is omitted, the account has a passkey and is eligible but
-has no live **top-level** forum message other than the auto-created profile
-note. When `messageId` is set, that id is not this address's live top-level
-note (About me included) with a photo or video. Either case →
-**403** (after the passkey and grant checks, before any LNURL fetch; no
-invoice is stored):
-
-```json
-{ "error": "Forum post required" }
-```
-
-Missing `isPlatform` account (when `messageId` is set) → **503** (before any
-LNURL fetch; no invoice is stored):
-
-```json
-{ "error": "Platform account is not configured" }
-```
-
-LNURL-pay failure, decode failure, or invoice amount mismatch → **502**:
-
-```json
-{ "error": "Lightning Address did not issue an invoice" }
-```
-
-Success → **Response** `200`:
-
-```json
-{
-  "id": "<32 hex>",
-  "pr": "lnbc…",
-  "paymentHash": "<64 hex>",
-  "amountMsat": 100000
-}
-```
-
-Unpaid invoices expire after 15 minutes (`GIFT_INVOICE_TTL_MS`). A later
-`POST /invoices` sweeps unpaid rows after expiry plus one extra TTL; until
-then a matching preimage still proves payment. Restart clears the store.
-
-### `POST /invoices/proof`
-
-Spend-worker proof. Body `{ "id", "preimage" }`. Proof is the **preimage**;
-`sha256(preimage)` must equal the stored payment hash.
-
-Same 503/401 as `POST /invoices` when unconfigured or unauthorized.
-
-Bad JSON or missing `id`/`preimage` → **400**
-`{ "error": "Expected a JSON body with id and preimage" }`.
-
-Unknown id → **404** `{ "error": "Invoice not found" }` (including after
-sweep/restart). Matching preimage →
-**200** even after the 15-minute unpaid TTL, as long as the row is still in
-memory. Expired unpaid **without** a matching preimage → **409**
-`{ "error": "Invoice expired" }`. Hash mismatch on an unexpired invoice →
-**400** `{ "error": "Proof does not match invoice" }`. Already paid with a
-different preimage → **409** `{ "error": "Invoice already paid" }`. Same
-preimage → **200** idempotent.
-
-A matching proof (including the same-preimage idempotent 200) inserts one
-outbound `gift` row when `DATABASE_URL` is set: BOLT11 `pr` as
-`lightning_invoice`, amount `floor(msat / 1000)` sats, fee 0, recipient
-handle from the invoice address, description `21gifts moderator` when the
-invoice has `groupMessageId`, else `21gifts welcome` when `comment` is
-exactly `Welcome` (on the username path the welcome checks count only these
-records; a `welcome` gift of any description paid to the account's legacy
-external address counts too), else `21gifts daily`,
-`source_wallet` `lightning.space`. Without SQL the recorder is a no-op.
-Insert errors log `gifts.record_failed` and do not change the HTTP
-response.
-
-When the invoice has `messageId`, the api inserts a platform-account
-gift-reply first (name trimmed or `21.gifts`, text = comment, `parentId` =
-`messageId`, same visual as a zap gift-reply), then `addSats(floor(msat/1000))`
-on that post. That path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply,
-attach persists a deterministic `spendGiftReplyId` marker under that reply,
-`markDeleted` so live `listReplies` omits it, then `addSats`s the reply (a live
-existing marker is `markDeleted` only and does not `addSats`; no nested
-gift-reply and no `notifyForumReply`). Repeat proof with the same preimage is
-idempotent. Parent missing/deleted or platform missing: skip attach, log
-`invoice.gift_reply.failed`, still **200** + gift persist.
-
-When the invoice has `groupMessageId`, the api then inserts one platform
-conversation message in that closed `moderator_group` thread (name trimmed
-or `21.gifts`, `sats` = `floor(msat/1000)`, text = comment · recipient
-name, `giftForMessageId` set to the triggering message's id). Repeat proof
-with the same preimage is idempotent on the deterministic id. Triggering
-row missing, thread missing or not `moderator_group`, platform missing, or
-store throw: skip attach, log `invoice.group_gift.failed`, still **200** +
-gift persist.
-
-Success → **Response** `200`:
-
-```json
-{ "status": "paid", "id": "<id>", "paymentHash": "<64 hex>" }
-```
-
-### `POST /spend/daily-instruction`
-
-Spend-worker daily instruction. Bearer `SPEND_API_TOKEN`. Body `{ "address" }`.
-Extra keys are ignored. The kind is always daily. The api collects passkey,
-live top-level post, a live top-level photo or video posted today UTC (the
-About-me profile note included), funding
-eligibility (`eligibleToday`: grant, the completed shop payment today or
-yesterday, and, from `RECOVERY_SHARE_REQUIRED_FROM`, the 21.gifts recovery
-share), the same-UTC-day welcome
-flag, and the daily roster, then returns whether to pay and the amount,
-comment, and today's media post as `messageId`. This is exactly the
-`latestTodayMediaPostId` fact used by `payoutToday` and `pingTodayMedia`; the
-profile note is not screened out before that lookup. Spend does not choose those fields. The
-address is matched as a member's receiving address (`<username>@<host of
-PUBLIC_BASE_URL>` with a verified wallet); any other address is a missing account.
-
-Auth runs before JSON parsing and before gifts or roster. Unset or blank
-token → **503** `{ "error": "Spend invoices are not configured" }`. Missing
-or wrong `Authorization: Bearer` → **401** `{ "error": "Unauthorized" }`.
-
-JSON parse failure, a non-object body, or a missing or non-string `address`
-→ **400** `{ "error": "Expected a JSON body with address" }`. A string that
-is not a Lightning Address → **400**
-`{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
-
-A gift-ledger list throw → **503** `{ "error": "Gift ledger unreadable" }`
-and does not read the roster. An omitted gift store does not apply the
-welcome-paid rule. The roster is read from the API store (a missing
-injection is a fresh in-memory store); a stored row is matched by the account
-the address resolves to, so a listed account counts only on its receiving
-address. A
-roster request error keeps its status and `{ "error" }`. Any other roster
-throw → **502** `{ "error": "Daily roster is unavailable" }`.
-
-Success is always **200**: `{ "action": "skip", "reason" }` or
-`{ "action": "pay", "amountUsd", "comment", "messageId" }`, where
-`messageId` is today's qualifying media post. A skip is not logged. The token, comments, and
-Lightning addresses are not logged.
+### Fond payouts (`/fond`)
+
+The `/fond` routes are always mounted. Each answers **404**
+`{ "error": "Not found" }` unless `PAYOUT_SIGNER` is `fond` (trimmed, any
+case). With `fond`, the spend ping queues each decided payout instruction
+(daily, welcome, moderator stipend) as one row in `fond_payout`, deduped per
+UTC day, kind, and address. The single Fond account (`FOND_USERNAME`) pays
+the queued rows from its own in-app wallet. This api does not pay. When
+`PAYOUT_SIGNER` is unset or blank there is no payout sink: the spend ping is
+not configured, pings are skipped, and the process still boots. Any other
+value, including `spend`, throws `Invalid PAYOUT_SIGNER` at boot. No log line
+carries an address, payment hash, BOLT11, or Spark invoice.
+
+`GET /fond/health` and `GET /fond/summary` are public and send
+`Cache-Control: no-store`. `GET /fond/health` reads today's and yesterday's
+open rows: **200** `{ "status": "ok", "open" }`, or **503**
+`{ "status": "overdue", "open", "overdue" }` when a row of today is older
+than 15 minutes or a row of yesterday is still open; a store throw is
+**503** `{ "status": "unavailable" }`. `GET /fond/summary` returns
+`{ username, receivedSats, paidOutSats, feesSats, balanceSats, balanceSyncedAt, payoutsPaid, payoutsPaidUsd }`
+from the Fond account's completed wallet payments, its latest balance
+snapshot, and the paid payouts (zeros and `null` when that account is
+missing or cannot sign Fond payouts); a store throw or an unsafe sat total
+is **503** `{ "error": "Fond summary is unavailable" }`.
+
+`GET /fond/payouts` and `POST /fond/payouts/:id/invoice` need the Fond
+account's session: no or invalid Bearer → **401** `{ "error": "Unauthorized" }`;
+any other account → **403** `{ "error": "Fond only" }`. A store throw is
+**503** `{ "error": "Payouts are unavailable" }`.
+
+`GET /fond/payouts` → **200** `{ "payouts": [{ id, kind, status, utcDay, paymentHash }] }`
+for today's open rows; `paymentHash` is set only while `invoiced` or
+`settling`.
+
+`POST /fond/payouts/:id/invoice` issues the recipient invoice for one row.
+A non-UUID or unknown id → **404**. An `invoiced` row returns its stored
+invoice again. An `owed` row of today is claimed (`issuing`); another
+request's live claim → **409** `{ "error": "Invoice in progress" }` (a claim
+older than two minutes is taken over). Any other row → **409**
+`{ "error": "Not payable" }`. The stored USD amount is converted at the
+current BTC/USD spot: no usable spot → **503** `{ "error": "Price unavailable" }`;
+below one sat → **409** `{ "error": "Amount below one sat" }`; both release
+the claim. Then the shared gift invoice issue runs (below). An issue refusal
+below 500 marks the row `failed` and answers **409** with its `error` (and
+`code` when set); a 502/503 releases the claim and keeps its status. Success
+→ **200** `{ "id", "bolt11", "paymentHash", "sparkInvoice" }`; `sparkInvoice`
+is a fee-free Spark invoice (memo `fond:<paymentHash>`) only when free in-app
+payments are on and the recipient has a verified in-app wallet, else `null`.
+
+**Gift invoice issue.** In this order: an invalid `amountUsd` (positive, at
+most two decimals, at most 100000), an invalid UUID, or both `messageId` and
+`groupMessageId` → **400** `Expected a JSON body with address and amountMsat`;
+an address that is not `local@domain.tld` → **400**
+`Not a valid Lightning Address (expected name@domain)`; `amountMsat` outside
+`1000..10000000000` → **400**. A `messageId` whose live top-level note has
+`goalClosedAt` set → **409** `credit_closed` before every later gate. The
+address is matched only as a member's wallet-backed receiving address (see
+[Receiving address](#receiving-address)): a member with a passkey but no
+verified wallet → **403** `Wallet required`; no such member or no passkey →
+**403** `Passkey required`. Not `eligibleToday` (grant from UTC 2026-10-01,
+from `RECOVERY_SHARE_REQUIRED_FROM` a 21.gifts recovery share for the current
+verified wallet, and a completed server-verified shop payment on the booked
+payout day or the day before) → **403** `Funding grant required`. The
+one-time welcome gift skips only the shop-payment condition, for an exactly
+`verified` non-platform account that has not received its welcome gift, with
+USD `1.00`, comment `Welcome`, no `messageId` or `groupMessageId`, and
+`amountMsat` no more than the server's USD 1.00 spot conversion plus 10% (no
+usable spot keeps the condition); it first reserves one open welcome
+invoice per account (**409** `Welcome invoice already open`; reservation
+store failure **503**). Comment `Welcome` for an account already welcomed
+(a platform `Welcome` reply under one of its notes, live or hidden, or a
+recorded `welcome` gift to its legacy external address or under its username
+at or after its wallet verification) → **409** `Welcome gift already paid`.
+With `messageId` the note must be this account's live top-level note (About
+me included) with a photo or video, else **403** `Forum post required`, and a
+missing platform account → **503** `Platform account is not configured`.
+Without `messageId` the account needs a live top-level note other than the
+profile note (**403** `Forum post required`). A `groupMessageId` is kept only
+when it is this account's message in the `moderator_group` thread, the
+sender earns the group payout, and a platform account exists; otherwise it
+is dropped and `invoice.group_message_ignored` is logged. The api then
+fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver;
+failure or an amount mismatch → **502**
+`Lightning Address did not issue an invoice`.
+
+**Settlement.** The Fond paid worker watches today's and yesterday's
+`invoiced` rows and expired `settling` claims. It confirms payment through
+the Spark coordinator for Spark invoices and the LNURL server's LUD-21
+`/verify` otherwise, then settles each row once and marks it `paid`
+(`fond.payout.paid`); a failure returns it to `invoiced`
+(`fond.proof.failed`). Settlement inserts one outbound `gift` row (amount
+`floor(msat / 1000)` sats, the decided kind, the stored USD, the Fond
+username as paying wallet; insert errors log `gifts.record_failed`). With a
+top-level `messageId` it inserts a platform-account gift-reply (text =
+comment) and adds the sats to that note, without notifying; with a reply
+`messageId` it stores a hidden marker under the reply and adds the sats to
+the reply. Failures there log `invoice.gift_reply.failed`. With a
+`groupMessageId` it inserts one platform message in that `moderator_group`
+thread (`sats`, text = comment · recipient name, `giftForMessageId` = the
+triggering message); failures log `invoice.group_gift.failed`. Each write
+is idempotent on a deterministic id.
 
 ### `GET /messages`
 
@@ -7856,8 +7505,8 @@ The same media with a different pin is **409**
 Text-only posts are unchanged (still **429** on burst). After a **new**
 top-level persist, the welcome POST is sent and awaited before the daily
 POST. `address` is the author's wallet-backed receiving address (no verified
-wallet → no ping). The api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
-Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
+wallet → no ping). With `PAYOUT_SIGNER=fond` the api queues the decided instruction for `address` in `fond_payout` for the Fond member
+(see [Fond payouts](#fond-payouts-fond); awaited; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant and,
 from `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts recovery share, a completed
 server-verified shop payment today or yesterday UTC, **and** the new row has media (`hasPhoto` /
@@ -7869,8 +7518,8 @@ non-platform account and any live top-level photo or video exists, including
 the About-me note, the api also
 POSTs `{ address, kind: "welcome" }` for that note, independent
 of `eligibleToday` and independent of whether the new row itself has media.
-Spend pays the welcome gift and does not also pay the daily gift on that
-same UTC day. A later UTC day still pays the daily gift.
+The welcome gift replaces the daily gift on that same UTC day. A later UTC
+day still queues the daily gift.
 The same ping runs when the account becomes exactly `verified` and is
 non-platform, and when About me is saved while welcome-eligible. Every 15 minutes, while an operator has turned it on
 with `PUT /debug/welcome-sweep`, the welcome sweep welcome-pings every exactly
@@ -7892,7 +7541,7 @@ and the platform account do not welcome-ping. An eligible text-only post with
 no photo or video anywhere does not welcome-ping.
 Errors are logged; the POST still
 returns **200**. Replies do not ping. Idempotent media replay does not ping
-again. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` skips the ping; the
+again. Unset or blank `PAYOUT_SIGNER` skips the ping; the
 process still boots. The worker signs a
 top-level kind:1 (content includes Damus-visible `#bitcoin` and `#21gifts`, and when the author's `location` is non-null also `#<locationHashtagName>` plus a `t` tag (not on the profile note);
 forum `text` stays the member's words) and fans out when `NOSTR_PUBLISH=1`.
@@ -8330,7 +7979,7 @@ still unavailable after that second check, the response is **503**
 
 Missing or invalid Bearer → **401** `{ "error": "Unauthorized" }`, including when `:id` is not a UUID. Unknown id, a non-UUID after a valid session, a note that is not a live repayable top-level ask with a term, or a caller who is not the author → **404** `{ "error": "Not found" }`. Author missing `forum.pay` → **409** `{ "error": "missing_requirements", "missing": ["rules"] }`.
 
-After close, every route that mints a gift or zap invoice for that note answers **409** `{ "error": "This credit no longer collects", "code": "credit_closed" }` and mints nothing. `POST /invoices` makes that decision from the live row loaded under the message lock before recipient and payout gates. The shared Fond invoice path therefore marks its payout terminally `failed` with this refusal even when a missing passkey, funding grant, media/account association, or platform account would otherwise refuse invoice issue. A loan that filled on its own keeps accepting gifts.
+After close, every route that mints a gift or zap invoice for that note answers **409** `{ "error": "This credit no longer collects", "code": "credit_closed" }` and mints nothing. The gift invoice issue (`POST /fond/payouts/:id/invoice`) makes that decision from the live row loaded under the message lock before recipient and payout gates. The shared Fond invoice path therefore marks its payout terminally `failed` with this refusal even when a missing passkey, funding grant, media/account association, or platform account would otherwise refuse invoice issue. A loan that filled on its own keeps accepting gifts.
 
 ### `POST /messages/:id/repayment` — optional amount body
 
@@ -9306,7 +8955,7 @@ verified, basis and the platform account get **404**
 `{ "error": "Not found" }` on that id (no existence leak). A moderator
 (`isModeratorGroupMember`) gets **200**.
 
-A platform stipend row in `moderator_group` (`POST /invoices/proof` with
+A platform stipend row in `moderator_group` (a settled Fond moderator payout with
 `groupMessageId`) has no actor and the platform account as sender, so it is
 `fromMe: false` and inbound for every member. That row's `giftFor` is the
 triggering message id so the app can render it attached under that message.
@@ -9804,8 +9453,7 @@ status or the text:
 Other 400s on the same routes (for example an unsigned forum note on
 `POST /messages/:id/invoice`) carry no `code`.
 
-Spend lookups (`POST /invoices`, `GET /invoices/eligible`,
-`GET /invoices/passkey`, `GET /invoices/posted`) take the same address form
+The gift invoice issue of `POST /fond/payouts/:id/invoice` takes the same address form
 (`accountByReceivingAddress`): `<username>@<host of PUBLIC_BASE_URL>`,
 trimmed and case-insensitive, resolved by username to a member with a
 verified wallet. Any other domain, a member without a verified wallet, or the
@@ -9901,17 +9549,14 @@ are **not** exposed as HTTP routes in this codebase yet. Paths and JSON for
 these land in the PR that implements them; this file is updated then. Do not
 treat the list below as inventing endpoints.
 
-**Donor LNDHub credentials.** Paying uses lightning.space LNDHub in the
-external spend worker, not encrypted storage in this api. No `/me/donor`
-deposit route.
+**Donor LNDHub credentials.** This api does not pay and stores no donor
+wallet credentials. No `/me/donor` deposit route.
 
 **Recurring gifts.** Donors will configure fixed USD amounts to
-recipients. They are paid by the external spend worker **when the recipient
-posts a top-level note**, not on a daily timer. Invoice HTTP (`POST /invoices`
-/ `POST /invoices/proof`) is unchanged except proof now attaches a gift-reply
-when a top-level `messageId` was stored, or a hidden spend marker when
-`messageId` is a reply; do not invent new paths. No `/me/recurring` or
-in-process scheduler.
+recipients. Payouts are paid by the Fond member from its own in-app wallet
+(see [Fond payouts](#fond-payouts-fond)) **when the recipient posts a
+top-level note**, not on a daily timer; this api does not pay. No
+`/me/recurring` or in-process scheduler.
 
 **Feed / discovery / campaign index.** Paginated read endpoints over indexed
 NOSTR events (profiles, campaigns, replies). Not wired yet. Custodial nsec
@@ -9940,7 +9585,7 @@ exist on the account model; `GET /debug/accounts` and
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)
-- Arbitrary LNDHub URLs (the external spend worker uses lightning.space only)
+- Arbitrary LNDHub URLs (this api has no LNDHub client)
 
 > **SQL boot invariant:** When `DATABASE_URL` is configured, boot must create or
 > read the Spark viewer key successfully. Failure is fatal and is propagated from

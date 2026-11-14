@@ -12,7 +12,6 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
@@ -23,20 +22,8 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: null });
-  });
-
-  it('classifies a matching spend token when debug does not match', async () => {
-    const auth = await resolveRequestAuth({
-      authorizationHeader: 'Bearer spend',
-      authStore: new InMemoryAuthStore(),
-      now: 1,
-      debugToken: 'debug',
-      spendApiToken: 'spend',
-    });
-    expect(auth).toEqual({ accountId: null, authKind: 'spend', operator: null });
   });
 
   it('returns none for an empty Bearer token', async () => {
@@ -45,7 +32,6 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
@@ -56,7 +42,6 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
@@ -85,7 +70,6 @@ describe('resolveRequestAuth', () => {
       authStore: store,
       now: 1 + SESSION_TTL_MS + 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
@@ -114,7 +98,6 @@ describe('resolveRequestAuth', () => {
       authStore: store,
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
     });
     expect(auth).toEqual({ accountId: 'acc', authKind: 'session', operator: null });
   });
@@ -126,7 +109,6 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
       operatorLogin: keys.operatorLogin,
     });
     expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: 'op-write' });
@@ -139,7 +121,6 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
       operatorLogin: keys.operatorLogin,
     });
     expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: null });
@@ -152,7 +133,6 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
       operatorLogin: keys.operatorLogin,
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
@@ -166,7 +146,6 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
       operatorLogin: keys.operatorLogin,
       keyGrant: { operator: 'carried', keyFingerprint: 'SHA256:x', level: 'admin' },
     });
@@ -176,7 +155,6 @@ describe('resolveRequestAuth', () => {
       authStore: new InMemoryAuthStore(),
       now: 1,
       debugToken: 'debug',
-      spendApiToken: 'spend',
       operatorLogin: keys.operatorLogin,
       keyGrant: null,
     });

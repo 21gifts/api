@@ -47,7 +47,7 @@ let addressRefKey: string | null = null;
  * The key is trimmed. `undefined`, `null`, and a blank value clear it; the
  * console line then prints the fixed marker `[address]` for `address`.
  *
- * @param key - Server secret (`SPEND_API_TOKEN`), or nothing to clear.
+ * @param key - Log reference key (`SPEND_API_TOKEN`), or nothing to clear.
  * @returns void
  */
 export function setAddressRefKey(key: string | null | undefined): void {
@@ -183,8 +183,6 @@ export interface RequestLogDeps {
   authStore: AuthStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
-  /** Spend-worker shared secret, or `undefined` when spend auth is disabled. */
-  spendApiToken: string | undefined;
   /** SSH key login whose key tokens are logged with their operator name. */
   operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
@@ -239,7 +237,6 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
     const auth = await resolveRequestAuth({
       authorizationHeader: captured.authorizationHeader,
       debugToken: deps.debugToken,
-      spendApiToken: deps.spendApiToken,
       operatorLogin: deps.operatorLogin,
       keyGrant: captured.keyGrant,
       authStore: deps.authStore,

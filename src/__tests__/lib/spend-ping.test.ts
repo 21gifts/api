@@ -7,14 +7,13 @@ import {
 } from '@/lib/daily-roster-store';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore } from '@/lib/gift-store';
-import type { FetchFn } from '@/lib/lnurlp';
 import { setAddressRefKey, setDiagnosticSink } from '@/lib/log';
 import {
   FondQueueSink,
-  HttpPayoutSink,
   HttpSpendPing,
   NoopSpendPing,
   type PayoutDelivery,
+  type PayoutSink,
   resolveSpendPing,
 } from '@/lib/spend-ping';
 import { InMemoryFondPayoutStore } from '@/lib/fond-payout-store';
@@ -24,7 +23,6 @@ import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 const ADDRESS = 'ada@example.com';
 const MESSAGE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TOKEN = 'spend-secret-token';
-const SPEND_URL = 'https://spend.example';
 const ADDRESS_REF = expectedAddressRef(ADDRESS, TOKEN);
 
 const LNURL: LnurlServerConfig = {
@@ -69,12 +67,6 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
     .map((arg) => JSON.parse(arg) as Record<string, unknown>);
 }
 
-function abortError(): Error {
-  const err = new Error('aborted');
-  err.name = 'AbortError';
-  return err;
-}
-
 function writtenStore(
   partial: {
     comment?: string;
@@ -94,134 +86,202 @@ function writtenStore(
   });
 }
 
-function pingFetch(
-  opts: {
-    pingStatus?: number;
-    pingError?: Error;
-    onCall?: (url: string, init?: RequestInit) => void;
-  } = {},
-): FetchFn {
-  return async (input, init) => {
-    if (opts.onCall !== undefined) {
-      opts.onCall(String(input), init);
-    }
-    if (opts.pingError !== undefined) {
-      throw opts.pingError;
-    }
-    const pingStatus = opts.pingStatus !== undefined ? opts.pingStatus : 200;
-    return new Response(pingStatus === 200 ? JSON.stringify({ status: 'accepted' }) : null, {
-      status: pingStatus,
-    });
-  };
+type Deliver = (address: string, body: Record<string, string | number>) => Promise<PayoutDelivery>;
+
+/** A sink that records every delivery and resolves with `delivery`. */
+function recordingSink(delivery: PayoutDelivery = { outcome: 'accepted' }): {
+  sink: PayoutSink;
+  deliver: ReturnType<typeof vi.fn<Deliver>>;
+} {
+  const deliver = vi.fn<Deliver>(async () => delivery);
+  return { sink: { deliver }, deliver };
 }
 
 describe('NoopSpendPing', () => {
-  it('resolves without calling fetch', async () => {
-    const fetchImpl = vi.fn<FetchFn>();
+  it('resolves undefined', async () => {
     await expect(new NoopSpendPing().ping(ADDRESS, MESSAGE_ID)).resolves.toBeUndefined();
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
 describe('resolveSpendPing', () => {
-  const fetchImpl: FetchFn = async () =>
-    new Response(JSON.stringify({ status: 'accepted' }), { status: 200 });
-
-  it('returns undefined when SPEND_URL is missing', () => {
-    expect(resolveSpendPing({ SPEND_API_TOKEN: TOKEN }, fetchImpl)).toBeUndefined();
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setAddressRefKey(null);
   });
 
-  it('returns undefined when SPEND_URL is blank', () => {
+  it('returns undefined when PAYOUT_SIGNER is unset', () => {
     expect(
-      resolveSpendPing({ SPEND_URL: '  ', SPEND_API_TOKEN: TOKEN }, fetchImpl),
+      resolveSpendPing(
+        {},
+        {
+          rosterStore: writtenStore(),
+          fondPayoutStore: new InMemoryFondPayoutStore(),
+        },
+      ),
     ).toBeUndefined();
   });
 
-  it('returns undefined when SPEND_API_TOKEN is missing', () => {
-    expect(resolveSpendPing({ SPEND_URL }, fetchImpl)).toBeUndefined();
+  it('returns undefined when PAYOUT_SIGNER is unset and no options are given', () => {
+    expect(resolveSpendPing({})).toBeUndefined();
   });
 
-  it('returns undefined when SPEND_API_TOKEN is blank', () => {
-    expect(resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: '\t' }, fetchImpl)).toBeUndefined();
+  it('returns undefined when PAYOUT_SIGNER is blank or whitespace', () => {
+    for (const value of ['', '  ', '\t']) {
+      expect(
+        resolveSpendPing(
+          { PAYOUT_SIGNER: value },
+          {
+            rosterStore: writtenStore(),
+            fondPayoutStore: new InMemoryFondPayoutStore(),
+          },
+        ),
+      ).toBeUndefined();
+    }
   });
 
-  it('throws when both env values are set and the roster store is omitted', () => {
-    expect(() => resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl)).toThrow(
-      'Daily roster store is required',
-    );
-  });
-
-  it('returns HttpSpendPing with trimmed URL and stripped trailing slashes', async () => {
-    let seen = '';
-    const recording: FetchFn = async (input) => {
-      seen = String(input);
-      return new Response(JSON.stringify({ status: 'accepted' }), { status: 200 });
-    };
+  it('queues a decided daily ping into the fond payout store', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemoryFondPayoutStore();
     const ping = resolveSpendPing(
-      { SPEND_URL: ' https://spend.example/// ', SPEND_API_TOKEN: ` ${TOKEN} ` },
-      recording,
+      { PAYOUT_SIGNER: 'fond' },
       {
         ...LOOKUP,
-        rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }),
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+        fondPayoutStore: store,
+        now: () => Date.parse('2026-11-09T12:00:00.000Z'),
       },
     );
     expect(ping).toBeInstanceOf(HttpSpendPing);
-    await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(seen).toBe('https://spend.example/ping');
+    await expect(ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted')).resolves.toEqual({
+      status: 'accepted',
+    });
+    const rows = await store.listOpen('2026-11-09');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'daily',
+      address: ADDRESS,
+      amountUsd: '2',
+      comment: 'thanks',
+      messageId: MESSAGE_ID,
+      groupMessageId: null,
+      status: 'owed',
+    });
   });
 
-  it('accepts an options object that omits the gift ledger and the clock', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
-    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
-      ...LOOKUP,
-      rosterStore: writtenStore({
-        comment: 'thanks',
-        recipients: [{ address: ADDRESS, amountUsd: 2 }],
-      }),
-    });
+  it('accepts PAYOUT_SIGNER in any case with surrounding whitespace', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemoryFondPayoutStore();
+    const ping = resolveSpendPing(
+      { PAYOUT_SIGNER: ' FOND ' },
+      {
+        ...LOOKUP,
+        rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 3 }] }),
+        fondPayoutStore: store,
+        now: () => Date.parse('2026-11-09T12:00:00.000Z'),
+      },
+    );
     expect(ping).toBeInstanceOf(HttpSpendPing);
-    await ping?.ping(ADDRESS, MESSAGE_ID);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
+    await ping?.ping(ADDRESS, MESSAGE_ID, 'moderator');
+    const rows = await store.listOpen('2026-11-09');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'moderator',
+      address: ADDRESS,
+      amountUsd: '3',
+      comment: '21gifts moderator',
+      messageId: null,
+      groupMessageId: MESSAGE_ID,
+    });
+  });
+
+  it('accepts an options object that omits the gift ledger, the clock, and the lookup', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-09T23:30:00.000Z'));
+    try {
+      const store = new InMemoryFondPayoutStore();
+      const ping = resolveSpendPing(
+        { PAYOUT_SIGNER: 'fond' },
+        {
+          rosterStore: writtenStore({ comment: 'thanks' }),
+          fondPayoutStore: store,
+        },
+      );
+      expect(ping).toBeInstanceOf(HttpSpendPing);
+      await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+      const rows = await store.listOpen('2026-11-09');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ address: ADDRESS, amountUsd: '1', comment: 'thanks' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('uses the current clock when the gift ledger is set and now is omitted', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
-    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
-      ...LOOKUP,
-      rosterStore: writtenStore({
-        comment: 'thanks',
-        recipients: [{ address: ADDRESS, amountUsd: 2 }],
-      }),
-      gifts: new InMemoryGiftStore([]),
-    });
-    await ping?.ping(ADDRESS, MESSAGE_ID);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-20T12:00:00.000Z'));
+    try {
+      const store = new InMemoryFondPayoutStore();
+      const welcomeYesterday: GiftRow = {
+        paidAt: new Date('2026-09-19T08:00:00.000Z'),
+        amountSats: 1000,
+        recipientWosUser: 'Ada',
+        kind: 'welcome',
+      };
+      const ping = resolveSpendPing(
+        { PAYOUT_SIGNER: 'fond' },
+        {
+          ...LOOKUP,
+          rosterStore: writtenStore({
+            comment: 'thanks',
+            recipients: [{ address: ADDRESS, amountUsd: 2 }],
+          }),
+          fondPayoutStore: store,
+          gifts: new InMemoryGiftStore([welcomeYesterday]),
+        },
+      );
+      await ping?.ping(ADDRESS, MESSAGE_ID);
+      const rows = await store.listOpen('2026-09-20');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ address: ADDRESS, amountUsd: '2' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('forwards the gift ledger and the clock into the daily decision', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     setAddressRefKey(TOKEN);
     const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const store = new InMemoryFondPayoutStore(() => nowMs);
     const welcomeToday: GiftRow = {
       paidAt: new Date('2026-09-20T08:00:00.000Z'),
       amountSats: 1000,
       recipientWosUser: 'Ada',
       kind: 'welcome',
     };
-    const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
-      ...LOOKUP,
-      rosterStore: writtenStore({
-        comment: 'thanks',
-        recipients: [{ address: ADDRESS, amountUsd: 2 }],
-      }),
-      gifts: new InMemoryGiftStore([welcomeToday]),
-      now: () => nowMs,
+    const ping = resolveSpendPing(
+      { PAYOUT_SIGNER: 'fond' },
+      {
+        ...LOOKUP,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+        fondPayoutStore: store,
+        gifts: new InMemoryGiftStore([welcomeToday]),
+        now: () => nowMs,
+      },
+    );
+    await expect(ping?.ping(ADDRESS, MESSAGE_ID)).resolves.toEqual({
+      status: 'skipped',
+      reason: 'welcome_paid',
     });
-    await ping?.ping(ADDRESS, MESSAGE_ID);
-    expect(fetchImpl).toHaveBeenCalledTimes(0);
+    expect(await store.listOpen('2026-09-20')).toEqual([]);
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -230,8 +290,37 @@ describe('resolveSpendPing', () => {
           e['reason'] === 'welcome_paid',
       ),
     ).toBe(true);
-    setAddressRefKey(null);
-    warn.mockRestore();
+  });
+
+  it('throws Invalid PAYOUT_SIGNER for spend', () => {
+    expect(() =>
+      resolveSpendPing(
+        { PAYOUT_SIGNER: 'spend' },
+        {
+          rosterStore: writtenStore(),
+          fondPayoutStore: new InMemoryFondPayoutStore(),
+        },
+      ),
+    ).toThrow('Invalid PAYOUT_SIGNER');
+  });
+
+  it('throws Invalid PAYOUT_SIGNER for another value before resolving stores', () => {
+    expect(() => resolveSpendPing({ PAYOUT_SIGNER: 'other' })).toThrow('Invalid PAYOUT_SIGNER');
+  });
+
+  it('requires the roster and fond payout stores in fond mode', () => {
+    expect(() => resolveSpendPing({ PAYOUT_SIGNER: 'fond' })).toThrow(
+      'Daily roster store is required',
+    );
+    expect(() =>
+      resolveSpendPing(
+        { PAYOUT_SIGNER: 'fond' },
+        { fondPayoutStore: new InMemoryFondPayoutStore() },
+      ),
+    ).toThrow('Daily roster store is required');
+    expect(() =>
+      resolveSpendPing({ PAYOUT_SIGNER: 'fond' }, { rosterStore: writtenStore() }),
+    ).toThrow('Fond payout store is required');
   });
 });
 
@@ -249,23 +338,21 @@ describe('HttpSpendPing', () => {
     setAddressRefKey(null);
   });
 
-  it.each([
-    ['spend.ping.ok', 200, true],
-    ['spend.ping.failed', 500, true],
-    ['spend.ping.skipped', 200, false],
+  it.each<[string, PayoutDelivery, boolean]>([
+    ['spend.ping.ok', { outcome: 'accepted' }, true],
+    ['spend.ping.failed', { outcome: 'failed' }, true],
+    ['spend.ping.skipped', { outcome: 'accepted' }, false],
   ])(
     'prints %s with addressRef and no address, and the sink keeps the address',
-    async (event, pingStatus, listed) => {
+    async (event, delivery, listed) => {
       const sink = vi.fn();
       setDiagnosticSink(sink);
       await new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl: pingFetch({ pingStatus }),
         ...LOOKUP,
         rosterStore: writtenStore(
           listed ? { recipients: [{ address: ADDRESS, amountUsd: 2 }] } : {},
         ),
+        sink: recordingSink(delivery).sink,
       }).ping(ADDRESS, MESSAGE_ID);
       const lines = parsedEvents(warn).filter((e) => e['event'] === event);
       expect(lines).toHaveLength(1);
@@ -276,16 +363,16 @@ describe('HttpSpendPing', () => {
     },
   );
 
-  it('does not POST daily when the roster is undecided and logs spend.ping.skipped', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: writtenStore(),
-    }).ping(ADDRESS, MESSAGE_ID);
-    expect(fetchImpl).not.toHaveBeenCalled();
+  it('does not deliver daily when the roster is undecided and logs spend.ping.skipped', async () => {
+    const { sink, deliver } = recordingSink();
+    await expect(
+      new HttpSpendPing({
+        ...LOOKUP,
+        rosterStore: writtenStore(),
+        sink,
+      }).ping(ADDRESS, MESSAGE_ID),
+    ).resolves.toEqual({ status: 'skipped', reason: 'undecided' });
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -298,54 +385,29 @@ describe('HttpSpendPing', () => {
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
 
-  it('logs spend.ping.ok on 202 accepted', async () => {
-    const fetchImpl: FetchFn = pingFetch({ pingStatus: 202 });
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: writtenStore(),
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+  it('logs spend.ping.ok when the sink accepts', async () => {
+    const { sink } = recordingSink({ outcome: 'accepted' });
+    await expect(
+      new HttpSpendPing({
+        ...LOOKUP,
+        rosterStore: writtenStore(),
+        sink,
+      }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
+    ).resolves.toEqual({ status: 'accepted' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(true);
   });
 
-  it('uses AbortSignal.timeout of 5000 by default and the injected timeoutMs', async () => {
-    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
-    const fetchImpl: FetchFn = pingFetch();
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: writtenStore(),
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(timeoutSpy).toHaveBeenCalledWith(5000);
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: writtenStore(),
-      timeoutMs: 1_000,
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(timeoutSpy).toHaveBeenCalledWith(1_000);
-    timeoutSpy.mockRestore();
-  });
-
-  it('logs spend.ping.failed on POST non-2xx and does not throw', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch({ pingStatus: 500 }));
+  it('logs spend.ping.failed when the sink fails and does not throw', async () => {
+    const { sink, deliver } = recordingSink({ outcome: 'failed' });
     await expect(
       new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
         ...LOOKUP,
         rosterStore: writtenStore(),
+        sink,
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toEqual({ status: 'failed' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0]?.[0]).toBe(ADDRESS);
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
@@ -354,50 +416,18 @@ describe('HttpSpendPing', () => {
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
 
-  it('logs spend.ping.failed on POST network error and does not throw', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch({ pingError: new Error('network down') }));
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore(),
-      }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('logs spend.ping.failed on POST abort and does not throw', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch({ pingError: abortError() }));
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore(),
-      }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('logs spend.ping.failed on a roster read throw and does not POST', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('logs spend.ping.failed on a roster read throw and does not deliver', async () => {
+    const { sink, deliver } = recordingSink();
     const rosterStore = writtenStore();
     vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('network down'));
     await expect(
       new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
         ...LOOKUP,
         rosterStore,
+        sink,
       }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toEqual({ status: 'failed' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
@@ -406,38 +436,45 @@ describe('HttpSpendPing', () => {
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
 
-  it('logs spend.ping.failed when hasBeenWritten throws and does not GET or POST', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
-    const rosterStore = new InMemoryDailyRosterStore();
-    vi.spyOn(rosterStore, 'hasBeenWritten').mockRejectedValue(new Error('store down'));
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore,
-      }).ping(ADDRESS, MESSAGE_ID),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-    expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
-  });
-
-  it('does not POST moderator when the roster has an empty moderators list and logs spend.ping.skipped', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('reads the roster through the store once and never asks whether it was written', async () => {
+    const { sink, deliver } = recordingSink();
+    const rosterStore = writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] });
+    const get = vi.spyOn(rosterStore, 'get');
+    const hasBeenWritten = vi.spyOn(rosterStore, 'hasBeenWritten');
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
+      ...LOOKUP,
+      rosterStore,
+      sink,
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(hasBeenWritten).not.toHaveBeenCalled();
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('decides from the stored defaults when the roster store was never written', async () => {
+    const { sink, deliver } = recordingSink();
+    await new HttpSpendPing({
+      ...LOOKUP,
+      rosterStore: new InMemoryDailyRosterStore(),
+      sink,
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0]?.[1]).toEqual({
+      address: ADDRESS,
+      messageId: MESSAGE_ID,
+      amountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD,
+      comment: '',
+    });
+  });
+
+  it('does not deliver moderator when the roster has an empty moderators list and logs spend.ping.skipped', async () => {
+    const { sink, deliver } = recordingSink();
+    await new HttpSpendPing({
       ...LOOKUP,
       rosterStore: writtenStore(),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -449,24 +486,16 @@ describe('HttpSpendPing', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(false);
   });
 
-  it('POSTs welcome JSON with amountUsd 1 and comment Welcome', async () => {
-    let seenInit: RequestInit | undefined;
-    const fetchImpl: FetchFn = pingFetch({
-      onCall: (_url, init) => {
-        seenInit = init;
-      },
-    });
+  it('delivers welcome with amountUsd 1 and comment Welcome', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore(),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
-    expect(seenInit?.method).toBe('POST');
-    expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
-    expect(new Headers(seenInit?.headers).get('Content-Type')).toBe('application/json');
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0]?.[0]).toBe(ADDRESS);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         kind: 'welcome',
@@ -481,16 +510,14 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('does not POST daily when paymentsEnabled is false and logs spend.ping.skipped', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('does not deliver daily when paymentsEnabled is false and logs spend.ping.skipped', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({ paymentsEnabled: false }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -502,16 +529,14 @@ describe('HttpSpendPing', () => {
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
 
-  it('does not POST welcome when paymentsEnabled is false and logs spend.ping.skipped', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('does not deliver welcome when paymentsEnabled is false and logs spend.ping.skipped', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({ paymentsEnabled: false }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -522,19 +547,17 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('does not POST moderator when the switch is off and logs spend.ping.skipped', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('does not deliver moderator when the switch is off and logs spend.ping.skipped', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         moderators: [{ address: ADDRESS, amountUsd: 3 }],
         moderatorPaymentsEnabled: false,
       }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -545,18 +568,16 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('does not POST an unlisted moderator and logs spend.ping.skipped', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('does not deliver an unlisted moderator and logs spend.ping.skipped', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         moderators: [{ address: 'other@example.com', amountUsd: 3 }],
       }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -567,24 +588,19 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('POSTs listed daily amountUsd and comment including a different address case', async () => {
-    let seenInit: RequestInit | undefined;
-    const fetchImpl: FetchFn = pingFetch({
-      onCall: (_url, init) => {
-        seenInit = init;
-      },
-    });
+  it('delivers listed daily amountUsd and comment including a different address case', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: 'Ada@Example.com', amountUsd: 2 }],
       }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID);
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0]?.[0]).toBe(ADDRESS);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         messageId: MESSAGE_ID,
@@ -600,24 +616,19 @@ describe('HttpSpendPing', () => {
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
 
-  it('POSTs the listed moderator amountUsd and comment 21gifts moderator', async () => {
-    let seenInit: RequestInit | undefined;
-    const fetchImpl: FetchFn = pingFetch({
-      onCall: (_url, init) => {
-        seenInit = init;
-      },
-    });
+  it('delivers the listed moderator amountUsd and comment 21gifts moderator', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         moderators: [{ address: ADDRESS, amountUsd: 3 }],
       }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0]?.[0]).toBe(ADDRESS);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         kind: 'moderator',
@@ -633,16 +644,14 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('does not POST daily when unlisted without grantStatus even if defaultAmountUsd is present', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('does not deliver daily when unlisted without grantStatus even if defaultAmountUsd is present', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -653,24 +662,15 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('POSTs defaultAmountUsd 1 for an unlisted admitted daily address', async () => {
-    let seenInit: RequestInit | undefined;
-    const fetchImpl = vi.fn<FetchFn>(
-      pingFetch({
-        onCall: (_url, init) => {
-          seenInit = init;
-        },
-      }),
-    );
+  it('delivers defaultAmountUsd 1 for an unlisted admitted daily address', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         messageId: MESSAGE_ID,
@@ -678,7 +678,7 @@ describe('HttpSpendPing', () => {
         comment: 'thanks',
       }),
     );
-    expect(String(seenInit?.body)).not.toContain('"kind"');
+    expect('kind' in (deliver.mock.calls[0]?.[1] ?? {})).toBe(false);
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
@@ -686,24 +686,15 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('POSTs 1 USD for an unlisted trial daily address', async () => {
-    let seenInit: RequestInit | undefined;
-    const fetchImpl = vi.fn<FetchFn>(
-      pingFetch({
-        onCall: (_url, init) => {
-          seenInit = init;
-        },
-      }),
-    );
+  it('delivers 1 USD for an unlisted trial daily address', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'trial');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         messageId: MESSAGE_ID,
@@ -713,17 +704,15 @@ describe('HttpSpendPing', () => {
     );
   });
 
-  it('does not POST an unlisted daily address when grantStatus is none, pending, or rejected', async () => {
+  it('does not deliver to an unlisted daily address when grantStatus is none, pending, or rejected', async () => {
     for (const grantStatus of ['none', 'pending', 'rejected'] as const) {
-      const fetchImpl = vi.fn<FetchFn>(pingFetch());
+      const { sink, deliver } = recordingSink();
       await new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
         ...LOOKUP,
         rosterStore: writtenStore({ comment: 'thanks' }),
+        sink,
       }).ping(ADDRESS, MESSAGE_ID, 'daily', grantStatus);
-      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(deliver).not.toHaveBeenCalled();
       expect(
         parsedEvents(warn).some(
           (e) =>
@@ -736,27 +725,18 @@ describe('HttpSpendPing', () => {
     }
   });
 
-  it('POSTs the listed daily amount when grantStatus is rejected', async () => {
-    let seenInit: RequestInit | undefined;
-    const fetchImpl = vi.fn<FetchFn>(
-      pingFetch({
-        onCall: (_url, init) => {
-          seenInit = init;
-        },
-      }),
-    );
+  it('delivers the listed daily amount when grantStatus is rejected', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
       }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'rejected');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         messageId: MESSAGE_ID,
@@ -767,16 +747,14 @@ describe('HttpSpendPing', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.skipped')).toBe(false);
   });
 
-  it('does not POST an unlisted admitted daily address when paymentsEnabled is false', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('does not deliver to an unlisted admitted daily address when paymentsEnabled is false', async () => {
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks', paymentsEnabled: false }),
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -787,9 +765,9 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('does not POST daily when a welcome gift was paid today and logs spend.ping.skipped', async () => {
+  it('does not deliver daily when a welcome gift was paid today and logs spend.ping.skipped', async () => {
     const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const { sink, deliver } = recordingSink();
     const welcomeToday: GiftRow = {
       paidAt: new Date('2026-09-20T08:00:00.000Z'),
       amountSats: 1000,
@@ -797,9 +775,6 @@ describe('HttpSpendPing', () => {
       kind: 'welcome',
     };
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
@@ -807,8 +782,9 @@ describe('HttpSpendPing', () => {
       }),
       gifts: new InMemoryGiftStore([welcomeToday]),
       now: () => nowMs,
+      sink,
     }).ping(ADDRESS, MESSAGE_ID);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -819,16 +795,9 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('POSTs listed daily when the welcome gift was paid on the previous UTC day', async () => {
+  it('delivers listed daily when the welcome gift was paid on the previous UTC day', async () => {
     const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
-    let seenInit: RequestInit | undefined;
-    const fetchImpl = vi.fn<FetchFn>(
-      pingFetch({
-        onCall: (_url, init) => {
-          seenInit = init;
-        },
-      }),
-    );
+    const { sink, deliver } = recordingSink();
     const welcomeYesterday: GiftRow = {
       paidAt: new Date('2026-09-19T08:00:00.000Z'),
       amountSats: 1000,
@@ -836,9 +805,6 @@ describe('HttpSpendPing', () => {
       kind: 'welcome',
     };
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
@@ -846,10 +812,10 @@ describe('HttpSpendPing', () => {
       }),
       gifts: new InMemoryGiftStore([welcomeYesterday]),
       now: () => nowMs,
+      sink,
     }).ping(ADDRESS, MESSAGE_ID);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         messageId: MESSAGE_ID,
@@ -859,8 +825,8 @@ describe('HttpSpendPing', () => {
     );
   });
 
-  it('logs spend.ping.failed when listOutbound rejects and does not POST', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('logs spend.ping.failed when listOutbound rejects and does not deliver', async () => {
+    const { sink, deliver } = recordingSink();
     const gifts = {
       listOutbound: async () => {
         throw new Error('ledger down');
@@ -868,18 +834,16 @@ describe('HttpSpendPing', () => {
     };
     await expect(
       new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
         ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
         }),
         gifts,
+        sink,
       }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toEqual({ status: 'failed' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
@@ -887,7 +851,7 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('POSTs welcome JSON when gifts is set and does not list outbound gifts', async () => {
+  it('delivers welcome when gifts is set and does not list outbound gifts', async () => {
     let listCalls = 0;
     const gifts = {
       listOutbound: async () => {
@@ -895,23 +859,16 @@ describe('HttpSpendPing', () => {
         throw new Error('must not list');
       },
     };
-    let seenInit: RequestInit | undefined;
-    const fetchImpl: FetchFn = pingFetch({
-      onCall: (_url, init) => {
-        seenInit = init;
-      },
-    });
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore(),
       gifts,
+      sink,
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(listCalls).toBe(0);
-    expect(seenInit?.method).toBe('POST');
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         kind: 'welcome',
@@ -921,227 +878,9 @@ describe('HttpSpendPing', () => {
     );
   });
 
-  it('GETs live daily-roster when unwritten, POSTs decided daily, and does not import', async () => {
-    const rosterStore = new InMemoryDailyRosterStore();
-    const getSpy = vi.spyOn(rosterStore, 'get');
-    const importSpy = vi.spyOn(rosterStore, 'importDocument');
-    const fetchImpl = vi.fn<FetchFn>(async (input) => {
-      if (String(input) === `${SPEND_URL}/daily-roster`) {
-        return new Response(
-          JSON.stringify({
-            comment: 'thanks',
-            paymentsEnabled: true,
-            defaultAmountUsd: 1,
-            recipients: [{ address: ADDRESS, amountUsd: 2.5 }],
-          }),
-          { status: 200 },
-        );
-      }
-      return new Response(null, { status: 202 });
-    });
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore,
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
-    const getInit = fetchImpl.mock.calls[0]?.[1];
-    expect(getInit?.method).toBe('GET');
-    expect(getInit?.headers).toEqual({ Authorization: `Bearer ${TOKEN}` });
-    expect(new Headers(getInit?.headers).get('Content-Type')).toBeNull();
-    expect(getInit?.signal).toBeInstanceOf(AbortSignal);
-    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
-    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(
-      JSON.stringify({
-        address: ADDRESS,
-        messageId: MESSAGE_ID,
-        amountUsd: 2.5,
-        comment: 'thanks',
-      }),
-    );
-    expect(getSpy).not.toHaveBeenCalled();
-    expect(importSpy).not.toHaveBeenCalled();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-    expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
-  });
-
-  it('GETs live daily-roster when unwritten and skips moderator as undecided without importing', async () => {
-    const rosterStore = new InMemoryDailyRosterStore();
-    const importSpy = vi.spyOn(rosterStore, 'importDocument');
-    const fetchImpl = vi.fn<FetchFn>(async (input) => {
-      if (String(input) === `${SPEND_URL}/daily-roster`) {
-        return new Response(
-          JSON.stringify({
-            comment: 'thanks',
-            paymentsEnabled: true,
-            defaultAmountUsd: 1,
-            recipients: [{ address: ADDRESS, amountUsd: 2.5 }],
-          }),
-          { status: 200 },
-        );
-      }
-      return new Response(null, { status: 202 });
-    });
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore,
-    }).ping(ADDRESS, MESSAGE_ID, 'moderator');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
-    expect(importSpy).not.toHaveBeenCalled();
-    expect(
-      parsedEvents(warn).some(
-        (e) =>
-          e['event'] === 'spend.ping.skipped' &&
-          e['addressRef'] === ADDRESS_REF &&
-          e['reason'] === 'undecided',
-      ),
-    ).toBe(true);
-  });
-
-  it('GETs live daily-roster when unwritten and POSTs listed moderator', async () => {
-    const rosterStore = new InMemoryDailyRosterStore();
-    const fetchImpl = vi.fn<FetchFn>(async (input) => {
-      if (String(input) === `${SPEND_URL}/daily-roster`) {
-        return new Response(
-          JSON.stringify({
-            paymentsEnabled: true,
-            moderatorPaymentsEnabled: true,
-            moderators: [{ address: ADDRESS, amountUsd: 5 }],
-          }),
-          { status: 200 },
-        );
-      }
-      return new Response(null, { status: 202 });
-    });
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore,
-    }).ping(ADDRESS, MESSAGE_ID, 'moderator');
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
-    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe(`${SPEND_URL}/ping`);
-    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(
-      JSON.stringify({
-        address: ADDRESS,
-        kind: 'moderator',
-        groupMessageId: MESSAGE_ID,
-        amountUsd: 5,
-        comment: '21gifts moderator',
-      }),
-    );
-  });
-
-  it('logs spend.ping.failed when unwritten live GET returns non-2xx', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response(null, { status: 500 }));
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: new InMemoryDailyRosterStore(),
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toMatch(/\/daily-roster$/u);
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
-
-  it('logs spend.ping.failed when unwritten live GET body is JSON null', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response('null', { status: 200 }));
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: new InMemoryDailyRosterStore(),
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
-
-  it('logs spend.ping.failed when unwritten live GET throws', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => {
-      throw new Error('network down');
-    });
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: new InMemoryDailyRosterStore(),
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
-
-  it('GETs live daily-roster when unwritten and skips welcome when paymentsEnabled is false', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => {
-      return new Response(JSON.stringify({ paymentsEnabled: false }), { status: 200 });
-    });
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: new InMemoryDailyRosterStore(),
-    }).ping(ADDRESS, MESSAGE_ID, 'welcome');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/daily-roster`);
-    expect(
-      parsedEvents(warn).some(
-        (e) =>
-          e['event'] === 'spend.ping.skipped' &&
-          e['addressRef'] === ADDRESS_REF &&
-          e['reason'] === 'payments_disabled',
-      ),
-    ).toBe(true);
-  });
-
-  it('does not GET when a written store lists the moderator', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch({ pingStatus: 202 }));
-    await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 5 }] }),
-    }).ping(ADDRESS, MESSAGE_ID, 'moderator');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
-  });
-
-  it('pingOnDay POSTs the argument day when welcome was paid on the clock day', async () => {
+  it('pingOnDay delivers the argument day when welcome was paid on the clock day', async () => {
     const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
-    let seenInit: RequestInit | undefined;
-    const fetchImpl = vi.fn<FetchFn>(async (_input, init) => {
-      seenInit = init;
-      return new Response(null, { status: 202 });
-    });
+    const { sink, deliver } = recordingSink();
     const welcomeToday: GiftRow = {
       paidAt: new Date('2026-09-20T08:00:00.000Z'),
       amountSats: 1000,
@@ -1149,9 +888,6 @@ describe('HttpSpendPing', () => {
       kind: 'welcome',
     };
     const outcome = await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
@@ -1159,10 +895,12 @@ describe('HttpSpendPing', () => {
       }),
       gifts: new InMemoryGiftStore([welcomeToday]),
       now: () => nowMs,
+      sink,
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'accepted' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(seenInit?.body).toBe(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver.mock.calls[0]?.[0]).toBe(ADDRESS);
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         messageId: MESSAGE_ID,
@@ -1171,7 +909,7 @@ describe('HttpSpendPing', () => {
         day: '2026-09-19',
       }),
     );
-    expect(String(seenInit?.body)).not.toContain('2026-09-20');
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).not.toContain('2026-09-20');
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
@@ -1181,23 +919,17 @@ describe('HttpSpendPing', () => {
   });
 
   it('pingOnDay books a moderator stipend on the argument day without the welcome check', async () => {
-    let seenInit: RequestInit | undefined;
-    const fetchImpl = vi.fn<FetchFn>(async (_input, init) => {
-      seenInit = init;
-      return new Response(null, { status: 202 });
-    });
+    const { sink, deliver } = recordingSink();
     const listOutbound = vi.fn(async () => []);
     const outcome = await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 5 }] }),
       gifts: { listOutbound },
+      sink,
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19', undefined, 'moderator');
     expect(outcome).toEqual({ status: 'accepted' });
     expect(listOutbound).not.toHaveBeenCalled();
-    expect(seenInit?.body).toBe(
+    expect(JSON.stringify(deliver.mock.calls[0]?.[1])).toBe(
       JSON.stringify({
         address: ADDRESS,
         kind: 'moderator',
@@ -1210,7 +942,7 @@ describe('HttpSpendPing', () => {
   });
 
   it('pingOnDay skips when the welcome gift was paid on the argument day', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const { sink, deliver } = recordingSink();
     const welcomeOnDay: GiftRow = {
       paidAt: new Date('2026-09-19T08:00:00.000Z'),
       amountSats: 1000,
@@ -1218,18 +950,16 @@ describe('HttpSpendPing', () => {
       kind: 'welcome',
     };
     const outcome = await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
       }),
       gifts: new InMemoryGiftStore([welcomeOnDay]),
+      sink,
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'skipped', reason: 'welcome_paid' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) =>
@@ -1240,20 +970,15 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('pingOnDay returns skipped when spend responds 200 skipped', async () => {
-    const fetchImpl = vi.fn<FetchFn>(
-      async () =>
-        new Response(JSON.stringify({ status: 'skipped', reason: 'paid' }), { status: 200 }),
-    );
+  it('pingOnDay returns skipped with the reason the sink reports', async () => {
+    const { sink } = recordingSink({ outcome: 'skipped', reason: 'paid' });
     const outcome = await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
       }),
+      sink,
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'skipped', reason: 'paid' });
     expect(
@@ -1266,17 +991,15 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('pingOnDay returns accepted on 202 with an empty body', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response(null, { status: 202 }));
+  it('pingOnDay returns accepted when the sink accepts', async () => {
+    const { sink } = recordingSink({ outcome: 'accepted' });
     const outcome = await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
       }),
+      sink,
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'accepted' });
     expect(
@@ -1286,40 +1009,16 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('pingOnDay returns accepted on 200 accepted JSON', async () => {
-    const fetchImpl = vi.fn<FetchFn>(
-      async () => new Response(JSON.stringify({ status: 'accepted' }), { status: 200 }),
-    );
-    const outcome = await new HttpSpendPing({
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
-      ...LOOKUP,
-      rosterStore: writtenStore({
-        comment: 'thanks',
-        recipients: [{ address: ADDRESS, amountUsd: 2 }],
-      }),
-    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
-    expect(outcome).toEqual({ status: 'accepted' });
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
-
-  it('pingOnDay returns failed on HTTP 500 and does not throw', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response(null, { status: 500 }));
+  it('pingOnDay returns failed when the sink fails and does not throw', async () => {
+    const { sink } = recordingSink({ outcome: 'failed' });
     await expect(
       new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
         ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
         }),
+        sink,
       }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
     ).resolves.toEqual({ status: 'failed' });
     expect(
@@ -1329,185 +1028,18 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('pingOnDay returns failed on 201 and does not throw', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response(null, { status: 201 }));
+  it('pingOnDay returns failed on a roster read throw and does not deliver', async () => {
+    const { sink, deliver } = recordingSink();
+    const rosterStore = writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] });
+    vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('store down'));
     await expect(
       new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
-      ),
-    ).toBe(true);
-  });
-
-  it('pingOnDay returns failed when 200 body JSON is null', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response('null', { status: 200 }));
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('pingOnDay returns failed when 200 body JSON is an array', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response('[]', { status: 200 }));
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('pingOnDay returns failed when 200 body JSON is a string', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response('"nope"', { status: 200 }));
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('pingOnDay returns failed when 200 skipped JSON has no reason', async () => {
-    const fetchImpl = vi.fn<FetchFn>(
-      async () => new Response(JSON.stringify({ status: 'skipped' }), { status: 200 }),
-    );
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('pingOnDay returns failed when 200 skipped JSON has an empty reason', async () => {
-    const fetchImpl = vi.fn<FetchFn>(
-      async () => new Response(JSON.stringify({ status: 'skipped', reason: '' }), { status: 200 }),
-    );
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('pingOnDay returns failed when 200 JSON has another status', async () => {
-    const fetchImpl = vi.fn<FetchFn>(
-      async () => new Response(JSON.stringify({ status: 'other' }), { status: 200 }),
-    );
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('pingOnDay returns failed when 200 body is not JSON', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => new Response('{', { status: 200 }));
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('pingOnDay returns failed when fetch throws and does not throw', async () => {
-    const fetchImpl = vi.fn<FetchFn>(async () => {
-      throw new Error('network down');
-    });
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
-        ...LOOKUP,
-        rosterStore: writtenStore({
-          comment: 'thanks',
-          recipients: [{ address: ADDRESS, amountUsd: 2 }],
-        }),
-      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
-    ).resolves.toEqual({ status: 'failed' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.failed')).toBe(true);
-  });
-
-  it('pingOnDay returns failed when hasBeenWritten rejects and does not POST', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
-    const rosterStore = new InMemoryDailyRosterStore();
-    vi.spyOn(rosterStore, 'hasBeenWritten').mockRejectedValue(new Error('store down'));
-    await expect(
-      new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
         ...LOOKUP,
         rosterStore,
+        sink,
       }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
     ).resolves.toEqual({ status: 'failed' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
@@ -1515,8 +1047,8 @@ describe('HttpSpendPing', () => {
     ).toBe(true);
   });
 
-  it('pingOnDay returns failed when listOutbound rejects and does not POST', async () => {
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+  it('pingOnDay returns failed when listOutbound rejects and does not deliver', async () => {
+    const { sink, deliver } = recordingSink();
     const gifts = {
       listOutbound: async () => {
         throw new Error('ledger down');
@@ -1524,18 +1056,16 @@ describe('HttpSpendPing', () => {
     };
     await expect(
       new HttpSpendPing({
-        spendUrl: SPEND_URL,
-        token: TOKEN,
-        fetchImpl,
         ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
         }),
         gifts,
+        sink,
       }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
     ).resolves.toEqual({ status: 'failed' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
         (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
@@ -1551,179 +1081,154 @@ describe('HttpSpendPing stored rows by account', () => {
 
   it('matches no stored row without an account lookup and pays the default', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    let seenInit: RequestInit | undefined;
-    const ping = resolveSpendPing(
-      { SPEND_URL, SPEND_API_TOKEN: TOKEN },
-      pingFetch({ onCall: (_url, init) => (seenInit = init) }),
-      { rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }) },
-    );
-    await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(JSON.parse(String(seenInit?.body))).toMatchObject({ amountUsd: 1 });
+    const { sink, deliver } = recordingSink();
+    await new HttpSpendPing({
+      rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }),
+      sink,
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(deliver.mock.calls[0]?.[1]).toMatchObject({ amountUsd: 1 });
   });
 
   it('matches no stored row for an address on another host', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const { sink, deliver } = recordingSink();
     await new HttpSpendPing({
       ...LOOKUP,
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 3 }] }),
+      sink,
     }).ping('ada@elsewhere.example', MESSAGE_ID, 'moderator');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(parsedEvents(warn).some((e) => e['reason'] === 'not_listed')).toBe(true);
   });
 
-  it('logs spend.ping.failed and does not POST when the account lookup throws', async () => {
+  it('logs spend.ping.failed and does not deliver when the account lookup throws', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const { sink, deliver } = recordingSink();
     const ping = new HttpSpendPing({
       accounts: { getAccountByUsername: () => Promise.reject(new Error('db down')) },
       lnurlServer: LNURL,
-      spendUrl: SPEND_URL,
-      token: TOKEN,
-      fetchImpl,
       rosterStore: writtenStore(),
+      sink,
     });
-    await ping.ping(ADDRESS, MESSAGE_ID);
+    expect(await ping.ping(ADDRESS, MESSAGE_ID)).toEqual({ status: 'failed' });
     expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-10-01')).toEqual({ status: 'failed' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(parsedEvents(warn).filter((e) => e['event'] === 'spend.ping.failed')).toHaveLength(2);
   });
 });
 
-describe('HttpPayoutSink', () => {
-  const sinkOpts = { spendUrl: SPEND_URL, token: TOKEN };
-
-  it('maps ping bodies with the same strict response contract and never throws', async () => {
-    const accepted = new HttpPayoutSink({
-      ...sinkOpts,
-      fetchImpl: async () => new Response(null, { status: 202 }),
-    });
-    expect(await accepted.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'accepted' });
-    const empty200 = new HttpPayoutSink({
-      ...sinkOpts,
-      fetchImpl: async () => new Response(null, { status: 200 }),
-    });
-    expect(await empty200.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'failed' });
-    const skipped = new HttpPayoutSink({
-      ...sinkOpts,
-      fetchImpl: async () =>
-        new Response(JSON.stringify({ status: 'skipped', reason: 'not_ready' }), { status: 200 }),
-    });
-    expect(await skipped.deliver(ADDRESS, { address: ADDRESS })).toEqual({
-      outcome: 'skipped',
-      reason: 'not_ready',
-    });
-    const failed = new HttpPayoutSink({
-      ...sinkOpts,
-      fetchImpl: async () => new Response(null, { status: 500 }),
-    });
-    expect(await failed.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'failed' });
-    const threw = new HttpPayoutSink({
-      ...sinkOpts,
-      fetchImpl: async () => {
-        throw new Error('down');
-      },
-    });
-    expect(await threw.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'failed' });
+describe('HttpSpendPing with an injected sink', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setAddressRefKey(null);
   });
 
-  it('maps pingOnDay bodies: 202 and 200 accepted, 200 skipped, else failed', async () => {
-    let seenInit: RequestInit | undefined;
-    const accepted = new HttpPayoutSink({
-      ...sinkOpts,
-      fetchImpl: async (_input, init) => {
-        seenInit = init;
-        return new Response(null, { status: 202 });
-      },
-    });
-    expect(await accepted.deliver(ADDRESS, { address: ADDRESS, day: '2026-11-09' })).toEqual({
-      outcome: 'accepted',
-    });
-    expect(seenInit?.method).toBe('POST');
-    expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
-    expect(JSON.parse(String(seenInit?.body))).toEqual({
-      address: ADDRESS,
-      day: '2026-11-09',
-    });
-
-    const jsonAccepted = new HttpPayoutSink({
-      ...sinkOpts,
-      fetchImpl: async () => new Response(JSON.stringify({ status: 'accepted' }), { status: 200 }),
-    });
-    expect(await jsonAccepted.deliver(ADDRESS, { day: '2026-11-09' })).toEqual({
-      outcome: 'accepted',
-    });
-
-    const skipped = new HttpPayoutSink({
-      ...sinkOpts,
-      fetchImpl: async () =>
-        new Response(JSON.stringify({ status: 'skipped', reason: 'paid' }), { status: 200 }),
-    });
-    expect(await skipped.deliver(ADDRESS, { day: '2026-11-09' })).toEqual({
-      outcome: 'skipped',
-      reason: 'paid',
-    });
-  });
-
-  it.each([
-    ['status 201', async (): Promise<Response> => new Response(null, { status: 201 })],
-    ['status 500', async (): Promise<Response> => new Response(null, { status: 500 })],
-    ['null JSON', async (): Promise<Response> => new Response('null', { status: 200 })],
-    ['array JSON', async (): Promise<Response> => new Response('[]', { status: 200 })],
-    ['unparsable JSON', async (): Promise<Response> => new Response('{', { status: 200 })],
-    [
-      'skipped without reason',
-      async (): Promise<Response> =>
-        new Response(JSON.stringify({ status: 'skipped' }), { status: 200 }),
-    ],
-    [
-      'other status',
-      async (): Promise<Response> =>
-        new Response(JSON.stringify({ status: 'other' }), { status: 200 }),
-    ],
-    [
-      'a throw',
-      async (): Promise<Response> => {
-        throw new Error('down');
-      },
-    ],
-  ])('maps %s for a day body to failed', async (_name, fetchImpl) => {
-    const sink = new HttpPayoutSink({ ...sinkOpts, fetchImpl });
-    expect(await sink.deliver(ADDRESS, { day: '2026-11-09' })).toEqual({ outcome: 'failed' });
-  });
-
-  it('returns each concurrent delivery its own skip reason when responses finish in reverse', async () => {
-    const pending = new Map<string, (response: Response) => void>();
-    const fetchImpl: FetchFn = (_input, init) => {
-      if (init?.method === 'GET') {
-        return Promise.resolve(
-          new Response(JSON.stringify({ paymentsEnabled: true }), { status: 200 }),
-        );
-      }
-      return new Promise<Response>((resolve) => {
-        const body = JSON.parse(String(init?.body)) as { day: string };
-        pending.set(body.day, resolve);
-      });
-    };
-    const sink = new HttpPayoutSink({ ...sinkOpts, fetchImpl });
+  it('logs accepted, skipped, and failed from the sink outcome', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const deliver = vi
+      .fn<Deliver>()
+      .mockResolvedValueOnce({ outcome: 'accepted' })
+      .mockResolvedValueOnce({ outcome: 'skipped', reason: 'paid' })
+      .mockResolvedValueOnce({ outcome: 'failed' });
     const ping = new HttpSpendPing({
       ...LOOKUP,
-      fetchImpl,
+      rosterStore: writtenStore({
+        comment: 'thanks',
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+      sink: { deliver },
+    });
+    await ping.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(parsedEvents(warn).some((event) => event['event'] === 'spend.ping.ok')).toBe(true);
+    expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09')).toEqual({
+      status: 'skipped',
+      reason: 'paid',
+    });
+    expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09')).toEqual({ status: 'failed' });
+    expect(deliver).toHaveBeenCalledTimes(3);
+    expect(deliver.mock.calls[0]?.[1]).toEqual({
+      address: ADDRESS,
+      messageId: MESSAGE_ID,
+      amountUsd: 2,
+      comment: 'thanks',
+    });
+  });
+
+  it('passes through the skip reason from an injected sink', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const { sink } = recordingSink({ outcome: 'skipped', reason: 'closed' });
+    const outcome = await new HttpSpendPing({
+      ...LOOKUP,
+      rosterStore: writtenStore({
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+      sink,
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09');
+    expect(outcome).toEqual({ status: 'skipped', reason: 'closed' });
+    expect(
+      parsedEvents(warn).some(
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'closed',
+      ),
+    ).toBe(true);
+  });
+
+  it('logs spend.ping.skipped when the injected sink skips during ping', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const { sink, deliver } = recordingSink({ outcome: 'skipped', reason: 'paid' });
+    await expect(
+      new HttpSpendPing({
+        ...LOOKUP,
+        rosterStore: writtenStore({
+          comment: 'thanks',
+          recipients: [{ address: ADDRESS, amountUsd: 2 }],
+        }),
+        sink,
+      }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
+    ).resolves.toEqual({ status: 'skipped', reason: 'paid' });
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(
+      parsedEvents(warn).some(
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'paid',
+      ),
+    ).toBe(true);
+  });
+
+  it('logs spend.ping.failed when the injected store read throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const rosterStore = writtenStore();
+    vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('down'));
+    const { sink, deliver } = recordingSink();
+    await new HttpSpendPing({
+      rosterStore,
+      sink,
+    }).ping(ADDRESS, MESSAGE_ID);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((event) => event['event'] === 'spend.ping.failed')).toBe(true);
+  });
+
+  it('returns each concurrent delivery its own skip reason when deliveries finish in reverse', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const pending = new Map<string, (delivery: PayoutDelivery) => void>();
+    const sink: PayoutSink = {
+      deliver: (_address, body) =>
+        new Promise<PayoutDelivery>((resolve) => {
+          pending.set(String(body['day']), resolve);
+        }),
+    };
+    const ping = new HttpSpendPing({
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
       sink,
     });
     const first = ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09', 'admitted');
     const second = ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-10', 'admitted');
     await vi.waitFor(() => expect(pending.size).toBe(2));
-    pending.get('2026-11-10')?.(
-      new Response(JSON.stringify({ status: 'skipped', reason: 'second' }), { status: 200 }),
-    );
-    pending.get('2026-11-09')?.(
-      new Response(JSON.stringify({ status: 'skipped', reason: 'first' }), { status: 200 }),
-    );
+    pending.get('2026-11-10')?.({ outcome: 'skipped', reason: 'second' });
+    pending.get('2026-11-09')?.({ outcome: 'skipped', reason: 'first' });
     await expect(second).resolves.toEqual({ status: 'skipped', reason: 'second' });
     await expect(first).resolves.toEqual({ status: 'skipped', reason: 'first' });
   });
@@ -2033,201 +1538,5 @@ describe('FondQueueSink', () => {
     expect(
       await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'thanks' }),
     ).toEqual({ outcome: 'failed' });
-  });
-});
-
-describe('resolveSpendPing with PAYOUT_SIGNER', () => {
-  it('uses the fond queue without a spend URL or token', async () => {
-    const store = new InMemoryFondPayoutStore();
-    const ping = resolveSpendPing(
-      { PAYOUT_SIGNER: 'fond' },
-      async () => new Response(null, { status: 500 }),
-      {
-        rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }),
-        fondPayoutStore: store,
-        now: () => Date.parse('2026-11-09T12:00:00.000Z'),
-      },
-    );
-    expect(ping).toBeInstanceOf(HttpSpendPing);
-    await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    const rows = await store.listOpen('2026-11-09');
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.address).toBe(ADDRESS);
-  });
-
-  it('passes gifts, accounts, and lnurlServer through in fond mode', () => {
-    const ping = resolveSpendPing(
-      { PAYOUT_SIGNER: 'fond' },
-      async () => new Response(null, { status: 500 }),
-      {
-        rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }),
-        fondPayoutStore: new InMemoryFondPayoutStore(),
-        gifts: new InMemoryGiftStore([]),
-        accounts: LOOKUP.accounts,
-        lnurlServer: LOOKUP.lnurlServer,
-      },
-    );
-    expect(ping).toBeInstanceOf(HttpSpendPing);
-  });
-
-  it('omits gifts, accounts, and lnurlServer in fond mode', () => {
-    const ping = resolveSpendPing(
-      { PAYOUT_SIGNER: 'fond' },
-      async () => new Response(null, { status: 500 }),
-      {
-        rosterStore: writtenStore(),
-        fondPayoutStore: new InMemoryFondPayoutStore(),
-      },
-    );
-    expect(ping).toBeInstanceOf(HttpSpendPing);
-  });
-
-  it('throws Invalid PAYOUT_SIGNER before resolving stores', () => {
-    expect(() => resolveSpendPing({ PAYOUT_SIGNER: 'other' }, async () => new Response())).toThrow(
-      'Invalid PAYOUT_SIGNER',
-    );
-  });
-
-  it('requires the roster and fond payout stores in fond mode', () => {
-    expect(() => resolveSpendPing({ PAYOUT_SIGNER: 'fond' }, async () => new Response())).toThrow(
-      'Daily roster store is required',
-    );
-    expect(() =>
-      resolveSpendPing({ PAYOUT_SIGNER: 'fond' }, async () => new Response(), {
-        rosterStore: writtenStore(),
-      }),
-    ).toThrow('Fond payout store is required');
-  });
-
-  it('keeps spend mode when PAYOUT_SIGNER is unset', () => {
-    const ping = resolveSpendPing(
-      { SPEND_URL, SPEND_API_TOKEN: TOKEN },
-      async () => new Response(),
-      {
-        rosterStore: writtenStore(),
-      },
-    );
-    expect(ping).toBeInstanceOf(HttpSpendPing);
-  });
-});
-
-describe('HttpSpendPing with an injected sink', () => {
-  it('logs accepted, skipped, and failed from the sink outcome', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    setAddressRefKey(TOKEN);
-    const deliver = vi
-      .fn<(address: string, body: Record<string, string | number>) => Promise<PayoutDelivery>>()
-      .mockResolvedValueOnce({ outcome: 'accepted' })
-      .mockResolvedValueOnce({ outcome: 'skipped', reason: 'paid' })
-      .mockResolvedValueOnce({ outcome: 'failed' });
-    const sink = { deliver };
-    const ping = new HttpSpendPing({
-      fetchImpl: async () => new Response(null, { status: 200 }),
-      ...LOOKUP,
-      rosterStore: writtenStore({
-        comment: 'thanks',
-        recipients: [{ address: ADDRESS, amountUsd: 2 }],
-      }),
-      sink,
-    });
-    await ping.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(parsedEvents(warn).some((event) => event['event'] === 'spend.ping.ok')).toBe(true);
-    expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09')).toEqual({
-      status: 'skipped',
-      reason: 'paid',
-    });
-    expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09')).toEqual({ status: 'failed' });
-    expect(deliver).toHaveBeenCalledTimes(3);
-    expect(deliver.mock.calls[0]?.[1]).toEqual({
-      address: ADDRESS,
-      messageId: MESSAGE_ID,
-      amountUsd: 2,
-      comment: 'thanks',
-    });
-    warn.mockRestore();
-    setAddressRefKey(null);
-  });
-
-  it('passes through the skip reason from an injected sink', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    setAddressRefKey(TOKEN);
-    const sink = {
-      deliver: async (): Promise<PayoutDelivery> => ({ outcome: 'skipped', reason: 'closed' }),
-    };
-    const outcome = await new HttpSpendPing({
-      fetchImpl: async () => new Response(null, { status: 200 }),
-      ...LOOKUP,
-      rosterStore: writtenStore({
-        recipients: [{ address: ADDRESS, amountUsd: 2 }],
-      }),
-      sink,
-    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09');
-    expect(outcome).toEqual({ status: 'skipped', reason: 'closed' });
-    expect(
-      parsedEvents(warn).some(
-        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'closed',
-      ),
-    ).toBe(true);
-    warn.mockRestore();
-    setAddressRefKey(null);
-  });
-
-  it('logs spend.ping.skipped when the injected sink skips during ping', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    setAddressRefKey(TOKEN);
-    const deliver = vi.fn(async (): Promise<PayoutDelivery> => ({
-      outcome: 'skipped',
-      reason: 'paid',
-    }));
-    await new HttpSpendPing({
-      fetchImpl: async () => new Response(null, { status: 200 }),
-      ...LOOKUP,
-      rosterStore: writtenStore({
-        comment: 'thanks',
-        recipients: [{ address: ADDRESS, amountUsd: 2 }],
-      }),
-      sink: { deliver },
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(deliver).toHaveBeenCalledTimes(1);
-    expect(
-      parsedEvents(warn).some(
-        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'paid',
-      ),
-    ).toBe(true);
-    warn.mockRestore();
-    setAddressRefKey(null);
-  });
-
-  it('reads only the written roster store when the sink is injected without spend env', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    setAddressRefKey(TOKEN);
-    const deliver = vi.fn(async (): Promise<PayoutDelivery> => ({ outcome: 'accepted' }));
-    const rosterStore = writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] });
-    const hasBeenWritten = vi.spyOn(rosterStore, 'hasBeenWritten');
-    await new HttpSpendPing({
-      fetchImpl: async () => new Response(null, { status: 500 }),
-      rosterStore,
-      sink: { deliver },
-    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
-    expect(hasBeenWritten).not.toHaveBeenCalled();
-    warn.mockRestore();
-    setAddressRefKey(null);
-  });
-
-  it('logs spend.ping.failed when the injected store read throws', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    setAddressRefKey(TOKEN);
-    const rosterStore = writtenStore();
-    vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('down'));
-    const deliver = vi.fn(async (): Promise<PayoutDelivery> => ({ outcome: 'accepted' }));
-    await new HttpSpendPing({
-      fetchImpl: async () => new Response(null, { status: 500 }),
-      rosterStore,
-      sink: { deliver },
-    }).ping(ADDRESS, MESSAGE_ID);
-    expect(deliver).not.toHaveBeenCalled();
-    expect(parsedEvents(warn).some((event) => event['event'] === 'spend.ping.failed')).toBe(true);
-    warn.mockRestore();
-    setAddressRefKey(null);
   });
 });

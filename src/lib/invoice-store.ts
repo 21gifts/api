@@ -1,7 +1,7 @@
 import { GIFT_INVOICE_TTL_MS } from '@/lib/config';
 
 /**
- * In-memory gift invoices issued for the spend worker.
+ * In-memory gift invoices issued for Fond payouts.
  *
  * Same persistence story as auth: process-local, gone on restart. Unpaid
  * invoices expire after `GIFT_INVOICE_TTL_MS` (checked at read time). `sweep`
@@ -11,7 +11,7 @@ import { GIFT_INVOICE_TTL_MS } from '@/lib/config';
 
 /** One BOLT11 fetched from a recipient Lightning Address, awaiting proof. */
 export interface GiftInvoice {
-  /** 32 hex chars, unguessable id returned to the spend worker. */
+  /** 32 hex chars, unguessable invoice id. */
   id: string;
   /** Recipient Lightning Address used to fetch `pr`. */
   address: string;
@@ -36,7 +36,7 @@ export interface GiftInvoice {
   /** LUD-12 comment / gift-reply text (may be `''`). */
   comment?: string;
   /**
-   * Spend-worker USD amount already normalized to two decimals (`"5.00"`).
+   * Decided USD amount already normalized to two decimals (`"5.00"`).
    * Absent when the issue request did not send `amountUsd`.
    */
   amountUsd?: string;

@@ -159,14 +159,16 @@ async function passkeyBegin(request: APIRequestContext): Promise<{ challengeId: 
   return body;
 }
 
-test('Function: syncWelcomePing — posted lookup is up', async ({ request }) => {
-  const res = await request.get('/invoices/posted');
-  expect(res.status()).toBe(503);
+test('Function: syncWelcomePing — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', { data: { text: 'hi' } });
+  expect(res.status()).toBe(401);
 });
 
-test('Function: accountWelcomed — posted lookup is up', async ({ request }) => {
-  const res = await request.get('/invoices/posted');
-  expect(res.status()).toBe(503);
+test('Function: accountWelcomed — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
+  request,
+}) => {
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: isWelcomeRecipient — welcome dry-run applies the shared rule', async ({
@@ -1882,37 +1884,24 @@ test('Function: resolveCandlesUrl — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
-test('Function: resolveSpendPing — default boot has no SPEND_URL', async ({ request }) => {
+test('Function: resolveSpendPing — default boot has no PAYOUT_SIGNER', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
-test('Function: HttpSpendPing — default boot has no SPEND_URL', async ({ request }) => {
+test('Function: HttpSpendPing — default boot has no PAYOUT_SIGNER', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
-test('Function: NoopSpendPing — default boot has no SPEND_URL', async ({ request }) => {
+test('Function: NoopSpendPing — default boot has no PAYOUT_SIGNER', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
 
-test('Function: decideSpendInstruction — POST /spend/daily-instruction unconfigured is 503', async ({
+test('Function: decideSpendInstruction — default boot has no PAYOUT_SIGNER', async ({
   request,
 }) => {
-  const res = await request.post('/spend/daily-instruction', {
-    data: { address: 'alice@walletofsatoshi.com' },
-  });
-  expect(res.status()).toBe(503);
-  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
-});
-
-test('Function: decideCliDailyInstruction — POST /spend/daily-instruction unconfigured is 503', async ({
-  request,
-}) => {
-  const res = await request.post('/spend/daily-instruction', {
-    data: { address: 'alice@walletofsatoshi.com' },
-  });
-  expect(res.status()).toBe(503);
-  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
 });
 
 test('Function: welcomeGiftPaidOnUtcDay — matches a welcome gift on the UTC day', async ({
@@ -2119,114 +2108,71 @@ test('Function: openBootStores — default boot has no DATABASE_URL and serves H
   expect(res.status()).toBe(200);
 });
 
-test('Function: invoiceRoutes — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
-});
-
-test('Function: spendInstructionRoutes — POST /spend/daily-instruction unconfigured is 503', async ({
+test('Function: InMemoryInvoiceStore — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
   request,
 }) => {
-  const res = await request.post('/spend/daily-instruction', {
-    data: { address: 'alice@walletofsatoshi.com' },
-  });
-  expect(res.status()).toBe(503);
-  expect(((await res.json()) as { error: string }).error).toBe('Spend invoices are not configured');
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
 });
 
-test('Function: checkSpendAuth — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: InMemoryInvoiceStore — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: requestGiftInvoice — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: decodeBolt11 — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: inspectBolt11 — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: isNip57Invoice — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: newInvoiceId — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: normalizeHex32 — POST /invoices/proof unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices/proof', {
-    data: { id: 'x', preimage: '11'.repeat(32) },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: preimageMatchesHash — POST /invoices/proof unconfigured is 503', async ({
+test('Function: requestGiftInvoice — POST /pay/:username/invoice for an unknown member is 404', async ({
   request,
 }) => {
-  const res = await request.post('/invoices/proof', {
-    data: { id: 'x', preimage: '11'.repeat(32) },
-  });
-  expect(res.status()).toBe(503);
+  const res = await request.post('/pay/:username/invoice', { data: { amountSats: 1 } });
+  expect(res.status()).toBe(404);
 });
 
-test('Function: NoopGiftRecorder — POST /invoices/proof unconfigured is 503', async ({
+test('Function: decodeBolt11 — POST /pay/:username/invoice for an unknown member is 404', async ({
   request,
 }) => {
-  const res = await request.post('/invoices/proof', {
-    data: { id: 'x', preimage: '11'.repeat(32) },
-  });
-  expect(res.status()).toBe(503);
+  const res = await request.post('/pay/:username/invoice', { data: { amountSats: 1 } });
+  expect(res.status()).toBe(404);
 });
 
-test('Function: SqlGiftRecorder — POST /invoices/proof unconfigured is 503', async ({
-  request,
-}) => {
-  const res = await request.post('/invoices/proof', {
-    data: { id: 'x', preimage: '11'.repeat(32) },
-  });
-  expect(res.status()).toBe(503);
+test('Function: inspectBolt11 — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', { data: { text: 'hi' } });
+  expect(res.status()).toBe(401);
 });
 
-test('Function: recipientHandleFromAddress — POST /invoices/proof unconfigured is 503', async ({
+test('Function: isNip57Invoice — POST /messages without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages', { data: { text: 'hi' } });
+  expect(res.status()).toBe(401);
+});
+
+test('Function: newInvoiceId — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
   request,
 }) => {
-  const res = await request.post('/invoices/proof', {
-    data: { id: 'x', preimage: '11'.repeat(32) },
-  });
-  expect(res.status()).toBe(503);
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: normalizeHex32 — default boot serves HTTP', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: preimageMatchesHash — default boot serves HTTP', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: NoopGiftRecorder — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
+  request,
+}) => {
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: SqlGiftRecorder — default boot has no DATABASE_URL', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: recipientHandleFromAddress — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
+  request,
+}) => {
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: serializeAccount — GET /debug/accounts listing is 200', async ({ request }) => {
@@ -3283,12 +3229,6 @@ test('Function: linkDailyRosterAccounts — default boot has no DATABASE_URL', a
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: withPayoutAddresses — GET /funding/daily-roster/document without SPEND_API_TOKEN is 503', async ({
-  request,
-}) => {
-  expect((await request.get('/funding/daily-roster/document')).status()).toBe(503);
-});
-
 test('Function: normalizeDailyRosterComment — POST /funding/daily-roster/comment without bearer is 401', async ({
   request,
 }) => {
@@ -3386,31 +3326,28 @@ test('Function: resolveRecoveryShareRequiredFrom — boots with a blank start da
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: recoveryShareRequired — GET /invoices/eligible unconfigured is 503', async ({
-  request,
-}) => {
-  expect((await request.get('/invoices/eligible?address=ada@127.0.0.1')).status()).toBe(503);
+test('Function: recoveryShareRequired — GET /me without bearer is 401', async ({ request }) => {
+  const res = await request.get('/me');
+  expect(res.status()).toBe(401);
 });
 test('Function: eligibleToday — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-// The payout gate decides only for a member with a verified wallet on a payout path; the spend
-// routes need SPEND_API_TOKEN and LNURL_SERVER_URL (both blank here), so the spend gate answers first.
-test('Function: inGrantProgramToday — GET /invoices/eligible unconfigured is 503', async ({
+// The payout gate decides only for a signed-in member with a verified wallet; the session gate
+// of POST /messages answers first here.
+test('Function: inGrantProgramToday — POST /messages without bearer is 401', async ({
   request,
 }) => {
-  const res = await request.get('/invoices/eligible?address=ada@127.0.0.1');
-  expect(res.status()).toBe(503);
-  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+  const res = await request.post('/messages', { data: { text: 'hi' } });
+  expect(res.status()).toBe(401);
 });
-test('Function: loadPayoutEligibility — GET /invoices/eligible unconfigured is 503', async ({
+test('Function: loadPayoutEligibility — POST /messages without bearer is 401', async ({
   request,
 }) => {
-  const res = await request.get('/invoices/eligible?address=ada@127.0.0.1');
-  expect(res.status()).toBe(503);
-  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+  const res = await request.post('/messages', { data: { text: 'hi' } });
+  expect(res.status()).toBe(401);
 });
-// The trial ping needs a staff session and a configured spend ping (SPEND_URL blank here).
+// The trial ping needs a staff session and a configured spend ping (PAYOUT_SIGNER unset here).
 test('Function: pingTodayMedia — POST /funding/trial without bearer is 401', async ({
   request,
 }) => {
@@ -4137,12 +4074,12 @@ test('Function: PostgresMemberHabitStore — GET /habits is public', async ({ re
   expect(res.status()).toBe(200);
 });
 
-// Needs SPEND_API_TOKEN and LNURL_SERVER_URL (both blank here): the spend gate answers first.
-test('Function: accountByReceivingAddress — GET /invoices/eligible unconfigured is 503', async ({
+// The Fond routes need PAYOUT_SIGNER=fond (unset here), so they answer 404 first.
+test('Function: accountByReceivingAddress — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
   request,
 }) => {
-  const res = await request.get('/invoices/eligible?address=ada@127.0.0.1');
-  expect(res.status()).toBe(503);
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
 });
 
 async function expectEmptySpot(request: APIRequestContext): Promise<void> {
@@ -5076,38 +5013,22 @@ test('Function: fondRoutes — GET /fond/payouts is 404 when PAYOUT_SIGNER is un
   expect(res.status()).toBe(404);
 });
 
-test('Function: issueGiftInvoice — POST /invoices unconfigured is 503', async ({ request }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
-});
-
-test('Function: proveGiftInvoice — POST /invoices/proof unconfigured is 503', async ({
+test('Function: issueGiftInvoice — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
   request,
 }) => {
-  const res = await request.post('/invoices/proof', {
-    data: { id: 'x', preimage: 'a'.repeat(64) },
-  });
-  expect(res.status()).toBe(503);
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
 });
 
-test('Function: settleProvenGift — POST /invoices/proof unconfigured is 503', async ({
+test('Function: settleProvenGift — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
   request,
 }) => {
-  const res = await request.post('/invoices/proof', {
-    data: { id: 'x', preimage: 'a'.repeat(64) },
-  });
-  expect(res.status()).toBe(503);
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: persistProvenGift — default boot serves HTTP', async ({ request }) => {
   const res = await request.get('/healthz');
-  expect(res.status()).toBe(200);
-});
-
-test('Function: HttpPayoutSink — default boot has no SPEND_URL', async ({ request }) => {
-  const res = await request.get('/info');
   expect(res.status()).toBe(200);
 });
 
@@ -5170,13 +5091,11 @@ test('Function: PostgresWalletTransferStore — default boot serves HTTP', async
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: InMemoryWelcomeInvoiceReservationStore — POST /invoices stops at unconfigured spend before reservation', async ({
+test('Function: InMemoryWelcomeInvoiceReservationStore — POST /fond/payouts/:id/invoice is 404 when PAYOUT_SIGNER is unset', async ({
   request,
 }) => {
-  const res = await request.post('/invoices', {
-    data: { address: 'alice@example.com', amountMsat: 1000 },
-  });
-  expect(res.status()).toBe(503);
+  const res = await request.post('/fond/payouts/:id/invoice');
+  expect(res.status()).toBe(404);
 });
 
 test('Function: PostgresWelcomeInvoiceReservationStore — default boot has no DATABASE_URL', async ({

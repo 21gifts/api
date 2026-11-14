@@ -1,8 +1,8 @@
 /**
  * Classify an Authorization header for the HTTP audit log.
  *
- * Debug and spend tokens are compared with the same constant-time helper as
- * the debug routes. Key tokens of the operator SSH key login go through
+ * The debug token is compared with the same constant-time helper as the
+ * debug routes. Key tokens of the operator SSH key login go through
  * {@link OperatorLogin.resolveBearer}. Session tokens go through
  * {@link resolveSession}.
  */
@@ -32,14 +32,14 @@ export interface RequestAuth {
 }
 
 /**
- * Classify `Authorization` as debug, spend, session, or none.
+ * Classify `Authorization` as debug, session, or none.
  *
  * `DEBUG_TOKEN` is `debug` without an operator. A valid key token of the SSH
  * key login is `debug` with the operator name. When `keyGrant` is given (the
  * grant resolved when the request arrived, or `null` for no key token), it is
  * used as is and the token row is not looked up again.
  *
- * @param args - Header, stores, clock, configured tokens, the optional key login, and the optional `keyGrant` carried from the request start.
+ * @param args - Header, stores, clock, the configured debug token, the optional key login, and the optional `keyGrant` carried from the request start.
  * @returns Auth kind, optional account id, and the operator name of a key token. Never returns the token.
  */
 export async function resolveRequestAuth(args: {
@@ -47,17 +47,12 @@ export async function resolveRequestAuth(args: {
   authStore: AuthStore;
   now: number;
   debugToken: string | undefined;
-  spendApiToken: string | undefined;
   operatorLogin?: OperatorLogin | undefined;
   keyGrant?: OperatorKeyGrant | null | undefined;
 }): Promise<RequestAuth> {
   const debugToken = args.debugToken?.trim() ?? '';
   if (debugToken !== '' && bearerMatchesDebugToken(debugToken, args.authorizationHeader)) {
     return { accountId: null, authKind: 'debug', operator: null };
-  }
-  const spendToken = args.spendApiToken?.trim() ?? '';
-  if (spendToken !== '' && bearerMatchesDebugToken(spendToken, args.authorizationHeader)) {
-    return { accountId: null, authKind: 'spend', operator: null };
   }
   const grant =
     args.keyGrant !== undefined
