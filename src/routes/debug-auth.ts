@@ -49,7 +49,10 @@ function loginBody(value: unknown): { challenge: string; signature: string } | n
  * `operator`, `level`, `keyFingerprint`, and `expiresAt`. Both answer 503
  * `Operator login is not configured` when the allowed-signers files or the
  * namespace were not loaded, and 429 `Too many requests` past the
- * per-address limit.
+ * per-address limit. Every answer carries `Cache-Control: no-store`. A `POST`
+ * refused before the signature check logs `debug.auth.login.refused` with
+ * reason `not_configured`, `rate_limited`, `body_too_large`, or
+ * `invalid_body`; later refusals are logged by `OperatorLogin.login`.
  *
  * @param deps - Login service, clock, and optional limiters.
  * @returns A Hono app serving `GET /challenge` and `POST /`.
