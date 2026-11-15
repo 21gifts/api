@@ -43,7 +43,10 @@ export interface FondPaidWorkerDeps {
   fetchImpl: FetchFn;
   /** Clock in epoch milliseconds. */
   now: () => number;
-  /** `FOND_USERNAME`; recorded as the paying wallet. */
+  /**
+   * `FOND_USERNAME`; recorded as the paying wallet and the author of the
+   * gift reply and the Moderators-group stipend line.
+   */
   fondUsername: string;
   /** Gift, forum, and group settlement collaborators. */
   actions: GiftActionDeps;

@@ -4685,6 +4685,7 @@ describe('settleProvenGift reply author', () => {
     const messageStore = uuidPostStore();
     const conversationStore = new InMemoryConversationStore();
     await seedGroupTrigger(conversationStore);
+    const recorded: GiftRecord[] = [];
     const target = invoice({
       id: 'fe'.repeat(16),
       messageId: POST_ID,
@@ -4700,6 +4701,11 @@ describe('settleProvenGift reply author', () => {
         now: () => 100,
         fetchImpl: happyFetch(),
         fundingStore: new InMemoryFundingStore(),
+        giftRecorder: {
+          recordOutbound: async (row) => {
+            recorded.push(row);
+          },
+        },
       },
       target,
       100,
@@ -4709,6 +4715,7 @@ describe('settleProvenGift reply author', () => {
       'tondo-fond',
     );
     expect(await messageStore.getById(spendGiftReplyId(target.id))).toBeUndefined();
+    expect(recorded).toHaveLength(1);
     expect(await conversationStore.getMessageById(spendGroupGiftId(target.id))).toBeUndefined();
     const events = parsedEvents(warn).map((event) => event['event']);
     expect(events).toContain('invoice.gift_reply.failed');

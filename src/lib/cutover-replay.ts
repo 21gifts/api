@@ -8,6 +8,7 @@
 import { earnsModeratorGroupPay } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
+import type { ConversationMessageRow } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { effectiveStatus, eligibleToday, utcDayKey, type FundingGrant } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
@@ -140,6 +141,29 @@ async function windowPosts(
   }
 }
 
+/**
+ * Whether a group row is a paid gift/stipend line rather than a member's own
+ * message. `attachSpendGroupGift` sets `giftForMessageId` on the stipend row;
+ * the live moderator ping never fires for such a row, so replay must not
+ * either, whatever account authored it.
+ *
+ * @param row - Conversation row from `listThreadPage`.
+ * @returns `true` when `giftForMessageId` is a non-empty string.
+ */
+function isGiftLine(row: ConversationMessageRow): boolean {
+  return typeof row.giftForMessageId === 'string' && row.giftForMessageId !== '';
+}
+
+/**
+ * Moderator-group messages in `[fromMs, toMs)`, paging back from `toMs`.
+ * Rows without a sender and gift/stipend lines (see {@link isGiftLine}) are
+ * not triggers.
+ *
+ * @param conversations - Conversation store.
+ * @param fromMs - Window start, inclusive.
+ * @param toMs - Window end, exclusive.
+ * @returns One `moderator` trigger per member message, oldest page last.
+ */
 async function windowGroupMessages(
   conversations: ConversationStore,
   fromMs: number,
@@ -158,7 +182,11 @@ async function windowGroupMessages(
       cursor,
     });
     for (const row of page) {
-      if (row.senderAccountId !== null && inWindow(row.createdAt.getTime(), fromMs, toMs)) {
+      if (
+        row.senderAccountId !== null &&
+        !isGiftLine(row) &&
+        inWindow(row.createdAt.getTime(), fromMs, toMs)
+      ) {
         triggers.push({
           trigger: 'moderator',
           eventId: row.id,

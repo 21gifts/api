@@ -435,7 +435,10 @@ export interface GiftActionDeps {
   store: InvoiceStore;
   /** Atomic welcome-exception entitlement leases. */
   welcomeReservations?: WelcomeInvoiceReservationStore;
-  /** Auth store for receiving address, passkey, platform, and recovery lookups. */
+  /**
+   * Auth store for receiving address, passkey, platform, and recovery
+   * lookups, and the Fond author lookup via `getAccountByUsername`.
+   */
   authStore: InvoiceRouteDeps['authStore'];
   /** Forum store for post, media, gift-reply, and group lookups. */
   messageStore: InvoiceRouteDeps['messageStore'];
