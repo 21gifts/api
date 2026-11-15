@@ -20,7 +20,7 @@ export type SpendGrantStatus = 'none' | 'pending' | 'trial' | 'admitted' | 'reje
  * @param input - Recipient address, the recipient's account id when known,
  *   ping kind, roster JSON, optional daily grant status, and optional
  *   same-UTC-day welcome flag.
- * @returns The amount and comment to POST, or a skip reason.
+ * @returns The amount and comment to deliver, or a skip reason.
  */
 export function decideSpendInstruction(input: {
   address: string;
