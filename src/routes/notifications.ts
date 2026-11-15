@@ -69,6 +69,22 @@ function tagsFromRows(rows: readonly NotificationRow[]): string[] {
   return tags;
 }
 
+/**
+ * Ids of `rows` that level `mentions` keeps for `recipientAccountId`; these
+ * rows serialize with `personal: true`.
+ *
+ * @param args - Rows, recipient, accounts, and parent notes, as for {@link notificationsMatchingLevel}.
+ * @returns The ids {@link notificationsMatchingLevel} keeps at level `mentions`.
+ */
+function personalRowIds(args: {
+  rows: readonly NotificationRow[];
+  recipientAccountId: string;
+  accounts: readonly { id: string; role: string; isPlatform?: boolean }[];
+  parentById: ReadonlyMap<string, MessageRow>;
+}): Set<string> {
+  return new Set(notificationsMatchingLevel({ ...args, level: 'mentions' }).map((row) => row.id));
+}
+
 /** Optional `endpoint` string from a JSON object body. */
 function endpointFromBody(body: unknown): string | undefined {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -225,9 +241,16 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
             logEvent('notifications.hidden.purge_failed');
           }
         }
-        const notifications: PublicNotification[] = kept
-          .slice(0, NOTIFICATION_LIST_LIMIT)
-          .map(serializeNotification);
+        const listed = kept.slice(0, NOTIFICATION_LIST_LIMIT);
+        const personal = personalRowIds({
+          rows: listed,
+          recipientAccountId: account.id,
+          accounts,
+          parentById,
+        });
+        const notifications: PublicNotification[] = listed.map((row) =>
+          serializeNotification(row, personal.has(row.id)),
+        );
         const unreadCount = kept.filter((row) => row.readAt === null).length;
         return c.json({ notifications, unreadCount }, 200);
       } catch {
@@ -346,7 +369,22 @@ export function notificationRoutes(deps: NotificationRouteDeps): Hono {
             });
           }
         }
-        return c.json(serializeNotification(outcome.row), 200);
+        const row = outcome.row;
+        let personal = false;
+        try {
+          const parent = await deps.messages.getById(row.parentId);
+          // notificationsMatchingLevel does not read `accounts`.
+          personal = personalRowIds({
+            rows: [row],
+            recipientAccountId: account.id,
+            accounts: [],
+            parentById: new Map(parent === undefined ? [] : [[row.parentId, parent]]),
+          }).has(row.id);
+        } catch {
+          // The row is already stamped; a failed lookup answers personal false for every type.
+          logEvent('notifications.read.personal_failed');
+        }
+        return c.json(serializeNotification(row, personal), 200);
       } catch {
         logEvent('notifications.read.failed');
         return c.json({ error: 'Notifications are unavailable' }, 503);
