@@ -2518,7 +2518,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 - **Purpose:** Classify Authorization as `debug`, `spend`, `session`, or `none`. The spend token is compared with `checkSpendAuth`, the check of the spend routes. A key token of the SSH key login (`OperatorLogin.resolveBearer`) is `debug` with its operator name; it is the only bearer classed `debug`. Session goes through `resolveSession`. Never returns the token.
 - **Inputs:** Header, `AuthStore`, `now`, optional spend token (`SPEND_API_TOKEN`), optional `operatorLogin`, optional `keyGrant` (the key-token grant resolved when the request arrived, or `null` for no key token; when given it is used as is and the token row is not looked up again).
-- **Returns / side effects:** `{ accountId, authKind, operator }`. `operator` is the operator name for a key token and `null` otherwise. A rejected `operator_token` or session lookup propagates as a rejection; `requestLog` catches it and stores `authKind: 'none'`.
+- **Returns / side effects:** `{ accountId, authKind, operator }`. `operator` is the operator name for a key token and `null` otherwise. A rejected `operator_token` or session lookup propagates as a rejection. `requestLog` resolves the key grant itself when the request arrives and passes it in, so its call never repeats the `operator_token` lookup: a rejected key lookup there logs `api_log.key_lookup.failed` and the row is classified without a key token, and a rejected session lookup is caught at the audit write and stored as `authKind: 'none'`.
 - **Used by:** `requestLog`.
 
 ## Function: debugDbRoutes
