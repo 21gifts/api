@@ -6,6 +6,7 @@ import {
   activeShopDays,
   activeShopList,
   activeShops,
+  assignedShopAccountIds,
   type ShopActivityLookups,
 } from '@/lib/shop-activity';
 
@@ -31,6 +32,19 @@ function charge(partial: Partial<PosChargeRef> = {}): PosChargeRef {
     ...partial,
   };
 }
+
+describe('assignedShopAccountIds', () => {
+  it('collects unique accounts from live assigned notes with the shop hashtag', () => {
+    expect(
+      assignedShopAccountIds([
+        shop({ id: 'one', accountId: 'shop' }),
+        shop({ id: 'two', accountId: 'shop' }),
+        shop({ id: 'blank', accountId: '' }),
+        shop({ id: 'long', accountId: 'other', text: 'Cafe #21GiftsShopping' }),
+      ]),
+    ).toEqual(new Set(['shop']));
+  });
+});
 
 describe('activeShopDays', () => {
   it('returns 30 zero-filled UTC days ending on today, oldest first', () => {
