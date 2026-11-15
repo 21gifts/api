@@ -7675,6 +7675,64 @@ the ingest clock so future-dated events cannot pin thread order; missing or
 non-numeric `created_at` retains the existing ingest-time storage fallback.
 Other unknown pubkeys remain on Nostr only.
 
+Inbound direct messages (kind:4 and NIP-17 kind:1059 gift wraps `#p`-tagged to a
+member or platform pubkey) are read with `since` = now minus
+`INBOUND_DM_SINCE_S` (three days), because NIP-59 gift wraps date `created_at`
+up to two days back; event-id dedupe is unchanged. Member↔member and
+member↔platform messages are stored as before. A sender pubkey that is not a
+21.gifts account is stored on the member↔Damus thread only when all of these
+hold: it is not blocked (the same `nostr_blocked_pubkey` source as replies, read
+at pass start and checked again per message); it is a known contact of the
+recipient, meaning it is recorded in `nostr_zapper` or the recipient's
+member↔Damus thread with that pubkey already holds a message the member sent;
+and a per-pubkey and global sliding limit accepts it (the external reply
+windows, with a budget of its own, so direct messages and forum replies do not
+consume each other's budget). Anything else is skipped silently: no thread, no
+message, no push, no log. The budget is released when nothing is stored after
+it was taken. A kind:4 sender is the envelope author, so it is decided before
+the decrypt; a gift wrap's sender is known only after the unwrap, and the
+worker keeps the sender of a skipped wrap (never its text) for the query
+window, so later passes decide it again without a second unwrap. A skipped
+wrap is stored on a later pass once its sender becomes a known contact. A
+message whose account secret is missing is not remembered and is tried again
+on the next pass. The memory holds at most 10 000 entries per conversation
+store; when full it takes no new ones, so the remembered ones stay hits. An
+event whose `created_at` is later than now plus `EXTERNAL_REPLY_FUTURE_SKEW_MS`
+(10 minutes, the clock skew allowed for external replies) is left for a later
+pass: it is not decrypted, stored, or remembered, so future-dated wraps cannot
+occupy that memory. The `since` bound is checked on each received event as
+well: an event older than now minus `INBOUND_DM_SINCE_S` is skipped the same
+way, even when a relay returns it.
+
+Stored member↔Damus threads are brought in line with this rule once. On the
+first SQL boot that carries it, `removeUnadmittedDamusThreads` removes every
+`member_damus` thread whose counterpart this rule would not admit as a known
+contact: the thread holds no message sent by the member, and its counterpart
+pubkey is not recorded in `nostr_zapper`. It is removed with its messages, read
+markers, extra photos, translations, the `conversation` push outbox rows of its
+messages, and the invoice attempts that name the thread or one of its messages.
+`member_damus` threads in which the member sent at least one message or whose
+counterpart is an entitled external zapper, and all member↔member,
+member↔platform, and Moderators-group threads, stay. Each affected member with
+a push subscription gets one dismiss push for the tags `conversation:<id>` of
+the removed threads, carrying the badge count after the removal; it is written
+in the same transaction as the deletes. The run is recorded in `app_setting`
+(`member_damus_cleanup`) in that transaction too, so later boots remove nothing
+and a thread stored after the run stays; any failure, a dismiss write
+included, rolls everything back and the next boot tries again. The step
+runs only after the boot's external-zapper backfill completed without an error
+and below its 10,000-receipt ceiling; otherwise the boot logs
+`conversations.damus_cleanup.deferred`, writes no marker, and a later boot
+runs it. Inside the transaction `nostr_zapper` is locked against new
+entitlements and read again, so a counterpart that becomes a zapper during the
+run keeps its thread. Every deleted
+and inserted row is recorded in `db_change`. The boot logs one
+`conversations.damus_cleanup` event with the number of removed threads and
+messages. `GET /conversations` no longer lists a removed thread or counts it in
+`unreadCount`. A relay can return an event of a removed thread again within
+the query window; event-id dedupe no longer finds it, and the admission rule
+above skips it, because its sender is not a known contact.
+
 Known limitation: if the payer's wallet publishes no kind:9735 receipt, the
 external zapper gains no website visibility. Operator manual settlement
 covers member-created forum invoices only; it cannot create an external

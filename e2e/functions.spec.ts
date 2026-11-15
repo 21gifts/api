@@ -4512,6 +4512,12 @@ test('Function: repairWalletPaymentPairs — needs DATABASE_URL; default boot is
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
+test('Function: removeUnadmittedDamusThreads — needs DATABASE_URL; default boot is healthy', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
 test('Function: migrateWalletSchema — needs DATABASE_URL; default boot stores in memory (200)', async ({
   request,
 }) => {

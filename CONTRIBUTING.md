@@ -135,7 +135,7 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `PostgresTrustStore`, `migrateTrustSchema`,
 `PostgresFundingStore`, `migrateFundingSchema`,
 `PostgresDailyRosterStore`, `migrateDailyRosterSchema`, `linkDailyRosterAccounts`,
-`PostgresConversationStore`, `migrateConversationSchema`,
+`PostgresConversationStore`, `migrateConversationSchema`, `removeUnadmittedDamusThreads`,
 `PostgresPushStore`, `migratePushSchema`,
 `PostgresNotificationStore`, `migrateNotificationSchema`, `PostgresApiLogStore`,
 `PostgresDiagnosticStore`, `migrateDiagnosticSchema`,
