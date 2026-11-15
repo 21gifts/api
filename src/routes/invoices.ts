@@ -101,7 +101,7 @@ function deterministicUuidFromHex(hex: string): string {
 
 /**
  * Deterministic gift-reply id for a gift invoice so a retry of the same
- * proof is idempotent on `message.id`.
+ * settlement is idempotent on `message.id`.
  *
  * @param invoiceId - Gift invoice id.
  * @returns UUID derived from SHA-256 of the spend-gift prefix and invoice id.
@@ -113,7 +113,7 @@ function spendGiftReplyId(invoiceId: string): string {
 
 /**
  * Deterministic Moderators-group stipend message id for a gift invoice so
- * a retry of the same proof is idempotent on `conversation_message.id`.
+ * a repeated settlement is idempotent on `conversation_message.id`.
  *
  * @param invoiceId - Gift invoice id.
  * @returns UUID derived from SHA-256 of `21gifts-spend-group-gift:` and invoice id.
@@ -330,7 +330,7 @@ function welcomeReservationsFor(deps: GiftActionDeps): WelcomeInvoiceReservation
  *
  * @param deps - Action collaborators.
  * @param invoice - Proven invoice.
- * @param paidAtMs - Proof clock.
+ * @param paidAtMs - Settlement clock.
  * @param fiat - Snapshot for the gift row.
  * @param sourceWallet - Paying wallet label (the Fond username).
  * @param kindOverride - Decided kind that overrides the invoice-derived kind.
@@ -379,7 +379,7 @@ export async function persistProvenGift(
  *
  * @param deps - Action collaborators.
  * @param invoice - Proven invoice.
- * @param paidAtMs - Proof clock.
+ * @param paidAtMs - Settlement clock.
  * @param fiat - Same snapshot as the gift row and forum credit.
  */
 async function attachSpendGiftReply(
@@ -478,7 +478,7 @@ async function attachSpendGiftReply(
  *
  * @param deps - Action collaborators.
  * @param invoice - Proven gift invoice.
- * @param paidAtMs - Proof clock, epoch milliseconds.
+ * @param paidAtMs - Settlement clock, epoch milliseconds.
  * @param fiat - Same snapshot as the gift row and forum credit.
  */
 async function attachSpendGroupGift(
@@ -551,11 +551,11 @@ async function attachSpendGroupGift(
 /**
  * Persist every side effect of a proven invoice (gift row, forum credit,
  * moderator-group stipend). Attach failures are logged inside the helpers and
- * never block the paid answer.
+ * never block the settlement.
  *
  * @param deps - Action collaborators.
  * @param invoice - Proven invoice fields from the stored row.
- * @param paidAtMs - Proof clock.
+ * @param paidAtMs - Settlement clock.
  * @param sourceWallet - Paying wallet label.
  * @param fiat - Payment-time snapshot shared by all three writes.
  * @param kindOverride - Durable payout kind when the caller stores one.
