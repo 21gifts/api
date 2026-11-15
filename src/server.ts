@@ -564,7 +564,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   routes and backs `/debug/logins` and `DELETE /debug/sessions`).
  * @throws {@link Error}
  * When `LOGINS_OPEN_DEFAULT` is set to a value other than `open` or `closed`,
- * or `RECOVERY_SHARE_REQUIRED_FROM` to anything but an ISO date.
+ * `RECOVERY_SHARE_REQUIRED_FROM` to anything but an ISO date, or
+ * `PAYOUT_SIGNER` to anything but `spend` or `fond` while no `payoutSigner`
+ * is injected.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {

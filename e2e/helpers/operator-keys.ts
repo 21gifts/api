@@ -44,7 +44,7 @@ function publicKey(name: string): string {
  * workers find the same keys.
  *
  * @returns Paths of the signers directory and of each private key.
- * @throws When the key directory cannot be removed, created, or written, or `ssh-keygen` fails.
+ * @throws When the key directory cannot be removed, created, written, or read, or `ssh-keygen` fails.
  */
 export function e2eOperatorKeys(): E2eOperatorKeys {
   const keys: E2eOperatorKeys = {
