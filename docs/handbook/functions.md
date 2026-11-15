@@ -1377,7 +1377,7 @@
 - **Purpose:** Timing-safe compare of the spend-worker Bearer token to `SPEND_API_TOKEN`.
 - **Inputs:** Configured token (may be unset) and the raw `Authorization` header.
 - **Returns / side effects:** `unconfigured` | `unauthorized` | `ok`. Does not throw on length mismatch.
-- **Used by:** `invoiceRoutes`.
+- **Used by:** `invoiceRoutes`, `fundingRoutes` and `spendInstructionRoutes` (the spend Bearer), and `resolveRequestAuth` (the `spend` class of `api_log`).
 
 ## Function: isWelcomeRecipient
 
