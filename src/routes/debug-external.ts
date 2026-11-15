@@ -18,7 +18,7 @@ export interface DebugExternalRouteDeps {
 /**
  * Build `GET /debug/external-pubkeys`.
  *
- * @param deps - Message store and optional operator token.
+ * @param deps - Message store and optional SSH key login.
  * @returns A Hono app with the bearer-gated external identity list.
  */
 export function debugExternalRoutes(deps: DebugExternalRouteDeps): Hono {

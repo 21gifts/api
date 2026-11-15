@@ -41,6 +41,7 @@ export interface RequestAuth {
  *
  * @param args - Header, stores, clock, the spend token, the optional key login, and the optional `keyGrant` carried from the request start.
  * @returns Auth kind, optional account id, and the operator name of a key token. Never returns the token.
+ * @throws Rejects when the operator token store or the session store rejects a lookup.
  */
 export async function resolveRequestAuth(args: {
   authorizationHeader: string | undefined;

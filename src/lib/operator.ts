@@ -45,6 +45,7 @@ export const OPERATOR_LEVEL: unique symbol = Symbol('operatorLevel');
  * @param tokens - Operator credentials the route accepts.
  * @param authorizationHeader - Raw `Authorization` header, or `undefined`.
  * @returns `true` when the granted level is at least `level`, otherwise the refusal.
+ * @throws Rejects when the operator token store rejects the lookup of a key token.
  */
 export async function checkOperator(
   level: OperatorLevel,

@@ -397,7 +397,7 @@ export async function requireStaff(
 /**
  * Gate for the staff GET routes: an operator token or a staff session.
  *
- * @param deps - Route collaborators (operator tokens and auth store).
+ * @param deps - Route collaborators (SSH key login and auth store).
  * @param header - Raw `Authorization` header.
  * @returns The reading account id (`null` for an operator token), otherwise
  *   the 401/403 error.

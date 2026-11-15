@@ -44,6 +44,7 @@ function publicKey(name: string): string {
  * workers find the same keys.
  *
  * @returns Paths of the signers directory and of each private key.
+ * @throws When a file of the key directory cannot be written or `ssh-keygen` fails.
  */
 export function e2eOperatorKeys(): E2eOperatorKeys {
   const keys: E2eOperatorKeys = {

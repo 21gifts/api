@@ -224,7 +224,7 @@ interface RequestLogCapture {
  * Auth failure still stores `authKind: 'none'`. A store failure logs
  * `api_log.write.failed` and does not throw.
  *
- * @param deps - Audit store, auth store, tokens, and optional clock.
+ * @param deps - Audit store, auth store, spend token, optional key login, and optional clock.
  * @param captured - Method, path, status, duration, and client metadata.
  * @returns Resolves when the write has finished or failed.
  */
@@ -286,7 +286,7 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
  * costs no lookup there. A failed lookup logs `api_log.key_lookup.failed`
  * and is not repeated: the row is then classified without a key token.
  *
- * @param deps - Audit store, auth store, tokens, and optional clock.
+ * @param deps - Audit store, auth store, spend token, optional key login, and optional clock.
  * @returns Middleware that emits `http.request` with method, path, status, and ms.
  */
 export function requestLog(deps: RequestLogDeps): MiddlewareHandler {

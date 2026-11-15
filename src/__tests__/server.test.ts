@@ -259,7 +259,7 @@ describe('createApp', () => {
     }
   });
 
-  it('mounts the read-only wallet route before the write-token debug group', async () => {
+  it('mounts the read-only wallet route before the operator-gated /debug/accounts group', async () => {
     const keys = await seededOperatorLogin();
     const authStore = new InMemoryAuthStore();
     const accountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';

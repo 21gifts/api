@@ -34,7 +34,7 @@ export interface GrantContinuationRouteDeps {
  * reads it without a session, because the body holds only counts.
  * This does not serve the public 30-day series.
  *
- * @param deps - Auth store, clock, shop notes, POS charges, and operator tokens.
+ * @param deps - Auth store, clock, shop notes, POS charges, and the optional SSH key login.
  * @returns A Hono app with `GET /`.
  */
 export function grantContinuationRoutes(deps: GrantContinuationRouteDeps): Hono {
