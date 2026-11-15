@@ -1,7 +1,6 @@
 import { expect, type APIRequestContext } from '@playwright/test';
 import { operatorHeaders } from './operator-keys';
 
-/** Operator headers configured by the Playwright web server. */
 /**
  * Create a moderator account and return its authenticated request headers and id.
  *
