@@ -32,8 +32,13 @@ import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { NOT_PAYABLE, serializeMessage, unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
 import { migrateBannerSchema } from '@/lib/banner-store';
-import { migrateConversationSchema } from '@/lib/conversation-store';
-import { migrateNotificationSchema } from '@/lib/notification-store';
+import {
+  DAMUS_THREAD_CLEANUP_KEY,
+  migrateConversationSchema,
+  PostgresConversationStore,
+} from '@/lib/conversation-store';
+import { removeUnadmittedDamusThreads } from '@/lib/conversation-push';
+import { migrateNotificationSchema, PostgresNotificationStore } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushOutboxRow } from '@/lib/push-store';
 import { migrateTrustSchema } from '@/lib/trust-store';
 import { PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
@@ -2823,6 +2828,307 @@ describe('PostgresAuthStore wallet intro seen', () => {
   });
 });
 
+describe('PostgresConversationStore memberWroteToDamus', () => {
+  test('is true only when the member sent in that member_damus thread', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateConversationSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const store = new PostgresConversationStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const member = crypto.randomUUID();
+      await auth.createAccount({
+        id: member,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      const wrote = hex64();
+      const inboundOnly = hex64();
+      const now = new Date();
+      const row = (conversationId: string, senderAccountId: string | null) => ({
+        id: crypto.randomUUID(),
+        conversationId,
+        text: 'hi',
+        createdAt: now,
+        senderAccountId,
+        senderPubkey: null,
+        name: 'n',
+        actorAccountId: senderAccountId,
+        actorName: '',
+        eventId: null,
+        nostrPublishState: 'skipped' as const,
+        nostrEvent: null,
+        claimedUntil: null,
+        sats: 0,
+      });
+      expect(await store.memberWroteToDamus(member, wrote)).toBe(false);
+      const wroteThread = await store.openMemberDamus(member, wrote, now);
+      expect(await store.memberWroteToDamus(member, wrote)).toBe(false);
+      await store.appendMessage(row(wroteThread.id, member));
+      expect(await store.memberWroteToDamus(member, wrote.toUpperCase())).toBe(true);
+      const inboundThread = await store.openMemberDamus(member, inboundOnly, now);
+      await store.appendMessage(row(inboundThread.id, null));
+      expect(await store.memberWroteToDamus(member, inboundOnly)).toBe(false);
+      expect(await store.memberWroteToDamus(crypto.randomUUID(), wrote)).toBe(false);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('removeUnadmittedDamusThreads on Postgres', () => {
+  test('removes Damus threads without a member message with their rows, once', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migrateConversationSchema(client);
+      await migratePushSchema(client);
+      await migrateNotificationSchema(client);
+      await migrateLoginGateSchema(client);
+      await client.execute('DELETE FROM app_setting WHERE key = $1', [DAMUS_THREAD_CLEANUP_KEY]);
+      const auth = new PostgresAuthStore(client);
+      const conversations = new PostgresConversationStore(client);
+      const push = new PostgresPushStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const account = async (): Promise<string> => {
+        const id = crypto.randomUUID();
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+        return id;
+      };
+      const member = await account();
+      const other = await account();
+      const platform = await account();
+      await push.upsertSubscription({
+        endpoint: `https://push.example/${member}`,
+        accountId: member,
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(),
+        sessionToken: 'session',
+      });
+      const now = new Date();
+      const row = (conversationId: string, senderAccountId: string | null) => ({
+        id: crypto.randomUUID(),
+        conversationId,
+        text: 'hi',
+        createdAt: now,
+        senderAccountId,
+        senderPubkey: null,
+        name: 'n',
+        actorAccountId: senderAccountId,
+        actorName: '',
+        eventId: `${hex64()}`,
+        nostrPublishState: 'skipped' as const,
+        nostrEvent: null,
+        claimedUntil: null,
+        sats: 0,
+      });
+      const photo = { contentType: 'image/jpeg' as const, bytes: new Uint8Array([1, 2, 3]) };
+
+      const inbound = await conversations.openMemberDamus(member, hex64(), now);
+      const inboundA = row(inbound.id, null);
+      const inboundB = row(inbound.id, null);
+      await conversations.appendMessage(inboundA, photo, [photo]);
+      await conversations.appendMessage(inboundB);
+      await conversations.markRead(inbound.id, member, now);
+      await client.execute(
+        `INSERT INTO conversation_message_translation
+           (message_id, target_lang, source_sha256, translated_text, created_at)
+         VALUES ($1, 'de', 'x', 'hallo', $2)`,
+        [inboundA.id, now],
+      );
+      const outboxRow = (messageId: string): PushOutboxRow => ({
+        id: crypto.randomUUID(),
+        accountId: member,
+        type: 'conversation',
+        messageId,
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        finishedAt: null,
+        createdAt: now,
+        deliveredEndpoints: [],
+        skipEndpoints: [],
+      });
+      const removedPush = outboxRow(inboundA.id);
+      await push.enqueue(removedPush);
+      const invoiceId = crypto.randomUUID();
+      await client.execute(
+        `INSERT INTO message_invoice
+           (id, created_at, message_id, payer_account_id, author_account_id, amount_sats,
+            result, http_status, conversation_id)
+         VALUES ($1, $2, $3, $4, $3, 21, 'no_author', 400, $5)`,
+        [invoiceId, now, '00000000-0000-0000-0000-000000000000', member, inbound.id],
+      );
+      const empty = await conversations.openMemberDamus(member, hex64(), now);
+
+      const wrote = await conversations.openMemberDamus(member, hex64(), now);
+      const wroteInbound = row(wrote.id, null);
+      await conversations.appendMessage(wroteInbound, photo, [photo]);
+      await conversations.appendMessage(row(wrote.id, member));
+      await conversations.markRead(wrote.id, member, now);
+      const keptPush = outboxRow(wroteInbound.id);
+      await push.enqueue(keptPush);
+      const pair = await conversations.openMemberMember(member, other, now);
+      await conversations.appendMessage(row(pair.id, other));
+      const ticket = await conversations.openMemberPlatform(member, platform, now);
+      await conversations.appendMessage(row(ticket.id, platform));
+      const group = await conversations.ensureModeratorGroup(platform, now);
+      const messages = new PostgresMessageStore(client);
+      const zapperPubkey = hex64();
+      await messages.recordZapper(zapperPubkey.toUpperCase(), hex64(), now);
+      const zapper = await conversations.openMemberDamus(member, zapperPubkey, now);
+      await conversations.appendMessage(row(zapper.id, null));
+      const txStores = (tx: SqlClient) => ({
+        conversations: new PostgresConversationStore(tx),
+        pushStore: new PostgresPushStore(tx),
+        notifications: new PostgresNotificationStore(tx),
+      });
+
+      const count = async (text: string, params: readonly unknown[]): Promise<number> =>
+        Number((await client.query<{ n: string | number }>(text, params))[0]?.n ?? 0);
+      const threadsLeft = async (ids: readonly string[]): Promise<number> =>
+        count('SELECT count(*) AS n FROM conversation WHERE id = ANY($1::uuid[])', [
+          postgresTextArrayLiteral(ids),
+        ]);
+      const rowsOf = async (threadId: string): Promise<number[]> => [
+        await count('SELECT count(*) AS n FROM conversation_message WHERE conversation_id = $1', [
+          threadId,
+        ]),
+        await count('SELECT count(*) AS n FROM conversation_read WHERE conversation_id = $1', [
+          threadId,
+        ]),
+        await count(
+          `SELECT count(*) AS n FROM conversation_message_extra_photo e
+           JOIN conversation_message m ON m.id = e.message_id WHERE m.conversation_id = $1`,
+          [threadId],
+        ),
+      ];
+      expect(await rowsOf(inbound.id)).toEqual([2, 1, 1]);
+
+      const failed = await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        notifications: new PostgresNotificationStore(client),
+        zappers: messages,
+        auth,
+        nowMs: now.getTime(),
+        storesFor: (tx) => {
+          const stores = txStores(tx);
+          stores.pushStore.enqueue = async () => {
+            throw new Error('push outbox unavailable');
+          };
+          return stores;
+        },
+      });
+      expect(failed).toEqual({ threads: 0, messages: 0 });
+      expect(await threadsLeft([inbound.id, empty.id])).toBe(2);
+      expect(await rowsOf(inbound.id)).toEqual([2, 1, 1]);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [removedPush.id]),
+      ).toBe(1);
+      expect(
+        await count('SELECT count(*) AS n FROM app_setting WHERE key = $1', [
+          DAMUS_THREAD_CLEANUP_KEY,
+        ]),
+      ).toBe(0);
+
+      // The zapper snapshot read before the transaction is empty here, as if the
+      // entitlement was recorded after it; the check inside the transaction keeps the thread.
+      const first = await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        notifications: new PostgresNotificationStore(client),
+        zappers: { listZapperPubkeys: async () => [] },
+        auth,
+        nowMs: now.getTime(),
+        storesFor: txStores,
+      });
+      expect(first.threads).toBeGreaterThanOrEqual(2);
+      expect(first.messages).toBeGreaterThanOrEqual(2);
+
+      expect(await threadsLeft([inbound.id, empty.id])).toBe(0);
+      expect(await rowsOf(inbound.id)).toEqual([0, 0, 0]);
+      expect(
+        await count(
+          'SELECT count(*) AS n FROM conversation_message_translation WHERE message_id = $1',
+          [inboundA.id],
+        ),
+      ).toBe(0);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [removedPush.id]),
+      ).toBe(0);
+      expect(
+        await count('SELECT count(*) AS n FROM message_invoice WHERE id = $1', [invoiceId]),
+      ).toBe(0);
+      expect(await threadsLeft([wrote.id, pair.id, ticket.id, group.id, zapper.id])).toBe(5);
+      expect(await rowsOf(zapper.id)).toEqual([1, 0, 0]);
+      expect(await rowsOf(wrote.id)).toEqual([2, 1, 1]);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [keptPush.id]),
+      ).toBe(1);
+      expect(await conversations.unreadCount(member, false, platform)).toBe(3);
+      const dismiss = await client.query<{ payload: string }>(
+        `SELECT payload FROM push_outbox WHERE account_id = $1 AND type = 'dismiss'`,
+        [member],
+      );
+      expect(dismiss).toHaveLength(1);
+      const dismissPayload = JSON.parse(dismiss[0]?.payload ?? '{}') as {
+        tags: string[];
+        unreadCount: number;
+      };
+      expect(dismissPayload.tags.sort()).toEqual(
+        [`conversation:${inbound.id}`, `conversation:${empty.id}`].sort(),
+      );
+      expect(dismissPayload.unreadCount).toBe(3);
+      expect(
+        await count('SELECT count(*) AS n FROM app_setting WHERE key = $1', [
+          DAMUS_THREAD_CLEANUP_KEY,
+        ]),
+      ).toBe(1);
+
+      const later = await conversations.openMemberDamus(member, hex64(), now);
+      await conversations.appendMessage(row(later.id, null));
+      expect(
+        await removeUnadmittedDamusThreads({
+          conversations,
+          pushStore: push,
+          zappers: messages,
+          auth,
+          nowMs: now.getTime(),
+          storesFor: txStores,
+        }),
+      ).toEqual({ threads: 0, messages: 0 });
+      expect(await threadsLeft([later.id, wrote.id, pair.id, ticket.id, group.id, zapper.id])).toBe(
+        6,
+      );
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore heart amount', () => {
   test('an update without heartSats keeps 21 and a provided 5 replaces it', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
@@ -3703,6 +4009,255 @@ describe('POST /me/wallet/counterparties sources in Postgres', () => {
         previousOwnerId,
         claimantId,
       ]);
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('GET /pos received without a till charge in Postgres', () => {
+  test('lists observed receipts that settled no open or paid charge of the own account', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl, { max: 1 });
+    const hex64 = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    const shopId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const shopKey = `02${hex64()}`;
+    const previousKey = `03${hex64()}`;
+    const payerKey = `02${hex64()}`;
+    const mergedKey = `03${hex64()}`;
+    const prefix = crypto.randomUUID();
+    const id = (name: string): string => `${prefix}-${name}`;
+    const now = Date.parse('2026-11-12T12:00:00.000Z');
+    const at = (minutes: number): Date => new Date(now - minutes * 60_000);
+    const hashA = hex64();
+    const hashB = hex64();
+    const hashC = hex64();
+    const chargeIds = {
+      paidSpark: crypto.randomUUID(),
+      cancelledSpark: crypto.randomUUID(),
+      pendingLn: crypto.randomUUID(),
+      expiredLn: crypto.randomUUID(),
+      unknownLn: crypto.randomUUID(),
+    };
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migrateWalletSchema(client);
+      await migratePosSchema(client);
+      const auth = new PostgresAuthStore(client);
+      for (const accountId of [shopId, otherId]) {
+        await auth.createAccount({
+          id: accountId,
+          linkingKey: null,
+          role: 'verified',
+          name: null,
+          username: `tr_${accountId.replaceAll('-', '').slice(0, 12)}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+      await client.execute(
+        `UPDATE account SET spark_pubkey = $2, spark_pubkey_verified_at = now() WHERE id = $1`,
+        [shopId, shopKey],
+      );
+      await client.execute(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, $4)`,
+        [shopId, previousKey, `spark1${'q'.repeat(62)}`, at(60 * 48)],
+      );
+      const charge = async (
+        chargeId: string,
+        status: string,
+        sparkInvoice: string | null,
+        paidAt: Date | null,
+        hashes: Array<[string, Date]>,
+      ): Promise<void> => {
+        await client.execute(
+          `INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice)
+           VALUES ($1, $2, 21, $3, $4, $5, $6, $7)`,
+          [chargeId, shopId, status, at(60), at(55), paidAt, sparkInvoice],
+        );
+        for (const [hash, createdAt] of hashes) {
+          await client.execute(
+            `INSERT INTO pos_charge_invoice (payment_hash, charge_id, created_at) VALUES ($1, $2, $3)`,
+            [hash, chargeId, createdAt],
+          );
+        }
+      };
+      const sparkPaid = `spark1${prefix.replaceAll('-', '')}paid`;
+      const sparkCancelled = `spark1${prefix.replaceAll('-', '')}cancelled`;
+      await charge(chargeIds.paidSpark, 'paid', sparkPaid, at(9), []);
+      await charge(chargeIds.cancelledSpark, 'cancelled', sparkCancelled, null, []);
+      await charge(chargeIds.pendingLn, 'pending', null, null, [[hashA, at(200)]]);
+      await charge(chargeIds.expiredLn, 'expired', null, null, [[hashB, at(16)]]);
+      // Paid over Lightning, settling payment not reported: lifetime 45..25 minutes ago with the allowance.
+      await charge(chargeIds.unknownLn, 'paid', null, at(30), [[hashC, at(40)]]);
+
+      const time = new Date(now);
+      const wallet = new PostgresWalletStore(client);
+      const report = (name: string, paymentHash: string, direction: 'in' | 'out' = 'in') => ({
+        accountId: shopId,
+        paymentId: id(name),
+        direction,
+        status: 'completed' as const,
+        amountSats: 21,
+        feeSats: 0,
+        paidAt: time,
+        method: 'lightning',
+        paymentHash,
+        invoice: null,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'unknown' as const,
+        counterpartyAccountId: null,
+        firstSeenAt: time,
+        updatedAt: time,
+      });
+      await wallet.upsertPayments([
+        report('ln-pending', hashA.toUpperCase()),
+        report('ln-expired', hashB),
+        report('ln-out-report', hashA, 'out'),
+      ]);
+
+      const transfers = new PostgresWalletTransferStore(client);
+      const receipt = (
+        name: string,
+        minutes: number,
+        extra: Partial<WalletTransferRecord> = {},
+      ): WalletTransferRecord => ({
+        accountId: shopId,
+        walletPubkey: shopKey,
+        transferId: id(name),
+        direction: 'in',
+        type: 'preimage_swap',
+        status: 'completed',
+        amountSats: 21,
+        counterpartyPubkey: payerKey,
+        counterpartyPubkeys: [payerKey],
+        sparkInvoice: null,
+        transferCreatedAt: at(minutes),
+        transferUpdatedAt: null,
+        seenAt: time,
+        ...extra,
+      });
+      for (const row of [
+        receipt('ln', 10, { amountSats: 2100 }),
+        receipt('spark', 20, { type: 'transfer' }),
+        receipt('both', 21, { amountSats: 10 }),
+        receipt('both', 22, { walletPubkey: previousKey, amountSats: 11, type: 'transfer' }),
+        receipt('old', 24 * 60 + 1),
+        receipt('future-edge', -5),
+        receipt('future', -6),
+        receipt('other-account', 5, { accountId: otherId }),
+        receipt('sent', 5, { direction: 'out' }),
+        receipt('pending', 5, { status: 'pending' }),
+        receipt('exit', 5, { type: 'cooperative_exit' }),
+        receipt('deposit', 5, { type: 'utxo_swap' }),
+        receipt('from-previous', 5, { type: 'transfer', counterpartyPubkeys: [previousKey] }),
+        receipt('self', 5, { type: 'transfer', counterpartyPubkeys: [shopKey] }),
+        // An account merge moved in the transfers of mergedKey, not its wallet row.
+        receipt('merged-side', 6, {
+          walletPubkey: mergedKey,
+          direction: 'out',
+          counterpartyPubkeys: [shopKey],
+        }),
+        receipt('from-merged', 6, { type: 'transfer', counterpartyPubkeys: [mergedKey] }),
+        receipt('spark-paid', 8, {
+          type: 'transfer',
+          sparkInvoice: ` ${sparkPaid.toUpperCase()} `,
+        }),
+        receipt('spark-cancelled', 11, { type: 'transfer', sparkInvoice: sparkCancelled }),
+        receipt('ln-pending', 13),
+        receipt('ln-expired', 14),
+        receipt('ln-out-report', 15),
+        receipt('before', 46),
+        receipt('first-edge', 45),
+        receipt('inside', 33),
+        receipt('last-edge', 25),
+        receipt('spark-inside', 34, { type: 'transfer' }),
+        // One transfer id in two wallets: one excluded row excludes the whole payment.
+        receipt('mixed-inside', 33, { walletPubkey: previousKey, type: 'transfer' }),
+        receipt('mixed-inside', 33),
+        receipt('spark-paid', 8, { walletPubkey: previousKey }),
+      ]) {
+        await transfers.upsertTransfer(row);
+      }
+      const read = async (limit = 20): Promise<string[]> =>
+        (
+          await transfers.listTillReceipts({
+            accountId: shopId,
+            sinceMs: now - 24 * 60 * 60_000,
+            nowMs: now,
+            clockAllowanceMs: 300_000,
+            limit,
+          })
+        ).map((entry) => entry.id.slice(prefix.length + 1));
+      // `first-edge`, `inside`, and `last-edge` are unreported Lightning receipts inside the
+      // lifetime of the paid charge whose settling payment is not known yet: withheld.
+      expect(await read()).toEqual([
+        'future-edge',
+        'ln',
+        'spark-cancelled',
+        'ln-expired',
+        'ln-out-report',
+        'spark',
+        'both',
+        'spark-inside',
+        'before',
+      ]);
+      expect(await read(2)).toEqual(['future-edge', 'ln']);
+      const both = (
+        await transfers.listTillReceipts({
+          accountId: shopId,
+          sinceMs: now - 24 * 60 * 60_000,
+          nowMs: now,
+          clockAllowanceMs: 300_000,
+          limit: 20,
+        })
+      ).find((entry) => entry.id === id('both'));
+      expect(both).toEqual({
+        id: id('both'),
+        amountSats: 21,
+        receivedAt: at(22),
+        kind: 'lightning',
+      });
+
+      // Once the shop's wallet reports the settling payment of the unknown charge, nothing is withheld.
+      await wallet.upsertPayments([report('settling', hashC)]);
+      await transfers.upsertTransfer(receipt('settling', 32));
+      expect(await read()).toEqual([
+        'future-edge',
+        'ln',
+        'spark-cancelled',
+        'ln-expired',
+        'ln-out-report',
+        'spark',
+        'both',
+        'last-edge',
+        'mixed-inside',
+        'inside',
+        'spark-inside',
+        'first-edge',
+        'before',
+      ]);
+    } finally {
+      await client.execute('DELETE FROM wallet_transfer WHERE account_id IN ($1, $2)', [
+        shopId,
+        otherId,
+      ]);
+      await client.execute('DELETE FROM wallet_payment WHERE account_id = $1', [shopId]);
+      await client.execute(
+        'DELETE FROM pos_charge_invoice WHERE charge_id IN (SELECT id FROM pos_charge WHERE account_id = $1)',
+        [shopId],
+      );
+      await client.execute('DELETE FROM pos_charge WHERE account_id = $1', [shopId]);
+      await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [shopId]);
+      await client.execute('DELETE FROM account WHERE id IN ($1, $2)', [shopId, otherId]);
       await closeIfPossible(sql);
     }
   });

@@ -692,7 +692,14 @@ describe('backfillExternalZappers', () => {
       }),
     );
 
-    await expect(backfillExternalZappers(store, deps)).resolves.toBe(0);
+    const summaries: unknown[] = [];
+    await expect(
+      backfillExternalZappers(store, {
+        ...deps,
+        onComplete: (summary) => summaries.push(summary),
+      }),
+    ).resolves.toBe(0);
+    expect(summaries).toEqual([{ scanned: 450, reachedCeiling: false }]);
     expect(await store.listReplies(parentId)).toHaveLength(1);
     expect(loggedEvents(warn)).toContainEqual(
       expect.objectContaining({
@@ -704,6 +711,25 @@ describe('backfillExternalZappers', () => {
       }),
     );
     warn.mockRestore();
+  });
+
+  it('does not report completion when the scan throws', async () => {
+    const store = new BackfillRowsStore([]);
+    store.listUnattributedIndexedReceipts = async () => {
+      throw new Error('receipts unavailable');
+    };
+    const summaries: unknown[] = [];
+    await expect(
+      backfillExternalZappers(store, {
+        auth: new InMemoryAuthStore(),
+        querier: new RecordingQuerier(),
+        urls: URLS,
+        timeoutMs: 50,
+        now: () => 1_800_000_000_000,
+        onComplete: (summary) => summaries.push(summary),
+      }),
+    ).rejects.toThrow('receipts unavailable');
+    expect(summaries).toEqual([]);
   });
 
   it('stops and logs after scanning the 10,000-receipt ceiling', async () => {
@@ -718,6 +744,7 @@ describe('backfillExternalZappers', () => {
     const store = new BackfillRowsStore(rows);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
+    const summaries: unknown[] = [];
     await expect(
       backfillExternalZappers(store, {
         auth: new InMemoryAuthStore(),
@@ -725,9 +752,11 @@ describe('backfillExternalZappers', () => {
         urls: URLS,
         timeoutMs: 50,
         now: () => 1_800_000_000_000,
+        onComplete: (summary) => summaries.push(summary),
       }),
     ).resolves.toBe(0);
 
+    expect(summaries).toEqual([{ scanned: 10_000, reachedCeiling: true }]);
     expect(store.backfillCalls).toHaveLength(50);
     expect(store.backfillCalls[0]).toEqual({ limit: 200, before: undefined });
     expect(store.backfillCalls.at(-1)?.limit).toBe(200);

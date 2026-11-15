@@ -1239,6 +1239,18 @@ describe('LNURL server wiring', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ outcome: 'unknown' });
+    const readWallets: string[] = [];
+    const reading = createApp({
+      env: { LNURL_WEBHOOK_SECRET: 'secret' },
+      walletReadNow: (walletPubkey) => readWallets.push(walletPubkey),
+    });
+    const read = await reading.request('/webhooks/lnurl', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breez-signature': signature },
+      body,
+    });
+    expect(await read.json()).toEqual({ outcome: 'unknown' });
+    expect(readWallets).toEqual([`02${'1'.repeat(64)}`]);
 
     const wallet = `02${'1'.repeat(64)}`;
     const now = Date.now();

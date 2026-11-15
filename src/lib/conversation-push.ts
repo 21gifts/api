@@ -6,14 +6,17 @@
  */
 
 import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
+import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
 import {
   conversationPushRecipientIds,
   type ConversationMessageRow,
   type ConversationThread,
 } from '@/lib/conversation';
-import type { ConversationStore } from '@/lib/conversation-store';
+import type { ConversationStore, RemovedDamusThreads } from '@/lib/conversation-store';
 import { logEvent } from '@/lib/log';
+import type { MessageStore } from '@/lib/message-store';
+import { enqueueNotificationDismiss } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import { buildConversationPushPayload } from '@/lib/push';
 import type { PushOutboxRow, PushStore } from '@/lib/push-store';
@@ -148,4 +151,107 @@ export async function notifyConversationMessage(args: {
   if (failed) {
     throw new Error('conversations.push.failed');
   }
+}
+
+/** Stores the cleanup's dismiss step reads and writes. */
+interface DamusCleanupStores {
+  conversations: ConversationStore;
+  pushStore: PushStore;
+  notifications?: Pick<NotificationStore, 'unreadCount'>;
+}
+
+/**
+ * Enqueue one strict dismiss push per member with a push subscription for the
+ * tags `conversation:<id>` of the removed threads, carrying that member's
+ * badge after the removal. Throws on the first failure.
+ */
+async function enqueueRemovedThreadDismissals(
+  removed: RemovedDamusThreads,
+  stores: DamusCleanupStores,
+  auth: Pick<AuthStore, 'getAccount' | 'listAccounts'>,
+  nowMs: number,
+): Promise<void> {
+  const tagsByMember = new Map<string, string[]>();
+  for (const thread of removed.threads) {
+    const tags = tagsByMember.get(thread.memberId) ?? [];
+    tags.push(`conversation:${thread.id}`);
+    tagsByMember.set(thread.memberId, tags);
+  }
+  const inboxUnreadOf = inboxUnreadCountFor(stores.conversations, auth);
+  for (const [memberId, tags] of tagsByMember) {
+    const subs = await stores.pushStore.listByAccount(memberId);
+    if (subs.length === 0) {
+      continue;
+    }
+    const notifUnread =
+      stores.notifications === undefined ? 0 : await stores.notifications.unreadCount(memberId);
+    await enqueueNotificationDismiss({
+      pushStore: stores.pushStore,
+      accountId: memberId,
+      tags,
+      nowMs,
+      unreadCount: notifUnread + (await inboxUnreadOf(memberId)),
+      strict: true,
+    });
+  }
+}
+
+/**
+ * Boot step: one-time removal of the member↔Damus threads whose counterpart
+ * the inbound direct-message admission rule would not admit, through
+ * {@link ConversationStore.removeDamusThreadsWithoutMemberMessage}: threads
+ * that hold no message sent by the member and whose counterpart pubkey is not
+ * an entitled external zapper (`listZapperPubkeys`, the source the admission
+ * rule reads).
+ *
+ * For each member with a push subscription who lost a thread, one dismiss
+ * push for the tags `conversation:<id>` of the removed threads is written
+ * before the removal commits, carrying the member's badge count after the
+ * removal (in-app notification unread plus listed inbox unread), so a device
+ * closes notifications of a removed thread and its badge drops. On Postgres
+ * the store hands its transaction client to `storesFor`, so the badge is read
+ * from the state after the deletes and the dismiss rows commit or roll back
+ * together with them; without `storesFor` (memory) the given stores are used.
+ *
+ * Logs one `conversations.damus_cleanup` event with the number of removed
+ * threads and messages (both 0 when the run already happened). Any failure,
+ * including a failed zapper read or dismiss write, logs
+ * `conversations.damus_cleanup.failed`, removes nothing on Postgres (the
+ * transaction rolls back, the run marker included), and the boot continues;
+ * the next boot runs it again. Does not throw.
+ *
+ * @param args - Conversation, push and optional notification stores, the
+ *   zapper source, account lookup for the badge count, the clock, and an
+ *   optional factory of the same stores on a transaction client.
+ * @returns Removed thread and message counts.
+ */
+export async function removeUnadmittedDamusThreads(args: {
+  conversations: ConversationStore;
+  pushStore: PushStore;
+  notifications?: Pick<NotificationStore, 'unreadCount'>;
+  zappers: Pick<MessageStore, 'listZapperPubkeys'>;
+  auth: Pick<AuthStore, 'getAccount' | 'listAccounts'>;
+  nowMs: number;
+  storesFor?: (tx: SqlClient) => DamusCleanupStores;
+}): Promise<{ threads: number; messages: number }> {
+  let removed: RemovedDamusThreads;
+  try {
+    const keep = new Set(
+      (await args.zappers.listZapperPubkeys()).map((value) => value.toLowerCase()),
+    );
+    removed = await args.conversations.removeDamusThreadsWithoutMemberMessage(
+      new Date(args.nowMs),
+      keep,
+      async (done, tx) => {
+        const stores = tx !== null && args.storesFor !== undefined ? args.storesFor(tx) : args;
+        await enqueueRemovedThreadDismissals(done, stores, args.auth, args.nowMs);
+      },
+    );
+  } catch {
+    logEvent('conversations.damus_cleanup.failed');
+    return { threads: 0, messages: 0 };
+  }
+  const counts = { threads: removed.threads.length, messages: removed.messages };
+  logEvent('conversations.damus_cleanup', counts);
+  return counts;
 }

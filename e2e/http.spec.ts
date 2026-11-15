@@ -1766,3 +1766,11 @@ test('PUT /fond/deposit-address is 404 when PAYOUT_SIGNER is unset', async ({ re
   expect(res.status()).toBe(404);
   expect(await res.json()).toEqual({ error: 'Not found' });
 });
+
+test('GET /pos lists payments received without a till charge as received', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.get('/pos', { headers: auth });
+  expect(res.status()).toBe(200);
+  // The default boot reads no wallet (no Spark viewer), so nothing was observed.
+  expect(await res.json()).toEqual({ charge: null, history: [], received: [] });
+});

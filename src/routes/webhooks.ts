@@ -20,6 +20,12 @@ const WEBHOOK_BODY_LIMIT_BYTES = 64 * 1024;
 export interface WebhookRouteDeps extends PaymentReceivedDeps {
   /** Secret shared with the LNURL server (`LNURL_WEBHOOK_SECRET`). */
   secret: string;
+  /**
+   * Read the receiving wallet now (the wallet transfer worker's bounded read).
+   * Called with `data.user_pubkey` of a signed, usable notice; it must not
+   * throw and its outcome never changes the answer. Omitted → nothing is read.
+   */
+  readWallet?: (walletPubkey: string) => void;
 }
 
 /**
@@ -29,7 +35,9 @@ export interface WebhookRouteDeps extends PaymentReceivedDeps {
  * match. A body above 64 KiB, and a signed body that is not a usable
  * `spark_payment_received`, answer 200 `ignored` without writing anything,
  * because the LNURL server retries every other answer without end. A failed store call answers 503, so it retries; the push is
- * enqueued at most once per payment hash.
+ * enqueued at most once per payment hash. A signed, usable notice also asks
+ * `readWallet` to read the receiving wallet now; that request never changes
+ * the answer.
  *
  * @param deps - Secret, stores, and clock.
  * @returns A Hono app exposing `POST /lnurl`.
@@ -48,6 +56,11 @@ export function webhookRoutes(deps: WebhookRouteDeps): Hono {
     if (payment === null) {
       logEvent('payment_received.ignored');
       return c.json({ outcome: 'ignored' }, 200);
+    }
+    try {
+      deps.readWallet?.(payment.userPubkey);
+    } catch {
+      logEvent('payment_received.read_failed');
     }
     try {
       const outcome = await notifyPaymentReceived(deps, payment);

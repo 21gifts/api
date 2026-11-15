@@ -21,6 +21,12 @@ export const POS_CHARGE_TTL_MS = 5 * 60 * 1000;
 /** `GET /pos` keeps showing a charge as `charge` this long after it was paid. */
 export const POS_PAID_SHOW_MS = 60 * 1000;
 
+/** `GET /pos` lists payments received without a till charge from this far back (24 hours). */
+export const TILL_RECEIVED_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** `GET /pos` lists at most this many payments received without a till charge, as many as `history`. */
+export const TILL_RECEIVED_LIMIT = 20;
+
 /** Currencies a till operator can type. None is special. */
 export type PosFiatCode = 'USD' | 'CHF' | 'EUR' | 'PHP';
 

@@ -73,6 +73,7 @@ import {
   type NotificationStore,
 } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
+import { removeUnadmittedDamusThreads } from '@/lib/conversation-push';
 import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
 import { migrateFundingSchema, PostgresFundingStore, type FundingStore } from '@/lib/funding-store';
 import {
@@ -125,6 +126,7 @@ import { ensureSparkViewer, migrateSparkViewerSchema, type SparkViewer } from '@
 import {
   PostgresWalletTransferStore,
   type ObservedCounterpartyStore,
+  type TillReceiptStore,
   type WalletTransferStore,
 } from '@/lib/wallet-transfer-store';
 import {
@@ -259,7 +261,8 @@ export interface BootStores {
    */
   walletStore: WalletStore | undefined;
   /** Durable server-verified Spark transfer store, or undefined on memory boots. */
-  walletTransferStore: (WalletTransferStore & ObservedCounterpartyStore) | undefined;
+  walletTransferStore:
+    (WalletTransferStore & ObservedCounterpartyStore & TillReceiptStore) | undefined;
   /** Durable atomic welcome-invoice entitlement reservations, or undefined on memory boots. */
   welcomeInvoiceReservationStore: WelcomeInvoiceReservationStore | undefined;
   /** Read-only Spark viewer, ephemeral on memory boots. */
@@ -394,6 +397,16 @@ export interface BootFxOptions {
  * `linkDailyRosterAccounts` links roster rows without an account (host of
  * `PUBLIC_BASE_URL` when the LNURL server resolves, else null) and logs
  * `daily_roster.accounts_linked` with `linked` and `unlinked`.
+ * Once the Postgres conversation, push, and notification stores exist,
+ * `removeUnadmittedDamusThreads` (only after a complete external-zapper
+ * backfill: no throw and below its ceiling; otherwise it logs
+ * `conversations.damus_cleanup.deferred` and a later boot runs it) removes,
+ * once per database, the
+ * `member_damus` threads that hold no message sent by the member and whose
+ * counterpart is not an entitled external zapper, writes the dismiss pushes in
+ * the same transaction (stores built on the transaction client), and logs
+ * `conversations.damus_cleanup`; a memory boot holds no stored thread and
+ * does not run it.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`,
@@ -689,6 +702,7 @@ export async function openBootStores(
     'conversation_message_translation',
   );
   await backfillZapPayments(messageStore);
+  let zappersComplete = false;
   try {
     await backfillExternalZappers(messageStore, {
       auth: authStore,
@@ -696,6 +710,9 @@ export async function openBootStores(
       urls: fx?.zapRelayUrls ?? resolveZapRelays(process.env),
       timeoutMs: fx?.nostrRelayTimeoutMs ?? 5_000,
       now,
+      onComplete: (summary) => {
+        zappersComplete = !summary.reachedCeiling;
+      },
     });
   } catch {
     logEvent('nostr.zapper.backfill.failed');
@@ -715,6 +732,25 @@ export async function openBootStores(
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
+  // The cleanup keeps zapper threads, so it waits for a complete zapper
+  // backfill; a failed or capped scan defers it to a later boot.
+  if (!zappersComplete) {
+    logEvent('conversations.damus_cleanup.deferred');
+  } else {
+    await removeUnadmittedDamusThreads({
+      conversations: conversationStore,
+      pushStore,
+      notifications: notificationStore,
+      zappers: messageStore,
+      auth: authStore,
+      nowMs: now(),
+      storesFor: (tx) => ({
+        conversations: new PostgresConversationStore(tx, { fetchImpl, fiatRates, now }),
+        pushStore: new PostgresPushStore(tx),
+        notifications: new PostgresNotificationStore(tx),
+      }),
+    });
+  }
   const trustStore = new PostgresTrustStore(sqlClient);
   const fundingStore = new PostgresFundingStore(sqlClient, transactions);
   const rosterStore = new PostgresDailyRosterStore(sqlClient, rosterLnurlServer?.host ?? null);
