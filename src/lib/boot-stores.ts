@@ -73,6 +73,7 @@ import {
   type NotificationStore,
 } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushStore } from '@/lib/push-store';
+import { removeUnadmittedDamusThreads } from '@/lib/conversation-push';
 import { migrateTrustSchema, PostgresTrustStore, type TrustStore } from '@/lib/trust-store';
 import { migrateFundingSchema, PostgresFundingStore, type FundingStore } from '@/lib/funding-store';
 import {
@@ -101,6 +102,7 @@ import {
   repairWalletPaymentPairs,
   type WalletStore,
 } from '@/lib/wallet-store';
+import { PostgresWalletUsageStore, type WalletUsageStore } from '@/lib/wallet-usage-store';
 import {
   migrateOperatorLoginSchema,
   PostgresOperatorLoginStore,
@@ -125,6 +127,7 @@ import { ensureSparkViewer, migrateSparkViewerSchema, type SparkViewer } from '@
 import {
   PostgresWalletTransferStore,
   type ObservedCounterpartyStore,
+  type TillReceiptStore,
   type WalletTransferStore,
 } from '@/lib/wallet-transfer-store';
 import {
@@ -258,13 +261,20 @@ export interface BootStores {
    */
   walletStore: WalletStore | undefined;
   /** Durable server-verified Spark transfer store, or undefined on memory boots. */
-  walletTransferStore: (WalletTransferStore & ObservedCounterpartyStore) | undefined;
+  walletTransferStore:
+    (WalletTransferStore & ObservedCounterpartyStore & TillReceiptStore) | undefined;
   /** Durable atomic welcome-invoice entitlement reservations, or undefined on memory boots. */
   welcomeInvoiceReservationStore: WelcomeInvoiceReservationStore | undefined;
   /** Read-only Spark viewer, ephemeral on memory boots. */
   sparkViewer: SparkViewer | undefined;
   /** Public identity key wallets grant to the deployment viewer. */
   walletViewerPublicKey: string | null;
+  /**
+   * Postgres-backed wallet-usage reads, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default. Read-only: the
+   * store does not migrate.
+   */
+  usageStore: WalletUsageStore | undefined;
   /**
    * Postgres-backed member interaction-log events, or `undefined` when no
    * SQL client was opened so `createApp` keeps the empty in-memory default.
@@ -335,6 +345,7 @@ export interface BootFxOptions {
  * {@link InMemoryFondPayoutStore} as `fondPayoutStore`, `bannerStore: undefined`,
  * `sparkInvoiceStore: undefined`,
  * `walletStore: undefined`,
+ * `usageStore: undefined`,
  * `memberEventStore: undefined`,
  * `loginGateStore: undefined`, `operatorLoginStore: undefined`,
  * `listDbChange: undefined`,
@@ -361,6 +372,7 @@ export interface BootFxOptions {
  * {@link PostgresDailyRosterStore}, {@link PostgresFondPayoutStore},
  * {@link PostgresBannerStore},
  * {@link PostgresSparkInvoiceStore}, {@link PostgresWalletStore},
+ * {@link PostgresWalletUsageStore} (read-only; no migration),
  * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek` and `RECOVERY_SHARE_KEK` into
  * `recoveryShareKek` right after the auth migration, constructs {@link PostgresBtcUsdStore} and
@@ -393,6 +405,16 @@ export interface BootFxOptions {
  * `linkDailyRosterAccounts` links roster rows without an account (host of
  * `PUBLIC_BASE_URL` when the LNURL server resolves, else null) and logs
  * `daily_roster.accounts_linked` with `linked` and `unlinked`.
+ * Once the Postgres conversation, push, and notification stores exist,
+ * `removeUnadmittedDamusThreads` (only after a complete external-zapper
+ * backfill: no throw and below its ceiling; otherwise it logs
+ * `conversations.damus_cleanup.deferred` and a later boot runs it) removes,
+ * once per database, the
+ * `member_damus` threads that hold no message sent by the member and whose
+ * counterpart is not an entitled external zapper, writes the dismiss pushes in
+ * the same transaction (stores built on the transaction client), and logs
+ * `conversations.damus_cleanup`; a memory boot holds no stored thread and
+ * does not run it.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`,
@@ -480,6 +502,7 @@ export async function openBootStores(
       welcomeInvoiceReservationStore: undefined,
       sparkViewer: memoryViewer?.viewer,
       walletViewerPublicKey: memoryViewer?.publicKey ?? null,
+      usageStore: undefined,
       memberEventStore: undefined,
       loginGateStore: undefined,
       operatorLoginStore: undefined,
@@ -688,6 +711,7 @@ export async function openBootStores(
     'conversation_message_translation',
   );
   await backfillZapPayments(messageStore);
+  let zappersComplete = false;
   try {
     await backfillExternalZappers(messageStore, {
       auth: authStore,
@@ -695,6 +719,9 @@ export async function openBootStores(
       urls: fx?.zapRelayUrls ?? resolveZapRelays(process.env),
       timeoutMs: fx?.nostrRelayTimeoutMs ?? 5_000,
       now,
+      onComplete: (summary) => {
+        zappersComplete = !summary.reachedCeiling;
+      },
     });
   } catch {
     logEvent('nostr.zapper.backfill.failed');
@@ -714,6 +741,25 @@ export async function openBootStores(
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
+  // The cleanup keeps zapper threads, so it waits for a complete zapper
+  // backfill; a failed or capped scan defers it to a later boot.
+  if (!zappersComplete) {
+    logEvent('conversations.damus_cleanup.deferred');
+  } else {
+    await removeUnadmittedDamusThreads({
+      conversations: conversationStore,
+      pushStore,
+      notifications: notificationStore,
+      zappers: messageStore,
+      auth: authStore,
+      nowMs: now(),
+      storesFor: (tx) => ({
+        conversations: new PostgresConversationStore(tx, { fetchImpl, fiatRates, now }),
+        pushStore: new PostgresPushStore(tx),
+        notifications: new PostgresNotificationStore(tx),
+      }),
+    });
+  }
   const trustStore = new PostgresTrustStore(sqlClient);
   const fundingStore = new PostgresFundingStore(sqlClient, transactions);
   const rosterStore = new PostgresDailyRosterStore(sqlClient, rosterLnurlServer?.host ?? null);
@@ -752,6 +798,7 @@ export async function openBootStores(
     welcomeInvoiceReservationStore: new PostgresWelcomeInvoiceReservationStore(sqlClient),
     sparkViewer: sparkViewerKey.viewer,
     walletViewerPublicKey: sparkViewerKey.publicKey,
+    usageStore: new PostgresWalletUsageStore(sqlClient),
     memberEventStore: new PostgresMemberEventStore(sqlClient),
     loginGateStore: new PostgresLoginGateStore(sqlClient),
     operatorLoginStore: new PostgresOperatorLoginStore(sqlClient),

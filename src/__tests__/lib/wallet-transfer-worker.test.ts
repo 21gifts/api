@@ -2080,3 +2080,172 @@ describe('wallet transfer worker edge decisions', () => {
     expect(calls).toBe(2);
   });
 });
+
+describe('startWalletTransferWorker readNow', () => {
+  const KEYS = ['2', '3', '4', '5', '6'].map((digit) => `02${digit.repeat(64)}`);
+
+  function harness(options: { failList?: unknown; failAddress?: string } = {}) {
+    vi.useFakeTimers();
+    const gates = new Map<string, Array<() => void>>();
+    const reads: string[] = [];
+    let listCalls = 0;
+    let tickDone = false;
+    const wallets = [OWNER, ...KEYS].map((key, index) => ({
+      accountId: `account-${index}`,
+      sparkPubkey: key,
+      sparkAddress: `spark1${key.slice(2, 8)}`,
+    }));
+    const store: WalletTransferStore = {
+      listWallets: vi.fn(async () => {
+        listCalls += 1;
+        if (!tickDone) {
+          tickDone = true;
+          return [];
+        }
+        if (options.failList !== undefined) throw options.failList;
+        return wallets;
+      }),
+      syncState: vi.fn(async () => ({
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: null,
+      })),
+      upsertTransfer: vi.fn(async () => ({
+        inserted: true,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      })),
+      upsertTokenTransaction: vi.fn(noTokenWrite),
+      markFullSync: vi.fn(noFullSyncWrite),
+      hasShopPayment: vi.fn(async () => false),
+    };
+    const handle = startWalletTransferWorker({
+      viewer: {
+        transfers: async ({ sparkAddress }) => {
+          reads.push(sparkAddress);
+          await new Promise<void>((resolve) => {
+            gates.set(sparkAddress, [...(gates.get(sparkAddress) ?? []), resolve]);
+          });
+          if (sparkAddress === options.failAddress) throw new Error('viewer failed');
+          return {
+            transfers: [transfer({ receiverIdentityPublicKey: bytes(OWNER) })],
+            offset: -1,
+            rawCount: 1,
+          };
+        },
+        tokenTransactions: noTokenTransactions,
+        balance: async () => 0,
+      },
+      transfers: store,
+      balances: { recordBalance: async () => undefined },
+      auth: {
+        getAccount: async () => undefined,
+        hasRecoveryShareForVerifiedWallet: async () => false,
+      },
+      funding: { getByAccountId: async () => undefined },
+      ping: {
+        messageStore: {
+          latestLiveTopLevelMediaId: async () => null,
+          getById: async () => undefined,
+        },
+        authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+      },
+      now: () => NOW,
+    });
+    const release = async (address: string): Promise<void> => {
+      const waiting = gates.get(address) ?? [];
+      gates.set(address, []);
+      for (const resolve of waiting) resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    return { handle, reads, release, listCalls: () => listCalls, address: wallets };
+  }
+
+  it('reads one wallet now, at most once in flight plus one queued read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { handle, reads, release, address } = harness();
+    await vi.advanceTimersByTimeAsync(0);
+    const owner = address[0]!.sparkAddress;
+    handle.readNow(OWNER.toUpperCase().replace(/^0/, '0'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toEqual([owner]);
+    handle.readNow(OWNER);
+    handle.readNow(OWNER);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toEqual([owner]);
+    await release(owner);
+    expect(reads).toEqual([owner, owner]);
+    await release(owner);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toEqual([owner, owner]);
+    const events = warn.mock.calls.map((call) => String(call[0]));
+    expect(events.some((line) => line.includes('"wallet_transfer.synced"'))).toBe(true);
+    expect(events.join('\n')).not.toContain(OWNER);
+    handle.stop();
+    warn.mockRestore();
+  });
+
+  it('runs at most four extra reads at once and drops bad keys, unknown keys, and reads after stop', async () => {
+    const { handle, reads, release, address, listCalls } = harness();
+    await vi.advanceTimersByTimeAsync(0);
+    handle.readNow('not-a-key');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listCalls()).toBe(1);
+    for (const key of KEYS) handle.readNow(key);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toEqual(address.slice(1, 5).map((wallet) => wallet.sparkAddress));
+    for (const wallet of address.slice(1, 5)) await release(wallet.sparkAddress);
+    handle.readNow(`03${'9'.repeat(64)}`);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toHaveLength(4);
+    handle.stop();
+    handle.readNow(OWNER);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toHaveLength(4);
+  });
+
+  it('logs a failed wallet list or a failed read with the account id only', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (const failList of [new Error('list failed'), 'list failed']) {
+      const listing = harness({ failList });
+      await vi.advanceTimersByTimeAsync(0);
+      listing.handle.readNow(OWNER);
+      await vi.advanceTimersByTimeAsync(0);
+      listing.handle.stop();
+    }
+    const reading = harness({ failAddress: `spark1${OWNER.slice(2, 8)}` });
+    await vi.advanceTimersByTimeAsync(0);
+    reading.handle.readNow(OWNER);
+    await vi.advanceTimersByTimeAsync(0);
+    await reading.release(`spark1${OWNER.slice(2, 8)}`);
+    reading.handle.stop();
+    const events = warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'wallet_transfer.failed',
+        accountId: 'all',
+        reason: 'Error',
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'wallet_transfer.failed',
+        accountId: 'all',
+        reason: 'unknown',
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'wallet_transfer.failed',
+        accountId: 'account-0',
+        reason: 'Error',
+      }),
+    );
+    expect(JSON.stringify(events)).not.toContain(OWNER);
+    warn.mockRestore();
+  });
+});

@@ -426,6 +426,32 @@ async function syncWallet(
 }
 
 /**
+ * Sync one wallet and log the outcome with the account id only.
+ *
+ * @param deps - Worker collaborators.
+ * @param wallet - Wallet to read.
+ * @returns `false` when the read failed (logged as `wallet_transfer.failed`).
+ */
+async function syncAndLog(
+  deps: WalletTransferWorkerDeps,
+  wallet: WalletTransferWallet,
+): Promise<boolean> {
+  try {
+    const changed = await syncWallet(deps, wallet);
+    if (changed.inserted > 0 || changed.updated > 0) {
+      logEvent('wallet_transfer.synced', { accountId: wallet.accountId, ...changed });
+    }
+    return true;
+  } catch (error) {
+    logEvent('wallet_transfer.failed', {
+      accountId: wallet.accountId,
+      reason: error instanceof Error ? error.name : 'unknown',
+    });
+    return false;
+  }
+}
+
+/**
  * Synchronize all due wallets once, at most four at a time.
  *
  * @param deps - Viewer, stores, catch-up ping collaborators, and clock.
@@ -446,22 +472,26 @@ export async function runWalletTransferTick(
           failed.set(key, false);
           return;
         }
-        try {
-          const changed = await syncWallet(deps, wallet);
-          if (changed.inserted > 0 || changed.updated > 0) {
-            logEvent('wallet_transfer.synced', { accountId: wallet.accountId, ...changed });
-          }
-        } catch (error) {
-          failed.set(key, true);
-          logEvent('wallet_transfer.failed', {
-            accountId: wallet.accountId,
-            reason: error instanceof Error ? error.name : 'unknown',
-          });
-        }
+        if (!(await syncAndLog(deps, wallet))) failed.set(key, true);
       }),
     );
   }
   return failed;
+}
+
+/** Handle of {@link startWalletTransferWorker}. */
+export interface WalletTransferWorkerHandle {
+  /** Stop future passes and extra reads. */
+  stop: () => void;
+  /**
+   * Read one wallet now, outside the pass schedule. At most one extra read
+   * runs per wallet; a request while it runs queues one more read after it,
+   * and further requests add nothing. At most four extra reads run at once;
+   * a request beyond that, for a key that is not a wallet, or after `stop`
+   * is dropped and the wallet waits for the next pass. Never throws; a failed
+   * read logs `wallet_transfer.failed` like a pass.
+   */
+  readNow: (walletPubkey: string) => void;
 }
 
 /**
@@ -469,13 +499,29 @@ export async function runWalletTransferTick(
  *
  * @param deps - Viewer, stores, catch-up ping collaborators, and clock.
  * @param intervalMs - Base tick interval, default 60 seconds.
- * @returns Handle that stops future schedules.
+ * @returns Handle that stops future schedules and reads one wallet on request.
  */
 export function startWalletTransferWorker(
   deps: WalletTransferWorkerDeps,
   intervalMs: number = WALLET_TRANSFER_INTERVAL_MS,
-): { stop: () => void } {
+): WalletTransferWorkerHandle {
   let stopped = false;
+  const reading = new Set<string>();
+  const again = new Set<string>();
+  const readNow = (walletPubkey: string): void => {
+    const key = walletPubkey.toLowerCase();
+    if (stopped || !/^0[23][0-9a-f]{64}$/.test(key)) return;
+    if (reading.has(key)) {
+      again.add(key);
+      return;
+    }
+    if (reading.size >= WALLET_TRANSFER_CONCURRENCY) return;
+    reading.add(key);
+    void readWallets(deps, key).finally(() => {
+      reading.delete(key);
+      if (again.delete(key)) readNow(key);
+    });
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const attempts = new Map<string, number>();
   const retryAfter = new Map<string, number>();
@@ -514,7 +560,33 @@ export function startWalletTransferWorker(
       stopped = true;
       if (timer !== undefined) clearTimeout(timer);
     },
+    readNow,
   };
+}
+
+/**
+ * Read every listed wallet with this key once (normally one), logging like a pass.
+ *
+ * @param deps - Worker collaborators.
+ * @param walletPubkey - Lower-case wallet identity key.
+ * @returns Resolves when the reads end; never rejects.
+ */
+async function readWallets(deps: WalletTransferWorkerDeps, walletPubkey: string): Promise<void> {
+  let wallets: WalletTransferWallet[];
+  try {
+    wallets = (await deps.transfers.listWallets()).filter(
+      (wallet) => wallet.sparkPubkey === walletPubkey,
+    );
+  } catch (error) {
+    logEvent('wallet_transfer.failed', {
+      accountId: 'all',
+      reason: error instanceof Error ? error.name : 'unknown',
+    });
+    return;
+  }
+  for (const wallet of wallets) {
+    await syncAndLog(deps, wallet);
+  }
 }
 function outboundCounterpartiesOf(
   receivers: ReadonlyArray<{ id: string; key: string | null }>,

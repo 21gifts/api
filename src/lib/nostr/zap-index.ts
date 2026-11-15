@@ -188,8 +188,13 @@ export async function backfillZapPayments(store: MessageStore): Promise<number> 
  * past every row seen, using immutable ingest creation time and receipt event
  * id keys so attribution changes between pages cannot skip or repeat rows.
  *
+ * `deps.onComplete`, when given, is called once after the scan with the
+ * number of scanned rows and whether the scan stopped at the ceiling, so a
+ * caller can tell a complete scan from a capped one (a throwing scan never
+ * calls it).
+ *
  * @param store - Message store containing indexed receipt frames.
- * @param deps - Auth, profile querier, relays, timeout, and clock.
+ * @param deps - Auth, profile querier, relays, timeout, clock, and optional `onComplete`.
  * @returns Number of verified external zappers encountered in this scan.
  * @throws Propagates store failures; relay profile failures are suppressed by
  *   {@link resolveExternalProfileName}.
@@ -202,6 +207,7 @@ export async function backfillExternalZappers(
     urls: readonly string[];
     timeoutMs: number;
     now: () => number;
+    onComplete?: (summary: { scanned: number; reachedCeiling: boolean }) => void;
   },
 ): Promise<number> {
   let verified = 0;
@@ -281,6 +287,7 @@ export async function backfillExternalZappers(
     attributed,
     gifts,
   });
+  deps.onComplete?.({ scanned, reachedCeiling: scanned === EXTERNAL_ZAPPER_BACKFILL_CEILING });
   return verified;
 }
 

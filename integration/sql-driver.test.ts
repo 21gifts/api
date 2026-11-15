@@ -32,8 +32,13 @@ import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { NOT_PAYABLE, serializeMessage, unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore, type MessageStore } from '@/lib/message-store';
 import { migrateBannerSchema } from '@/lib/banner-store';
-import { migrateConversationSchema } from '@/lib/conversation-store';
-import { migrateNotificationSchema } from '@/lib/notification-store';
+import {
+  DAMUS_THREAD_CLEANUP_KEY,
+  migrateConversationSchema,
+  PostgresConversationStore,
+} from '@/lib/conversation-store';
+import { removeUnadmittedDamusThreads } from '@/lib/conversation-push';
+import { migrateNotificationSchema, PostgresNotificationStore } from '@/lib/notification-store';
 import { migratePushSchema, PostgresPushStore, type PushOutboxRow } from '@/lib/push-store';
 import { migrateTrustSchema } from '@/lib/trust-store';
 import { PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
@@ -77,6 +82,8 @@ import {
   migrateWelcomeInvoiceReservationSchema,
   PostgresWelcomeInvoiceReservationStore,
 } from '@/lib/welcome-reservation';
+import { PostgresWalletUsageStore } from '@/lib/wallet-usage-store';
+import type { WalletUsagePaymentRow } from '@/lib/wallet-usage';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
 import type { OrchestraClient } from '@/lib/orchestra';
@@ -2823,6 +2830,307 @@ describe('PostgresAuthStore wallet intro seen', () => {
   });
 });
 
+describe('PostgresConversationStore memberWroteToDamus', () => {
+  test('is true only when the member sent in that member_damus thread', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateConversationSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const store = new PostgresConversationStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const member = crypto.randomUUID();
+      await auth.createAccount({
+        id: member,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      const wrote = hex64();
+      const inboundOnly = hex64();
+      const now = new Date();
+      const row = (conversationId: string, senderAccountId: string | null) => ({
+        id: crypto.randomUUID(),
+        conversationId,
+        text: 'hi',
+        createdAt: now,
+        senderAccountId,
+        senderPubkey: null,
+        name: 'n',
+        actorAccountId: senderAccountId,
+        actorName: '',
+        eventId: null,
+        nostrPublishState: 'skipped' as const,
+        nostrEvent: null,
+        claimedUntil: null,
+        sats: 0,
+      });
+      expect(await store.memberWroteToDamus(member, wrote)).toBe(false);
+      const wroteThread = await store.openMemberDamus(member, wrote, now);
+      expect(await store.memberWroteToDamus(member, wrote)).toBe(false);
+      await store.appendMessage(row(wroteThread.id, member));
+      expect(await store.memberWroteToDamus(member, wrote.toUpperCase())).toBe(true);
+      const inboundThread = await store.openMemberDamus(member, inboundOnly, now);
+      await store.appendMessage(row(inboundThread.id, null));
+      expect(await store.memberWroteToDamus(member, inboundOnly)).toBe(false);
+      expect(await store.memberWroteToDamus(crypto.randomUUID(), wrote)).toBe(false);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('removeUnadmittedDamusThreads on Postgres', () => {
+  test('removes Damus threads without a member message with their rows, once', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migrateConversationSchema(client);
+      await migratePushSchema(client);
+      await migrateNotificationSchema(client);
+      await migrateLoginGateSchema(client);
+      await client.execute('DELETE FROM app_setting WHERE key = $1', [DAMUS_THREAD_CLEANUP_KEY]);
+      const auth = new PostgresAuthStore(client);
+      const conversations = new PostgresConversationStore(client);
+      const push = new PostgresPushStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const account = async (): Promise<string> => {
+        const id = crypto.randomUUID();
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+        return id;
+      };
+      const member = await account();
+      const other = await account();
+      const platform = await account();
+      await push.upsertSubscription({
+        endpoint: `https://push.example/${member}`,
+        accountId: member,
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(),
+        sessionToken: 'session',
+      });
+      const now = new Date();
+      const row = (conversationId: string, senderAccountId: string | null) => ({
+        id: crypto.randomUUID(),
+        conversationId,
+        text: 'hi',
+        createdAt: now,
+        senderAccountId,
+        senderPubkey: null,
+        name: 'n',
+        actorAccountId: senderAccountId,
+        actorName: '',
+        eventId: `${hex64()}`,
+        nostrPublishState: 'skipped' as const,
+        nostrEvent: null,
+        claimedUntil: null,
+        sats: 0,
+      });
+      const photo = { contentType: 'image/jpeg' as const, bytes: new Uint8Array([1, 2, 3]) };
+
+      const inbound = await conversations.openMemberDamus(member, hex64(), now);
+      const inboundA = row(inbound.id, null);
+      const inboundB = row(inbound.id, null);
+      await conversations.appendMessage(inboundA, photo, [photo]);
+      await conversations.appendMessage(inboundB);
+      await conversations.markRead(inbound.id, member, now);
+      await client.execute(
+        `INSERT INTO conversation_message_translation
+           (message_id, target_lang, source_sha256, translated_text, created_at)
+         VALUES ($1, 'de', 'x', 'hallo', $2)`,
+        [inboundA.id, now],
+      );
+      const outboxRow = (messageId: string): PushOutboxRow => ({
+        id: crypto.randomUUID(),
+        accountId: member,
+        type: 'conversation',
+        messageId,
+        payload: '{}',
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        finishedAt: null,
+        createdAt: now,
+        deliveredEndpoints: [],
+        skipEndpoints: [],
+      });
+      const removedPush = outboxRow(inboundA.id);
+      await push.enqueue(removedPush);
+      const invoiceId = crypto.randomUUID();
+      await client.execute(
+        `INSERT INTO message_invoice
+           (id, created_at, message_id, payer_account_id, author_account_id, amount_sats,
+            result, http_status, conversation_id)
+         VALUES ($1, $2, $3, $4, $3, 21, 'no_author', 400, $5)`,
+        [invoiceId, now, '00000000-0000-0000-0000-000000000000', member, inbound.id],
+      );
+      const empty = await conversations.openMemberDamus(member, hex64(), now);
+
+      const wrote = await conversations.openMemberDamus(member, hex64(), now);
+      const wroteInbound = row(wrote.id, null);
+      await conversations.appendMessage(wroteInbound, photo, [photo]);
+      await conversations.appendMessage(row(wrote.id, member));
+      await conversations.markRead(wrote.id, member, now);
+      const keptPush = outboxRow(wroteInbound.id);
+      await push.enqueue(keptPush);
+      const pair = await conversations.openMemberMember(member, other, now);
+      await conversations.appendMessage(row(pair.id, other));
+      const ticket = await conversations.openMemberPlatform(member, platform, now);
+      await conversations.appendMessage(row(ticket.id, platform));
+      const group = await conversations.ensureModeratorGroup(platform, now);
+      const messages = new PostgresMessageStore(client);
+      const zapperPubkey = hex64();
+      await messages.recordZapper(zapperPubkey.toUpperCase(), hex64(), now);
+      const zapper = await conversations.openMemberDamus(member, zapperPubkey, now);
+      await conversations.appendMessage(row(zapper.id, null));
+      const txStores = (tx: SqlClient) => ({
+        conversations: new PostgresConversationStore(tx),
+        pushStore: new PostgresPushStore(tx),
+        notifications: new PostgresNotificationStore(tx),
+      });
+
+      const count = async (text: string, params: readonly unknown[]): Promise<number> =>
+        Number((await client.query<{ n: string | number }>(text, params))[0]?.n ?? 0);
+      const threadsLeft = async (ids: readonly string[]): Promise<number> =>
+        count('SELECT count(*) AS n FROM conversation WHERE id = ANY($1::uuid[])', [
+          postgresTextArrayLiteral(ids),
+        ]);
+      const rowsOf = async (threadId: string): Promise<number[]> => [
+        await count('SELECT count(*) AS n FROM conversation_message WHERE conversation_id = $1', [
+          threadId,
+        ]),
+        await count('SELECT count(*) AS n FROM conversation_read WHERE conversation_id = $1', [
+          threadId,
+        ]),
+        await count(
+          `SELECT count(*) AS n FROM conversation_message_extra_photo e
+           JOIN conversation_message m ON m.id = e.message_id WHERE m.conversation_id = $1`,
+          [threadId],
+        ),
+      ];
+      expect(await rowsOf(inbound.id)).toEqual([2, 1, 1]);
+
+      const failed = await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        notifications: new PostgresNotificationStore(client),
+        zappers: messages,
+        auth,
+        nowMs: now.getTime(),
+        storesFor: (tx) => {
+          const stores = txStores(tx);
+          stores.pushStore.enqueue = async () => {
+            throw new Error('push outbox unavailable');
+          };
+          return stores;
+        },
+      });
+      expect(failed).toEqual({ threads: 0, messages: 0 });
+      expect(await threadsLeft([inbound.id, empty.id])).toBe(2);
+      expect(await rowsOf(inbound.id)).toEqual([2, 1, 1]);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [removedPush.id]),
+      ).toBe(1);
+      expect(
+        await count('SELECT count(*) AS n FROM app_setting WHERE key = $1', [
+          DAMUS_THREAD_CLEANUP_KEY,
+        ]),
+      ).toBe(0);
+
+      // The zapper snapshot read before the transaction is empty here, as if the
+      // entitlement was recorded after it; the check inside the transaction keeps the thread.
+      const first = await removeUnadmittedDamusThreads({
+        conversations,
+        pushStore: push,
+        notifications: new PostgresNotificationStore(client),
+        zappers: { listZapperPubkeys: async () => [] },
+        auth,
+        nowMs: now.getTime(),
+        storesFor: txStores,
+      });
+      expect(first.threads).toBeGreaterThanOrEqual(2);
+      expect(first.messages).toBeGreaterThanOrEqual(2);
+
+      expect(await threadsLeft([inbound.id, empty.id])).toBe(0);
+      expect(await rowsOf(inbound.id)).toEqual([0, 0, 0]);
+      expect(
+        await count(
+          'SELECT count(*) AS n FROM conversation_message_translation WHERE message_id = $1',
+          [inboundA.id],
+        ),
+      ).toBe(0);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [removedPush.id]),
+      ).toBe(0);
+      expect(
+        await count('SELECT count(*) AS n FROM message_invoice WHERE id = $1', [invoiceId]),
+      ).toBe(0);
+      expect(await threadsLeft([wrote.id, pair.id, ticket.id, group.id, zapper.id])).toBe(5);
+      expect(await rowsOf(zapper.id)).toEqual([1, 0, 0]);
+      expect(await rowsOf(wrote.id)).toEqual([2, 1, 1]);
+      expect(
+        await count('SELECT count(*) AS n FROM push_outbox WHERE id = $1', [keptPush.id]),
+      ).toBe(1);
+      expect(await conversations.unreadCount(member, false, platform)).toBe(3);
+      const dismiss = await client.query<{ payload: string }>(
+        `SELECT payload FROM push_outbox WHERE account_id = $1 AND type = 'dismiss'`,
+        [member],
+      );
+      expect(dismiss).toHaveLength(1);
+      const dismissPayload = JSON.parse(dismiss[0]?.payload ?? '{}') as {
+        tags: string[];
+        unreadCount: number;
+      };
+      expect(dismissPayload.tags.sort()).toEqual(
+        [`conversation:${inbound.id}`, `conversation:${empty.id}`].sort(),
+      );
+      expect(dismissPayload.unreadCount).toBe(3);
+      expect(
+        await count('SELECT count(*) AS n FROM app_setting WHERE key = $1', [
+          DAMUS_THREAD_CLEANUP_KEY,
+        ]),
+      ).toBe(1);
+
+      const later = await conversations.openMemberDamus(member, hex64(), now);
+      await conversations.appendMessage(row(later.id, null));
+      expect(
+        await removeUnadmittedDamusThreads({
+          conversations,
+          pushStore: push,
+          zappers: messages,
+          auth,
+          nowMs: now.getTime(),
+          storesFor: txStores,
+        }),
+      ).toEqual({ threads: 0, messages: 0 });
+      expect(await threadsLeft([later.id, wrote.id, pair.id, ticket.id, group.id, zapper.id])).toBe(
+        6,
+      );
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore heart amount', () => {
   test('an update without heartSats keeps 21 and a provided 5 replaces it', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
@@ -3703,6 +4011,255 @@ describe('POST /me/wallet/counterparties sources in Postgres', () => {
         previousOwnerId,
         claimantId,
       ]);
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('GET /pos received without a till charge in Postgres', () => {
+  test('lists observed receipts that settled no open or paid charge of the own account', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl, { max: 1 });
+    const hex64 = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    const shopId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const shopKey = `02${hex64()}`;
+    const previousKey = `03${hex64()}`;
+    const payerKey = `02${hex64()}`;
+    const mergedKey = `03${hex64()}`;
+    const prefix = crypto.randomUUID();
+    const id = (name: string): string => `${prefix}-${name}`;
+    const now = Date.parse('2026-11-12T12:00:00.000Z');
+    const at = (minutes: number): Date => new Date(now - minutes * 60_000);
+    const hashA = hex64();
+    const hashB = hex64();
+    const hashC = hex64();
+    const chargeIds = {
+      paidSpark: crypto.randomUUID(),
+      cancelledSpark: crypto.randomUUID(),
+      pendingLn: crypto.randomUUID(),
+      expiredLn: crypto.randomUUID(),
+      unknownLn: crypto.randomUUID(),
+    };
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migrateWalletSchema(client);
+      await migratePosSchema(client);
+      const auth = new PostgresAuthStore(client);
+      for (const accountId of [shopId, otherId]) {
+        await auth.createAccount({
+          id: accountId,
+          linkingKey: null,
+          role: 'verified',
+          name: null,
+          username: `tr_${accountId.replaceAll('-', '').slice(0, 12)}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+      await client.execute(
+        `UPDATE account SET spark_pubkey = $2, spark_pubkey_verified_at = now() WHERE id = $1`,
+        [shopId, shopKey],
+      );
+      await client.execute(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, $4)`,
+        [shopId, previousKey, `spark1${'q'.repeat(62)}`, at(60 * 48)],
+      );
+      const charge = async (
+        chargeId: string,
+        status: string,
+        sparkInvoice: string | null,
+        paidAt: Date | null,
+        hashes: Array<[string, Date]>,
+      ): Promise<void> => {
+        await client.execute(
+          `INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice)
+           VALUES ($1, $2, 21, $3, $4, $5, $6, $7)`,
+          [chargeId, shopId, status, at(60), at(55), paidAt, sparkInvoice],
+        );
+        for (const [hash, createdAt] of hashes) {
+          await client.execute(
+            `INSERT INTO pos_charge_invoice (payment_hash, charge_id, created_at) VALUES ($1, $2, $3)`,
+            [hash, chargeId, createdAt],
+          );
+        }
+      };
+      const sparkPaid = `spark1${prefix.replaceAll('-', '')}paid`;
+      const sparkCancelled = `spark1${prefix.replaceAll('-', '')}cancelled`;
+      await charge(chargeIds.paidSpark, 'paid', sparkPaid, at(9), []);
+      await charge(chargeIds.cancelledSpark, 'cancelled', sparkCancelled, null, []);
+      await charge(chargeIds.pendingLn, 'pending', null, null, [[hashA, at(200)]]);
+      await charge(chargeIds.expiredLn, 'expired', null, null, [[hashB, at(16)]]);
+      // Paid over Lightning, settling payment not reported: lifetime 45..25 minutes ago with the allowance.
+      await charge(chargeIds.unknownLn, 'paid', null, at(30), [[hashC, at(40)]]);
+
+      const time = new Date(now);
+      const wallet = new PostgresWalletStore(client);
+      const report = (name: string, paymentHash: string, direction: 'in' | 'out' = 'in') => ({
+        accountId: shopId,
+        paymentId: id(name),
+        direction,
+        status: 'completed' as const,
+        amountSats: 21,
+        feeSats: 0,
+        paidAt: time,
+        method: 'lightning',
+        paymentHash,
+        invoice: null,
+        destination: null,
+        description: null,
+        lnurlComment: null,
+        category: 'unknown' as const,
+        counterpartyAccountId: null,
+        firstSeenAt: time,
+        updatedAt: time,
+      });
+      await wallet.upsertPayments([
+        report('ln-pending', hashA.toUpperCase()),
+        report('ln-expired', hashB),
+        report('ln-out-report', hashA, 'out'),
+      ]);
+
+      const transfers = new PostgresWalletTransferStore(client);
+      const receipt = (
+        name: string,
+        minutes: number,
+        extra: Partial<WalletTransferRecord> = {},
+      ): WalletTransferRecord => ({
+        accountId: shopId,
+        walletPubkey: shopKey,
+        transferId: id(name),
+        direction: 'in',
+        type: 'preimage_swap',
+        status: 'completed',
+        amountSats: 21,
+        counterpartyPubkey: payerKey,
+        counterpartyPubkeys: [payerKey],
+        sparkInvoice: null,
+        transferCreatedAt: at(minutes),
+        transferUpdatedAt: null,
+        seenAt: time,
+        ...extra,
+      });
+      for (const row of [
+        receipt('ln', 10, { amountSats: 2100 }),
+        receipt('spark', 20, { type: 'transfer' }),
+        receipt('both', 21, { amountSats: 10 }),
+        receipt('both', 22, { walletPubkey: previousKey, amountSats: 11, type: 'transfer' }),
+        receipt('old', 24 * 60 + 1),
+        receipt('future-edge', -5),
+        receipt('future', -6),
+        receipt('other-account', 5, { accountId: otherId }),
+        receipt('sent', 5, { direction: 'out' }),
+        receipt('pending', 5, { status: 'pending' }),
+        receipt('exit', 5, { type: 'cooperative_exit' }),
+        receipt('deposit', 5, { type: 'utxo_swap' }),
+        receipt('from-previous', 5, { type: 'transfer', counterpartyPubkeys: [previousKey] }),
+        receipt('self', 5, { type: 'transfer', counterpartyPubkeys: [shopKey] }),
+        // An account merge moved in the transfers of mergedKey, not its wallet row.
+        receipt('merged-side', 6, {
+          walletPubkey: mergedKey,
+          direction: 'out',
+          counterpartyPubkeys: [shopKey],
+        }),
+        receipt('from-merged', 6, { type: 'transfer', counterpartyPubkeys: [mergedKey] }),
+        receipt('spark-paid', 8, {
+          type: 'transfer',
+          sparkInvoice: ` ${sparkPaid.toUpperCase()} `,
+        }),
+        receipt('spark-cancelled', 11, { type: 'transfer', sparkInvoice: sparkCancelled }),
+        receipt('ln-pending', 13),
+        receipt('ln-expired', 14),
+        receipt('ln-out-report', 15),
+        receipt('before', 46),
+        receipt('first-edge', 45),
+        receipt('inside', 33),
+        receipt('last-edge', 25),
+        receipt('spark-inside', 34, { type: 'transfer' }),
+        // One transfer id in two wallets: one excluded row excludes the whole payment.
+        receipt('mixed-inside', 33, { walletPubkey: previousKey, type: 'transfer' }),
+        receipt('mixed-inside', 33),
+        receipt('spark-paid', 8, { walletPubkey: previousKey }),
+      ]) {
+        await transfers.upsertTransfer(row);
+      }
+      const read = async (limit = 20): Promise<string[]> =>
+        (
+          await transfers.listTillReceipts({
+            accountId: shopId,
+            sinceMs: now - 24 * 60 * 60_000,
+            nowMs: now,
+            clockAllowanceMs: 300_000,
+            limit,
+          })
+        ).map((entry) => entry.id.slice(prefix.length + 1));
+      // `first-edge`, `inside`, and `last-edge` are unreported Lightning receipts inside the
+      // lifetime of the paid charge whose settling payment is not known yet: withheld.
+      expect(await read()).toEqual([
+        'future-edge',
+        'ln',
+        'spark-cancelled',
+        'ln-expired',
+        'ln-out-report',
+        'spark',
+        'both',
+        'spark-inside',
+        'before',
+      ]);
+      expect(await read(2)).toEqual(['future-edge', 'ln']);
+      const both = (
+        await transfers.listTillReceipts({
+          accountId: shopId,
+          sinceMs: now - 24 * 60 * 60_000,
+          nowMs: now,
+          clockAllowanceMs: 300_000,
+          limit: 20,
+        })
+      ).find((entry) => entry.id === id('both'));
+      expect(both).toEqual({
+        id: id('both'),
+        amountSats: 21,
+        receivedAt: at(22),
+        kind: 'lightning',
+      });
+
+      // Once the shop's wallet reports the settling payment of the unknown charge, nothing is withheld.
+      await wallet.upsertPayments([report('settling', hashC)]);
+      await transfers.upsertTransfer(receipt('settling', 32));
+      expect(await read()).toEqual([
+        'future-edge',
+        'ln',
+        'spark-cancelled',
+        'ln-expired',
+        'ln-out-report',
+        'spark',
+        'both',
+        'last-edge',
+        'mixed-inside',
+        'inside',
+        'spark-inside',
+        'first-edge',
+        'before',
+      ]);
+    } finally {
+      await client.execute('DELETE FROM wallet_transfer WHERE account_id IN ($1, $2)', [
+        shopId,
+        otherId,
+      ]);
+      await client.execute('DELETE FROM wallet_payment WHERE account_id = $1', [shopId]);
+      await client.execute(
+        'DELETE FROM pos_charge_invoice WHERE charge_id IN (SELECT id FROM pos_charge WHERE account_id = $1)',
+        [shopId],
+      );
+      await client.execute('DELETE FROM pos_charge WHERE account_id = $1', [shopId]);
+      await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [shopId]);
+      await client.execute('DELETE FROM account WHERE id IN ($1, $2)', [shopId, otherId]);
       await closeIfPossible(sql);
     }
   });
@@ -9782,6 +10339,1596 @@ describe('PostgresOperatorLoginStore and api_log.operator', () => {
       expect(changes.some((row) => row.challenge === hashed)).toBe(true);
       expect(changes.some((row) => row.challenge === challenge)).toBe(false);
     } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresWalletUsageStore', () => {
+  test('merges completed payments and reads forum invoices and shop charges', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const ids: string[] = [];
+    const payoutIds: string[] = [];
+    const paymentHashes: string[] = [];
+    const messageIds: string[] = [];
+    const receiptIds: string[] = [];
+    const sparkInvoices: string[] = [];
+    // Every inserted text id carries this prefix, so the assertions never read
+    // another run's rows from the shared database.
+    const run = `usage-${crypto.randomUUID()}`;
+    let previousPlatform: string | undefined;
+    let platformId: string | undefined;
+    try {
+      await migrateAuthSchema(client);
+      await migrateMessageSchema(client);
+      await migratePosSchema(client);
+      await migrateFondPayoutSchema(client);
+      await migrateWalletSchema(client);
+      await migrateSparkInvoiceSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const previous = await client.query<{ id: string }>(
+        `SELECT id FROM account WHERE is_platform LIMIT 1`,
+      );
+      const previousRow = previous[0];
+      if (previousRow !== undefined) {
+        previousPlatform = previousRow.id;
+      }
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const create = async (role: 'basis' | 'fond', isPlatform: boolean): Promise<string> => {
+        const id = crypto.randomUUID();
+        await auth.createAccount({
+          id,
+          linkingKey: null,
+          role,
+          name: null,
+          username: `usage_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+          walletRequired: true,
+          ...(isPlatform ? { isPlatform: true } : {}),
+        });
+        ids.push(id);
+        return id;
+      };
+      const memberA = await create('basis', false);
+      const memberB = await create('basis', false);
+      const shop = await create('basis', false);
+      const fund = await create('fond', false);
+      platformId = await create('fond', true);
+
+      const since = new Date(Date.UTC(2400, 0, 1 + Math.floor(Math.random() * 300), 12, 0, 0));
+      const at = (minutes: number): Date => new Date(since.getTime() + minutes * 60_000);
+      const bolt11 = `${run}-bolt`;
+      const sparkInvoice = `${run}-spark`;
+      const owedInvoice = `${run}-owed`;
+      const forumPr = `${run}-forum-pr`;
+      const invoiceOnlyPr = `${run}-invoice-only-pr`;
+
+      const insertNote = async (accountId: string, hidden: boolean): Promise<string> => {
+        const id = crypto.randomUUID();
+        messageIds.push(id);
+        await client.execute(
+          `INSERT INTO message (id, account_id, name, text, created_at, deleted_at)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [id, accountId, 'Usage note', `${run} note`, at(0), hidden ? at(5) : null],
+        );
+        return id;
+      };
+
+      const insertShopNote = async (
+        accountId: string,
+        shopAccountId: string,
+        hidden: boolean,
+      ): Promise<string> => {
+        const id = crypto.randomUUID();
+        messageIds.push(id);
+        await client.execute(
+          `INSERT INTO message (id, account_id, shop_account_id, name, text, created_at, deleted_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            id,
+            accountId,
+            shopAccountId,
+            'Usage shop note',
+            `${run} shop #21GiftsShop`,
+            at(0),
+            hidden ? at(5) : null,
+          ],
+        );
+        return id;
+      };
+
+      const insertPayment = async (row: {
+        accountId: string;
+        paymentId: string;
+        direction: 'in' | 'out';
+        status: string;
+        amountSats: number;
+        feeSats: number;
+        paidAt: Date;
+        category: string;
+        counterpartyAccountId: string | null;
+        paymentHash: string | null;
+        invoice: string | null;
+        destination?: string | null;
+      }): Promise<void> => {
+        await client.execute(
+          `INSERT INTO wallet_payment (
+             account_id, payment_id, direction, status, amount_sats, fee_sats, paid_at,
+             method, payment_hash, invoice, destination, description, lnurl_comment,
+             category, counterparty_account_id, first_seen_at, updated_at
+           ) VALUES (
+             $1,$2,$3,$4,$5,$6,$7,'lightning',$8,$9,$12,NULL,NULL,$10,$11,$7,$7
+           )`,
+          [
+            row.accountId,
+            row.paymentId,
+            row.direction,
+            row.status,
+            row.amountSats,
+            row.feeSats,
+            row.paidAt,
+            row.paymentHash,
+            row.invoice,
+            row.category,
+            row.counterpartyAccountId,
+            row.destination ?? null,
+          ],
+        );
+      };
+      const insertPayout = async (
+        status: string,
+        bolt: string | null,
+        spark: string | null,
+      ): Promise<void> => {
+        const id = crypto.randomUUID();
+        payoutIds.push(id);
+        await client.execute(
+          `INSERT INTO fond_payout (
+             id, utc_day, kind, address, amount_usd, comment, status, bolt11, spark_invoice
+           ) VALUES ($1, '2400-01-01', 'welcome', $2, '1.00', 'usage', $3, $4, $5)`,
+          [id, `${run}-${id}`, status, bolt, spark],
+        );
+      };
+      const insertSparkInvoice = async (paymentHash: string, invoice: string): Promise<void> => {
+        sparkInvoices.push(invoice);
+        await client.execute(
+          `INSERT INTO spark_invoice (
+             payment_hash, invoice, receiver_pubkey, amount_sats, bolt11, zap_request,
+             created_at, status
+           ) VALUES ($1,$2,$3,1,$4,$5,$6,'settled')`,
+          [
+            paymentHash,
+            invoice,
+            hex64(),
+            `${run}-spark-bolt-${crypto.randomUUID()}`,
+            `${run}-spark-zap-request-${crypto.randomUUID()}`,
+            at(0),
+          ],
+        );
+      };
+
+      const platformProfileNoteId = await insertNote(platformId, false);
+      await client.execute(`UPDATE account SET profile_message_id = $1 WHERE id = $2`, [
+        platformProfileNoteId,
+        platformId,
+      ]);
+      // A platform-authored note that is not the profile note is ordinary and
+      // can receive a real forum gift.
+      const platformOrdinaryNoteId = await insertNote(platformId, false);
+
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-g1`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 100,
+        feeSats: 200,
+        paidAt: at(120),
+        category: 'unknown',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: `${run}-g1`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 150,
+        feeSats: 10,
+        paidAt: at(180),
+        category: 'shop',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      const giftHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-g2`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 40,
+        feeSats: 1,
+        paidAt: at(240),
+        category: 'gift',
+        counterpartyAccountId: null,
+        paymentHash: giftHash,
+        invoice: forumPr,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-g2`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 40,
+        feeSats: 0,
+        paidAt: at(250),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: giftHash,
+        invoice: forumPr,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-g3`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 12321,
+        feeSats: 0,
+        paidAt: at(300),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: fund,
+        paymentId: `${run}-g4`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 293955,
+        feeSats: 0,
+        paidAt: at(360),
+        category: 'outside_lightning',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-g5`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 69089,
+        feeSats: 210,
+        paidAt: at(420),
+        category: 'outside_lightning',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayout('paid', bolt11, null);
+      await insertPayment({
+        accountId: fund,
+        paymentId: `${run}-g6`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 1000,
+        feeSats: 0,
+        paidAt: at(480),
+        category: 'shop',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: bolt11,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: `${run}-g6`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 1000,
+        feeSats: 0,
+        paidAt: at(490),
+        category: 'shop',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayout('paid', null, sparkInvoice);
+      await insertPayment({
+        accountId: fund,
+        paymentId: `${run}-g7`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 500,
+        feeSats: 0,
+        paidAt: at(540),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: sparkInvoice,
+      });
+      await insertPayout('owed', owedInvoice, null);
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-g8`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 7,
+        feeSats: 0,
+        paidAt: at(600),
+        category: 'gift',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: owedInvoice,
+      });
+      await insertPayment({
+        accountId: platformId,
+        paymentId: `${run}-g9`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 1,
+        feeSats: 0,
+        paidAt: at(660),
+        category: 'platform',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-pending`,
+        direction: 'out',
+        status: 'pending',
+        amountSats: 111,
+        feeSats: 0,
+        paidAt: at(30),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-before`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 222,
+        feeSats: 0,
+        paidAt: at(-1),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      // One side is just before the bound and the other just after it. The
+      // one-day read slack lets the two rows pair, and `bounds` then drops the
+      // whole pair because its earliest `paid_at` is before the bound. Without
+      // the slack, the in-window side would count as a separate payment.
+      const nearBoundaryId = `${run}-near-boundary`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: nearBoundaryId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 223,
+        feeSats: 0,
+        paidAt: at(-12 * 60),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: nearBoundaryId,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 223,
+        feeSats: 0,
+        paidAt: at(12 * 60),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-straddle`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 333,
+        feeSats: 0,
+        paidAt: at(-1440),
+        category: 'unknown',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-straddle`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 333,
+        feeSats: 0,
+        paidAt: at(1440),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      // A current outgoing row and a future-dated incoming row share a hash.
+      // With the exclusive upper bound the future row is not read: the current
+      // row counts on its own instead of pairing and taking the future amount,
+      // fee, category, or account.
+      const futureHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-future-shared-current`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 74,
+        feeSats: 3,
+        paidAt: at(1000),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: futureHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: `${run}-future-shared-future`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 75,
+        feeSats: 9,
+        paidAt: at(2000),
+        category: 'shop',
+        counterpartyAccountId: memberA,
+        paymentHash: futureHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-unknown`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 9,
+        feeSats: 0,
+        paidAt: at(720),
+        category: 'unknown',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-unknown`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 9,
+        feeSats: 0,
+        paidAt: at(730),
+        category: 'unknown',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-onchain`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 15,
+        feeSats: 0,
+        paidAt: at(780),
+        category: 'onchain',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+
+      // Forum-gift classifier cases: each `gift` payment is a forum gift only
+      // when the paid invoice is a living, claimed forum gift or paid heart.
+      const conversationHash = hex64();
+      const repaymentHash = hex64();
+      const hiddenHash = hex64();
+      const heartHash = hex64();
+      const invoiceOnlyHash = hex64();
+      const zapHash = hex64();
+      const sparkInvoiceHash = hex64();
+      const sparkDestinationHash = hex64();
+      const sparkConversationHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-conversation`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 41,
+        feeSats: 0,
+        paidAt: at(840),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: conversationHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-repayment`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 42,
+        feeSats: 0,
+        paidAt: at(850),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: repaymentHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-hidden`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 43,
+        feeSats: 0,
+        paidAt: at(860),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: hiddenHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-heart`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 44,
+        feeSats: 0,
+        paidAt: at(870),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: heartHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-invoice-only`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 45,
+        feeSats: 0,
+        paidAt: at(880),
+        category: 'platform',
+        counterpartyAccountId: platformId,
+        paymentHash: null,
+        invoice: invoiceOnlyPr,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-zap`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 46,
+        feeSats: 0,
+        paidAt: at(890),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: zapHash,
+        invoice: null,
+      });
+      await insertSparkInvoice(sparkInvoiceHash, `${run}-spark-forum`);
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-spark-invoice`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 47,
+        feeSats: 0,
+        paidAt: at(895),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: `${run}-spark-forum`,
+      });
+      await insertSparkInvoice(sparkDestinationHash, `${run}-spark-destination`);
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-spark-destination`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 48,
+        feeSats: 0,
+        paidAt: at(896),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: null,
+        destination: `${run}-spark-destination`,
+      });
+      await insertSparkInvoice(sparkConversationHash, `${run}-spark-conversation`);
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-spark-conversation`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 49,
+        feeSats: 0,
+        paidAt: at(897),
+        category: 'gift',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: `${run}-spark-conversation`,
+      });
+      const platformFeeHash = hex64();
+      const platformHeartHash = hex64();
+      const platformOrdinaryGiftHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-platform-fee`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 50,
+        feeSats: 0,
+        paidAt: at(910),
+        category: 'platform',
+        counterpartyAccountId: platformId,
+        paymentHash: platformFeeHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-platform-heart`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 51,
+        feeSats: 0,
+        paidAt: at(911),
+        category: 'gift',
+        counterpartyAccountId: platformId,
+        paymentHash: platformHeartHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-platform-ordinary-gift`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 52,
+        feeSats: 0,
+        paidAt: at(912),
+        category: 'gift',
+        counterpartyAccountId: platformId,
+        paymentHash: platformOrdinaryGiftHash,
+        invoice: null,
+      });
+      // An incoming-only row names its payer through `counterparty_account_id`.
+      // It must still count as members-to-members rather than outside-to-member.
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-incoming-only`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 53,
+        feeSats: 0,
+        paidAt: at(913),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: null,
+      });
+
+      const forumHeartAt = at(30);
+      const forumGiftAt = at(40);
+      const forumErrorAt = at(50);
+      const forumOldAt = at(-1440);
+      const forumConversationAt = at(60);
+      const forumRepayAt = at(70);
+      const forumRepayPartAt = at(80);
+      const forumUnpaidAt = at(90);
+      const forumHiddenAt = at(100);
+      const forumInvoiceOnlyAt = at(110);
+      const forumPlatformFeeAt = at(120);
+      const forumPlatformHeartAt = at(130);
+      const insertForum = async (row: {
+        createdAt: Date;
+        amountSats: number;
+        result: string;
+        heart: boolean;
+        paymentHash: string | null;
+        pr: string | null;
+        description: string | null;
+        conversationId: string | null;
+        hiddenNote: boolean;
+        noteId?: string;
+        noteAuthorId?: string;
+        paid: boolean;
+      }): Promise<void> => {
+        const noteAuthorId = row.noteAuthorId ?? memberB;
+        const messageId = row.noteId ?? (await insertNote(noteAuthorId, row.hiddenNote));
+        await client.execute(
+          `INSERT INTO message_invoice (
+             id, created_at, message_id, payer_account_id, author_account_id,
+             amount_sats, result, http_status, heart, payment_hash, pr, description,
+             conversation_id
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,200,$8,$9,$10,$11,$12)`,
+          [
+            crypto.randomUUID(),
+            row.createdAt,
+            messageId,
+            memberA,
+            noteAuthorId,
+            row.amountSats,
+            row.result,
+            row.heart,
+            row.paymentHash,
+            row.pr,
+            row.description,
+            row.conversationId,
+          ],
+        );
+        if (!row.paid) {
+          return;
+        }
+        if (row.paymentHash === null) {
+          throw new Error('paid forum invoice has no payment hash');
+        }
+        const storedHash = row.paymentHash.toLowerCase();
+        const receiptEventId = `${run}-receipt-${crypto.randomUUID()}`;
+        receiptIds.push(receiptEventId);
+        await client.execute(
+          `INSERT INTO nostr_zap_payment (payment_hash, receipt_event_id, created_at)
+           VALUES ($1::text, $2::text, $3::timestamptz)`,
+          [storedHash, receiptEventId, row.createdAt],
+        );
+        paymentHashes.push(storedHash);
+        await client.execute(
+          `INSERT INTO nostr_zap_receipt (event_id, message_id, sats, recorded_at)
+           VALUES ($1::text, $2::uuid, $3::bigint, $4::timestamptz)`,
+          [receiptEventId, messageId, row.amountSats, row.createdAt],
+        );
+      };
+      await insertForum({
+        createdAt: forumHeartAt,
+        amountSats: 21,
+        result: 'ok',
+        heart: true,
+        paymentHash: heartHash.toUpperCase(),
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumGiftAt,
+        amountSats: 5,
+        result: 'ok',
+        heart: false,
+        paymentHash: giftHash,
+        pr: forumPr,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumErrorAt,
+        amountSats: 77,
+        result: 'error',
+        heart: true,
+        paymentHash: hex64(),
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumOldAt,
+        amountSats: 88,
+        result: 'ok',
+        heart: true,
+        paymentHash: hex64(),
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumConversationAt,
+        amountSats: 31,
+        result: 'ok',
+        heart: true,
+        paymentHash: conversationHash,
+        pr: null,
+        description: null,
+        conversationId: crypto.randomUUID(),
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumRepayAt,
+        amountSats: 32,
+        result: 'ok',
+        heart: false,
+        paymentHash: repaymentHash,
+        pr: null,
+        description: `repay:0:${memberB}`,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumRepayPartAt,
+        amountSats: 33,
+        result: 'ok',
+        heart: false,
+        paymentHash: hex64(),
+        pr: null,
+        description: `repayp:0:${memberB}:0:21:21`,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumUnpaidAt,
+        amountSats: 34,
+        result: 'ok',
+        heart: true,
+        paymentHash: hex64(),
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: false,
+      });
+      await insertForum({
+        createdAt: forumHiddenAt,
+        amountSats: 35,
+        result: 'ok',
+        heart: false,
+        paymentHash: hiddenHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: true,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumInvoiceOnlyAt,
+        amountSats: 45,
+        result: 'ok',
+        heart: false,
+        paymentHash: invoiceOnlyHash,
+        pr: invoiceOnlyPr,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: at(898),
+        amountSats: 47,
+        result: 'ok',
+        heart: false,
+        paymentHash: sparkInvoiceHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: at(899),
+        amountSats: 48,
+        result: 'ok',
+        heart: false,
+        paymentHash: sparkDestinationHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: at(900),
+        amountSats: 49,
+        result: 'ok',
+        heart: false,
+        paymentHash: sparkConversationHash,
+        pr: null,
+        description: null,
+        conversationId: crypto.randomUUID(),
+        hiddenNote: false,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumPlatformFeeAt,
+        amountSats: 1,
+        result: 'ok',
+        heart: false,
+        paymentHash: platformFeeHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        noteId: platformProfileNoteId,
+        noteAuthorId: platformId,
+        paid: true,
+      });
+      await insertForum({
+        createdAt: forumPlatformHeartAt,
+        amountSats: 2,
+        result: 'ok',
+        heart: true,
+        paymentHash: platformHeartHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        noteId: platformProfileNoteId,
+        noteAuthorId: platformId,
+        paid: true,
+      });
+      const forumPlatformOrdinaryGiftAt = at(140);
+      await insertForum({
+        createdAt: forumPlatformOrdinaryGiftAt,
+        amountSats: 3,
+        result: 'ok',
+        heart: false,
+        paymentHash: platformOrdinaryGiftHash,
+        pr: null,
+        description: null,
+        conversationId: null,
+        hiddenNote: false,
+        noteId: platformOrdinaryNoteId,
+        noteAuthorId: platformId,
+        paid: true,
+      });
+      // A zap receipt gift: claimed hash, living note, no heart invoice.
+      const zapReceiptId = `${run}-zap-receipt`;
+      receiptIds.push(zapReceiptId);
+      const zapNoteId = await insertNote(memberB, false);
+      await client.execute(
+        `INSERT INTO nostr_zap_receipt (event_id, message_id, sats, recorded_at)
+         VALUES ($1::text, $2::uuid, 46, $3::timestamptz)`,
+        [zapReceiptId, zapNoteId, at(890)],
+      );
+      paymentHashes.push(zapHash);
+      await client.execute(
+        `INSERT INTO nostr_zap_payment (payment_hash, receipt_event_id, created_at)
+         VALUES ($1::text, $2::text, $3::timestamptz)`,
+        [zapHash, zapReceiptId, at(890)],
+      );
+
+      // Two unrelated same-direction rows on different accounts keep their id
+      // but are not a transfer pair, so they must stay two payments.
+      const sharedUnpairedId = `${run}-shared-unpaired`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: sharedUnpairedId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 61,
+        feeSats: 0,
+        paidAt: at(900),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: sharedUnpairedId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 62,
+        feeSats: 0,
+        paidAt: at(901),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: null,
+      });
+      // A proper opposite-direction pair on two accounts is one payment.
+      const sharedPairId = `${run}-shared-pair`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: sharedPairId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 63,
+        feeSats: 1,
+        paidAt: at(902),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: sharedPairId,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 63,
+        feeSats: 0,
+        paidAt: at(903),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      // A paired id that starts with `row:<account uuid>:` must not collide
+      // with that account's unpaired row whose bare payment id is the suffix.
+      const rowPrefixedUnpairedId = `${run}-row-prefixed`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: rowPrefixedUnpairedId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 64,
+        feeSats: 0,
+        paidAt: at(904),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: null,
+      });
+      const rowPrefixedPairId = `row:${memberA}:${rowPrefixedUnpairedId}`;
+      await insertPayment({
+        accountId: memberB,
+        paymentId: rowPrefixedPairId,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 65,
+        feeSats: 2,
+        paidAt: at(905),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: rowPrefixedPairId,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 65,
+        feeSats: 0,
+        paidAt: at(906),
+        category: 'member',
+        counterpartyAccountId: null,
+        paymentHash: null,
+        invoice: null,
+      });
+      // Payment hashes pair member-to-member rows even when their payment ids
+      // differ. Hash comparison is case-insensitive.
+      const sharedHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-hash-out`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 66,
+        feeSats: 1,
+        paidAt: at(907),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: sharedHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-hash-in`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 66,
+        feeSats: 0,
+        paidAt: at(908),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: sharedHash.toUpperCase(),
+        invoice: null,
+      });
+      // Spark invoices pair through the same non-empty invoice text.
+      const sharedInvoice = `${run}-shared-invoice`;
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-invoice-out`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 67,
+        feeSats: 1,
+        paidAt: at(909),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: null,
+        invoice: sharedInvoice,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-invoice-in`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 67,
+        feeSats: 0,
+        paidAt: at(910),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: sharedInvoice,
+      });
+      // One outgoing row matched by two incoming rows is ambiguous and keeps
+      // all three rows as separate payments.
+      const ambiguousHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: `${run}-ambiguous-out`,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 68,
+        feeSats: 0,
+        paidAt: at(911),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: ambiguousHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: `${run}-ambiguous-in-1`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 70,
+        feeSats: 0,
+        paidAt: at(912),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: ambiguousHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: `${run}-ambiguous-in-2`,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 71,
+        feeSats: 0,
+        paidAt: at(913),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: ambiguousHash,
+        invoice: null,
+      });
+      // A same-id pair still merges when a third, non-completed row shares the
+      // id: only completed rows take part in the one-partner rule. The two
+      // completed rows also share a hash, so the id and hash joins find the
+      // same pair and `UNION` must still count it once.
+      const sharedIdWithFailedRow = `${run}-shared-id-failed`;
+      const sharedIdHash = hex64();
+      await insertPayment({
+        accountId: memberA,
+        paymentId: sharedIdWithFailedRow,
+        direction: 'out',
+        status: 'completed',
+        amountSats: 72,
+        feeSats: 1,
+        paidAt: at(920),
+        category: 'member',
+        counterpartyAccountId: memberB,
+        paymentHash: sharedIdHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: memberB,
+        paymentId: sharedIdWithFailedRow,
+        direction: 'in',
+        status: 'completed',
+        amountSats: 72,
+        feeSats: 0,
+        paidAt: at(921),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: sharedIdHash,
+        invoice: null,
+      });
+      await insertPayment({
+        accountId: shop,
+        paymentId: sharedIdWithFailedRow,
+        direction: 'in',
+        status: 'failed',
+        amountSats: 73,
+        feeSats: 0,
+        paidAt: at(922),
+        category: 'member',
+        counterpartyAccountId: memberA,
+        paymentHash: null,
+        invoice: null,
+      });
+
+      const shopPaidAt = at(15);
+      const shopPendingAt = at(25);
+      const shopOldAt = at(-60);
+      await insertShopNote(shop, memberA, false);
+      await insertShopNote(memberB, memberB, true);
+      const insertCharge = async (
+        accountId: string,
+        createdAt: Date,
+        status: string,
+      ): Promise<void> => {
+        await client.execute(
+          `INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at)
+           VALUES ($1,$2,21,$3,$4,$5)`,
+          [crypto.randomUUID(), accountId, status, createdAt, at(2000)],
+        );
+      };
+      await insertCharge(memberA, shopPaidAt, 'paid');
+      await insertCharge(memberB, shopPendingAt, 'pending');
+      await insertCharge(fund, shopOldAt, 'paid');
+
+      const store = new PostgresWalletUsageStore(client);
+      // The exclusive bound sits after the one-day straddle row and before the
+      // future-dated row that shares `futureHash` with the current row.
+      const payments = await store.payments(since.getTime(), at(1441).getTime());
+      const ours = payments.filter((row) => {
+        const payer = row.payerAccountId;
+        const payee = row.payeeAccountId;
+        return (payer !== null && ids.includes(payer)) || (payee !== null && ids.includes(payee));
+      });
+      const byAmount = (amount: number): WalletUsagePaymentRow => {
+        const found = ours.find((row) => row.amountSats === amount);
+        if (found === undefined) {
+          throw new Error(`missing payment amount ${amount}`);
+        }
+        return found;
+      };
+      expect(
+        ours.map((row) => row.amountSats).sort((left, right) => (left < right ? -1 : 1)),
+      ).toEqual([
+        1, 7, 9, 15, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 61, 62, 63, 64, 65, 66,
+        67, 68, 70, 71, 72, 74, 150, 500, 1000, 12321, 69089, 293955,
+      ]);
+      expect(byAmount(74)).toMatchObject({
+        feeSats: 3,
+        category: 'member',
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+        isFundPayout: false,
+        isForumGift: false,
+      });
+      expect(ours.some((row) => row.amountSats === 75)).toBe(false);
+      const pair = ours.filter((row) => row.amountSats === 63);
+      expect(pair).toHaveLength(1);
+      expect(pair[0]?.feeSats).toBe(1);
+      expect(byAmount(64)).toMatchObject({
+        feeSats: 0,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(byAmount(65)).toMatchObject({
+        feeSats: 2,
+        payerAccountId: memberB,
+        payeeAccountId: shop,
+      });
+      expect(
+        ours
+          .filter((row) => row.amountSats === 64 || row.amountSats === 65)
+          .map((row) => row.amountSats)
+          .sort((left, right) => left - right),
+      ).toEqual([64, 65]);
+      expect(byAmount(61)).toMatchObject({
+        feeSats: 0,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(byAmount(62)).toMatchObject({
+        feeSats: 0,
+        payerAccountId: memberB,
+        payeeAccountId: memberA,
+      });
+
+      const grouped = byAmount(150);
+      expect(grouped).toMatchObject({
+        feeSats: 210,
+        category: 'shop',
+        payerAccountId: memberA,
+        payeeAccountId: shop,
+        payerParty: 'members',
+        payeeParty: 'members',
+        isFundPayout: false,
+        isForumGift: false,
+      });
+      expect(grouped.paidAt.toISOString()).toBe(at(120).toISOString());
+
+      const gift = byAmount(40);
+      expect(gift).toMatchObject({
+        category: 'gift',
+        feeSats: 1,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+        isForumGift: true,
+      });
+      expect(gift.paidAt.toISOString()).toBe(at(240).toISOString());
+
+      const transfer = byAmount(12321);
+      expect(transfer).toMatchObject({
+        category: 'member',
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+        payerParty: 'members',
+        payeeParty: 'members',
+        isFundPayout: false,
+        isForumGift: false,
+      });
+
+      const outsideFund = byAmount(293955);
+      expect(outsideFund).toMatchObject({
+        category: 'outside_lightning',
+        payerAccountId: null,
+        payeeAccountId: fund,
+        payerParty: 'outside',
+        payeeParty: 'fund',
+        isFundPayout: false,
+        isForumGift: false,
+      });
+
+      const withdrawal = byAmount(69089);
+      expect(withdrawal).toMatchObject({
+        feeSats: 210,
+        category: 'outside_lightning',
+        payerAccountId: memberA,
+        payeeAccountId: null,
+        payerParty: 'members',
+        payeeParty: 'outside',
+        isFundPayout: false,
+        isForumGift: false,
+      });
+
+      const boltPayout = byAmount(1000);
+      expect(boltPayout).toMatchObject({
+        category: 'shop',
+        payerAccountId: fund,
+        payeeAccountId: shop,
+        payerParty: 'fund',
+        payeeParty: 'members',
+        isFundPayout: true,
+        isForumGift: false,
+      });
+      expect(boltPayout.paidAt.toISOString()).toBe(at(480).toISOString());
+
+      const sparkPayout = byAmount(500);
+      expect(sparkPayout).toMatchObject({
+        payerAccountId: fund,
+        payeeAccountId: memberB,
+        payerParty: 'fund',
+        payeeParty: 'members',
+        isFundPayout: true,
+        isForumGift: false,
+      });
+
+      expect(byAmount(7).isFundPayout).toBe(false);
+      expect(byAmount(7).category).toBe('gift');
+      expect(byAmount(7).isForumGift).toBe(false);
+
+      const platformPayment = byAmount(1);
+      expect(platformPayment).toMatchObject({
+        payerAccountId: platformId,
+        payeeAccountId: memberB,
+        payerParty: 'platform',
+        payeeParty: 'members',
+        category: 'platform',
+        isFundPayout: false,
+        isForumGift: false,
+      });
+
+      expect(byAmount(9).category).toBe('unknown');
+      expect(byAmount(9).isForumGift).toBe(false);
+      expect(byAmount(15).category).toBe('onchain');
+
+      // Only a paid forum gift or paid heart on a living note is `isForumGift`.
+      expect(byAmount(41).isForumGift).toBe(false);
+      expect(byAmount(42).isForumGift).toBe(false);
+      expect(byAmount(43).isForumGift).toBe(false);
+      expect(byAmount(44).isForumGift).toBe(true);
+      expect(byAmount(45).isForumGift).toBe(true);
+      expect(byAmount(45).category).toBe('platform');
+      expect(byAmount(46).isForumGift).toBe(true);
+      expect(byAmount(46).category).toBe('gift');
+      expect(byAmount(47).isForumGift).toBe(true);
+      expect(byAmount(48).isForumGift).toBe(true);
+      expect(byAmount(49).isForumGift).toBe(false);
+      expect(byAmount(50)).toMatchObject({
+        category: 'platform',
+        payerAccountId: memberA,
+        payeeAccountId: platformId,
+        payerParty: 'members',
+        payeeParty: 'platform',
+        isForumGift: false,
+      });
+      expect(byAmount(51)).toMatchObject({
+        category: 'gift',
+        payerAccountId: memberA,
+        payeeAccountId: platformId,
+        payerParty: 'members',
+        payeeParty: 'platform',
+        isForumGift: true,
+      });
+      expect(byAmount(52)).toMatchObject({
+        category: 'gift',
+        payerAccountId: memberA,
+        payeeAccountId: platformId,
+        payerParty: 'members',
+        payeeParty: 'platform',
+        isForumGift: true,
+      });
+      expect(byAmount(53)).toMatchObject({
+        category: 'member',
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+        payerParty: 'members',
+        payeeParty: 'members',
+        isForumGift: false,
+      });
+      expect(byAmount(66)).toMatchObject({
+        feeSats: 1,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(byAmount(66).paidAt.toISOString()).toBe(at(907).toISOString());
+      expect(ours.filter((row) => row.amountSats === 66)).toHaveLength(1);
+      expect(byAmount(67)).toMatchObject({
+        feeSats: 1,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(ours.filter((row) => row.amountSats === 67)).toHaveLength(1);
+      expect(byAmount(68)).toMatchObject({
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(ours.filter((row) => row.amountSats === 68)).toHaveLength(1);
+      expect(byAmount(70)).toMatchObject({
+        payeeAccountId: memberB,
+      });
+      expect(ours.filter((row) => row.amountSats === 70)).toHaveLength(1);
+      expect(byAmount(71)).toMatchObject({
+        payeeAccountId: shop,
+      });
+      expect(ours.filter((row) => row.amountSats === 71)).toHaveLength(1);
+      expect(
+        ours.filter(
+          (row) => row.amountSats === 68 || row.amountSats === 70 || row.amountSats === 71,
+        ),
+      ).toHaveLength(3);
+      expect(byAmount(72)).toMatchObject({
+        feeSats: 1,
+        payerAccountId: memberA,
+        payeeAccountId: memberB,
+      });
+      expect(byAmount(72).paidAt.toISOString()).toBe(at(920).toISOString());
+      expect(ours.filter((row) => row.amountSats === 72)).toHaveLength(1);
+      expect(ours.some((row) => row.amountSats === 73)).toBe(false);
+      expect(ours.some((row) => row.payerAccountId === memberA && row.amountSats === 223)).toBe(
+        false,
+      );
+      expect(ours.some((row) => row.payeeAccountId === memberB && row.amountSats === 223)).toBe(
+        false,
+      );
+
+      const forum = await store.forumInvoices(since.getTime());
+      const forumAt = (createdAt: Date) =>
+        forum.find((row) => row.createdAt.getTime() === createdAt.getTime());
+      expect(forumAt(forumHeartAt)).toEqual({
+        createdAt: forumHeartAt,
+        amountSats: 21,
+        heart: true,
+      });
+      expect(forumAt(forumGiftAt)).toEqual({
+        createdAt: forumGiftAt,
+        amountSats: 5,
+        heart: false,
+      });
+      expect(forumAt(forumInvoiceOnlyAt)).toEqual({
+        createdAt: forumInvoiceOnlyAt,
+        amountSats: 45,
+        heart: false,
+      });
+      expect(forumAt(forumErrorAt)).toBeUndefined();
+      expect(forumAt(forumOldAt)).toBeUndefined();
+      expect(forumAt(forumConversationAt)).toBeUndefined();
+      expect(forumAt(forumRepayAt)).toBeUndefined();
+      expect(forumAt(forumRepayPartAt)).toBeUndefined();
+      expect(forumAt(forumUnpaidAt)).toBeUndefined();
+      expect(forumAt(forumHiddenAt)).toBeUndefined();
+      expect(forumAt(forumPlatformFeeAt)).toBeUndefined();
+      expect(forumAt(forumPlatformHeartAt)).toEqual({
+        createdAt: forumPlatformHeartAt,
+        amountSats: 2,
+        heart: true,
+      });
+      expect(forumAt(forumPlatformOrdinaryGiftAt)).toEqual({
+        createdAt: forumPlatformOrdinaryGiftAt,
+        amountSats: 3,
+        heart: false,
+      });
+      expect(forum.every((row) => row.createdAt.getTime() >= since.getTime())).toBe(true);
+      expect(forum.map((row) => row.amountSats).sort((left, right) => left - right)).toEqual([
+        2, 3, 5, 21, 45, 47, 48,
+      ]);
+
+      const charges = await store.shopCharges(since.getTime());
+      const chargeAt = (createdAt: Date) =>
+        charges.find((row) => row.createdAt.getTime() === createdAt.getTime());
+      expect(chargeAt(shopPaidAt)?.status).toBe('paid');
+      expect(chargeAt(shopPendingAt)).toBeUndefined();
+      expect(chargeAt(shopOldAt)).toBeUndefined();
+      expect(charges).toHaveLength(1);
+      expect(charges.every((row) => row.createdAt.getTime() >= since.getTime())).toBe(true);
+    } finally {
+      if (receiptIds.length > 0) {
+        await client.execute(`DELETE FROM nostr_zap_receipt WHERE event_id = ANY($1::text[])`, [
+          postgresTextArrayLiteral(receiptIds),
+        ]);
+      }
+      if (ids.length > 0) {
+        const idList = postgresTextArrayLiteral(ids);
+        await client.execute(
+          `DELETE FROM wallet_payment
+           WHERE account_id = ANY($1::uuid[]) OR counterparty_account_id = ANY($1::uuid[])`,
+          [idList],
+        );
+        await client.execute(`DELETE FROM pos_charge WHERE account_id = ANY($1::uuid[])`, [idList]);
+        await client.execute(
+          `DELETE FROM message_invoice
+           WHERE payer_account_id = ANY($1::uuid[]) OR author_account_id = ANY($1::uuid[])`,
+          [idList],
+        );
+      }
+      if (paymentHashes.length > 0) {
+        await client.execute(`DELETE FROM nostr_zap_payment WHERE payment_hash = ANY($1::text[])`, [
+          postgresTextArrayLiteral(paymentHashes),
+        ]);
+      }
+      if (messageIds.length > 0) {
+        await client.execute(`DELETE FROM message WHERE id = ANY($1::uuid[])`, [
+          postgresTextArrayLiteral(messageIds),
+        ]);
+      }
+      if (payoutIds.length > 0) {
+        await client.execute(`DELETE FROM fond_payout WHERE id = ANY($1::uuid[])`, [
+          postgresTextArrayLiteral(payoutIds),
+        ]);
+      }
+      if (sparkInvoices.length > 0) {
+        await client.execute(`DELETE FROM spark_invoice WHERE invoice = ANY($1::text[])`, [
+          postgresTextArrayLiteral(sparkInvoices),
+        ]);
+      }
+      if (platformId !== undefined) {
+        await client.execute(`UPDATE account SET is_platform = false WHERE id = $1`, [platformId]);
+      }
+      if (previousPlatform !== undefined && previousPlatform !== platformId) {
+        await client.execute(`UPDATE account SET is_platform = true WHERE id = $1`, [
+          previousPlatform,
+        ]);
+      }
+      if (ids.length > 0) {
+        await client.execute(`DELETE FROM account WHERE id = ANY($1::uuid[])`, [
+          postgresTextArrayLiteral(ids),
+        ]);
+      }
       await closeIfPossible(sql);
     }
   });

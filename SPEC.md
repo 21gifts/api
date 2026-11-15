@@ -252,7 +252,7 @@ Public base URLs used in examples:
 | POST   | `/messages/:id/repayment`                            | Bearer                                                            | Author pays the next giver share from their own wallet. A repeat for that unpaid share returns the outstanding invoice. Includes `sparkInvoice` (or `null`).                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/messages/:id/repayment/due`                        | Bearer                                                            | Author gets every payable repayment bill of the loan at once (at most 60), plus the due shares that wait for a giver who cannot receive                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST   | `/contact`                                           | Bearer                                                            | Send private in-app contact `{ text }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| GET    | `/pos`                                               | Bearer                                                            | Open till charge or null, plus up to 20 history rows; `charge.shopPayment` when the LNURL server resolves                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/pos`                                               | Bearer                                                            | Open till charge or null, plus up to 20 history rows and up to 20 `received` payments without a till charge (last 24 h); `charge.shopPayment` when the LNURL server resolves                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/pos`                                               | Bearer                                                            | Pin one whole-sat amount for five minutes; ends the account's open shop payment                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | DELETE | `/pos`                                               | Bearer                                                            | Cancel every unexpired pending till charge and its open shop payment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/conversations`                                     | Bearer                                                            | List visible private threads (per-row `unreadMessageCount`; envelope `unreadCount` is thread count)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -322,6 +322,7 @@ Public base URLs used in examples:
 | GET    | `/gifts`                                             | none                                                              | Outbound gifts for one UTC day (`?day=`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/gifts/stats`                                       | none                                                              | Aggregated outbound gift statistics                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/wallets/stats`                                     | none                                                              | Public member-wallet totals by UTC day, with carry-forward balances and funded-wallet counts                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| GET    | `/wallets/usage`                                     | none                                                              | Public aggregate wallet usage since the release (no auth)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/fx/spot`                                           | none                                                              | Current BTC price in USD, CHF, EUR, PHP (stored quote, refreshed every 5 minutes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/messages/stats`                                    | none                                                              | Living forum notes and replies counted together, by UTC day                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`                                          | Whether a wallet address has a passkey-backed account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -1927,15 +1928,93 @@ not replace it. A body that carries only `amountSats` is valid. It stores
 `amountCurrency`, `amount`, `amountUsd`, `amountChf`, `amountEur`, and
 `amountPhp` as null. It does not price those sats from a spot or a daily close.
 
+**Payments received without a till charge.** A customer can also pay the
+shop's address (for example its static sticker QR) with no open charge and
+type the amount in their own wallet. `received` lists those payments, so the
+till shows money that arrived without a charge. Only the signed-in account's
+own data is read: the completed incoming `wallet_transfer` rows the server
+observed in the account's current and previous wallets through the Spark
+viewer key, of type `preimage_swap` (Lightning) or `transfer` (a plain Spark
+transfer), created in the last 24 hours (and no later than now plus the
+5-minute clock allowance below), newest first, at most 20. Deposits,
+exits, leaf swaps, `unrecognized` rows, and pending, cancelled, expired, or
+returned transfers are not listed. Amount and time come only from that
+server-observed record.
+
+- **Not a payment from someone else.** A transfer whose sender key is one of
+  the account's own wallet keys (a move between the member's own wallets) is
+  not listed. Its own wallet keys are its current and previous wallets and
+  every wallet whose `wallet_transfer` rows it holds, so a wallet that an
+  account merge moved in (the merge moves the transfers, not the
+  `previous_wallet` row) still counts as its own. Payments from anyone else are listed,
+  including the platform account and other members, because they are
+  payments the wallet received.
+- **No payment twice.** A payment that settled one of the account's open
+  (`pending`) or `paid` till charges is shown only as that charge. The paid
+  charges taken into account are those paid at or after the start of the
+  24-hour window minus the clock allowance: a payment created inside the
+  window cannot have settled a charge that was marked paid before it. A Spark
+  payment settled a charge when its observed Spark invoice is the charge's
+  Spark invoice (compared trimmed and case-insensitively). The observed record
+  of a Lightning receipt carries no payment hash, so a Lightning receipt settled
+  a charge when the account's own wallet report (`wallet_payment`, see
+  `POST /me/wallet/report`) of that transfer id as payment id carries a payment
+  hash recorded for the charge (`pos_charge_invoice`). While that report is
+  missing (or has no payment hash), a Lightning receipt is withheld when it was
+  created inside the lifetime of an open or paid charge that has BOLT11
+  invoices and whose settling payment is not known yet (neither an observed
+  Spark transfer with its Spark invoice nor a reported payment hash of one of
+  its BOLT11s): from its first BOLT11 issue time to its `paidAt` (now for an
+  open charge), widened by the 5-minute clock allowance
+  (`CLIENT_INSTANT_FUTURE_SKEW_MS`) between the Spark operator clock and this
+  server's clock. A payment of an invoice of a `cancelled` or `expired` charge
+  is listed, since the till does not show it as paid. Amount and time are
+  never used to match a payment to a charge. These rules apply to each stored
+  row, and a transfer id is listed only when none of its rows (one per wallet
+  of the account) is excluded by them.
+- **Entry.** `{ "id", "amountSats", "receivedAt", "kind" }`: `id` is the Spark
+  transfer id (the payment id the shop's own wallet shows), `amountSats` the
+  received whole sats (one entry per transfer id, summed when one transfer
+  reached two of the account's wallets, and `lightning` when any of those rows
+  is a Lightning receipt), `receivedAt` the operator creation time (ISO-8601), and `kind` is
+  `lightning` or `spark`. There is no fiat figure (`docs/fiat-amounts.md`):
+  nobody typed an amount for such a payment and no figure was frozen when it
+  was created, so the entry carries only the received sats, and neither the
+  api nor the till prices those sats. No counterparty, invoice, payment hash, Spark
+  address, or key is returned.
+
 **Response** `200`:
 
 ```json
-{ "charge": null, "history": [] }
+{ "charge": null, "history": [], "received": [] }
 ```
 
 Every charge object carries `id`, `amountSats`, `status`, `createdAt`,
 `expiresAt`, `paidAt`, and the six fiat fields `amountCurrency`, `amount`,
 `amountUsd`, `amountChf`, `amountEur`, and `amountPhp`.
+
+**Response** `200` (two payments received without a charge):
+
+```json
+{
+  "charge": null,
+  "history": [],
+  "received": [
+    {
+      "id": "0a1b2c3d-0000-4000-8000-000000000002",
+      "amountSats": 2100,
+      "receivedAt": "2026-10-04T12:03:10.000Z",
+      "kind": "lightning"
+    },
+    {
+      "id": "0a1b2c3d-0000-4000-8000-000000000001",
+      "amountSats": 500,
+      "receivedAt": "2026-10-04T11:40:02.000Z",
+      "kind": "spark"
+    }
+  ]
+}
+```
 
 **Response** `200` (paid 10 s ago, sats-only):
 
@@ -1970,7 +2049,8 @@ Every charge object carries `id`, `amountSats`, `status`, `createdAt`,
       "amountEur": null,
       "amountPhp": null
     }
-  ]
+  ],
+  "received": []
 }
 ```
 
@@ -4870,10 +4950,24 @@ values can differ, so `GET /debug/db` returns two rows for one payment. When the
 apps reported it, the two rows share `payment_hash` (Lightning) or `invoice`
 (Spark invoice). A total over all members must keep one row per payment, for
 example by deduplicating on `payment_hash` or `invoice`; summing every row counts
-such a payment twice. An internal Spark transfer has the same `payment_id` on both
-rows; pairing fills a side reported without details with a category and the
-other account as counterparty, leaves the other row as stored, and both rows still
-count when summing.
+such a payment twice. In `GET /wallets/usage`, a completed `out` row and a
+completed `in` row on two different accounts form one payment when they share
+the same `payment_id`, the same `lower(payment_hash)` with both hashes non-null,
+or the same `invoice` with both invoices non-null and non-empty. Each row must
+have exactly one such partner among completed rows paid at most one day before
+the read window start; an ambiguous match stays unpaired. A row whose matching
+side is older than that candidate window counts on its own, and a payment is
+counted only when its earliest row is in the window. A row at or after the start
+of the UTC day after `now()` is excluded before pairing, so it cannot pair with
+an in-window row, make it ambiguous, or add its amount, fee, category, or
+account to the group. The pair's key is
+`'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every other
+completed row keeps `'row:' || account_id::text || ':' || payment_id`. An
+internal Spark transfer has the same `payment_id` on both rows; pairing fills a
+side reported without details with a category and the other account as
+counterparty and leaves the other row as stored. `GET /debug/db` still returns
+both rows, but `GET /wallets/usage` counts the pair once under the pairing rule
+above.
 
 ### `GET /debug/accounts`
 
@@ -6419,6 +6513,19 @@ granted the viewer simply return no transfers. Changed wallets log only
 `wallet_transfer.failed { accountId, reason }`. No address, wallet key,
 invoice, mnemonic, or amount is logged.
 
+**Read on a paid notice.** A signed, usable `spark_payment_received` notice on
+`POST /webhooks/lnurl` asks the worker to read the receiving wallet
+(`data.user_pubkey`) at once, so `GET /pos` shows a payment without waiting
+for the next pass. Only a key that is a listed current or previous wallet is
+read. At most one extra read runs per wallet; a notice while it runs queues
+one more read after it, and further notices add nothing. At most four extra
+reads run at once; a notice beyond that is dropped and the wallet is read on
+the next pass. The read is the same sync as a pass and logs the same events;
+it never changes the webhook's answer, authentication, or push. The SQL boot
+starts the worker before it builds the app and serves, so every notice can ask
+for the read. The notice is not a source of payment data: paid status and
+amounts come only from the observed record.
+
 `eligibleToday` additionally requires, from deployment and with no start-day
 configuration, a `wallet_transfer` for that member with direction `out`, type
 `transfer`, status `completed`, and at least one external recipient that
@@ -7671,6 +7778,64 @@ the ingest clock so future-dated events cannot pin thread order; missing or
 non-numeric `created_at` retains the existing ingest-time storage fallback.
 Other unknown pubkeys remain on Nostr only.
 
+Inbound direct messages (kind:4 and NIP-17 kind:1059 gift wraps `#p`-tagged to a
+member or platform pubkey) are read with `since` = now minus
+`INBOUND_DM_SINCE_S` (three days), because NIP-59 gift wraps date `created_at`
+up to two days back; event-id dedupe is unchanged. Member↔member and
+member↔platform messages are stored as before. A sender pubkey that is not a
+21.gifts account is stored on the member↔Damus thread only when all of these
+hold: it is not blocked (the same `nostr_blocked_pubkey` source as replies, read
+at pass start and checked again per message); it is a known contact of the
+recipient, meaning it is recorded in `nostr_zapper` or the recipient's
+member↔Damus thread with that pubkey already holds a message the member sent;
+and a per-pubkey and global sliding limit accepts it (the external reply
+windows, with a budget of its own, so direct messages and forum replies do not
+consume each other's budget). Anything else is skipped silently: no thread, no
+message, no push, no log. The budget is released when nothing is stored after
+it was taken. A kind:4 sender is the envelope author, so it is decided before
+the decrypt; a gift wrap's sender is known only after the unwrap, and the
+worker keeps the sender of a skipped wrap (never its text) for the query
+window, so later passes decide it again without a second unwrap. A skipped
+wrap is stored on a later pass once its sender becomes a known contact. A
+message whose account secret is missing is not remembered and is tried again
+on the next pass. The memory holds at most 10 000 entries per conversation
+store; when full it takes no new ones, so the remembered ones stay hits. An
+event whose `created_at` is later than now plus `EXTERNAL_REPLY_FUTURE_SKEW_MS`
+(10 minutes, the clock skew allowed for external replies) is left for a later
+pass: it is not decrypted, stored, or remembered, so future-dated wraps cannot
+occupy that memory. The `since` bound is checked on each received event as
+well: an event older than now minus `INBOUND_DM_SINCE_S` is skipped the same
+way, even when a relay returns it.
+
+Stored member↔Damus threads are brought in line with this rule once. On the
+first SQL boot that carries it, `removeUnadmittedDamusThreads` removes every
+`member_damus` thread whose counterpart this rule would not admit as a known
+contact: the thread holds no message sent by the member, and its counterpart
+pubkey is not recorded in `nostr_zapper`. It is removed with its messages, read
+markers, extra photos, translations, the `conversation` push outbox rows of its
+messages, and the invoice attempts that name the thread or one of its messages.
+`member_damus` threads in which the member sent at least one message or whose
+counterpart is an entitled external zapper, and all member↔member,
+member↔platform, and Moderators-group threads, stay. Each affected member with
+a push subscription gets one dismiss push for the tags `conversation:<id>` of
+the removed threads, carrying the badge count after the removal; it is written
+in the same transaction as the deletes. The run is recorded in `app_setting`
+(`member_damus_cleanup`) in that transaction too, so later boots remove nothing
+and a thread stored after the run stays; any failure, a dismiss write
+included, rolls everything back and the next boot tries again. The step
+runs only after the boot's external-zapper backfill completed without an error
+and below its 10,000-receipt ceiling; otherwise the boot logs
+`conversations.damus_cleanup.deferred`, writes no marker, and a later boot
+runs it. Inside the transaction `nostr_zapper` is locked against new
+entitlements and read again, so a counterpart that becomes a zapper during the
+run keeps its thread. Every deleted
+and inserted row is recorded in `db_change`. The boot logs one
+`conversations.damus_cleanup` event with the number of removed threads and
+messages. `GET /conversations` no longer lists a removed thread or counts it in
+`unreadCount`. A relay can return an event of a removed thread again within
+the query window; event-id dedupe no longer finds it, and the admission rule
+above skips it, because its sender is not a known contact.
+
 Known limitation: if the payer's wallet publishes no kind:9735 receipt, the
 external zapper gains no website visibility. Operator manual settlement
 covers member-created forum invoices only; it cannot create an external
@@ -7722,7 +7887,12 @@ under it. The worker always includes that profile note’s `event_id` in the rel
 query, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes a reply on that live
 top-level parent; a missing, hidden, or nested parent falls back to a
 top-level post with the remaining body. An empty comment does not create a
-blank living-room post.
+blank living-room post. The 1-sat compose fee is a platform payment, not a
+forum gift: `GET /wallets/usage` omits a non-heart invoice on the platform
+account's profile note (the note named by `account.profile_message_id`) from
+its paid forum gifts and forum series. An ordinary platform-authored note is
+not the profile note, so a gift on it counts. A heart on the profile note keeps
+the heart rule.
 
 Missing/invalid/expired bearer → **Response** `401`:
 
@@ -8712,6 +8882,106 @@ values and therefore always equal it.
 balance query throws or a current or daily sat total is not a safe integer. A
 total above `Number.MAX_SAFE_INTEGER` throws instead of returning a rounded
 JSON number. The failure logs `wallets.stats.failed`.
+
+### `GET /wallets/usage`
+
+Public, read-only aggregate of how the in-app wallet has been used since its
+production release `2026-11-09T11:17:00.000Z`. No auth. The numbers are computed
+on each request from completed wallet payments, paid forum gifts and hearts, and
+point-of-sale charges. The body contains only aggregates: no account id,
+username, name, payment id, payment hash, invoice, Lightning address, or node
+key. `GET /wallets/stats` is unchanged.
+
+The store reads `wallet_payment`, `account`, `spark_invoice`, `fond_payout`,
+`message_invoice`, `message`, `nostr_zap_payment`, `nostr_zap_receipt`, and
+`pos_charge`; it does not write.
+
+A completed `out` row and a completed `in` row on two different accounts form
+one payment when they share the same `payment_id`, the same
+`lower(payment_hash)` with both hashes non-null, or the same `invoice` with both
+invoices non-null and non-empty. Each of the two rows must have exactly one such
+partner among completed rows paid at most one day before the read window start;
+an ambiguous match never merges. A row whose matching side is older than that
+candidate window counts on its own, and a payment is counted only when its
+earliest `paid_at` is in the window. `GET /wallets/usage` passes an exclusive
+upper bound, the start of the UTC day after its `now()`, and the store excludes
+`paid_at >=` that bound before pair matching. A row after the current UTC day
+therefore cannot pair with an in-window row, make it ambiguous, or contribute
+its amount, fee, category, or account to the group. A pair's group key is
+`'pair:' || <out row account_id> || ':' || <out row payment_id>`. Every
+other completed row keeps `'row:' || account_id::text || ':' || payment_id`.
+The pair key is deterministic and injective because the outgoing `(account_id,
+payment_id)` is the `wallet_payment` primary key, and it is disjoint from the
+`row:` namespace. A counted payment enters the totals only when its earliest
+`paid_at` is on or after the release. The
+amount is the greatest `amount_sats` and the fee is the sum of `fee_sats`. The
+payer is the outgoing account, otherwise the incoming row's
+`counterparty_account_id`, otherwise outside. The payee is the incoming
+account, otherwise the outgoing row's counterparty, otherwise outside. An
+account with `is_platform` is `platform`; role `fond` is `fund`; every other
+account, including a shop, is `members`.
+
+Purpose, first match: a paid `fond_payout` whose `bolt11` or `spark_invoice`
+equals any row invoice is `fund_payout` (including a payout to a shop); a fund
+payee whose payer is not outside is `fund_deposit`; a paid forum gift is
+`forum_gift`; `shop` is `shop_purchase`; `member` is `transfer`; category
+`gift` or `platform` that is not a paid forum gift is `transfer` when both
+parties are `members` and `other` otherwise; `outside_lightning` or `onchain`
+is `deposit` when the payer is outside and `withdrawal` otherwise; anything
+else is `other`.
+
+A paid forum gift means one of the payment's candidate hashes, or its invoice,
+matches a `message_invoice` with `result = 'ok'`, no `conversation_id`, a
+description that does not start with `repay:` or `repayp:`, a claimed
+`nostr_zap_payment` hash, and a note whose `message.deleted_at` is null; or a
+zap receipt gift or paid heart on such a note. The candidate hashes are
+`lower(wallet_payment.payment_hash)` and every `lower(spark_invoice.payment_hash)`
+whose `spark_invoice.invoice` equals the row's `invoice` or `destination`. A
+Spark-invoice gift therefore counts even when the reported payment hash is null
+or unrelated; a conversation or repayment invoice that owns a candidate hash
+still excludes the zap-receipt branch. A `gift` or `platform` category alone
+does not make a forum gift, and the counterparty does not decide it: a payment
+that matches a claimed forum gift or heart invoice on a note not hidden by
+staff is a forum gift, whoever the counterparty is, except for the compose fee
+below. Conversation invoices and credit repayments are not forum gifts. A
+non-heart invoice on the official platform account's profile note is the 1-sat
+compose fee, a platform payment, not a forum gift; the same exclusion applies
+when its hash is claimed as a zap receipt. The profile note is exactly the note
+where the platform account's `account.profile_message_id` equals the note id.
+A gift on an ordinary platform-authored note is a forum gift. A heart on the
+profile note keeps the heart rule.
+
+`days` has every UTC day from the release day through today, and every purpose
+key. `flows` keeps only directions that occurred and is sorted by day, from,
+to, and purpose. `totals` also reports `activeWalletCount`,
+`sendingWalletCount`, and `receivingWalletCount`: distinct member-or-Fond
+wallets that paid or were paid, that paid, and that were paid. A sender in
+`topFiveSenderShare` is such a sending wallet, ranked by the sats it sent in
+counted payments, and the share divides the top five by `volumeSats`, with four
+decimal places and 0 when the volume is 0. `forum` starts 28 days before
+release (`gifts` are hearts that are false). The forum series and
+`totals.heartCount` include only paid forum gifts and hearts on living notes:
+no conversation invoices, no credit repayments, no hidden notes, and no unpaid
+invoices. A non-heart invoice on the platform account's profile note is the
+compose fee and is excluded; a heart on that note remains in the series. A
+non-heart invoice on an ordinary platform-authored note remains in the series.
+`shopCharges` starts 14 days before release. A heart increments the
+release total only when its own timestamp is on or after the release instant.
+Shop charges count only when `pos_charge.account_id` is the current
+`shop_account_id` of a live top-level note whose text has the `#21GiftsShop`
+token, the same rule as `GET /shops/activity`; a charge by any other account is
+not a shop charge.
+`totals.paidShopChargeCount` is the sum of the published daily
+`shopCharges[].paid` cells over the whole shop window, from
+`2026-10-26 11:17 UTC`, and is derivable from those daily cells. A payment
+whose `paid_at` is before the release instant is ignored. The store never reads a
+row at or after the start of the UTC day after `now()`, and the builder still
+ignores a payment whose UTC day is after the current UTC day. 200 sends
+`Cache-Control: public, max-age=60`.
+
+**Response** `503`: `{ "error": "Wallet usage is unavailable" }` when a read
+fails or a sat total is not a safe integer. The failure logs
+`wallets.usage.failed` and does not send the cache header.
 
 ### `GET /links/:code`
 
