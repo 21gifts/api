@@ -446,6 +446,18 @@ pay link's amount. Orchestra paying a shop payment's BOLT11 is one of those
 BOLT11s. No zap receipt, gift, or message is written for a till
 payment.
 
+The till also shows money that arrived without a charge. A customer can pay
+the shop's address (its static sticker QR) with no open charge and type the
+amount in their own wallet. `GET /pos` lists, for the signed-in shop only,
+the completed Lightning receipts and plain Spark transfers the server
+observed in the shop's own wallets over the last 24 hours that settled none
+of its open or paid charges: amount, time, and whether it came over
+Lightning or Spark, and nothing about the payer. A move between the shop's
+own wallets is not a payment and is not listed. A payment that settled a
+charge is shown only as that charge. A signed paid notice from the LNURL
+server makes the api read that wallet at once, so the payment shows without
+waiting for the next minute's pass.
+
 ### Shop identity
 
 Every public shop (a live top-level `#21GiftsShop` note with a till account)
