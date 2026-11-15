@@ -310,7 +310,7 @@ function parseLine(raw: string, level: OperatorLevel, namespace: string): LineOu
 /**
  * Load the operator keys once at boot.
  *
- * Returns `null` (key login off; every operator route then answers 503) when
+ * Returns `null` (key login off; every operator-gated route then answers 503) when
  * `DEBUG_ALLOWED_SIGNERS_DIR` or `DEBUG_SIGNING_NAMESPACE` is unset or blank,
  * when the namespace is not `21gifts-debug-dev`, `-stg`, or `-prd`, or when
  * one of the three files cannot be read. Both unset stays silent; every other

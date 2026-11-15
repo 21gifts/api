@@ -59,15 +59,16 @@ async function stopChild(child: ChildProcess): Promise<void> {
  * Start a dedicated default-mode API for one test, so public totals have no data from other specs.
  *
  * @returns Request context bound to the fresh API and a close function.
- * @throws When no free port or media directory can be had, the throwaway
- *   operator keys cannot be made, the request context cannot be created, the
- *   process cannot be spawned, exits before `GET /healthz` answers, or does not
- *   become healthy in time.
+ * @throws When no free port can be had, the throwaway operator keys cannot be
+ *   made, no media directory can be had, the request context cannot be
+ *   created, the process cannot be spawned, exits before `GET /healthz`
+ *   answers, or does not become healthy in time.
  */
 export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsServer> {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const port = await freePort();
   const baseURL = `http://127.0.0.1:${port}`;
+  const { signersDir } = e2eOperatorKeys();
   const mediaDir = mkdtempSync(join(tmpdir(), '21gifts-e2e-wallet-stats-'));
   const child = spawn('bun', ['src/index.ts'], {
     cwd: root,
@@ -77,7 +78,7 @@ export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsSer
       ...DEFAULT_BOOT_ENV,
       BIND_ADDR: `127.0.0.1:${port}`,
       PUBLIC_BASE_URL: baseURL,
-      DEBUG_ALLOWED_SIGNERS_DIR: e2eOperatorKeys().signersDir,
+      DEBUG_ALLOWED_SIGNERS_DIR: signersDir,
       DEBUG_SIGNING_NAMESPACE: E2E_SIGNING_NAMESPACE,
       CORS_ALLOWED_ORIGINS: baseURL,
       MEDIA_DIR: mediaDir,
