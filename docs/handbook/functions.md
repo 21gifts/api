@@ -1502,7 +1502,7 @@
 
 - **Purpose:** Process-local store of gift invoices issued for Fond payouts. `GiftInvoice` may include optional `messageId`, `groupMessageId`, and `comment`; `markPaid` preserves them.
 - **Inputs:** `put`, `get(id)`, `markPaid(id, preimage, now)`, `sweep(now)`.
-- **Returns / side effects:** Lookups return the row or `undefined`. `sweep` drops unpaid rows after expiry plus one extra TTL (409 tombstone window); paid rows stay for proof idempotency. Restart clears the map.
+- **Returns / side effects:** Lookups return the row or `undefined`. `sweep` drops unpaid rows after expiry plus one extra TTL so the map stays bounded (`issueGiftInvoice` calls it before each issue); rows marked paid are kept. `get` and `markPaid` have no production caller since the proof route was removed. Restart clears the map.
 - **Used by:** Default `createApp` `invoiceStore` (the `/fond` gift actions); the api entry point (`src/index.ts`) as the invoice store of the Fond paid worker actions.
 
 ## Function: NoopGiftRecorder
