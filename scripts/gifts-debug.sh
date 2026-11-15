@@ -167,13 +167,10 @@ read_env_var_optional() {
 [ -f "$ENV_FILE" ] || die "missing $ENV_FILE"
 DEBUG_API_URL=$(read_env_var DEBUG_API_URL "$ENV_FILE")
 DEBUG_API_URL="${DEBUG_API_URL%/}"
-DEBUG_SSH_KEY=$(read_env_var_optional DEBUG_SSH_KEY "$ENV_FILE")
+DEBUG_SSH_KEY=$(read_env_var DEBUG_SSH_KEY "$ENV_FILE")
 DEBUG_SSH_KEY="${DEBUG_SSH_KEY/#\~/$HOME}"
 DEBUG_SSH_ADMIN_KEY=$(read_env_var_optional DEBUG_SSH_ADMIN_KEY "$ENV_FILE")
 DEBUG_SSH_ADMIN_KEY="${DEBUG_SSH_ADMIN_KEY/#\~/$HOME}"
-if [ -z "$DEBUG_SSH_KEY" ]; then
-  die "DEBUG_SSH_KEY is not set in $ENV_FILE: gifts-debug logs in with an SSH key listed in the api's allowed-signers files"
-fi
 
 # Namespace of the api being called: 21gifts-debug-<dev|stg|prd>.
 signing_namespace() {
