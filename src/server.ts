@@ -565,8 +565,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * @throws {@link Error}
  * When `LOGINS_OPEN_DEFAULT` is set to a value other than `open` or `closed`,
  * `RECOVERY_SHARE_REQUIRED_FROM` to anything but an ISO date, or
- * `PAYOUT_SIGNER` to anything but `spend` or `fond` while no `payoutSigner`
- * is injected.
+ * `PAYOUT_SIGNER` to anything but `spend` or `fond` unless both
+ * `payoutSigner` and `spendPing` are injected.
  * @returns A Hono app with all routes and middleware attached.
  */
 export function createApp(deps: AppDeps = {}): Hono {
