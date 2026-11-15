@@ -44,7 +44,7 @@ function publicKey(name: string): string {
  * workers find the same keys.
  *
  * @returns Paths of the signers directory and of each private key.
- * @throws When a file of the key directory cannot be written or `ssh-keygen` fails.
+ * @throws When the key directory cannot be removed, created, or written, or `ssh-keygen` fails.
  */
 export function e2eOperatorKeys(): E2eOperatorKeys {
   const keys: E2eOperatorKeys = {
@@ -89,6 +89,7 @@ export function e2eOperatorKeys(): E2eOperatorKeys {
  * @param message - Exact challenge text.
  * @param namespace - Signature namespace (default: the default boot's).
  * @returns The armored signature.
+ * @throws When `ssh-keygen` cannot sign with the key.
  */
 export function e2eSign(
   keyPath: string,
@@ -107,6 +108,7 @@ export function e2eSign(
  *
  * @param keyPath - Private key (its `.pub` is read).
  * @returns The fingerprint.
+ * @throws When `ssh-keygen` cannot read the public key.
  */
 export function e2eFingerprint(keyPath: string): string {
   return (
@@ -182,8 +184,9 @@ async function logIn(
  *   {@link registerOperatorBaseURL}, else the project's `baseURL`).
  * @returns The header to send.
  * @throws When no base URL is given, registered, or set on the project.
- * @throws When the login fails (the challenge or `POST /debug/auth` does not
- *   answer 200, or the token has another level); the failed login is not kept.
+ * @throws When the login fails (the throwaway keys cannot be made, `ssh-keygen`
+ *   cannot sign, the challenge or `POST /debug/auth` does not answer 200, or the
+ *   token has another level); the failed login is not kept.
  */
 export async function operatorHeaders(
   request: APIRequestContext,
