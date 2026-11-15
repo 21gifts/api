@@ -76,7 +76,7 @@ describe('POST /debug/passkey-renew/reopen', () => {
     expect(res.status).toBe(503);
   });
 
-  it('returns 401 when the debug token is wrong', async () => {
+  it('returns 401 when the bearer is not a valid key token', async () => {
     const res = await post(mount({ operatorLogin: OP_KEYS.operatorLogin }), 'not-json', 'wrong');
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });

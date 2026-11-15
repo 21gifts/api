@@ -84,7 +84,7 @@ describe('POST /debug/shop-keys', () => {
     });
   });
 
-  it('returns 401 when the debug token is wrong', async () => {
+  it('returns 401 when the bearer is not a valid key token', async () => {
     const { app } = mount();
     const res = await post(app, 'not-json', 'wrong');
     expect(res.status).toBe(401);

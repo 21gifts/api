@@ -57,7 +57,7 @@ describe('POST /debug/push-ping', () => {
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 401 before JSON when the debug token is wrong', async () => {
+  it('returns 401 before JSON when the bearer is not a valid key token', async () => {
     const res = await mount({ operatorLogin: OP_KEYS.operatorLogin }).request('/debug/push-ping', {
       method: 'POST',
       headers: {
