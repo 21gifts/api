@@ -305,9 +305,9 @@ function notEligibleDetail(
  * and has no payout of that kind on the event's UTC day: neither in the gift
  * ledger under its username or its legacy external address, nor earlier in
  * this run. Daily and moderator payouts go
- * through `SpendPing.pingOnDay` on the event's UTC day; the payout queue's
- * record per day, kind, and address makes a repeated run skip what it already
- * booked. Welcome triggers are handed to `syncWelcomePing`, which pays once
+ * through `SpendPing.pingOnDay` on the event's UTC day; the payout queue keeps
+ * one row per day, kind, and address, so a repeated run adds no second row (a
+ * row already paid comes back as skipped `paid`). Welcome triggers are handed to `syncWelcomePing`, which pays once
  * per account.
  * `dryRun` reports `would_pay` / `would_send` and pings nothing.
  *
