@@ -55,8 +55,7 @@ const runShop = selected.has('shop-payment');
 
 // Throwaway operator keys for the SSH key login of both api boots (made at
 // config load, never committed). The specs log in with them through
-// `operatorHeaders` (`e2e/helpers/operator-keys.ts`); there is no static
-// operator token.
+// `operatorHeaders` (`e2e/helpers/operator-keys.ts`).
 const operatorKeys = runDefault || runShop ? e2eOperatorKeys() : undefined;
 const operatorLoginEnv = {
   DEBUG_ALLOWED_SIGNERS_DIR: operatorKeys?.signersDir ?? '',
