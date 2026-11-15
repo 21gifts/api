@@ -59,6 +59,8 @@ async function stopChild(child: ChildProcess): Promise<void> {
  * Start a dedicated default-mode API for one test, so public totals have no data from other specs.
  *
  * @returns Request context bound to the fresh API and a close function.
+ * @throws When the request context cannot be created, the process cannot be
+ *   spawned, exits before `GET /healthz` answers, or does not become healthy in time.
  */
 export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsServer> {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');

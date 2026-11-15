@@ -53,6 +53,8 @@ async function moderatorSession(
  * @param stamp - Unique suffix for the debug account and its username.
  * @param text - About-me text.
  * @returns Bearer headers of the moderator and the About-me note id.
+ * @throws When the operator login fails (see {@link operatorHeaders}) or a
+ *   request does not answer as expected.
  */
 export async function moderatorAboutNote(
   request: APIRequestContext,

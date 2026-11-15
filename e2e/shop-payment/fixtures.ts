@@ -163,6 +163,8 @@ export function freshUsername(prefix: string): string {
  * @param request - Playwright request context of the api.
  * @param prefix - Leading part of the username.
  * @returns The shop's username, name, session token, and wallet key.
+ * @throws When the operator login fails (see {@link operatorHeaders}) or a
+ *   provisioning request does not answer as expected.
  */
 export async function verifiedShop(request: APIRequestContext, prefix = 'shop'): Promise<Shop> {
   const username = freshUsername(prefix);
