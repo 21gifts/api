@@ -201,7 +201,8 @@ export const REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS: ReadonlySet<string> = new Set([
  * never starts before 2026-11-16. A credit in that set starts the day after it
  * filled, with no minimum.
  *
- * @param fundedAtMs - When collected sats first reached the goal.
+ * @param fundedAtMs - When the ask was reached: collected ask-currency
+ *   snapshots for fiat, collected sats for BTC and a legacy null currency.
  * @param messageId - Credit message id; matched case-insensitively against the
  *   operator-approved exceptions.
  * @returns Epoch milliseconds of that UTC midnight.
@@ -627,7 +628,8 @@ export interface RepaymentLedgerLine {
  * credit filled, never before 2026-11-16 unless the credit is an
  * operator-approved exception.
  *
- * @param fundedAtMs - When collected sats first reached the goal.
+ * @param fundedAtMs - When the ask was reached: collected ask-currency
+ *   snapshots for fiat, collected sats for BTC and a legacy null currency.
  * @param dayIndex - Zero-based day in the term.
  * @param messageId - Credit message id; the day-after-fill exception applies
  *   when it is in {@link REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS}.

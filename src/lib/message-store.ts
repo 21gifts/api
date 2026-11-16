@@ -207,6 +207,114 @@ function applyStoredGoal(stored: MessageRow): void {
   stored.goalAmountPhp = stored.goalAmountPhp ?? null;
 }
 
+/**
+ * Whether the collected amount already reaches a repayable ask.
+ *
+ * Fiat (USD, CHF, EUR, PHP) compares the stored payment snapshot in that
+ * currency with `goalAmount` as exact decimals. A null snapshot or a null
+ * goal does not reach, and sats are not a substitute. BTC and a null
+ * `goalCurrency` reach when `sats` is at least a positive `goalSats`.
+ * Any other currency does not reach.
+ */
+function askCollectedReachesGoal(row: {
+  goalCurrency?: string | null;
+  goalAmount?: string | null;
+  goalSats?: number | null;
+  sats: number;
+  amountUsd?: string | null;
+  amountChf?: string | null;
+  amountEur?: string | null;
+  amountPhp?: string | null;
+}): boolean {
+  const currency = row.goalCurrency === undefined ? null : row.goalCurrency;
+  if (currency === 'USD' || currency === 'CHF' || currency === 'EUR' || currency === 'PHP') {
+    const collected =
+      currency === 'USD'
+        ? row.amountUsd
+        : currency === 'CHF'
+          ? row.amountChf
+          : currency === 'EUR'
+            ? row.amountEur
+            : row.amountPhp;
+    const goal = row.goalAmount;
+    if (collected === null || collected === undefined || goal === null || goal === undefined) {
+      return false;
+    }
+    return decimalAtLeast(collected, goal);
+  }
+  if (currency === null || currency === 'BTC') {
+    const goalSats = row.goalSats;
+    return typeof goalSats === 'number' && goalSats > 0 && row.sats >= goalSats;
+  }
+  return false;
+}
+
+/** Exact `collected >= goal` for unsigned dot decimals. A bad string throws. */
+function decimalAtLeast(collected: string, goal: string): boolean {
+  const left = unsignedDecimal(collected);
+  const right = unsignedDecimal(goal);
+  const scale = left.frac.length > right.frac.length ? left.frac.length : right.frac.length;
+  const leftScaled = BigInt(`${left.whole}${left.frac.padEnd(scale, '0')}`);
+  const rightScaled = BigInt(`${right.whole}${right.frac.padEnd(scale, '0')}`);
+  return leftScaled >= rightScaled;
+}
+
+function unsignedDecimal(value: string): { whole: string; frac: string } {
+  if (!/^\d+(\.\d+)?$/.test(value)) {
+    throw new Error('fiat amount is not an unsigned decimal');
+  }
+  const dot = value.indexOf('.');
+  if (dot === -1) {
+    return { whole: value, frac: '' };
+  }
+  return { whole: value.slice(0, dot), frac: value.slice(dot + 1) };
+}
+
+/**
+ * One payment-fiat assignment, matching the SET fold: extra sats of 0 or a
+ * null delta leave the column; a null column takes the delta; both sides add.
+ */
+function foldedFiatSql(column: string, extraSats: string, delta: string): string {
+  return `CASE WHEN ${extraSats} = 0 THEN ${column} WHEN ${delta} IS NULL THEN ${column} WHEN ${column} IS NULL THEN ${delta} ELSE ${column} + ${delta} END`;
+}
+
+/**
+ * SQL boolean for the collected amount after this statement.
+ * Fiat uses the ask-currency snapshot. A null snapshot is not reached
+ * (`COALESCE` of the comparison is false) and does not fall back to sats.
+ * BTC and null currency use sats. Callers still require `goal_repayable`
+ * and a null `goal_funded_at`.
+ */
+function goalCollectedReachesAskSql(columns: {
+  currency: string;
+  goalAmount: string;
+  goalSats: string;
+  sats: string;
+  usd: string;
+  chf: string;
+  eur: string;
+  php: string;
+}): string {
+  const snapshot = `CASE ${columns.currency}
+        WHEN 'USD' THEN ${columns.usd}
+        WHEN 'CHF' THEN ${columns.chf}
+        WHEN 'EUR' THEN ${columns.eur}
+        WHEN 'PHP' THEN ${columns.php}
+      END`;
+  return `(
+    (
+      ${columns.currency} IN ('USD','CHF','EUR','PHP')
+      AND ${columns.goalAmount} IS NOT NULL
+      AND COALESCE(${snapshot} >= ${columns.goalAmount}, false)
+    )
+    OR (
+      (${columns.currency} IS NULL OR ${columns.currency} = 'BTC')
+      AND ${columns.goalSats} IS NOT NULL
+      AND ${columns.sats} >= ${columns.goalSats}
+    )
+  )`;
+}
+
 function mapGoalCurrency(value: string | null | undefined): GoalCurrency | null {
   if (value === 'BTC' || value === 'USD' || value === 'CHF' || value === 'EUR' || value === 'PHP') {
     return value;
@@ -1523,9 +1631,13 @@ export interface MessageStore {
 
   /**
    * End collecting on a live repayable ask. The first call sets
-   * `goal_closed_at` and, when the ask has not filled, also `goal_funded_at`;
-   * an early fiat close also freezes per-giver collected cents and marks
-   * `goal_debt_frozen`. Later calls change nothing and return stored values.
+   * `goal_closed_at` and, when the ask has not filled, also `goal_funded_at`.
+   * A fiat ask has filled when the collected snapshot in its currency reaches
+   * `goalAmount`; a missing snapshot adds nothing and does not fall back to
+   * sats. BTC and a legacy null currency have filled when `sats` reach
+   * `goalSats`. An early fiat close also freezes per-giver collected cents
+   * and marks `goal_debt_frozen`. Later calls change nothing and return
+   * stored values. An existing `goal_funded_at` is never cleared or moved.
    *
    * @param messageId - Credit note.
    * @param at - Close instant for deterministic stores; Postgres chooses
@@ -2453,9 +2565,17 @@ $message_goal_currency$`,
   `UPDATE message
    SET goal_funded_at = now()
    WHERE goal_repayable IS TRUE
-     AND goal_sats IS NOT NULL
-     AND sats >= goal_sats
-     AND goal_funded_at IS NULL`,
+     AND goal_funded_at IS NULL
+     AND ${goalCollectedReachesAskSql({
+       currency: 'goal_currency',
+       goalAmount: 'goal_amount',
+       goalSats: 'goal_sats',
+       sats: 'sats',
+       usd: 'fiat_usd',
+       chf: 'fiat_chf',
+       eur: 'fiat_eur',
+       php: 'fiat_php',
+     })}`,
   `UPDATE nostr_zap_receipt AS r
    SET recorded_at = COALESCE(m.goal_funded_at, now())
    FROM message AS m
@@ -4513,13 +4633,10 @@ export class InMemoryMessageStore implements MessageStore {
       row.amountEur = foldFiatColumn(row.amountEur, delta?.eur ?? null, extraSats);
       row.amountPhp = foldFiatColumn(row.amountPhp, delta?.php ?? null, extraSats);
       row.sats += extraSats;
-      const goalSats = row.goalSats;
       if (
         row.goalRepayable === true &&
         row.goalFundedAt === null &&
-        typeof goalSats === 'number' &&
-        goalSats > 0 &&
-        row.sats >= goalSats
+        askCollectedReachesGoal(row)
       ) {
         row.goalFundedAt = new Date();
       }
@@ -5097,10 +5214,16 @@ export class InMemoryMessageStore implements MessageStore {
       return undefined;
     }
     const currency = row.goalCurrency;
+    const reached = askCollectedReachesGoal(row);
     const freezesDebt =
       row.goalFundedAt === null &&
-      (currency === 'USD' || currency === 'CHF' || currency === 'EUR' || currency === 'PHP');
-    if (freezesDebt && !this.#creditPayerSnapshots.has(messageId)) {
+      (currency === 'USD' || currency === 'CHF' || currency === 'EUR' || currency === 'PHP') &&
+      !reached;
+    if (
+      freezesDebt &&
+      (currency === 'USD' || currency === 'CHF' || currency === 'EUR' || currency === 'PHP') &&
+      !this.#creditPayerSnapshots.has(messageId)
+    ) {
       const preview = await this.previewCreditPayerSnapshot(messageId, currency, at);
       const unitsByAccount = new Map(preview.map((payer) => [payer.accountId, payer.units]));
       this.#creditPayerSnapshots.set(messageId, {
@@ -8583,8 +8706,16 @@ export class PostgresMessageStore implements MessageStore {
            goal_funded_at = CASE
              WHEN goal_repayable IS TRUE
               AND goal_funded_at IS NULL
-              AND goal_sats IS NOT NULL
-              AND sats + $2::bigint >= goal_sats
+              AND ${goalCollectedReachesAskSql({
+                currency: 'goal_currency',
+                goalAmount: 'goal_amount',
+                goalSats: 'goal_sats',
+                sats: 'sats + $2::bigint',
+                usd: foldedFiatSql('fiat_usd', '$2::bigint', '$3::numeric'),
+                chf: foldedFiatSql('fiat_chf', '$2::bigint', '$4::numeric'),
+                eur: foldedFiatSql('fiat_eur', '$2::bigint', '$5::numeric'),
+                php: foldedFiatSql('fiat_php', '$2::bigint', '$6::numeric'),
+              })}
              THEN now()
              ELSE goal_funded_at
            END
@@ -9292,7 +9423,8 @@ export class PostgresMessageStore implements MessageStore {
       goal_closed_at: Date | string;
     }>(
       `WITH current AS MATERIALIZED (
-         SELECT id, goal_funded_at, goal_closed_at, goal_currency
+         SELECT id, goal_funded_at, goal_closed_at, goal_currency,
+                goal_amount, goal_sats, sats, fiat_usd, fiat_chf, fiat_eur, fiat_php
          FROM message
          WHERE id = $1::uuid
            AND goal_repayable IS TRUE
@@ -9302,7 +9434,17 @@ export class PostgresMessageStore implements MessageStore {
          SELECT id, goal_funded_at, goal_currency,
                 COALESCE(goal_closed_at, clock_timestamp()) AS close_at,
                 goal_funded_at IS NULL
-                  AND goal_currency IN ('USD','CHF','EUR','PHP') AS freeze_snapshot
+                  AND goal_currency IN ('USD','CHF','EUR','PHP')
+                  AND NOT ${goalCollectedReachesAskSql({
+                    currency: 'goal_currency',
+                    goalAmount: 'goal_amount',
+                    goalSats: 'goal_sats',
+                    sats: 'sats',
+                    usd: 'fiat_usd',
+                    chf: 'fiat_chf',
+                    eur: 'fiat_eur',
+                    php: 'fiat_php',
+                  })} AS freeze_snapshot
          FROM current
        ), updated AS (
          UPDATE message AS target
@@ -9562,8 +9704,16 @@ export class PostgresMessageStore implements MessageStore {
              WHEN message.parent_id IS NOT NULL THEN message.goal_funded_at
              WHEN message.goal_repayable IS TRUE
               AND message.goal_funded_at IS NULL
-              AND message.goal_sats IS NOT NULL
-              AND message.sats + inserted.sats >= message.goal_sats
+              AND ${goalCollectedReachesAskSql({
+                currency: 'message.goal_currency',
+                goalAmount: 'message.goal_amount',
+                goalSats: 'message.goal_sats',
+                sats: 'message.sats + inserted.sats',
+                usd: foldedFiatSql('message.fiat_usd', 'inserted.sats', '$4::numeric'),
+                chf: foldedFiatSql('message.fiat_chf', 'inserted.sats', '$5::numeric'),
+                eur: foldedFiatSql('message.fiat_eur', 'inserted.sats', '$6::numeric'),
+                php: foldedFiatSql('message.fiat_php', 'inserted.sats', '$7::numeric'),
+              })}
              THEN (SELECT at FROM settled_at)
              ELSE message.goal_funded_at
            END
