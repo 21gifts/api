@@ -100,8 +100,7 @@ class FailingWalletStore implements WalletStore {
 
 async function walletApp(
   options: {
-    debugToken?: string | undefined;
-    operatorLogin?: OperatorLogin;
+    operatorLogin?: OperatorLogin | null;
     now?: () => number;
     walletStore?: WalletStore;
     withAccount?: boolean;
@@ -138,8 +137,9 @@ async function walletApp(
     debugWalletRoutes({
       walletStore: options.walletStore ?? new InMemoryWalletStore(),
       authStore,
-      debugToken: options.debugToken,
-      ...(options.operatorLogin === undefined ? {} : { operatorLogin: options.operatorLogin }),
+      ...(options.operatorLogin === null
+        ? {}
+        : { operatorLogin: options.operatorLogin ?? OP_KEYS.operatorLogin }),
       ...(options.now === undefined ? {} : { now: options.now }),
     }),
   );
@@ -191,89 +191,75 @@ describe('debugWalletRoutes', () => {
     warn.mockRestore();
   });
 
-  it('returns 503 when debug is not configured or the token is blank', async () => {
-    const app = await walletApp({ debugToken: undefined });
-    const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`);
+  it('returns 503 when the key login is not configured', async () => {
+    const app = await walletApp({ operatorLogin: null });
+    const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
+      headers: { authorization: `Bearer ${OP_READ}` },
+    });
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({ error: 'Debug is not configured' });
-    const blank = await walletApp({ debugToken: '   ' });
-    const blankRes = await blank.request(`/debug/accounts/${ACCOUNT_ID}/wallet`);
-    expect(blankRes.status).toBe(503);
   });
 
-  it('returns 401 when the bearer matches neither token', async () => {
-    const app = await walletApp({ debugToken: 'secret' });
-    const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
-      headers: { authorization: 'Bearer other' },
-    });
-    expect(res.status).toBe(401);
-    await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
-  });
-
-  it('accepts DEBUG_TOKEN and a read key token', async () => {
-    const app = await walletApp({
-      debugToken: 'write-secret',
-      operatorLogin: OP_KEYS.operatorLogin,
-    });
-    for (const token of ['write-secret', OP_READ]) {
-      const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(res.status).toBe(200);
+  it('returns 401 for a missing or unknown bearer', async () => {
+    const app = await walletApp();
+    for (const headers of [{}, { authorization: 'Bearer secret' }]) {
+      const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, { headers });
+      expect(res.status).toBe(401);
+      await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
     }
-    const readOnly = await walletApp({
-      debugToken: undefined,
-      operatorLogin: OP_KEYS.operatorLogin,
-    });
-    const res = await readOnly.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
+  });
+
+  it('accepts a read key token', async () => {
+    const app = await walletApp();
+    const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
       headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
   });
 
   it('returns 404 for a malformed or unknown account id', async () => {
-    const app = await walletApp({ debugToken: 'secret' });
+    const app = await walletApp();
     for (const path of [
       '/debug/accounts/not-a-uuid/wallet',
       '/debug/accounts/cccccccc-cccc-4ccc-8ccc-cccccccccccc/wallet',
     ]) {
-      const res = await app.request(path, { headers: { authorization: 'Bearer secret' } });
+      const res = await app.request(path, { headers: { authorization: `Bearer ${OP_READ}` } });
       expect(res.status).toBe(404);
       await expect(res.json()).resolves.toEqual({ error: 'Not found' });
     }
   });
 
   it('returns 400 for a limit outside canonical decimal 1..500', async () => {
-    const app = await walletApp({ debugToken: 'secret' });
+    const app = await walletApp();
     for (const limit of ['', '0', '501', '1000', '+1', '1e2', ' 1', '1 ', 'abc', '1.0']) {
       const res = await app.request(
         `/debug/accounts/${ACCOUNT_ID}/wallet?limit=${encodeURIComponent(limit)}`,
-        { headers: { authorization: 'Bearer secret' } },
+        { headers: { authorization: `Bearer ${OP_READ}` } },
       );
       expect(res.status).toBe(400);
       await expect(res.json()).resolves.toEqual({ error: 'Invalid limit' });
     }
     for (const limit of ['050', '500']) {
       const ok = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet?limit=${limit}`, {
-        headers: { authorization: 'Bearer secret' },
+        headers: { authorization: `Bearer ${OP_READ}` },
       });
       expect(ok.status).toBe(200);
     }
   });
 
   it('returns 400 for a malformed cursor', async () => {
-    const app = await walletApp({ debugToken: 'secret' });
+    const app = await walletApp();
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet?cursor=abc`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toEqual({ error: 'Invalid cursor' });
   });
 
   it('returns a null balance and an empty payment page when the account never reported', async () => {
-    const app = await walletApp({ debugToken: 'secret' });
+    const app = await walletApp();
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({
@@ -299,13 +285,12 @@ describe('debugWalletRoutes', () => {
     });
     await store.upsertPayments([payment('pay-1', T2)]);
     const app = await walletApp({
-      debugToken: 'secret',
       walletStore: store,
       walletPubkey,
       now: () => T2.getTime(),
     });
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -356,14 +341,13 @@ describe('debugWalletRoutes', () => {
       receivedAt: RECEIVED,
     });
     const app = await walletApp({
-      debugToken: 'secret',
       walletStore: store,
       walletPubkey,
       now: () => T2.getTime(),
     });
 
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
 
     expect(res.status).toBe(200);
@@ -387,12 +371,11 @@ describe('debugWalletRoutes', () => {
       receivedAt: T2,
     });
     const app = await walletApp({
-      debugToken: 'secret',
       walletStore: store,
       now: () => T1.getTime(),
     });
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     const body = (await res.json()) as { balance: { ageSeconds: number } };
     expect(body.balance.ageSeconds).toBe(0);
@@ -402,12 +385,11 @@ describe('debugWalletRoutes', () => {
     const store = new InMemoryWalletStore();
     await store.upsertPayments([payment('pay-c', T2), payment('pay-b', T1), payment('pay-a', T1)]);
     const app = await walletApp({
-      debugToken: 'secret',
       walletStore: store,
       now: () => T2.getTime(),
     });
     const first = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet?limit=2`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     const firstBody = (await first.json()) as {
       payments: Array<{ paymentId: string }>;
@@ -417,7 +399,7 @@ describe('debugWalletRoutes', () => {
     expect(firstBody.nextCursor).toBeDefined();
     const second = await app.request(
       `/debug/accounts/${ACCOUNT_ID}/wallet?limit=2&cursor=${encodeURIComponent(firstBody.nextCursor ?? '')}`,
-      { headers: { authorization: 'Bearer secret' } },
+      { headers: { authorization: `Bearer ${OP_READ}` } },
     );
     const secondBody = (await second.json()) as {
       payments: Array<{ paymentId: string }>;
@@ -433,9 +415,9 @@ describe('debugWalletRoutes', () => {
 
   it('returns 503 and logs no amounts when the wallet store fails', async () => {
     const walletStore = new FailingWalletStore();
-    const app = await walletApp({ debugToken: 'secret', walletStore });
+    const app = await walletApp({ walletStore });
     const res = await app.request(`/debug/accounts/${ACCOUNT_ID}/wallet`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({ error: 'Wallet data is unavailable' });

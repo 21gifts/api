@@ -396,8 +396,6 @@ export interface MessagesRouteDeps {
    * that path needs the quote; a BTC ask still stores the typed sats.
    */
   fxSpot?: { latest(): Promise<FxSpotQuote | null> };
-  /** `DEBUG_TOKEN` (every operator level), or unset. */
-  debugToken?: string;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }

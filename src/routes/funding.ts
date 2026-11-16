@@ -20,7 +20,7 @@ import { pingTodayMedia } from '@/lib/funding-ping';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
-import { checkOperator } from '@/lib/operator';
+import { checkOperator, requireOperator } from '@/lib/operator';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, messagePay, serializeMessage, type MessageRow } from '@/lib/message';
@@ -96,8 +96,6 @@ export interface FundingRouteDeps {
   gifts: GiftStore;
   /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
   grantRound?: GrantRound;
-  /** `DEBUG_TOKEN` (every operator level), or unset. */
-  debugToken?: string;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -399,7 +397,7 @@ export async function requireStaff(
 /**
  * Gate for the staff GET routes: an operator token or a staff session.
  *
- * @param deps - Route collaborators (operator tokens and auth store).
+ * @param deps - Route collaborators (SSH key login and auth store).
  * @param header - Raw `Authorization` header.
  * @returns The reading account id (`null` for an operator token), otherwise
  *   the 401/403 error.
@@ -616,8 +614,10 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * (compare-and-set on the status read, log `funding.withdrawn`); any other
  * status is 409 `{ error: 'Conflict' }`. `basis` is 403 Forbidden.
  *
- * `GET /withdrawals` (operator `DEBUG_TOKEN` / operator key token only, like
- * `GET /daily-roster/links`; any session is 401) lists every
+ * `GET /withdrawals` (operator key token only, like
+ * `GET /daily-roster/links`, through {@link requireOperator} at `read`: any
+ * session is 401, and both answer 503 while the key login is not configured)
+ * lists every
  * withdrawal ever written, newest first, from
  * {@link FundingStore.listWithdrawals}, with the live name and whether the
  * account's current grant is no longer `withdrawn` (`reapplied`).
@@ -735,10 +735,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return c.json({ error: 'Funding is unavailable' }, 503);
       }
     })
-    .get('/withdrawals', async (c) => {
-      if ((await checkOperator('read', deps, c.req.header('authorization'))) !== true) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
+    .get('/withdrawals', requireOperator('read', deps), async (c) => {
       try {
         const rows = await deps.fundingStore.listWithdrawals();
         const names = new Map<string, string | null>();
@@ -1081,10 +1078,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       const result = await callRoster(deps, opened.caller, 'read', () => rosterStore.get());
       return answerRoster(c, result);
     })
-    .get('/daily-roster/links', async (c) => {
-      if ((await checkOperator('read', deps, c.req.header('authorization'))) !== true) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
+    .get('/daily-roster/links', requireOperator('read', deps), async (c) => {
       try {
         const report = await rosterStore.linkReport();
         logEvent('funding.daily_roster', rosterLogFields(null, 'links'));

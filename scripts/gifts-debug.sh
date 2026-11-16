@@ -3,7 +3,7 @@
 # gifts-debug — operator listing, role assignment,
 #               forum-note debug reads, HTTP audit log, external-pubkey inspection,
 #               forum-video restore, forum-note unhide,
-#               spend live roster, trust-edge backfill, account-by-id,
+#               trust-edge backfill, account-by-id,
 #               grant goal, staff funding/trust/forum reads, and
 #               full-table dump for 21.gifts
 #               (GET /debug/accounts, GET /debug/accounts/:id,
@@ -14,7 +14,6 @@
 #               POST /debug/passkey-renew/reopen,
 #               PUT /debug/messages/:id/video, POST /debug/messages/:id/restore,
 #               POST /debug/invoices/settle,
-#               GET {DEBUG_SPEND_URL}/debug/recipients,
 #               GET /debug/trust-edges, POST /debug/trust-edges,
 #               DELETE /debug/trust-edges,
 #               GET /debug/dump, GET /debug/dump/:table,
@@ -29,25 +28,23 @@
 #               DELETE /debug/sessions). No raw SQL.
 #
 # Credentials (never in this script, never printed):
-#   ~/.config/21gifts/debug.env  ->  DEBUG_API_URL, and DEBUG_TOKEN or DEBUG_SSH_KEY,
+#   ~/.config/21gifts/debug.env  ->  DEBUG_API_URL, DEBUG_SSH_KEY,
 #                                    optional DEBUG_SSH_ADMIN_KEY,
-#                                    optional DEBUG_SIGNING_NAMESPACE,
-#                                    optional DEBUG_SPEND_URL (default https://spend.21.gifts)
+#                                    optional DEBUG_SIGNING_NAMESPACE
 #   Override path with GIFTS_DEBUG_ENV.
 #
 # Operator login with SSH keys (GET /debug/auth/challenge, POST /debug/auth):
-#   DEBUG_SSH_KEY        private ed25519 key listed in the api's allowed-signers files.
-#                        When set, every api request uses a 15-minute key token kept in
+#   DEBUG_SSH_KEY        required: private ed25519 key listed in the api's allowed-signers
+#                        files. Every api request uses a 15-minute key token kept in
 #                        ${XDG_STATE_HOME:-~/.local/state}/21gifts/ (mode 600, one file per
 #                        namespace, API URL and key) and logs in
-#                        again by itself on 401. When unset, DEBUG_TOKEN is used as before.
+#                        again by itself on 401.
 #   DEBUG_SSH_ADMIN_KEY  optional second key; on a 403 whose body is the gate's
 #                        {"error":"Forbidden"} (level too low) the script logs in with it
 #                        (ssh-keygen may ask for its passphrase) and retries the request once.
 #   DEBUG_SIGNING_NAMESPACE  default from DEBUG_API_URL: dev-api.21.gifts -> 21gifts-debug-dev,
 #                        api.21.gifts -> 21gifts-debug-prd; set it for any other host
 #                        (21gifts-debug-dev, 21gifts-debug-stg, or 21gifts-debug-prd).
-#   The spend roster (gifts-debug spend) still uses DEBUG_TOKEN.
 #
 # Usage:
 #   gifts-debug login                # sign a challenge with DEBUG_SSH_KEY; keep the token
@@ -74,7 +71,6 @@
 #   gifts-debug video-put <id> <file>  # PUT video bytes for message id; 204 on success
 #   gifts-debug restore <id>         # POST unhide; print GET /debug/messages/:id JSON
 #   gifts-debug settle <payment-hash> <note> [preimage]  # POST manual settle; print response JSON
-#   gifts-debug spend [--raw]        # spend live roster table (default) or JSON
 #   gifts-debug funding-goal [--raw] # grant goal: shops per UTC day and qualifyingShops
 #   gifts-debug payout-days          # 7-UTC-day grant payout matrix JSON
 #   gifts-debug applications [account-id]
@@ -125,8 +121,6 @@
 #   gifts-debug video-put <message-id> ./clip.mp4
 #   gifts-debug restore <message-id>
 #   gifts-debug settle <payment-hash> "Wallet history checked" [preimage]
-#   gifts-debug spend
-#   gifts-debug spend --raw
 #   gifts-debug trust-edge <subject-id> <actor-id> verify
 #   gifts-debug trust-edge-delete <subject-id> moderator_confirm
 #
@@ -173,17 +167,10 @@ read_env_var_optional() {
 [ -f "$ENV_FILE" ] || die "missing $ENV_FILE"
 DEBUG_API_URL=$(read_env_var DEBUG_API_URL "$ENV_FILE")
 DEBUG_API_URL="${DEBUG_API_URL%/}"
-DEBUG_SPEND_URL=$(read_env_var_optional DEBUG_SPEND_URL "$ENV_FILE")
-DEBUG_SPEND_URL="${DEBUG_SPEND_URL:-https://spend.21.gifts}"
-DEBUG_SPEND_URL="${DEBUG_SPEND_URL%/}"
-DEBUG_SSH_KEY=$(read_env_var_optional DEBUG_SSH_KEY "$ENV_FILE")
+DEBUG_SSH_KEY=$(read_env_var DEBUG_SSH_KEY "$ENV_FILE")
 DEBUG_SSH_KEY="${DEBUG_SSH_KEY/#\~/$HOME}"
 DEBUG_SSH_ADMIN_KEY=$(read_env_var_optional DEBUG_SSH_ADMIN_KEY "$ENV_FILE")
 DEBUG_SSH_ADMIN_KEY="${DEBUG_SSH_ADMIN_KEY/#\~/$HOME}"
-DEBUG_TOKEN=$(read_env_var_optional DEBUG_TOKEN "$ENV_FILE")
-if [ -z "$DEBUG_SSH_KEY" ] && [ -z "$DEBUG_TOKEN" ]; then
-  die "DEBUG_TOKEN or DEBUG_SSH_KEY must be set in $ENV_FILE"
-fi
 
 # Namespace of the api being called: 21gifts-debug-<dev|stg|prd>.
 signing_namespace() {
@@ -327,15 +314,10 @@ sys.exit(0 if body == {"error": "Forbidden"} else 1)
 }
 
 # curl for every api request; prints the HTTP status (callers pass -o and -w).
-# With DEBUG_SSH_KEY: key token, one new login on 401, and on 403 one retry with
+# Key token of DEBUG_SSH_KEY, one new login on 401, and on 403 one retry with
 # DEBUG_SSH_ADMIN_KEY when it is set and the 403 is the gate's level refusal.
-# Without a key: DEBUG_TOKEN as before.
 op_curl() {
   local status token
-  if [ -z "$DEBUG_SSH_KEY" ]; then
-    curl -sS -H @"$(auth_header "$DEBUG_TOKEN")" "$@"
-    return
-  fi
   token=$(key_token operator "$DEBUG_SSH_KEY") || return 1
   status=$(curl -sS -H @"$(auth_header "$token")" "$@") || return 1
   if [ "$status" = "401" ]; then
@@ -352,7 +334,6 @@ op_curl() {
 }
 
 cmd_login() {
-  [ -n "$DEBUG_SSH_KEY" ] || die "DEBUG_SSH_KEY is not set in $ENV_FILE"
   key_login "$DEBUG_SSH_KEY" operator
 }
 
@@ -992,47 +973,6 @@ cmd_settle() {
   printf '%s\n' "$body"
 }
 
-fetch_recipients() {
-  local tmp status body
-  [ -n "$DEBUG_TOKEN" ] || die "DEBUG_TOKEN is not set in $ENV_FILE (the spend roster needs it)"
-  tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H @"$(auth_header "$DEBUG_TOKEN")" \
-    "${DEBUG_SPEND_URL}/debug/recipients") || {
-    rm -f "$tmp"
-    die "request failed"
-  }
-  body=$(cat "$tmp")
-  rm -f "$tmp"
-  if [ "$status" != "200" ]; then
-    die "HTTP ${status}: ${body}"
-  fi
-  printf '%s' "$body"
-}
-
-cmd_spend() {
-  local body
-  body=$(fetch_recipients)
-  if [ "$RAW" -eq 1 ]; then
-    printf '%s\n' "$body"
-    return
-  fi
-  printf '%s' "$body" | python3 -c '
-import json, sys
-data = json.load(sys.stdin)
-comment = data.get("comment")
-if comment is None:
-    comment = ""
-print("comment\t%s" % comment)
-rows = data.get("recipients") or []
-keys = ["address", "amountUsd", "comment"]
-print("\t".join(keys))
-for row in rows:
-    print("\t".join("" if row.get(k) is None else str(row.get(k, "")) for k in keys))
-print("%s rows" % len(rows), file=sys.stderr)
-'
-}
-
 cmd_funding_goal() {
   local body
   body=$(debug_get "/funding/goal")
@@ -1174,7 +1114,6 @@ case "${1:-}" in
   video-put) shift; cmd_video_put "$@" ;;
   restore) shift; cmd_restore "$@" ;;
   settle) shift; cmd_settle "$@" ;;
-  spend) cmd_spend ;;
   funding-goal) cmd_funding_goal ;;
   payout-days) cmd_get_json "/funding/payout-days" ;;
   applications) shift; cmd_applications "$@" ;;

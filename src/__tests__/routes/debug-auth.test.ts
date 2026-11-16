@@ -29,7 +29,8 @@ import {
 } from '@/__tests__/helpers/ssh-operator-keys';
 
 const NS = '21gifts-debug-dev';
-const DEBUG_TOKEN = 'static-operator-token';
+/** Value the removed static operator token used to have; it opens nothing now. */
+const OLD_STATIC_TOKEN = 'static-operator-token';
 const ring = new TestKeyring();
 const reader = ring.key('reader');
 const admin = ring.key('admin');
@@ -73,7 +74,7 @@ async function tokenFor(app: Hono, key: TestKey): Promise<string> {
 describe('debug auth routes in the app', () => {
   it('logs in, opens the routes of the level, and answers 403 above it', async () => {
     const apiLogStore = new InMemoryApiLogStore();
-    const app = createApp({ env: ENV, debugToken: DEBUG_TOKEN, apiLogStore });
+    const app = createApp({ env: ENV, apiLogStore });
     const challenge = await app.request('/debug/auth/challenge');
     expect(challenge.status).toBe(200);
     expect(await challenge.json()).toEqual({
@@ -110,10 +111,14 @@ describe('debug auth routes in the app', () => {
 
   it('fills api_log.operator for key-token requests only', async () => {
     const apiLogStore = new InMemoryApiLogStore();
-    const app = createApp({ env: ENV, debugToken: DEBUG_TOKEN, apiLogStore });
+    const app = createApp({ env: ENV, apiLogStore });
     const token = await tokenFor(app, reader);
     await app.request('/debug/logins', { headers: { authorization: `Bearer ${token}` } });
-    await app.request('/debug/logins', { headers: { authorization: `Bearer ${DEBUG_TOKEN}` } });
+    const old = await app.request('/debug/logins', {
+      headers: { authorization: `Bearer ${OLD_STATIC_TOKEN}` },
+    });
+    expect(old.status).toBe(401);
+    expect(await old.json()).toEqual({ error: 'Unauthorized' });
     await vi.waitFor(async () => {
       expect((await apiLogStore.listLatest(10)).length).toBe(4);
     });
@@ -123,16 +128,15 @@ describe('debug auth routes in the app', () => {
     expect(pairs).toEqual(
       expect.arrayContaining([
         ['debug', 'reader'],
-        ['debug', null],
+        ['none', null],
       ]),
     );
   });
 
-  it('answers 503 on both login routes without the files while DEBUG_TOKEN still works', async () => {
+  it('answers 503 on the login and operator routes without the files', async () => {
     const missing = ring.signersDir({ read: [] });
     const app = createApp({
       env: { DEBUG_ALLOWED_SIGNERS_DIR: missing, DEBUG_SIGNING_NAMESPACE: NS },
-      debugToken: DEBUG_TOKEN,
     });
     const challenge = await app.request('/debug/auth/challenge');
     expect(challenge.status).toBe(503);
@@ -140,13 +144,14 @@ describe('debug auth routes in the app', () => {
     const post = await app.request('/debug/auth', { method: 'POST', body: '{}' });
     expect(post.status).toBe(503);
     const logins = await app.request('/debug/logins', {
-      headers: { authorization: `Bearer ${DEBUG_TOKEN}` },
+      headers: { authorization: `Bearer ${OLD_STATIC_TOKEN}` },
     });
-    expect(logins.status).toBe(200);
+    expect(logins.status).toBe(503);
+    expect(await logins.json()).toEqual({ error: 'Debug is not configured' });
   });
 
   it('answers 503 on both login routes without a namespace', async () => {
-    const app = createApp({ env: { DEBUG_ALLOWED_SIGNERS_DIR: DIR }, debugToken: DEBUG_TOKEN });
+    const app = createApp({ env: { DEBUG_ALLOWED_SIGNERS_DIR: DIR } });
     expect((await app.request('/debug/auth/challenge')).status).toBe(503);
   });
 });

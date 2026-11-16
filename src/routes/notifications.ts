@@ -21,7 +21,7 @@ import { bearerToken } from '@/routes/me';
 
 /**
  * `/notifications` — signed-in in-app notification list and mark-read.
- * Nothing public. DEBUG_TOKEN cannot read member notifications.
+ * Nothing public. An operator key token cannot read member notifications.
  */
 
 /** Collaborators the `/notifications` routes need. */

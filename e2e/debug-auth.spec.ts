@@ -1,8 +1,7 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-import { e2eFingerprint, e2eOperatorKeys, e2eSign } from './helpers/operator-keys';
+import { e2eFingerprint, e2eOperatorKeys, e2eSign, operatorHeaders } from './helpers/operator-keys';
 
 const keys = e2eOperatorKeys();
-const OPERATOR = { authorization: 'Bearer e2e-debug-token' };
 
 interface LoginBody {
   token: string;
@@ -60,6 +59,34 @@ test('Function: OperatorLogin — a read key logs in, opens GET debug routes, an
   const write = await request.put('/debug/logins', { headers: bearer, data: { open: true } });
   expect(write.status()).toBe(403);
   expect(await write.json()).toEqual({ error: 'Forbidden' });
+});
+
+test('Function: OperatorLogin — a write key passes a write route and gets 403 on an admin route', async ({
+  request,
+}) => {
+  const login = await signIn(request, keys.writeKey);
+  expect(login.status).toBe(200);
+  const body = login.body as LoginBody;
+  expect(body).toMatchObject({ operator: 'e2e-writer', level: 'write' });
+  const bearer = { authorization: `Bearer ${body.token}` };
+  const write = await request.post('/debug/passkey-renew/reopen', {
+    headers: bearer,
+    data: { accountId: '00000000-0000-4000-8000-000000000001' },
+  });
+  expect(write.status()).toBe(404);
+  const admin = await request.post('/debug/shop-keys', { headers: bearer, data: {} });
+  expect(admin.status()).toBe(403);
+  expect(await admin.json()).toEqual({ error: 'Forbidden' });
+});
+
+test('Function: requireOperator — the former static token e2e-debug-token is 401', async ({
+  request,
+}) => {
+  const old = { authorization: 'Bearer e2e-debug-token' };
+  const read = await request.get('/debug/accounts', { headers: old });
+  expect(read.status()).toBe(401);
+  expect(await read.json()).toEqual({ error: 'Unauthorized' });
+  expect((await request.get('/funding/payout-days', { headers: old })).status()).toBe(401);
 });
 
 test('Function: OperatorSigners — the admin key logs in at admin and passes an admin route', async ({
@@ -130,7 +157,9 @@ test('Function: resolveRequestAuth — api_log names the operator of a key-token
   ).toBe(200);
   await expect
     .poll(async () => {
-      const res = await request.get('/debug/api-log', { headers: OPERATOR });
+      const res = await request.get('/debug/api-log', {
+        headers: await operatorHeaders(request, 'read'),
+      });
       const logs = ((await res.json()) as { logs: { path: string; operator: string | null }[] })
         .logs;
       return logs.some((row) => row.path === '/debug/contacts' && row.operator === 'e2e-reader');
