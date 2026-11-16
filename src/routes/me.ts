@@ -103,7 +103,7 @@ export interface MeRouteDeps {
    * recovery share (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
-  /** Daily payout switch used by the owner-facing payout explanation. */
+  /** Daily roster: the payout switch and the grant amount that prices the shop minimum. */
   rosterStore?: Pick<DailyRosterStore, 'get'>;
   /** Stored BTC-USD spot for the daily grant's 50 % shop-spend minimum. */
   fxSpotStore?: Pick<FxSpotStore, 'latest'>;
