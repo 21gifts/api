@@ -6054,6 +6054,7 @@ describe('indexOpenZapReceipts', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
+      listFundedCredits: () => base.listFundedCredits(),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
       replacePhotos: (...args: Parameters<InMemoryMessageStore['replacePhotos']>) =>
         base.replacePhotos(...args),
@@ -6370,6 +6371,7 @@ describe('indexOpenZapReceipts', () => {
           base.listInvoiceAttemptsForPayer(payerAccountId),
         listIndexedZapIngests: () => base.listIndexedZapIngests(),
         listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
+        listFundedCredits: () => base.listFundedCredits(),
         listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
         replacePhotos: (...args: Parameters<InMemoryMessageStore['replacePhotos']>) =>
           base.replacePhotos(...args),
@@ -7472,6 +7474,7 @@ describe('indexOpenZapReceipts', () => {
           base.listInvoiceAttemptsForPayer(payerAccountId),
         listIndexedZapIngests: () => base.listIndexedZapIngests(),
         listAuthoredMessages: (accountId: string) => base.listAuthoredMessages(accountId),
+        listFundedCredits: () => base.listFundedCredits(),
         listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
         replacePhotos: (...args: Parameters<InMemoryMessageStore['replacePhotos']>) =>
           base.replacePhotos(...args),

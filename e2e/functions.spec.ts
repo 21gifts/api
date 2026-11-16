@@ -3927,6 +3927,12 @@ test('GET /me/loans without bearer is 401', async ({ request }) => {
   expect((await request.get('/me/loans')).status()).toBe(401);
 });
 
+test('GET /loans/open without a session is 200', async ({ request }) => {
+  const res = await request.get('/loans/open');
+  expect(res.status()).toBe(200);
+  expect(Array.isArray(await res.json())).toBe(true);
+});
+
 test('Function: myLoansRoutes — GET /me/loans lists no loans for a new member', async ({
   request,
 }) => {

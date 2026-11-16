@@ -319,6 +319,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listInvoiceAttemptsForPayer: boom,
     listIndexedZapIngests: boom,
     listAuthoredMessages: boom,
+    listFundedCredits: boom,
     listOpenConversationZapEventIds: boom,
     attributeZapReceipt: boom,
     recordZapper: boom,
@@ -4652,6 +4653,7 @@ describe('POST /messages', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listFundedCredits: () => base.listFundedCredits(),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
       replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>
@@ -4819,6 +4821,7 @@ describe('POST /messages', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listFundedCredits: () => base.listFundedCredits(),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
       replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>
@@ -7209,6 +7212,7 @@ describe('POST /messages/:id/invoice', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listFundedCredits: () => base.listFundedCredits(),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
       replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>

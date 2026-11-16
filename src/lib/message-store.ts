@@ -1730,6 +1730,14 @@ export interface MessageStore {
   listAuthoredMessages(accountId: string): Promise<MessageRow[]>;
 
   /**
+   * Live top-level repayable notes that have a term, a funded time, and an
+   * author account. A plan that is already fully paid is included. No cap.
+   *
+   * @returns Matching row copies (caller-owned).
+   */
+  listFundedCredits(): Promise<MessageRow[]>;
+
+  /**
    * Newest `result === 'ok'` invoice with this payment hash, or `undefined`.
    *
    * @param paymentHash - BOLT11 payment hash (hex).
@@ -5578,6 +5586,17 @@ export class InMemoryMessageStore implements MessageStore {
         return b.id.localeCompare(a.id);
       });
     return Promise.resolve(sorted.map((row) => copyRow(row)));
+  }
+
+  listFundedCredits(): Promise<MessageRow[]> {
+    const funded = this.#rows.filter(
+      (row) =>
+        isLiveCreditNote(row) &&
+        typeof row.goalTermDays === 'number' &&
+        row.goalFundedAt instanceof Date &&
+        row.accountId !== null,
+    );
+    return Promise.resolve(funded.map((row) => copyRow(row)));
   }
 
   findOkInvoiceByPaymentHash(paymentHash: string): Promise<MessageInvoiceAttempt | undefined> {
@@ -9996,6 +10015,22 @@ export class PostgresMessageStore implements MessageStore {
     const rows = await this.#sql.query<MessageSqlRow>(
       `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message WHERE account_id = $1 ORDER BY created_at DESC, id DESC`,
       [accountId],
+    );
+    return rows.map((row) => mapMessageRow(row));
+  }
+
+  /**
+   * Live top-level repayable notes with a term, a funded time, and an author.
+   * A plan that is already fully paid is included. No `LIMIT`.
+   *
+   * @returns Mapped rows.
+   */
+  async listFundedCredits(): Promise<MessageRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND goal_repayable IS TRUE
+         AND goal_term_days IS NOT NULL AND goal_funded_at IS NOT NULL
+         AND account_id IS NOT NULL`,
     );
     return rows.map((row) => mapMessageRow(row));
   }

@@ -1290,6 +1290,95 @@ describe('repayment from the in-app wallet', () => {
     );
   }
 
+  function openLoans(app: Hono, headers: Record<string, string> = {}): Promise<Response> {
+    return Promise.resolve(app.request('/loans/open', { headers }));
+  }
+
+  async function addFundedLoan(
+    messages: InMemoryMessageStore,
+    options: {
+      id: string;
+      sats: number;
+      fundedAt: Date;
+      termDays: number;
+      accountId: string;
+      name: string;
+      goalCurrency: GoalFiatCode | null;
+      goalAmount: string | null;
+      fiatAmount: string | null;
+    },
+  ): Promise<void> {
+    await messages.create({
+      id: options.id,
+      accountId: options.accountId,
+      name: options.name,
+      text: 'loan',
+      createdAt: new Date(Date.UTC(2027, 1, 21)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 0,
+      goalSats: options.sats,
+      goalRepayable: true,
+      goalTermDays: options.termDays,
+      goalFundedAt: options.fundedAt,
+      ...(options.goalCurrency === null
+        ? {}
+        : { goalCurrency: options.goalCurrency, goalAmount: options.goalAmount }),
+    });
+    const currency = options.goalCurrency;
+    const fiatAmount = options.fiatAmount;
+    let fiat: {
+      usd: string | null;
+      chf: string | null;
+      eur: string | null;
+      php: string | null;
+    } | null = null;
+    if (currency !== null && fiatAmount !== null) {
+      fiat = {
+        usd: currency === 'USD' ? fiatAmount : null,
+        chf: currency === 'CHF' ? fiatAmount : null,
+        eur: currency === 'EUR' ? fiatAmount : null,
+        php: currency === 'PHP' ? fiatAmount : null,
+      };
+    }
+    await messages.recordZapReceipt(`r-${options.id}`, options.id, options.sats, fiat);
+    await messages.updateZapReceiptGift(`r-${options.id}`, { payerAccountId: WALLET_GIVER });
+  }
+
+  interface OpenLoan {
+    messageId: string;
+    accountId: string;
+    name: string;
+    currency: string;
+    outstanding: string | number;
+    overdue: boolean;
+  }
+
+  function centsOf(amount: string): bigint {
+    const whole = amount.split('.')[0] as string;
+    const frac = amount.split('.')[1] as string;
+    return BigInt(whole) * 100n + BigInt(frac);
+  }
+
+  function outstandingFromLedger(body: {
+    currency: string;
+    repayments: {
+      amount: string | null;
+      paidAmount: string | null;
+      sats: number | null;
+      paidSats: number;
+    }[];
+  }): string | number {
+    if (body.currency === 'BTC') {
+      return body.repayments.reduce((sum, line) => sum + (line.sats as number) - line.paidSats, 0);
+    }
+    const cents = body.repayments.reduce(
+      (sum, line) => sum + centsOf(line.amount as string) - centsOf(line.paidAmount as string),
+      0n,
+    );
+    return formatCents(cents);
+  }
+
   async function withNip57<T>(run: () => Promise<T>): Promise<T> {
     const bolt11 = await import('@/lib/bolt11');
     const nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
@@ -4480,6 +4569,412 @@ describe('repayment from the in-app wallet', () => {
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
       expect(String(warn.mock.calls[0]?.[0])).toContain('me.loans.failed');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('lists an open loan without a session and agrees with the public ledger', async () => {
+    const fundedAt = new Date(Date.UTC(2027, 1, 27, 12));
+    const openId = 'abababab-abab-4bab-8bab-abababababab';
+    const { app, messages } = await loanSetup({
+      fundedAt: null,
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+    });
+    await addFundedLoan(messages, {
+      id: openId,
+      sats: 100,
+      fundedAt,
+      termDays: 2,
+      accountId: AUTHOR,
+      name: 'Old snapshot',
+      goalCurrency: null,
+      goalAmount: null,
+      fiatAmount: null,
+    });
+    const response = await openLoans(app, { authorization: 'Bearer not-a-session' });
+    expect(response.status).toBe(200);
+    const listed = (await response.json()) as OpenLoan[];
+    expect(listed).toEqual([
+      {
+        messageId: openId,
+        accountId: AUTHOR,
+        name: 'Ada',
+        currency: 'BTC',
+        outstanding: 100,
+        overdue: true,
+      },
+    ]);
+    expect(Object.keys(listed[0] as OpenLoan).sort()).toEqual([
+      'accountId',
+      'currency',
+      'messageId',
+      'name',
+      'outstanding',
+      'overdue',
+    ]);
+    expect((await messages.getById(openId))?.name).toBe('Old snapshot');
+    const ledger = (await (await app.request(`/messages/${openId}/repayment`)).json()) as {
+      currency: string;
+      repayments: {
+        amount: string | null;
+        paidAmount: string | null;
+        sats: number | null;
+        paidSats: number;
+      }[];
+    };
+    expect(ledger.currency).toBe('BTC');
+    expect(listed[0]?.outstanding).toBe(outstandingFromLedger(ledger));
+    const again = (await (await openLoans(app)).json()) as OpenLoan[];
+    expect(again).toEqual(listed);
+  });
+
+  it('omits collecting, deleted, repaid, and non-loan notes', async () => {
+    const fundedAt = new Date(Date.UTC(2027, 1, 27, 12));
+    const openId = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+    const paidId = 'dededede-dede-4ede-8ede-dededededede';
+    const deletedId = 'efefefef-efef-4fef-8fef-efefefefefef';
+    const { app, messages } = await loanSetup({
+      fundedAt: null,
+      givers: [{ id: WALLET_GIVER, sats: 40, wallet: true }],
+    });
+    const funded = {
+      sats: 40,
+      fundedAt,
+      termDays: 1,
+      accountId: AUTHOR,
+      name: 'Ada',
+      goalCurrency: null,
+      goalAmount: null,
+      fiatAmount: null,
+    };
+    await addFundedLoan(messages, { ...funded, id: openId });
+    await addFundedLoan(messages, { ...funded, id: paidId });
+    await addFundedLoan(messages, { ...funded, id: deletedId });
+    await messages.markRepaymentPaid({
+      messageId: paidId,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      dueSats: 40,
+      paidAt: new Date(MONDAY),
+    });
+    expect(await messages.markDeleted(deletedId, new Date(MONDAY), AUTHOR)).toBe(true);
+    await messages.create({
+      id: 'plain-note',
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'hello',
+      createdAt: new Date(MONDAY),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: 'no-term',
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'ask',
+      createdAt: new Date(MONDAY),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 40,
+      goalRepayable: true,
+      goalFundedAt: fundedAt,
+    });
+    await messages.create({
+      id: 'reply-parent',
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(MONDAY),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: 'reply-note',
+      accountId: AUTHOR,
+      parentId: 'reply-parent',
+      name: 'Ada',
+      text: 'reply',
+      createdAt: new Date(MONDAY),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: fundedAt,
+      goalSats: 40,
+    });
+    const listed = (await (await openLoans(app)).json()) as OpenLoan[];
+    expect(listed.map((row) => row.messageId)).toEqual([openId]);
+    expect(listed[0]?.overdue).toBe(true);
+    expect(listed[0]?.outstanding).toBe(40);
+  });
+
+  it('is not overdue when the only unpaid share is due today', async () => {
+    const { app, messages } = await loanSetup({
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+      termDays: 2,
+      fundedAt: new Date(Date.UTC(2027, 1, 27, 12)),
+    });
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      dueSats: 50,
+      paidAt: new Date(MONDAY),
+    });
+    const listed = (await (await openLoans(app)).json()) as OpenLoan[];
+    expect(listed).toEqual([
+      {
+        messageId: CREDIT,
+        accountId: AUTHOR,
+        name: 'Ada',
+        currency: 'BTC',
+        outstanding: 50,
+        overdue: false,
+      },
+    ]);
+  });
+
+  it('keeps a loan funded before the repayment floor off the overdue list until the next day', async () => {
+    const floorId = '12121212-1212-4121-8121-121212121212';
+    const { app, clock } = await loanSetup({
+      messageId: floorId,
+      givers: [{ id: WALLET_GIVER, sats: 80, wallet: true }],
+      termDays: 1,
+      fundedAt: new Date('2026-11-09T14:12:13.130Z'),
+      now: Date.UTC(2026, 10, 16, 12),
+    });
+    const onFloor = (await (await openLoans(app)).json()) as OpenLoan[];
+    expect(onFloor).toEqual([
+      {
+        messageId: floorId,
+        accountId: AUTHOR,
+        name: 'Ada',
+        currency: 'BTC',
+        outstanding: 80,
+        overdue: false,
+      },
+    ]);
+    clock.now = Date.UTC(2026, 10, 17, 12);
+    const nextDay = (await (await openLoans(app)).json()) as OpenLoan[];
+    expect(nextDay[0]?.overdue).toBe(true);
+    expect(nextDay[0]?.outstanding).toBe(80);
+  });
+
+  it('reports a fiat remainder in loan cents and matches the public ledger', async () => {
+    const withoutSpot = await loanSetup({
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true, fiatAmount: '1.50' }],
+      termDays: 1,
+      goalCurrency: 'CHF',
+      goalAmount: '9.99',
+      fundedAt: new Date(Date.UTC(2027, 1, 27, 12)),
+    });
+    const hidden = (await (await openLoans(withoutSpot.app)).json()) as OpenLoan[];
+    expect(hidden[0]).toMatchObject({ currency: 'CHF', outstanding: '1.50', overdue: true });
+    expect(typeof hidden[0]?.outstanding).toBe('string');
+    expect((await withoutSpot.app.request(`/messages/${CREDIT}/repayment`)).status).toBe(503);
+
+    const { app, messages } = await loanSetup({
+      givers: [{ id: WALLET_GIVER, sats: 21, wallet: true, fiatAmount: '1.50' }],
+      termDays: 1,
+      goalCurrency: 'CHF',
+      goalAmount: '9.99',
+      fundedAt: new Date(Date.UTC(2027, 1, 27, 12)),
+      rates: async () => spot({ CHF: '100000.00' }),
+    });
+    const before = (await (await openLoans(app)).json()) as OpenLoan[];
+    const ledgerBefore = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as {
+      currency: string;
+      repayments: {
+        amount: string | null;
+        paidAmount: string | null;
+        sats: number | null;
+        paidSats: number;
+      }[];
+    };
+    expect(before[0]?.outstanding).toBe('1.50');
+    expect(before[0]?.outstanding).toBe(outstandingFromLedger(ledgerBefore));
+    await messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      partIndex: 0,
+      units: 40n,
+      sats: 9,
+      shareUnits: 150n,
+      paidAt: new Date(MONDAY),
+    });
+    const after = (await (await openLoans(app)).json()) as OpenLoan[];
+    const ledgerAfter = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as {
+      currency: string;
+      repayments: {
+        amount: string | null;
+        paidAmount: string | null;
+        sats: number | null;
+        paidSats: number;
+      }[];
+    };
+    expect(after[0]?.outstanding).toBe('1.10');
+    expect(after[0]?.outstanding).toBe(outstandingFromLedger(ledgerAfter));
+    expect(after[0]?.currency).toBe('CHF');
+  });
+
+  it('matches a partial bitcoin repayment to the public ledger', async () => {
+    const { app, messages } = await loanSetup({
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+      termDays: 1,
+      fundedAt: new Date(Date.UTC(2027, 1, 27, 12)),
+    });
+    await messages.markRepaymentPartPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: WALLET_GIVER,
+      partIndex: 0,
+      units: 40n,
+      sats: 40,
+      shareUnits: 100n,
+      paidAt: new Date(MONDAY),
+    });
+    const listed = (await (await openLoans(app)).json()) as OpenLoan[];
+    const ledger = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as {
+      currency: string;
+      repayments: {
+        amount: string | null;
+        paidAmount: string | null;
+        sats: number | null;
+        paidSats: number;
+      }[];
+    };
+    expect(listed[0]?.currency).toBe('BTC');
+    expect(listed[0]?.outstanding).toBe(60);
+    expect(listed[0]?.outstanding).toBe(outstandingFromLedger(ledger));
+    expect(listed[0]?.overdue).toBe(true);
+  });
+
+  it('orders overdue loans first, then currency, then the remainder', async () => {
+    const fundedOverdue = new Date(Date.UTC(2027, 1, 27, 12));
+    const fundedToday = new Date(Date.UTC(2027, 1, 28, 12));
+    const btcHigh = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1';
+    const btcLowA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+    const btcLowB = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1';
+    const chfHigh = 'd1111111-1111-4111-8111-111111111111';
+    const chfLow = 'd2222222-2222-4222-8222-222222222222';
+    const btcToday = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1';
+    const usdToday = 'ffffffff-ffff-4fff-8fff-fffffffffff1';
+    const { app, messages } = await loanSetup({
+      messageId: btcHigh,
+      givers: [{ id: WALLET_GIVER, sats: 500, wallet: true }],
+      termDays: 2,
+      fundedAt: fundedOverdue,
+    });
+    const btc = {
+      fundedAt: fundedOverdue,
+      termDays: 2,
+      accountId: AUTHOR,
+      name: 'Ada',
+      goalCurrency: null,
+      goalAmount: null,
+      fiatAmount: null,
+    };
+    await addFundedLoan(messages, { ...btc, id: btcLowA, sats: 200 });
+    await addFundedLoan(messages, { ...btc, id: btcLowB, sats: 200 });
+    await addFundedLoan(messages, {
+      id: chfHigh,
+      sats: 21,
+      fundedAt: fundedOverdue,
+      termDays: 2,
+      accountId: AUTHOR,
+      name: 'Ada',
+      goalCurrency: 'CHF',
+      goalAmount: '10.00',
+      fiatAmount: '10.00',
+    });
+    await addFundedLoan(messages, {
+      id: chfLow,
+      sats: 21,
+      fundedAt: fundedOverdue,
+      termDays: 2,
+      accountId: AUTHOR,
+      name: 'Ada',
+      goalCurrency: 'CHF',
+      goalAmount: '2.00',
+      fiatAmount: '2.00',
+    });
+    await addFundedLoan(messages, {
+      id: btcToday,
+      sats: 9000,
+      fundedAt: fundedToday,
+      termDays: 1,
+      accountId: AUTHOR,
+      name: 'Ada',
+      goalCurrency: null,
+      goalAmount: null,
+      fiatAmount: null,
+    });
+    await addFundedLoan(messages, {
+      id: usdToday,
+      sats: 21,
+      fundedAt: fundedToday,
+      termDays: 1,
+      accountId: AUTHOR,
+      name: 'Ada',
+      goalCurrency: 'USD',
+      goalAmount: '3.00',
+      fiatAmount: '3.00',
+    });
+    const first = (await (await openLoans(app)).json()) as OpenLoan[];
+    const second = (await (await openLoans(app)).json()) as OpenLoan[];
+    expect(second).toEqual(first);
+    expect(first.map((row) => row.messageId)).toEqual([
+      btcHigh,
+      btcLowA,
+      btcLowB,
+      chfHigh,
+      chfLow,
+      btcToday,
+      usdToday,
+    ]);
+    expect(first.map((row) => [row.currency, row.outstanding, row.overdue])).toEqual([
+      ['BTC', 500, true],
+      ['BTC', 200, true],
+      ['BTC', 200, true],
+      ['CHF', '10.00', true],
+      ['CHF', '2.00', true],
+      ['BTC', 9000, false],
+      ['USD', '3.00', false],
+    ]);
+  });
+
+  it('answers 503 when a funded loan has no computable debt', async () => {
+    const { app, messages } = await loanSetup({
+      givers: [{ id: WALLET_GIVER, sats: 100, wallet: true }],
+      termDays: 1,
+    });
+    await addFundedLoan(messages, {
+      id: 'abababab-abab-4bab-8bab-ababababab99',
+      sats: 21,
+      fundedAt: new Date(Date.UTC(2027, 1, 27, 12)),
+      termDays: 1,
+      accountId: AUTHOR,
+      name: 'Ada',
+      goalCurrency: 'USD',
+      goalAmount: null,
+      fiatAmount: null,
+    });
+    const response = await openLoans(app);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'Ask amount is unavailable' });
+  });
+
+  it('answers 503 when funded credits cannot be read', async () => {
+    const failing = await loanSetup();
+    vi.spyOn(failing.messages, 'listFundedCredits').mockRejectedValue(new Error('db down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const response = await openLoans(failing.app);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'Messages are unavailable' });
+      expect(String(warn.mock.calls[0]?.[0])).toContain('loans.open.failed');
     } finally {
       warn.mockRestore();
     }
