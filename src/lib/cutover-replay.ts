@@ -12,11 +12,13 @@ import type { ConversationMessageRow } from '@/lib/conversation';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { effectiveStatus, eligibleToday, utcDayKey, type FundingGrant } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 import type { GiftKind, GiftRow } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageListRow, MessageStore } from '@/lib/message-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import type { SpendPing } from '@/lib/spend-ping';
@@ -91,6 +93,10 @@ export interface ReplayDeps {
   lnurlServer?: LnurlServerConfig;
   /** First UTC day the 21.gifts recovery share is required for a payout; `null` → not required yet. */
   recoveryShareRequiredFrom: string | null;
+  /** Daily payout roster for a daily event's 50 % shop-spend minimum. */
+  roster?: Pick<DailyRosterStore, 'get'>;
+  /** Stored BTC-USD spot for a daily event's 50 % shop-spend minimum. */
+  fxSpot?: Pick<FxSpotStore, 'latest'>;
   now: () => number;
 }
 
@@ -447,6 +453,14 @@ export async function replayPayoutWindow(
       deps.recoveryShareRequiredFrom,
       deps.walletTransfers,
       day,
+      undefined,
+      payout === 'daily'
+        ? {
+            ...(deps.roster === undefined ? {} : { roster: deps.roster }),
+            ...(deps.fxSpot === undefined ? {} : { fxSpot: deps.fxSpot }),
+            address,
+          }
+        : undefined,
     );
     const ineligible = notEligibleDetail(
       account,

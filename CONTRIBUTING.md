@@ -170,6 +170,9 @@ wallet (`LNURL_SERVER_URL`) on a payout path, so their tests assert the 401 of `
 without a session;
 `latestTodayMediaPostId`, which is reached only after an account passes the payout gates; the
 default boot has no verified wallet and its member `GET /me` stops at `verify` before the media lookup;
+`dailyShopSatsRequired` and `dailyShopSatsRequiredForGrant`, which compute the daily grant's shop-spend
+minimum only after an account passes the verify, admission, wallet, and recovery-share gates; the
+default boot has no verified wallet and its member `GET /me` stops at `verify` before the minimum is read;
 `pingTodayMedia`, which pings only with a configured spend ping (`PAYOUT_SIGNER=fond`)
 after a staff decision or a stored recovery share, so its test asserts `POST /funding/trial` 401
 without a session;

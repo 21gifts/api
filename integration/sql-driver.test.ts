@@ -3376,6 +3376,8 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
     const buyerId = crypto.randomUUID();
     const shopId = crypto.randomUUID();
     const noteId = crypto.randomUUID();
+    const secondShopId = crypto.randomUUID();
+    const secondShopNoteId = crypto.randomUUID();
     const hex64 = (): string =>
       `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
     const buyerKey = `02${hex64()}`;
@@ -3473,8 +3475,59 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
       });
       await store.upsertTransfer(transfer('utc-d-minus-2', '2026-11-10T23:30:00.000Z'));
       await expect(store.hasShopPayment(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(false);
+      await expect(store.shopPaymentSats(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(0);
       await store.upsertTransfer(transfer('utc-d', '2026-11-12T23:30:00.000Z'));
       await expect(store.hasShopPayment(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(true);
+      await expect(store.shopPaymentSats(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(21);
+      await expect(store.hasShopPayment(buyerId, '2026-11-11', '2026-11-12', 21)).resolves.toBe(
+        true,
+      );
+      await expect(store.hasShopPayment(buyerId, '2026-11-11', '2026-11-12', 22)).resolves.toBe(
+        false,
+      );
+      await store.upsertTransfer({
+        ...transfer('utc-d-second-shop', '2026-11-11T12:00:00.000Z'),
+        amountSats: 34,
+        counterpartyPubkey: buyerKey,
+        counterpartyPubkeys: [shopKey, buyerKey],
+      });
+      await expect(store.shopPaymentSats(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(55);
+      const secondShopKey = `03${hex64()}`;
+      await auth.createAccount({
+        id: secondShopId,
+        linkingKey: null,
+        role: 'verified',
+        name: null,
+        username: `utc_second_shop_${secondShopId.slice(0, 8)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      await client.execute(
+        `UPDATE account SET spark_pubkey = $2, spark_pubkey_verified_at = now()
+         WHERE id = $1`,
+        [secondShopId, secondShopKey],
+      );
+      await new PostgresMessageStore(client).create({
+        id: secondShopNoteId,
+        accountId: secondShopId,
+        name: 'Second UTC Shop',
+        text: 'Also #21GiftsShop',
+        createdAt: new Date('2026-11-12T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        shopAccount: { id: secondShopId, username: null, name: 'Second UTC Shop' },
+      });
+      await store.upsertTransfer({
+        ...transfer('utc-d-two-shops', '2026-11-11T13:00:00.000Z'),
+        amountSats: 13,
+        counterpartyPubkey: shopKey,
+        counterpartyPubkeys: [shopKey, secondShopKey],
+      });
+      await expect(store.shopPaymentSats(buyerId, '2026-11-11', '2026-11-12')).resolves.toBe(68);
 
       const missingTimeTransferId = crypto.randomUUID();
       await store.upsertTransfer({
@@ -3634,7 +3687,12 @@ describe('PostgresWalletTransferStore UTC shop window', () => {
       await client.execute('DELETE FROM wallet_token_transaction WHERE account_id = $1', [buyerId]);
       await client.execute('DELETE FROM wallet_transfer WHERE account_id = $1', [buyerId]);
       await client.execute('DELETE FROM message WHERE id = $1', [noteId]);
-      await client.execute('DELETE FROM account WHERE id IN ($1, $2)', [buyerId, shopId]);
+      await client.execute('DELETE FROM message WHERE id = $1', [secondShopNoteId]);
+      await client.execute('DELETE FROM account WHERE id IN ($1, $2, $3)', [
+        buyerId,
+        shopId,
+        secondShopId,
+      ]);
       await closeIfPossible(sql);
     }
   });

@@ -195,8 +195,13 @@ function account(
 describe('replayPayoutWindow', () => {
   it('reports no_shop_payment when the shop payment rule blocks a payout', async () => {
     const h = await harness({ grants: [admitted(ADA)] });
-    const hasShopPayment = vi.fn(async () => false);
+    const hasShopPayment = vi.fn(
+      async (_accountId: string, _fromUtcDay: string, _toUtcDay: string, minSats = 1) =>
+        minSats <= 1,
+    );
     h.deps.walletTransfers = { hasShopPayment };
+    h.deps.roster = { get: async () => ({ paymentsEnabled: true, recipients: [] }) as never };
+    h.deps.fxSpot = { latest: async () => ({ rates: { USD: '100000' } }) as never };
     await h.member(ADA, 'ada', 'moderator');
     await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
 
@@ -210,8 +215,40 @@ describe('replayPayoutWindow', () => {
         detail: 'no_shop_payment',
       }),
     ]);
-    expect(hasShopPayment).toHaveBeenCalledWith(ADA, '2026-10-28', '2026-10-29');
+    expect(hasShopPayment).toHaveBeenCalledWith(ADA, '2026-10-28', '2026-10-29', 500);
     expect(h.spend.pingOnDay).not.toHaveBeenCalled();
+  });
+
+  it('keeps the 1-sat minimum for a moderator trigger while daily fails closed', async () => {
+    const h = await harness({ grants: [admitted(ADA)] });
+    const hasShopPayment = vi.fn(
+      async (_accountId: string, _fromUtcDay: string, _toUtcDay: string, minSats = 1) =>
+        minSats <= 1,
+    );
+    h.deps.walletTransfers = { hasShopPayment };
+    await h.member(ADA, 'ada', 'moderator', true, { profileMessageId: id(5) });
+    await h.post(id(5), ADA, '2026-10-29T06:00:00.000Z', false);
+    await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
+    const group = await h.conversations.ensureModeratorGroup(PLATFORM, new Date(FROM));
+    await h.conversations.appendMessage({
+      id: 'g-ada',
+      conversationId: group.id,
+      text: 'hi',
+      createdAt: new Date('2026-10-29T23:31:00.000Z'),
+      senderAccountId: ADA,
+      senderPubkey: null,
+      name: 'Ada',
+      ...unsignedConversationDefaults(),
+    });
+
+    const result = await h.run();
+
+    expect(result.events.map((e) => [e.eventId, e.payout, e.status, e.detail])).toEqual([
+      [id(1), 'daily', 'skipped', 'no_shop_payment'],
+      ['g-ada', 'moderator', 'paid', undefined],
+    ]);
+    expect(hasShopPayment).toHaveBeenCalledWith(ADA, '2026-10-28', '2026-10-29', 1);
+    expect(hasShopPayment).toHaveBeenCalledOnce();
   });
 
   it('pays a post before 00:00 once on its own day and still pays a post after 00:00 on the new day', async () => {

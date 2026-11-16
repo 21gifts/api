@@ -94,7 +94,37 @@ export interface WalletTransferStore {
   upsertTransfer(row: WalletTransferRecord): Promise<WalletTransferUpsertResult>;
   upsertTokenTransaction(row: WalletTokenTransactionRecord): Promise<void>;
   markFullSync(accountId: string, walletPubkey: string, syncedAt: Date): Promise<void>;
-  hasShopPayment(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<boolean>;
+  /**
+   * Sum the member's qualifying shop payments in an inclusive UTC-day window.
+   *
+   * A payment is outgoing, `completed`, of type `transfer`, and its day
+   * (`COALESCE(transfer_updated_at, transfer_created_at)`) is inside the
+   * window. One of its counterparty keys resolves to another account with a
+   * live top-level `#21GiftsShop` note. Each transfer is counted once, even
+   * when several keys resolve to shops or a shop has several notes.
+   *
+   * @param accountId - Paying member account id.
+   * @param fromUtcDay - First UTC day (`YYYY-MM-DD`, inclusive).
+   * @param toUtcDay - Last UTC day (`YYYY-MM-DD`, inclusive).
+   * @returns The summed `amount_sats`, or 0 when none qualify.
+   */
+  shopPaymentSats(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<number>;
+  /**
+   * Whether the member made at least `minSats` of qualifying shop payments in
+   * the window of {@link WalletTransferStore.shopPaymentSats}.
+   *
+   * @param accountId - Paying member account id.
+   * @param fromUtcDay - First UTC day (`YYYY-MM-DD`, inclusive).
+   * @param toUtcDay - Last UTC day (`YYYY-MM-DD`, inclusive).
+   * @param minSats - Inclusive minimum in whole sats (default 1).
+   * @returns `true` when the summed qualifying sats reach the minimum.
+   */
+  hasShopPayment(
+    accountId: string,
+    fromUtcDay: string,
+    toUtcDay: string,
+    minSats?: number,
+  ): Promise<boolean>;
 }
 
 /** Read port of the counterparty lookup over server-observed transfers. */
@@ -524,7 +554,8 @@ export class InMemoryWalletTransferStore
     return Promise.resolve();
   }
 
-  async hasShopPayment(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<boolean> {
+  async shopPaymentSats(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<number> {
+    let total = 0;
     for (const row of this.#rows.values()) {
       if (
         row.accountId !== accountId ||
@@ -544,10 +575,19 @@ export class InMemoryWalletTransferStore
         day <= toUtcDay &&
         (await hasExternalShop(counterparties, accountId, this.#isShop))
       ) {
-        return true;
+        total += row.amountSats;
       }
     }
-    return false;
+    return total;
+  }
+
+  async hasShopPayment(
+    accountId: string,
+    fromUtcDay: string,
+    toUtcDay: string,
+    minSats = 1,
+  ): Promise<boolean> {
+    return (await this.shopPaymentSats(accountId, fromUtcDay, toUtcDay)) >= minSats;
   }
 
   async findObservedCounterparties(
@@ -924,37 +964,29 @@ export class PostgresWalletTransferStore
     );
   }
 
-  async hasShopPayment(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<boolean> {
-    const rows = await this.sql.query<{ present: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1
-         FROM wallet_transfer AS payment
-         CROSS JOIN LATERAL unnest(payment.counterparty_pubkeys) AS counterparty(pubkey)
-         JOIN LATERAL (
-           SELECT COALESCE(
-             (SELECT id FROM account
-              WHERE spark_pubkey = counterparty.pubkey AND spark_pubkey_verified_at IS NOT NULL
-              ORDER BY id LIMIT 1),
-             (SELECT account_id FROM previous_wallet WHERE spark_pubkey = counterparty.pubkey
-              ORDER BY replaced_at DESC, account_id LIMIT 1)
-           ) AS account_id
-         ) AS resolved ON resolved.account_id IS NOT NULL
-         JOIN message AS shop
-           ON shop.shop_account_id = resolved.account_id
-          AND shop.parent_id IS NULL
-          AND shop.deleted_at IS NULL
-          AND shop.text ~* '#21GiftsShop([^A-Za-z0-9_]|$)'
-         WHERE payment.account_id = $1
-           AND payment.direction = 'out'
-           AND payment.status = 'completed'
-           AND payment.type = 'transfer'
-           AND resolved.account_id <> payment.account_id
-           AND (COALESCE(payment.transfer_updated_at, payment.transfer_created_at)
-                AT TIME ZONE 'UTC')::date BETWEEN $2::date AND $3::date
-       ) AS present`,
+  async shopPaymentSats(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<number> {
+    const rows = await this.sql.query<{ sats: number | string | bigint | null }>(
+      `SELECT COALESCE(SUM(wallet_transfer.amount_sats), 0) AS sats
+       FROM wallet_transfer
+       WHERE wallet_transfer.account_id = $1
+         AND wallet_transfer.direction = 'out'
+         AND wallet_transfer.status = 'completed'
+         AND wallet_transfer.type = 'transfer'
+         AND ${SHOP_EXISTS_SQL}
+         AND (COALESCE(wallet_transfer.transfer_updated_at, wallet_transfer.transfer_created_at)
+              AT TIME ZONE 'UTC')::date BETWEEN $2::date AND $3::date`,
       [accountId, fromUtcDay, toUtcDay],
     );
-    return rows[0]?.present === true;
+    return Number(rows[0]?.sats ?? 0);
+  }
+
+  async hasShopPayment(
+    accountId: string,
+    fromUtcDay: string,
+    toUtcDay: string,
+    minSats = 1,
+  ): Promise<boolean> {
+    return (await this.shopPaymentSats(accountId, fromUtcDay, toUtcDay)) >= minSats;
   }
   async findObservedCounterparties(
     accountId: string,

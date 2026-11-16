@@ -6,11 +6,14 @@
 
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import { recoveryShareRequired, utcDayKey } from '@/lib/funding';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { logEvent } from '@/lib/log';
 import { addUtcDays } from '@/lib/member-habit';
 import type { MessageStore } from '@/lib/message-store';
 import { receivingAddress } from '@/lib/receiving-address';
+import { dailyShopSatsRequiredForGrant } from '@/lib/shop-spend-minimum';
 import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
@@ -29,6 +32,10 @@ export interface TodayMediaPingDeps {
   recoveryShareRequiredFrom?: string | null;
   /** Server-verified transfers for the mandatory recent shop payment. */
   walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+  /** Live daily roster for the daily grant's 50 % shop-spend minimum. */
+  roster?: Pick<DailyRosterStore, 'get'>;
+  /** Stored BTC-USD spot for the daily grant's 50 % shop-spend minimum. */
+  fxSpot?: Pick<FxSpotStore, 'latest'>;
 }
 
 /**
@@ -89,16 +96,20 @@ export async function pingTodayMedia(
     return 'skipped';
   }
   try {
-    if (
-      deps.walletTransfers !== undefined &&
-      !(await deps.walletTransfers.hasShopPayment(
-        account.id,
-        addUtcDays(utcDayKey(nowMs), -1),
-        utcDayKey(nowMs),
-      ))
-    ) {
-      logEvent('spend.ping.skipped', { reason: 'no_shop_payment' });
-      return 'skipped';
+    if (deps.walletTransfers !== undefined) {
+      const minimum = await dailyMinimum(deps, account.id, address, grantStatus);
+      if (
+        minimum === null ||
+        !(await deps.walletTransfers.hasShopPayment(
+          account.id,
+          addUtcDays(utcDayKey(nowMs), -1),
+          utcDayKey(nowMs),
+          minimum,
+        ))
+      ) {
+        logEvent('spend.ping.skipped', { reason: 'no_shop_payment' });
+        return 'skipped';
+      }
     }
     if (
       requireShare &&
@@ -123,4 +134,34 @@ export async function pingTodayMedia(
     logEvent('funding.daily_ping.failed', { accountId: account.id });
     return 'failed';
   }
+}
+
+/**
+ * The daily grant's shop-spend minimum from the optional roster and spot.
+ *
+ * @param deps - Ping collaborators.
+ * @param accountId - Paying account id.
+ * @param address - Recipient Lightning Address.
+ * @param grantStatus - Effective daily grant status.
+ * @returns The required whole sats, or `null` when it cannot be computed.
+ * @throws Whatever the roster or spot store throws.
+ */
+async function dailyMinimum(
+  deps: TodayMediaPingDeps,
+  accountId: string,
+  address: string,
+  grantStatus: SpendGrantStatus,
+): Promise<number | null> {
+  if (deps.roster === undefined || deps.fxSpot === undefined) {
+    return null;
+  }
+  const roster = await deps.roster.get();
+  const spot = await deps.fxSpot.latest();
+  return dailyShopSatsRequiredForGrant({
+    roster,
+    spot,
+    accountId,
+    address,
+    grantStatus,
+  });
 }

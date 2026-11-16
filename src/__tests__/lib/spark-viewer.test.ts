@@ -1134,6 +1134,7 @@ describe('Spark viewer SDK value mapping', () => {
       markFullSync: async (accountId, walletPubkey) => {
         fullSync.add(`${accountId}\u0000${walletPubkey}`);
       },
+      shopPaymentSats: async () => 0,
       hasShopPayment: async () => false,
     };
     const deps: WalletTransferWorkerDeps = {

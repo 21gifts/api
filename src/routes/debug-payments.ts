@@ -15,6 +15,8 @@ import type { PushStore } from '@/lib/push-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import type { GiftStore } from '@/lib/gift-store';
@@ -50,6 +52,10 @@ export interface DebugPaymentsRouteDeps {
   fundingStore?: FundingStore;
   /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
   recoveryShareRequiredFrom?: string | null;
+  /** Daily payout roster for the daily grant's 50 % shop-spend minimum. */
+  rosterStore?: Pick<DailyRosterStore, 'get'>;
+  /** Stored BTC-USD spot for the daily grant's 50 % shop-spend minimum. */
+  fxSpotStore?: Pick<FxSpotStore, 'latest'>;
   /** LNURL server config for the spend ping's receiving address; omitted → none. */
   lnurlServer?: LnurlServerConfig;
   /** Moderator group messages for the window replay. */
@@ -207,6 +213,8 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
           ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
           ...(deps.walletTransfers === undefined ? {} : { walletTransfers: deps.walletTransfers }),
+          ...(deps.rosterStore === undefined ? {} : { roster: deps.rosterStore }),
+          ...(deps.fxSpotStore === undefined ? {} : { fxSpot: deps.fxSpotStore }),
           ...(deps.recoveryShareRequiredFrom === undefined
             ? {}
             : { recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom }),
@@ -276,6 +284,8 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
                 ? {}
                 : { walletTransfers: deps.walletTransfers }),
               recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom ?? null,
+              ...(deps.rosterStore === undefined ? {} : { roster: deps.rosterStore }),
+              ...(deps.fxSpotStore === undefined ? {} : { fxSpot: deps.fxSpotStore }),
               trust: deps.trustStore,
               gifts: deps.giftStore,
               spendPing: deps.spendPing,
@@ -351,6 +361,12 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
           deps.recoveryShareRequiredFrom ?? null,
           deps.walletTransfers,
           day,
+          undefined,
+          {
+            ...(deps.rosterStore === undefined ? {} : { roster: deps.rosterStore }),
+            ...(deps.fxSpotStore === undefined ? {} : { fxSpot: deps.fxSpotStore }),
+            address,
+          },
         );
       } catch {
         logEvent('debug.spend_ping.failed', { messageId });

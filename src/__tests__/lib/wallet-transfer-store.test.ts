@@ -114,6 +114,7 @@ describe('InMemoryWalletTransferStore', () => {
     ).resolves.toEqual({ inserted: false, updated: false, shopPaymentBecameCompleted: false });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(true);
     await expect(store.hasShopPayment('account', '2026-11-10', '2026-11-11')).resolves.toBe(false);
+    await expect(store.shopPaymentSats('account', '2026-11-11', '2026-11-12')).resolves.toBe(21);
   });
 
   it('keeps the same transfer id for different wallets and persists token/full-sync state', async () => {
@@ -442,6 +443,57 @@ describe('InMemoryWalletTransferStore', () => {
     expect(previous).toHaveBeenCalledWith(SHOP);
   });
 
+  it('sums each qualifying transfer once when several keys resolve to shops', async () => {
+    const SECOND_SHOP = `03${'e'.repeat(64)}`;
+    const store = new InMemoryWalletTransferStore({
+      verifiedAccountForPubkey: async (pubkey) =>
+        pubkey === SHOP ? 'shop-account' : pubkey === SECOND_SHOP ? 'second-shop' : null,
+      isShop: async (accountId) => accountId === 'shop-account' || accountId === 'second-shop',
+    });
+    await store.upsertTransfer(
+      row({
+        status: 'completed',
+        amountSats: 250,
+        counterpartyPubkeys: [SHOP, SECOND_SHOP],
+      }),
+    );
+    await store.upsertTransfer(
+      row({
+        transferId: 'transfer-2',
+        status: 'completed',
+        amountSats: 300,
+        counterpartyPubkey: SECOND_SHOP,
+        counterpartyPubkeys: [SECOND_SHOP],
+      }),
+    );
+
+    await expect(store.shopPaymentSats('account', '2026-11-12', '2026-11-12')).resolves.toBe(550);
+    await expect(store.hasShopPayment('account', '2026-11-12', '2026-11-12', 550)).resolves.toBe(
+      true,
+    );
+    await expect(store.hasShopPayment('account', '2026-11-12', '2026-11-12', 551)).resolves.toBe(
+      false,
+    );
+  });
+
+  it('counts a transfer once when several of its keys resolve to the same shop', async () => {
+    const SECOND_KEY = `03${'f'.repeat(64)}`;
+    const store = new InMemoryWalletTransferStore({
+      verifiedAccountForPubkey: async (pubkey) =>
+        pubkey === SHOP || pubkey === SECOND_KEY ? 'shop-account' : null,
+      isShop: async (accountId) => accountId === 'shop-account',
+    });
+    await store.upsertTransfer(
+      row({
+        status: 'completed',
+        amountSats: 250,
+        counterpartyPubkeys: [SHOP, SECOND_KEY],
+      }),
+    );
+
+    await expect(store.shopPaymentSats('account', '2026-11-12', '2026-11-12')).resolves.toBe(250);
+  });
+
   it('deterministically prefers a verified current owner over previous_wallet', async () => {
     const previous = vi.fn(async () => 'old-shop');
     const store = new InMemoryWalletTransferStore({
@@ -534,7 +586,7 @@ describe('PostgresWalletTransferStore', () => {
           },
         ];
       }
-      return [{ present: true }];
+      return [{ sats: '42' }];
     });
     const sql = { query, execute: vi.fn(async () => undefined) } as unknown as SqlClient;
     const store = new PostgresWalletTransferStore(sql);
@@ -549,8 +601,20 @@ describe('PostgresWalletTransferStore', () => {
       lastFullSyncAt: new Date('2026-11-12T06:00:00.000Z'),
     });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(true);
-    expect(query.mock.calls.at(-1)?.[0]).toContain('JOIN message AS shop');
-    expect(query.mock.calls.at(-1)?.[0]).toContain('unnest(payment.counterparty_pubkeys)');
+    await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12', 42)).resolves.toBe(
+      true,
+    );
+    await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12', 43)).resolves.toBe(
+      false,
+    );
+    await expect(store.shopPaymentSats('account', '2026-11-11', '2026-11-12')).resolves.toBe(42);
+    expect(query.mock.calls.at(-1)?.[0]).toContain('SUM(wallet_transfer.amount_sats)');
+    expect(query.mock.calls.at(-1)?.[0]).toContain('EXISTS (');
+    expect(query.mock.calls.at(-1)?.[0]).not.toContain('FROM wallet_transfer AS payment');
+    expect(query.mock.calls.at(-1)?.[0]).not.toContain(
+      'CROSS JOIN LATERAL unnest(payment.counterparty_pubkeys)',
+    );
+    expect(query.mock.calls.at(-1)?.[0]).toContain('unnest(wallet_transfer.counterparty_pubkeys)');
     expect(query.mock.calls.at(-1)?.[0]).toContain('spark_pubkey_verified_at IS NOT NULL');
     expect(query.mock.calls.at(-1)?.[0]).toContain('ORDER BY replaced_at DESC, account_id');
     expect(query.mock.calls.at(-1)?.[0]).toContain("AT TIME ZONE 'UTC'");
@@ -575,6 +639,20 @@ describe('PostgresWalletTransferStore', () => {
       lastFullSyncAt: null,
     });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(false);
+    await expect(store.shopPaymentSats('account', '2026-11-11', '2026-11-12')).resolves.toBe(0);
+  });
+
+  it('parses a bigint shop sum and defaults a missing row to zero', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce([{ sats: 7n }])
+      .mockResolvedValueOnce([]) as unknown as <T>(
+      text: string,
+      params?: readonly unknown[],
+    ) => Promise<T[]>;
+    const store = new PostgresWalletTransferStore({ query, execute: async () => undefined });
+    await expect(store.shopPaymentSats('account', '2026-11-11', '2026-11-12')).resolves.toBe(7);
+    await expect(store.shopPaymentSats('account', '2026-11-11', '2026-11-12')).resolves.toBe(0);
   });
 
   it('requires transaction support for writes', async () => {

@@ -21,6 +21,8 @@ import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import type { OperatorLogin } from '@/lib/operator-login';
 import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 
 const OP_KEYS = await seededOperatorLogin();
 const OP_LOGIN = OP_KEYS.operatorLogin;
@@ -63,6 +65,8 @@ function mount(
     giftStore?: InMemoryGiftStore;
     welcomeSweep?: WelcomeSweepSwitch;
     walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+    rosterStore?: Pick<DailyRosterStore, 'get'>;
+    fxSpotStore?: Pick<FxSpotStore, 'latest'>;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -83,6 +87,8 @@ function mount(
       lnurlServer: LNURL_SERVER,
       welcomeSweep: extra.welcomeSweep ?? { enabled: false },
       ...(extra.walletTransfers === undefined ? {} : { walletTransfers: extra.walletTransfers }),
+      ...(extra.rosterStore === undefined ? {} : { rosterStore: extra.rosterStore }),
+      ...(extra.fxSpotStore === undefined ? {} : { fxSpotStore: extra.fxSpotStore }),
     }),
   );
 }
@@ -1476,7 +1482,11 @@ describe('debugPaymentsRoutes', () => {
         fundingStore: deps.fundingStore,
         recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
-        walletTransfers: { hasShopPayment: async () => true },
+        walletTransfers: {
+          hasShopPayment: async (_id, _from, _to, minSats = 1) => minSats <= 500,
+        },
+        rosterStore: { get: async () => ({ paymentsEnabled: true, recipients: [] }) as never },
+        fxSpotStore: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       });
       return app.request('/debug/spend-ping', {
         method: 'POST',
@@ -1580,7 +1590,11 @@ describe('debugPaymentsRoutes', () => {
         fundingStore,
         recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
-        walletTransfers: { hasShopPayment: async () => true },
+        walletTransfers: {
+          hasShopPayment: async (_id, _from, _to, minSats = 1) => minSats <= 500,
+        },
+        rosterStore: { get: async () => ({ paymentsEnabled: true, recipients: [] }) as never },
+        fxSpotStore: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       }).request('/debug/invoices/settle', {
         method: 'POST',
         headers: { authorization: ADMIN_AUTH, 'content-type': 'application/json' },
@@ -1658,13 +1672,17 @@ describe('debugPaymentsRoutes', () => {
     it('replays every event of the window onto its own day', async () => {
       const { store, auth, fundingStore } = await seeded();
       const spendPing = spendPingMock();
-      const hasShopPayment = vi.fn(async () => true);
+      const hasShopPayment = vi.fn(
+        async (_id: string, _from: string, _to: string, minSats = 1) => minSats <= 500,
+      );
       const app = mount(store, OP_LOGIN, {
         spendPing,
         auth,
         fundingStore,
         now: WINDOW_NOW,
         walletTransfers: { hasShopPayment },
+        rosterStore: { get: async () => ({ paymentsEnabled: true, recipients: [] }) as never },
+        fxSpotStore: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       });
       const res = await post(app, WINDOW);
       expect(res.status).toBe(200);
@@ -1682,7 +1700,7 @@ describe('debugPaymentsRoutes', () => {
       expect(spendPing.pingOnDay.mock.calls).toEqual([
         ['ada@example.test', MESSAGE_ID, '2026-09-29', 'admitted', 'daily'],
       ]);
-      expect(hasShopPayment).toHaveBeenCalledWith(ACCOUNT_ID, '2026-09-28', '2026-09-29');
+      expect(hasShopPayment).toHaveBeenCalledWith(ACCOUNT_ID, '2026-09-28', '2026-09-29', 500);
       const replayed = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.replayed');
       expect(replayed).toMatchObject({ dryRun: false, events: 2, paid: 1 });
     });
