@@ -1,5 +1,6 @@
+import { canSignFondPayouts } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
-import type { LnurlServerConfig } from '@/lib/config';
+import { resolveFondUsername, type LnurlServerConfig } from '@/lib/config';
 import { WELCOME_GIFT_DESCRIPTION } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { logEvent } from '@/lib/log';
@@ -37,6 +38,7 @@ interface WelcomeRecord {
 /** Everything that marks a paid welcome gift, read once per check or sweep. */
 interface WelcomeLedger {
   platformId: string | null;
+  fondId: string | null;
   records: readonly WelcomeRecord[];
   legacyAccountIds: ReadonlySet<string>;
 }
@@ -56,10 +58,14 @@ export function isWelcomeRecipient(account: Pick<Account, 'role' | 'isPlatform'>
 type WelcomeGifts = Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
 
 /**
- * Read the welcome ledger: the platform account, every welcome gift paid to a
- * wallet address ({@link WELCOME_GIFT_DESCRIPTION}, recorded under the
- * member's username), and the accounts whose legacy external address received
- * a welcome gift.
+ * Read the welcome ledger: the platform account, the configured Fond account,
+ * every welcome gift paid to a wallet address
+ * ({@link WELCOME_GIFT_DESCRIPTION}, recorded under the member's username),
+ * and the accounts whose legacy external address received a welcome gift.
+ * The Fond account is the one account that passes {@link canSignFondPayouts}
+ * for `FOND_USERNAME` (at least `fond`, not the platform account); it may be
+ * absent, and a lower-role account or the platform account holding the
+ * username does not count.
  *
  * @param accounts - Every stored account.
  * @param gifts - Outbound gift store, or `undefined` (no gift records read).
@@ -79,8 +85,11 @@ async function loadWelcomeLedger(
             paidAtMs: row.paidAt.getTime(),
           }));
   const legacy = (await gifts?.listLegacyWelcomeAccountIds?.()) ?? [];
+  const fondUsername = resolveFondUsername(process.env);
+  const fondAccount = accounts.find((account) => canSignFondPayouts(account, fondUsername));
   return {
     platformId: accounts.find((account) => account.isPlatform === true)?.id ?? null,
+    fondId: fondAccount?.id ?? null,
     records,
     legacyAccountIds: new Set(legacy),
   };
@@ -88,10 +97,11 @@ async function loadWelcomeLedger(
 
 /**
  * Whether the account already received the one-time welcome gift, whichever
- * address it went to: a platform `Welcome` reply under one of its notes, a
- * welcome gift paid to its legacy external address, or a welcome gift
- * recorded under its username at or after its wallet was verified. Before that
- * the username may have belonged to another account.
+ * address it went to: a `Welcome` reply under one of its notes authored by the
+ * platform account or by the configured Fond account, a welcome gift paid to
+ * its legacy external address, or a welcome gift recorded under its username
+ * at or after its wallet was verified. Before that the username may have
+ * belonged to another account.
  *
  * @param ledger - The welcome ledger.
  * @param messages - Forum store.
@@ -115,20 +125,26 @@ async function welcomedBefore(
   ) {
     return true;
   }
-  return (
+  if (
     ledger.platformId !== null &&
     (await messages.accountHasWelcomeGift(account.id, ledger.platformId))
+  ) {
+    return true;
+  }
+  return (
+    ledger.fondId !== null && (await messages.accountHasWelcomeGift(account.id, ledger.fondId))
   );
 }
 
 /**
- * Whether the account already received the one-time welcome gift: a platform
- * `Welcome` reply under one of its notes, a `welcome` gift paid to its legacy
- * external address, or a welcome gift with description `21gifts welcome`
- * recorded under its username at or after its wallet was verified.
+ * Whether the account already received the one-time welcome gift: a `Welcome`
+ * reply under one of its notes authored by the platform account or the
+ * configured Fond account, a `welcome` gift paid to its legacy external
+ * address, or a welcome gift with description `21gifts welcome` recorded
+ * under its username at or after its wallet was verified.
  *
- * @param args - Auth store (platform lookup), forum store, optional gift
- *   store, and the account.
+ * @param args - Auth store (platform and configured Fond account lookup),
+ *   forum store, optional gift store, and the account.
  * @returns `true` when the welcome gift was already paid.
  */
 export async function accountWelcomed(args: {

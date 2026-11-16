@@ -261,7 +261,7 @@ Public base URLs used in examples:
 | GET    | `/debug/contacts`                                    | `Authorization: Bearer`                                           | Operator contact listing (`DEBUG_TOKEN` or operator key token)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/debug/invoices`                                    | `Authorization: Bearer`                                           | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN` or operator key token)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST   | `/debug/invoices/settle`                             | `Authorization: Bearer`                                           | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN` or operator key token)                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| POST   | `/debug/spend-ping`                                  | `Authorization: Bearer`                                           | Replay one qualifying top-level forum post onto that post's UTC day and return accepted or skipped; not limited to the clock day. With `{ from, to, dryRun? }` instead, replay every payout trigger of that window (posts, moderator-group messages, `/trial`, `/admit`, welcome), daily payouts and moderator stipends on each event's own UTC day, and return each event's outcome and totals (`DEBUG_TOKEN` or operator key token)                                                                                                                     |
+| POST   | `/debug/spend-ping`                                  | `Authorization: Bearer`                                           | Replay one qualifying top-level forum post onto that post's UTC day and return accepted or skipped; not limited to the clock day. With `{ from, to, dryRun? }` instead, replay every payout trigger of that window (posts, members' own moderator-group messages, not gift/stipend lines with `giftForMessageId` set, `/trial`, `/admit`, welcome), daily payouts and moderator stipends on each event's own UTC day, and return each event's outcome and totals (`DEBUG_TOKEN` or operator key token)                                                    |
 | GET    | `/debug/welcome-sweep`                               | `Authorization: Bearer`                                           | Welcome sweep switch and the accounts the sweep would ping now, without pinging (`DEBUG_TOKEN` or operator key token)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | PUT    | `/debug/welcome-sweep`                               | `Authorization: Bearer`                                           | Body `{ enabled }`. Turn the 15-minute welcome sweep on or off; off on every boot (`DEBUG_TOKEN` or operator key token)                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/debug/zap-ingests`                                 | `Authorization: Bearer`                                           | Operator kind:9735 ingest log (`DEBUG_TOKEN` or operator key token)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -6739,9 +6739,10 @@ Operator dry-run of the 15-minute welcome sweep. Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN` or an operator key token of level `read` or higher (a lower key token → `403`) (not an end-user session).
 Lists every account the sweep would welcome-ping now: non-platform, role exactly
 `verified`, a verified wallet with the LNURL server on, a live top-level photo or video
-(About me included), and not welcomed before (a platform `Welcome` reply, a
-`welcome` gift paid to its legacy external address, or a `21gifts welcome`
-gift under its username at or after its wallet verification). Reads only:
+(About me included), and not welcomed before (a `Welcome` reply authored by
+the platform or the configured Fond account, a `welcome` gift paid to its
+legacy external address, or a `21gifts welcome` gift under its username at or
+after its wallet verification). Reads only:
 pings nobody and stores nothing. Logs `debug.welcome_sweep.listed` with the
 count.
 
@@ -7144,8 +7145,8 @@ USD `1.00`, comment `Welcome`, no `messageId` or `groupMessageId`, and
 usable spot keeps the condition); it first reserves one open welcome
 invoice per account (**409** `Welcome invoice already open`; reservation
 store failure **503**). Comment `Welcome` for an account already welcomed
-(a platform `Welcome` reply under one of its notes, live or hidden, or a
-recorded `welcome` gift to its legacy external address or under its username
+(a `Welcome` reply under one of its notes, live or hidden, authored by the
+platform account or the configured Fond account, or a recorded `welcome` gift to its legacy external address or under its username
 at or after its wallet verification) → **409** `Welcome gift already paid`.
 With `messageId` the note must be this account's live top-level note (About
 me included) with a photo or video, else **403** `Forum post required`, and a
@@ -7167,13 +7168,20 @@ the Spark coordinator for Spark invoices and the LNURL server's LUD-21
 (`fond.proof.failed`). Settlement inserts one outbound `gift` row (amount
 `floor(msat / 1000)` sats, the decided kind, the stored USD, the Fond
 username as paying wallet; insert errors log `gifts.record_failed`). With a
-top-level `messageId` it inserts a platform-account gift-reply (text =
-comment) and adds the sats to that note, without notifying; with a reply
-`messageId` it stores a hidden marker under the reply and adds the sats to
-the reply. Failures there log `invoice.gift_reply.failed`. With a
-`groupMessageId` it inserts one platform message in that `moderator_group`
-thread (`sats`, text = comment · recipient name, `giftForMessageId` = the
-triggering message); failures log `invoice.group_gift.failed`. Each write
+top-level `messageId` it inserts a gift-reply (text = comment) and adds the
+sats to that note, without notifying; with a reply `messageId` it stores a
+hidden marker under the reply and adds the sats to the reply. Failures there
+log `invoice.gift_reply.failed`. With a `groupMessageId` it inserts one
+message in that `moderator_group` thread (`sats`, text = comment · recipient
+name, `giftForMessageId` = the triggering message); failures log
+`invoice.group_gift.failed`. The gift-reply and the group message are
+authored by the configured Fond account (`FOND_USERNAME`; display-name
+fallback that username, its id and Nostr key), and only when that account
+passes the Fond role check `canSignFondPayouts` (at least `fond`, not the
+platform account); an unknown Fond account, a lower-role account holding the
+handle, the platform account holding it, or a failed lookup skips both
+attachments and logs their failure event instead of posting as the
+platform. Each write
 is idempotent on a deterministic id.
 
 ### `GET /messages`
@@ -7756,8 +7764,8 @@ verification happened in either order. A process starts with the sweep off,
 so its run at boot pings nobody (`spend.ping.skipped` / `sweep_off`).
 `GET /debug/welcome-sweep` lists the accounts it would ping without pinging.
 The welcome gift is once per account, not once per address: an account that
-already has a platform reply with the text `Welcome` under one of its notes
-(live or hidden), a recorded `welcome` gift paid to its legacy external
+already has a reply with the text `Welcome` under one of its notes authored
+by the platform account or the configured Fond account (live or hidden), a recorded `welcome` gift paid to its legacy external
 address (the local part of `account.lightning_address` equals the gift's
 recipient handle), or a recorded `welcome` gift with description
 `21gifts welcome` under its username at or after its wallet verification, is
@@ -9282,9 +9290,12 @@ verified, basis and the platform account get **404**
 `{ "error": "Not found" }` on that id (no existence leak). A moderator
 (`isModeratorGroupMember`) gets **200**.
 
-A platform stipend row in `moderator_group` (a settled Fond moderator payout with
-`groupMessageId`) has no actor and the platform account as sender, so it is
-`fromMe: false` and inbound for every member. That row's `giftFor` is the
+A stipend row in `moderator_group` (a settled Fond moderator payout with
+`groupMessageId`) has no actor and the Fond account as sender, so it is
+`fromMe: false` and inbound for every viewer except the Fond account, which
+sees its own stipend row as `fromMe: true`. Stipend rows stored before the
+Fond account became their author keep the platform account as sender (the
+platform account is not a group member). That row's `giftFor` is the
 triggering message id so the app can render it attached under that message.
 
 Optional query `sinceMessageId` (UUID): long-polls until that message id is in
