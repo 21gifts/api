@@ -5237,6 +5237,7 @@ test('Function: dailyShopSatsRequiredForGrant — the trial default amount has n
   expect(me.status()).toBe(200);
   expect(((await me.json()) as { funding: unknown }).funding).toMatchObject({
     status: 'trial',
+    shopPaymentSats: 0,
     shopPaymentRequiredSats: null,
   });
 });

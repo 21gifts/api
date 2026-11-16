@@ -69,10 +69,13 @@ export async function latestTodayMediaPostId(
  * address, or there is no such post. With `requireShare` on a day the share is
  * required ({@link recoveryShareRequired}), an account without a 21.gifts recovery share for its
  * current verified wallet is not pinged (`spend.ping.skipped`,
- * `not_eligible`). Share read, lookup, and ping failures are logged as
- * `funding.daily_ping.failed` and returned as `failed`, so this never throws.
+ * `not_eligible`). Share, roster, stored-spot, and shop-sum read, lookup, and
+ * ping failures are logged as `funding.daily_ping.failed` and returned as
+ * `failed`, so this never throws.
  *
- * @param deps - Spend ping, LNURL server config, forum store, and auth store.
+ * @param deps - Spend ping, LNURL server config, forum store, auth store, and
+ *   the optional wallet transfers, daily roster, and stored spot of the
+ *   daily shop minimum.
  * @param account - Account to ping, read after the write that made it payable.
  * @param nowMs - Clock of that write (epoch ms).
  * @param grantStatus - Effective grant status after the write.

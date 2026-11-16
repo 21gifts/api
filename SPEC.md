@@ -732,8 +732,9 @@ share of the current wallet (not a replacement), from the UTC day
 member is eligible today with that share, sends the daily ping of today's
 newest live top-level photo or video, as `POST /funding/trial` does, without
 a second share read. Before that day, or while it is unset, the share made
-nobody payable, so nothing is read or pinged. A failed grant read or ping logs
-`funding.daily_ping.failed` `{ accountId }` and the answer stays 200.
+nobody payable, so nothing is read or pinged. A failed grant, roster,
+stored-spot, or shop-sum read or ping logs `funding.daily_ping.failed`
+`{ accountId }` and the answer stays 200.
 
 **Storage.** `recovery_share` (`docs/schema/recovery_share.sql`): primary key
 `(account_id, spark_pubkey)`, `recovery_share_ciphertext`, `stored_at`.
@@ -2935,7 +2936,7 @@ stays `null`)).
 | `funding`                         | object \| null  | Funding-program grant. `null` for `basis`. Otherwise always an object; no row and a withdrawn grant are both `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }` (never `withdrawn`). A failed owner grant read is `{ status: "unknown", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }`; it never fabricates `none`. `dailyPayoutStoppedNotice` is true only for the six legacy daily accounts with no grant row. Admitted includes live `reviewedByName`. |
 | `funding.shopPaymentDue`          | boolean \| null | Present inside non-`basis` `funding`. True exactly when the account is in the grant program today and its qualifying server-verified shop payments today and yesterday UTC sum to less than half its daily grant, rounded up in whole sats, and also true (fail closed, like `payoutToday`'s `shop_payment`) when no stored quote with a USD rate exists or the roster decides a skip; `null` when that transfer, roster, or stored-spot read failed or the grant read failed, because the required amount or program membership is then unknown.                        |
 | `funding.shopPaymentSats`         | number \| null  | Present inside non-`basis` `funding`. The owner's qualifying server-verified shop payments today and yesterday UTC together, in whole sats; `null` when the account is not in the grant program today or a grant, transfer, roster, or stored-spot read failed. Owner-only wallet data.                                                                                                                                                                                                                                                                                  |
-| `funding.shopPaymentRequiredSats` | number \| null  | Present inside non-`basis` `funding`. The whole sats those payments must reach: half the daily grant, rounded up, at least 1; `null` when the account is not in the grant program today, no stored BTC-USD quote with a USD rate exists, the roster decides a skip, or a read failed. With `shopPaymentSats` it lets the grant page show what is still missing.                                                                                                                                                                                                          |
+| `funding.shopPaymentRequiredSats` | number \| null  | Present inside non-`basis` `funding`. The whole sats those payments must reach: half the daily grant, rounded up, at least 1; `null` when the account is not in the grant program today, no stored BTC-USD quote with a USD rate exists, the roster decides a skip, or a read failed. With `shopPaymentSats` it lets the grant page show what is still missing. Owner-only wallet data.                                                                                                                                                                                  |
 | `funding.payoutToday`             | object \| null  | Present inside non-`basis` `funding`. Exactly one explanation for today's daily grant: `{ state: "paid" \| "due" \| "blocked", reason }`, or `null` when a required store read failed. Paid daily and welcome gifts win first; otherwise the first missing condition is `verify`, `admission`, `wallet`, `recovery_share`, `shop_payment`, then `media_post`. A withdrawn grant is owner-visible `none`, stops at `blocked` / `admission`, and never reaches `due`. All conditions with no recorded payout are `due`; `payments_paused` is the only due reason.          |
 | `grantPayoutToday`                | object \| null  | Compatibility field for `basis`, whose documented `funding: null` contract is unchanged. It carries the same payout object (normally `{ state: "blocked", reason: "verify" }`) for `basis` and is `null` for every other role. A recorded daily or welcome gift today still wins before the current role.                                                                                                                                                                                                                                                                |
 | `walletViewerPublicKey`           | string \| null  | The deployment's 66-lowercase-hex read-only Spark viewer identity key that the app grants. It can never move funds. Null when viewer initialization was unavailable.                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -2975,9 +2976,9 @@ and logs `funding.payout_today.failed { accountId }`. A failed grant read keeps
 the non-`basis` funding object with `status: "unknown"` and all grant-derived
 fields null/false as documented above; `funding.shopPaymentDue` is also null.
 When only the shop-payment read fails, `funding.shopPaymentDue` is likewise
-`null` because absence is unknown, never conservatively reported as true;
-`funding.shopPaymentSats` and `funding.shopPaymentRequiredSats` are then null
-too.
+`null` because absence is unknown, never conservatively reported as true,
+unless the required amount is already unknown without a stored USD quote or on
+a roster skip, which stays true; `funding.shopPaymentSats` is then null.
 
 The long-standing contract that `funding` is null for `basis` protects the
 grant record and is retained. Therefore `basis` receives the same explanation
@@ -3633,8 +3634,9 @@ payout. From the UTC day `RECOVERY_SHARE_REQUIRED_FROM` that ping also needs a
 21.gifts recovery share for the member's current verified wallet
 ([docs/social-recovery.md](docs/social-recovery.md)); without one it logs
 `spend.ping.skipped` / `not_eligible` and does not ping. No such post, or one
-from an earlier UTC day, does not ping. A failed share read, lookup, or ping
-logs `funding.daily_ping.failed` and the answer stays **200**.
+from an earlier UTC day, does not ping. A failed share, roster, stored-spot, or
+shop-sum read, lookup, or ping logs `funding.daily_ping.failed` and the answer
+stays **200**.
 
 ### `POST /funding/admit`
 

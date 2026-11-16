@@ -350,6 +350,49 @@ describe('GET /me', () => {
     expect(shopPaymentSats).toHaveBeenCalledOnce();
   });
 
+  it('keeps shop payment due without a stored spot when the shop sum cannot be read', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const res = await mount(store, {
+      fundingStore: admitted(),
+      walletTransfers: {
+        hasShopPayment: async () => {
+          throw new Error('transfers unavailable');
+        },
+        shopPaymentSats: async () => {
+          throw new Error('transfers unavailable');
+        },
+      },
+      fxSpotStore: new InMemoryFxSpotStore(),
+    }).request('/me', { headers: AUTH });
+    expect(((await res.json()) as { funding: unknown }).funding).toMatchObject({
+      shopPaymentDue: true,
+      shopPaymentSats: null,
+      shopPaymentRequiredSats: null,
+    });
+  });
+
+  it('reports an unknown minimum when the roster read fails', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const res = await mount(store, {
+      fundingStore: admitted(),
+      walletTransfers: transferFake(),
+      rosterStore: {
+        get: async () => {
+          throw new Error('roster unavailable');
+        },
+      },
+    }).request('/me', { headers: AUTH });
+    expect(((await res.json()) as { funding: unknown }).funding).toMatchObject({
+      shopPaymentDue: null,
+      shopPaymentSats: 500,
+      shopPaymentRequiredSats: null,
+    });
+  });
+
   it('reports the shop spending without a required amount when no spot is stored', async () => {
     const store = await seededStore();
     const existing = await store.getAccount('acc');
@@ -413,7 +456,7 @@ describe('GET /me', () => {
     expect(unavailableBody.funding).toMatchObject({
       shopPaymentDue: null,
       shopPaymentSats: null,
-      shopPaymentRequiredSats: null,
+      shopPaymentRequiredSats: 500,
     });
   });
 
