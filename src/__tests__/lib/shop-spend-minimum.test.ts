@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { DailyRosterDocument } from '@/lib/daily-roster';
+import type { FxSpotQuote } from '@/lib/fx-spot';
 import { dailyShopSatsRequired, dailyShopSatsRequiredForGrant } from '@/lib/shop-spend-minimum';
+
+/** Stored quote at 100 000 USD per BTC. */
+const SPOT: FxSpotQuote = {
+  asOf: '2026-11-16T00:00:00.000Z',
+  source: 'test',
+  rates: { USD: '100000' },
+};
 
 function roster(partial: Partial<DailyRosterDocument> = {}): DailyRosterDocument {
   return {
@@ -24,6 +32,10 @@ describe('dailyShopSatsRequired', () => {
     expect(dailyShopSatsRequired(0.003, '100000')).toBe(2);
   });
 
+  it('never requires less than 1 sat, even when the grant rounds to 0 sats', () => {
+    expect(dailyShopSatsRequired(0.000001, '100000')).toBe(1);
+  });
+
   it('returns null without a usable spot or amount', () => {
     expect(dailyShopSatsRequired(1, null)).toBeNull();
     expect(dailyShopSatsRequired(1, 'not-a-spot')).toBeNull();
@@ -36,7 +48,7 @@ describe('dailyShopSatsRequiredForGrant', () => {
     expect(
       dailyShopSatsRequiredForGrant({
         roster: roster({ recipients: [{ accountId: 'acc', amountUsd: 2 }] }),
-        spotUsd: '100000',
+        spot: SPOT,
         accountId: 'acc',
         grantStatus: 'admitted',
       }),
@@ -47,7 +59,7 @@ describe('dailyShopSatsRequiredForGrant', () => {
     expect(
       dailyShopSatsRequiredForGrant({
         roster: roster(),
-        spotUsd: '100000',
+        spot: SPOT,
         accountId: 'acc',
         grantStatus: 'admitted',
       }),
@@ -58,7 +70,7 @@ describe('dailyShopSatsRequiredForGrant', () => {
     expect(
       dailyShopSatsRequiredForGrant({
         roster: roster({ recipients: [{ address: 'ada@example.test', amountUsd: 3 }] as never }),
-        spotUsd: '100000',
+        spot: SPOT,
         accountId: 'acc',
         address: 'ada@example.test',
         grantStatus: 'admitted',
@@ -70,7 +82,7 @@ describe('dailyShopSatsRequiredForGrant', () => {
     expect(
       dailyShopSatsRequiredForGrant({
         roster: roster(),
-        spotUsd: '100000',
+        spot: SPOT,
         accountId: 'acc',
         grantStatus: 'withdrawn',
       }),
@@ -78,21 +90,23 @@ describe('dailyShopSatsRequiredForGrant', () => {
     expect(
       dailyShopSatsRequiredForGrant({
         roster: roster({ paymentsEnabled: false }),
-        spotUsd: '100000',
+        spot: SPOT,
         accountId: 'acc',
         grantStatus: 'admitted',
       }),
     ).toBeNull();
   });
 
-  it('fails closed without a spot', () => {
-    expect(
-      dailyShopSatsRequiredForGrant({
-        roster: roster({ recipients: [{ accountId: 'acc', amountUsd: 2 }] }),
-        spotUsd: null,
-        accountId: 'acc',
-        grantStatus: 'admitted',
-      }),
-    ).toBeNull();
+  it('fails closed without a stored spot or without its USD rate', () => {
+    for (const spot of [null, { ...SPOT, rates: { EUR: '90000' } }]) {
+      expect(
+        dailyShopSatsRequiredForGrant({
+          roster: roster({ recipients: [{ accountId: 'acc', amountUsd: 2 }] }),
+          spot,
+          accountId: 'acc',
+          grantStatus: 'admitted',
+        }),
+      ).toBeNull();
+    }
   });
 });

@@ -483,7 +483,7 @@ interface DailyShopStores {
 /** One request's memoized shop sum, roster, and stored-spot reads. */
 interface ShopRequestMemo {
   dailyShop: DailyShopStores;
-  transfers: Pick<WalletTransferStore, 'hasShopPayment' | 'shopPaymentSats'>;
+  transfers: Pick<WalletTransferStore, 'hasShopPayment'>;
   readShopSats: () => Promise<number>;
 }
 
@@ -497,22 +497,14 @@ interface ShopRequestMemo {
  * @param nowMs - Epoch milliseconds whose UTC day and preceding day are the window.
  * @returns Memoized transfer, roster, and spot views for this request.
  */
-function memoizedShopRequest(
-  deps: MeRouteDeps,
-  accountId: string,
-  nowMs: number,
-): ShopRequestMemo {
+function memoizedShopRequest(deps: MeRouteDeps, accountId: string, nowMs: number): ShopRequestMemo {
   const walletTransfers = deps.walletTransfers ?? new InMemoryWalletTransferStore();
   const dailyShop = memoizedDailyShopStores(deps);
   const shopPaymentFrom = addUtcDays(utcDayKey(nowMs), -1);
   const shopPaymentTo = utcDayKey(nowMs);
   let shopSatsPromise: Promise<number> | undefined;
   const readShopSats = (): Promise<number> => {
-    shopSatsPromise ??= walletTransfers.shopPaymentSats(
-      accountId,
-      shopPaymentFrom,
-      shopPaymentTo,
-    );
+    shopSatsPromise ??= walletTransfers.shopPaymentSats(accountId, shopPaymentFrom, shopPaymentTo);
     return shopSatsPromise;
   };
   return {
@@ -520,7 +512,6 @@ function memoizedShopRequest(
     transfers: {
       hasShopPayment: async (_accountId, _from, _to, minSats = 1) =>
         (await readShopSats()) >= minSats,
-      shopPaymentSats: () => readShopSats(),
     },
     readShopSats,
   };
@@ -568,7 +559,7 @@ async function storedDailyMinimum(
   const address = receivingAddress(account, deps.lnurlServer);
   return dailyShopSatsRequiredForGrant({
     roster: await dailyShop.roster.get(),
-    spotUsd: (await dailyShop.fxSpot.latest())?.rates.USD ?? null,
+    spot: await dailyShop.fxSpot.latest(),
     accountId: account.id,
     ...(address === null ? {} : { address: address.address }),
     grantStatus,
@@ -1493,8 +1484,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           accountId: current.id,
           replaced: result === 'replaced',
         });
-        const shop =
-          result === 'stored' ? memoizedShopRequest(deps, current.id, nowMs) : undefined;
+        const shop = result === 'stored' ? memoizedShopRequest(deps, current.id, nowMs) : undefined;
         if (shop !== undefined) {
           await pingAfterShareStored(deps, lnurlServer, current, nowMs, shop);
         }

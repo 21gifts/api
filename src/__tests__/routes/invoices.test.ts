@@ -34,6 +34,7 @@ import {
 } from '@/__tests__/helpers/wallet-lnurl';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
+import { InMemoryDailyRosterStore } from '@/lib/daily-roster-store';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -74,8 +75,7 @@ function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
     }),
     upsertTokenTransaction: async () => undefined,
     markFullSync: async () => undefined,
-    hasShopPayment: async (_id, _from, _to, minSats = 1) =>
-      (shopPayment ? 500 : 0) >= minSats,
+    hasShopPayment: async (_id, _from, _to, minSats = 1) => (shopPayment ? 500 : 0) >= minSats,
     shopPaymentSats: async () => (shopPayment ? 500 : 0),
   };
 }
@@ -3421,6 +3421,65 @@ describe('issueGiftInvoice welcome exception and funding gate', () => {
     expect(result).toEqual({ ok: false, status: 403, error: 'Funding grant required' });
     expect(await fundingStore.getByAccountId('acc-alice')).toEqual(stored);
     expect((await fundingStore.getByAccountId('acc-alice'))?.status).toBe('trial');
+  });
+
+  /** Transfer store whose every window sums to `sats` qualifying shop sats. */
+  function shopSats(sats: number): WalletTransferStore {
+    return {
+      ...fakeWalletTransferStore(),
+      hasShopPayment: async (_id, _from, _to, minSats = 1) => sats >= minSats,
+      shopPaymentSats: async () => sats,
+    };
+  }
+
+  /** Roster listing `acc-alice` at 2 USD, which needs 1000 shop sats at the 100k spot. */
+  async function twoDollarRoster(): Promise<InMemoryDailyRosterStore> {
+    const rosterStore = new InMemoryDailyRosterStore();
+    await rosterStore.addRecipient('acc-alice', 2);
+    return rosterStore;
+  }
+
+  it('refuses a daily invoice below half of the roster amount', async () => {
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const deps = await gateDeps({
+      fetchImpl,
+      rosterStore: await twoDollarRoster(),
+      walletTransfers: shopSats(999),
+    });
+    expect(await issueGiftInvoice(deps, { address: ADDRESS, amountMsat: 1000 })).toEqual({
+      ok: false,
+      status: 403,
+      error: 'Funding grant required',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('issues a daily invoice at exactly half of the roster amount', async () => {
+    const deps = await gateDeps({
+      fetchImpl: vi.fn<FetchFn>(happyFetch()),
+      rosterStore: await twoDollarRoster(),
+      walletTransfers: shopSats(1000),
+    });
+    expect((await issueGiftInvoice(deps, { address: ADDRESS, amountMsat: 1000 })).ok).toBe(true);
+  });
+
+  it.each([
+    ['an empty spot store', new InMemoryFxSpotStore()],
+    ['no spot store', undefined],
+  ])('refuses a daily invoice with %s', async (_label, fxSpotStore) => {
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const deps = await gateDeps({ fetchImpl }, true);
+    if (fxSpotStore === undefined) {
+      delete deps.fxSpotStore;
+    } else {
+      deps.fxSpotStore = fxSpotStore;
+    }
+    expect(await issueGiftInvoice(deps, { address: ADDRESS, amountMsat: 1000 })).toEqual({
+      ok: false,
+      status: 403,
+      error: 'Funding grant required',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 

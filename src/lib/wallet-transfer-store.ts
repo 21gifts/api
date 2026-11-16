@@ -554,11 +554,7 @@ export class InMemoryWalletTransferStore
     return Promise.resolve();
   }
 
-  async shopPaymentSats(
-    accountId: string,
-    fromUtcDay: string,
-    toUtcDay: string,
-  ): Promise<number> {
+  async shopPaymentSats(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<number> {
     let total = 0;
     for (const row of this.#rows.values()) {
       if (
@@ -968,11 +964,7 @@ export class PostgresWalletTransferStore
     );
   }
 
-  async shopPaymentSats(
-    accountId: string,
-    fromUtcDay: string,
-    toUtcDay: string,
-  ): Promise<number> {
+  async shopPaymentSats(accountId: string, fromUtcDay: string, toUtcDay: string): Promise<number> {
     const rows = await this.sql.query<{ sats: number | string | bigint | null }>(
       `SELECT COALESCE(SUM(wallet_transfer.amount_sats), 0) AS sats
        FROM wallet_transfer

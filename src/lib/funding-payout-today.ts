@@ -20,13 +20,7 @@ import { dailyShopSatsRequiredForGrant } from '@/lib/shop-spend-minimum';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { isWelcomeRecipient } from '@/lib/welcome-media';
 
-/**
- * Stable owner-facing reason codes for today's grant payout.
- *
- * `payments_paused` remains part of the wire contract for older clients, but
- * a disabled daily roster now fails closed as `shop_payment` before it can be
- * returned.
- */
+/** Stable owner-facing reason codes for today's grant payout. */
 export type FundingPayoutTodayReason =
   | 'welcome'
   | 'verify'
@@ -130,9 +124,11 @@ export async function loadFundingPayoutToday(
   }
   const roster = await deps.roster.get();
   const spot = await deps.fxSpot.latest();
+  // The paused switch is reported last, so the minimum is the one the grant
+  // needs once daily payments run again.
   const minimum = dailyShopSatsRequiredForGrant({
-    roster,
-    spotUsd: spot?.rates.USD ?? null,
+    roster: { ...roster, paymentsEnabled: true },
+    spot,
     accountId: account.id,
     grantStatus: effectiveStatus(grant, nowMs),
   });
@@ -144,6 +140,9 @@ export async function loadFundingPayoutToday(
   }
   if ((await latestTodayMediaPostId(deps.messages, account.id, nowMs)) === null) {
     return { state: 'blocked', reason: 'media_post' };
+  }
+  if (!roster.paymentsEnabled) {
+    return { state: 'due', reason: 'payments_paused' };
   }
   return { state: 'due', reason: null };
 }

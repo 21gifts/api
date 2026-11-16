@@ -159,7 +159,7 @@ async function dailyMinimum(
   const spot = await deps.fxSpot.latest();
   return dailyShopSatsRequiredForGrant({
     roster,
-    spotUsd: spot?.rates.USD ?? null,
+    spot,
     accountId,
     address,
     grantStatus,

@@ -197,9 +197,11 @@ async function inboundTick(
 }
 
 describe('runNostrWorkerTick', () => {
-  it('forwards wallet transfers to receipt ingest', async () => {
+  it('forwards wallet transfers, the daily roster, and the stored spot to receipt ingest', async () => {
     const { auth, messages } = await seed();
     const walletTransfers = {} as NonNullable<NostrWorkerDeps['walletTransfers']>;
+    const roster = {} as NonNullable<NostrWorkerDeps['roster']>;
+    const fxSpot = {} as NonNullable<NostrWorkerDeps['fxSpot']>;
     const indexOpenZapReceipts = vi.spyOn(zapIndexForWorkerTest, 'indexOpenZapReceipts');
 
     try {
@@ -212,11 +214,13 @@ describe('runNostrWorkerTick', () => {
           now: () => 1_700_000_000_000,
           env: {},
           walletTransfers,
+          roster,
+          fxSpot,
         }),
       );
 
       expect(indexOpenZapReceipts).toHaveBeenCalledWith(
-        expect.objectContaining({ walletTransfers }),
+        expect.objectContaining({ walletTransfers, roster, fxSpot }),
       );
     } finally {
       indexOpenZapReceipts.mockRestore();

@@ -9,6 +9,7 @@
  */
 
 import type { DailyRosterDocument } from '@/lib/daily-roster';
+import type { FxSpotQuote } from '@/lib/fx-spot';
 import { usdToMsat } from '@/lib/money';
 import { decideSpendInstruction, type SpendGrantStatus } from '@/lib/spend-instruction';
 
@@ -18,9 +19,9 @@ import { decideSpendInstruction, type SpendGrantStatus } from '@/lib/spend-instr
  * @param amountUsd - Daily grant in USD, as decided by the roster.
  * @param spotUsd - Stored USD-per-BTC decimal text, or `null` when no usable
  *   quote is stored.
- * @returns `ceil(grantSats / 2)` with `grantSats = floor(msat / 1000)`, or
- *   `null` when the spot is missing/unusable or the USD amount cannot be
- *   converted.
+ * @returns `max(1, ceil(grantSats / 2))` with `grantSats = floor(msat / 1000)`
+ *   (never below the 1-sat rule), or `null` when the spot is missing/unusable
+ *   or the USD amount cannot be converted.
  */
 export function dailyShopSatsRequired(amountUsd: number, spotUsd: string | null): number | null {
   if (spotUsd === null) {
@@ -31,7 +32,7 @@ export function dailyShopSatsRequired(amountUsd: number, spotUsd: string | null)
     return null;
   }
   const grantSats = Math.floor(msat / 1000);
-  return Math.ceil(grantSats / 2);
+  return Math.max(1, Math.ceil(grantSats / 2));
 }
 
 /**
@@ -39,17 +40,17 @@ export function dailyShopSatsRequired(amountUsd: number, spotUsd: string | null)
  *
  * The grant USD is exactly what {@link decideSpendInstruction} decides for a
  * daily payout with the account's effective grant status. A roster that
- * decides a skip, a missing spot, or an unconvertible amount returns `null`
- * so the caller can fail closed.
+ * decides a skip, a missing stored spot or one without a USD rate, or an
+ * unconvertible amount returns `null` so the caller can fail closed.
  *
- * @param input - Live roster document, stored USD spot, paying account id,
- *   optional receiving address (the stored roster matches by account id),
- *   and effective grant status.
+ * @param input - Live roster document, stored spot quote (`null` when none is
+ *   stored), paying account id, optional receiving address (the stored roster
+ *   matches by account id), and effective grant status.
  * @returns The required whole sats, or `null` when they cannot be computed.
  */
 export function dailyShopSatsRequiredForGrant(input: {
   roster: DailyRosterDocument;
-  spotUsd: string | null;
+  spot: FxSpotQuote | null;
   accountId: string;
   address?: string;
   grantStatus: SpendGrantStatus;
@@ -64,5 +65,5 @@ export function dailyShopSatsRequiredForGrant(input: {
   if ('skip' in decided) {
     return null;
   }
-  return dailyShopSatsRequired(decided.amountUsd, input.spotUsd);
+  return dailyShopSatsRequired(decided.amountUsd, input.spot?.rates.USD ?? null);
 }

@@ -106,10 +106,9 @@ function dailySpot(): InMemoryFxSpotStore {
   });
 }
 
-function transferFake(sats: () => Promise<boolean> = async () => true): Pick<
-  WalletTransferStore,
-  'hasShopPayment' | 'shopPaymentSats'
-> {
+function transferFake(
+  sats: () => Promise<boolean> = async () => true,
+): Pick<WalletTransferStore, 'hasShopPayment' | 'shopPaymentSats'> {
   const read = async (): Promise<number> => ((await sats()) ? 500 : 0);
   return {
     hasShopPayment: async (_id, _from, _to, minSats = 1) => (await read()) >= minSats,
@@ -3041,9 +3040,7 @@ describe('PUT /me/recovery-share', () => {
       const store = await memberStore();
       const ping = vi.fn(async () => undefined);
       const shopPaymentSats = vi.fn(async () => 500);
-      const rosterGet = vi.fn(
-        async () => ({ paymentsEnabled: true, recipients: [] }) as never,
-      );
+      const rosterGet = vi.fn(async () => ({ paymentsEnabled: true, recipients: [] }) as never);
       const spotLatest = vi.fn(async () => ({ rates: { USD: '100000' } }) as never);
       const res = await putShare(
         mount(store, {

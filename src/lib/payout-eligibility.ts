@@ -146,7 +146,7 @@ async function shopMinimum(
   const spot = await dailyShop.fxSpot.latest();
   return dailyShopSatsRequiredForGrant({
     roster,
-    spotUsd: spot?.rates.USD ?? null,
+    spot,
     accountId,
     grantStatus: effectiveStatus(grant, nowMs),
     ...(dailyShop.address === undefined ? {} : { address: dailyShop.address }),

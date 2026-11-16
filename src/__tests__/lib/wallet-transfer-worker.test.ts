@@ -765,7 +765,23 @@ describe('runWalletTransferTick', () => {
     expect((await runWalletTransferTick(deps)).size).toBe(0);
 
     expect(ping).not.toHaveBeenCalled();
-    expect(shopPaymentSats).not.toHaveBeenCalled();
+    expect(shopPaymentSats).toHaveBeenCalledOnce();
+  });
+
+  it('skips the account and gift reads when the window has no shop payment', async () => {
+    const ping = vi.fn(async () => ({ status: 'accepted' as const }));
+    const deps = catchUpTestDeps(() => NOW, ping);
+    const getAccount = vi.fn(deps.auth.getAccount);
+    const listOutbound = vi.fn(async () => []);
+    deps.transfers.shopPaymentSats = vi.fn(async () => 0);
+    deps.auth = { ...deps.auth, getAccount };
+    deps.gifts = { listOutbound } as never;
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+
+    expect(ping).not.toHaveBeenCalled();
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(listOutbound).not.toHaveBeenCalled();
   });
 
   it('drops a previous UTC day catch-up retry before attempting the new day', async () => {

@@ -8,6 +8,8 @@ import {
   type GrantRound,
 } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
+import { InMemoryDailyRosterStore } from '@/lib/daily-roster-store';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
@@ -1396,6 +1398,90 @@ describe('trial and admit pings from the grant gate day', () => {
       const names = parsedEvents(warn).map((e) => e['event']);
       expect(names).toContain('funding.daily_ping.failed');
       expect(names).not.toContain('funding.write.failed');
+    });
+
+    /**
+     * `fundingRoutes` with server-verified shop sums, so the ping applies the
+     * daily grant's 50 % minimum (1 USD default at 100 000 USD per BTC → 500 sats).
+     */
+    function shopMount(
+      stores: Awaited<ReturnType<typeof gated>>,
+      ping: () => Promise<undefined>,
+      shop: { sats: number; spot: boolean; roster?: InMemoryDailyRosterStore },
+    ): Hono {
+      return new Hono().route(
+        '/funding',
+        fundingRoutes({
+          authStore: stores.authStore,
+          fundingStore: stores.fundingStore,
+          messageStore: stores.messageStore,
+          now: gateClock,
+          gifts: new InMemoryGiftStore(),
+          lnurlServer: LNURL_SERVER,
+          recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
+          spendPing: { ping },
+          walletTransfers: {
+            hasShopPayment: async (_id, _from, _to, minSats = 1) => shop.sats >= minSats,
+          },
+          ...(shop.roster === undefined ? {} : { rosterStore: shop.roster }),
+          ...(shop.spot
+            ? {
+                fxSpotStore: new InMemoryFxSpotStore({
+                  asOf: '2026-10-29T00:00:00.000Z',
+                  source: 'test',
+                  rates: { USD: '100000' },
+                }),
+              }
+            : {}),
+        }),
+      );
+    }
+
+    it(`pings after ${route} when the shop spending reaches half the daily grant`, async () => {
+      const stores = await gated(true);
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        shopMount(stores, ping, { sats: 500, spot: true }),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      expect(ping).toHaveBeenCalledWith('ada@example.test', PHOTO_A, 'daily', status);
+    });
+
+    it(`does not ping after ${route} below the roster amount's half`, async () => {
+      const stores = await gated(true);
+      const roster = new InMemoryDailyRosterStore();
+      await roster.addRecipient(VERIFIED, 2);
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        shopMount(stores, ping, { sats: 999, spot: true, roster }),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      expect(ping).not.toHaveBeenCalled();
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({ event: 'spend.ping.skipped', reason: 'no_shop_payment' }),
+      );
+    });
+
+    it(`does not ping after ${route} without a stored spot`, async () => {
+      const stores = await gated(true);
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        shopMount(stores, ping, { sats: 500, spot: false }),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      expect(ping).not.toHaveBeenCalled();
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({ event: 'spend.ping.skipped', reason: 'no_shop_payment' }),
+      );
     });
   }
 });

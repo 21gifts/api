@@ -257,11 +257,11 @@ describe('loadFundingPayoutToday', () => {
     ]);
   });
 
-  it('fails closed when the roster disables daily payments', async () => {
+  it('reports the payments switch only after every payout condition holds', async () => {
     const { account, deps, reads } = scenario({ payments: false });
     await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
-      state: 'blocked',
-      reason: 'shop_payment',
+      state: 'due',
+      reason: 'payments_paused',
     });
     expect(reads).toEqual([
       'gifts',
@@ -269,7 +269,18 @@ describe('loadFundingPayoutToday', () => {
       'recovery',
       'roster',
       'spot',
+      'shop',
+      'media_latest',
+      'media_row',
     ]);
+  });
+
+  it('still requires half the daily grant while daily payments are paused', async () => {
+    const { account, deps } = scenario({ payments: false, shopSats: 499 });
+    await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
+      state: 'blocked',
+      reason: 'shop_payment',
+    });
   });
 
   it('reports due with no reason when all conditions and the payment switch hold', async () => {

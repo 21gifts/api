@@ -367,37 +367,42 @@ async function syncWallet(
     successful.add(catchUpKey);
     let keepCatchUpClaim = false;
     try {
-      const account = await deps.auth.getAccount(wallet.accountId);
-      if (
-        account !== undefined &&
-        !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
-      ) {
-        const nowMs = deps.now();
-        const memo = catchUpMemo(deps, wallet.accountId, account, yesterday, today);
-        const payout = await loadPayoutEligibility(
-          deps.funding,
-          deps.auth,
-          account,
-          nowMs,
-          deps.ping.recoveryShareRequiredFrom ?? null,
-          memo.transfers,
-          today,
-          1,
-          memo.dailyShop,
-        );
-        if (payout.eligible) {
-          const result = await pingTodayMedia(
-            memo.ping,
+      // Every daily minimum is at least 1 sat, so a window without any shop
+      // payment skips the account and gift reads.
+      const shopPayments = memoizedShopPayments(deps.transfers);
+      if (await shopPayments.hasShopPayment(wallet.accountId, yesterday, today)) {
+        const account = await deps.auth.getAccount(wallet.accountId);
+        if (
+          account !== undefined &&
+          !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
+        ) {
+          const nowMs = deps.now();
+          const memo = catchUpMemo(deps, account, shopPayments);
+          const payout = await loadPayoutEligibility(
+            deps.funding,
+            deps.auth,
             account,
             nowMs,
-            effectiveStatus(payout.grant, nowMs),
-            true,
+            deps.ping.recoveryShareRequiredFrom ?? null,
+            shopPayments,
+            today,
+            1,
+            memo.dailyShop,
           );
-          if (result === 'failed') {
-            delayCatchUpRetry(retries, catchUpKey, nowMs);
-          } else if (result === 'sent') {
-            retries.delete(catchUpKey);
-            keepCatchUpClaim = true;
+          if (payout.eligible) {
+            const result = await pingTodayMedia(
+              memo.ping,
+              account,
+              nowMs,
+              effectiveStatus(payout.grant, nowMs),
+              true,
+            );
+            if (result === 'failed') {
+              delayCatchUpRetry(retries, catchUpKey, nowMs);
+            } else if (result === 'sent') {
+              retries.delete(catchUpKey);
+              keepCatchUpClaim = true;
+            }
           }
         }
       }
@@ -700,36 +705,47 @@ function shouldStopTransferPaging(page: {
 }
 
 /**
- * One memoized shop-spend read and daily-minimum store pair for a catch-up ping.
+ * Shop-payment checks that read the summed sats of each account and window
+ * once, however many minimums are compared against it.
+ *
+ * @param store - Transfer store that sums qualifying shop payments.
+ * @returns A `hasShopPayment` view over memoized sums.
+ */
+function memoizedShopPayments(
+  store: Pick<WalletTransferStore, 'shopPaymentSats'>,
+): Pick<WalletTransferStore, 'hasShopPayment'> {
+  const sums = new Map<string, Promise<number>>();
+  return {
+    hasShopPayment: async (accountId, fromUtcDay, toUtcDay, minSats = 1) => {
+      const key = `${accountId}\u0000${fromUtcDay}\u0000${toUtcDay}`;
+      let sum = sums.get(key);
+      if (sum === undefined) {
+        sum = store.shopPaymentSats(accountId, fromUtcDay, toUtcDay);
+        sums.set(key, sum);
+      }
+      return (await sum) >= minSats;
+    },
+  };
+}
+
+/**
+ * Memoized daily roster and stored spot views for one catch-up ping.
  *
  * @param deps - Worker collaborators.
- * @param accountId - Paying account id.
  * @param account - Paying account (the daily minimum needs its address).
- * @param fromUtcDay - First window day.
- * @param toUtcDay - Last window day.
- * @returns Memoized views of the transfer sum, the daily roster and stored
- *   spot, and the ping deps that reuse them.
+ * @param transfers - Memoized shop-payment checks for this sync.
+ * @returns The daily-minimum collaborators and the ping deps that reuse them.
  */
 function catchUpMemo(
   deps: WalletTransferWorkerDeps,
-  accountId: string,
   account: Account,
-  fromUtcDay: string,
-  toUtcDay: string,
+  transfers: Pick<WalletTransferStore, 'hasShopPayment'>,
 ): {
-  transfers: Pick<WalletTransferStore, 'hasShopPayment'>;
   dailyShop: DailyShopMinimumDeps;
   ping: TodayMediaPingDeps;
 } {
-  let sats: Promise<number> | undefined;
-  const readSats = (): Promise<number> =>
-    (sats ??= deps.transfers.shopPaymentSats(accountId, fromUtcDay, toUtcDay));
-  const transfers: Pick<WalletTransferStore, 'hasShopPayment'> = {
-    hasShopPayment: async (_id, _from, _to, minSats = 1) => (await readSats()) >= minSats,
-  };
   let rosterRead:
-    | Promise<Awaited<ReturnType<NonNullable<TodayMediaPingDeps['roster']>['get']>>>
-    | undefined;
+    Promise<Awaited<ReturnType<NonNullable<TodayMediaPingDeps['roster']>['get']>>> | undefined;
   const roster = deps.ping.roster;
   const rosterView =
     roster === undefined
@@ -738,8 +754,7 @@ function catchUpMemo(
           get: () => (rosterRead ??= roster.get()),
         };
   let spotRead:
-    | Promise<Awaited<ReturnType<NonNullable<TodayMediaPingDeps['fxSpot']>['latest']>>>
-    | undefined;
+    Promise<Awaited<ReturnType<NonNullable<TodayMediaPingDeps['fxSpot']>['latest']>>> | undefined;
   const fxSpot = deps.ping.fxSpot;
   const spotView =
     fxSpot === undefined
@@ -749,7 +764,6 @@ function catchUpMemo(
         };
   const address = receivingAddress(account, deps.ping.lnurlServer);
   return {
-    transfers,
     dailyShop: {
       ...(rosterView === undefined ? {} : { roster: rosterView }),
       ...(spotView === undefined ? {} : { fxSpot: spotView }),

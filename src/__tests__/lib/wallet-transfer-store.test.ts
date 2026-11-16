@@ -601,12 +601,12 @@ describe('PostgresWalletTransferStore', () => {
       lastFullSyncAt: new Date('2026-11-12T06:00:00.000Z'),
     });
     await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12')).resolves.toBe(true);
-    await expect(
-      store.hasShopPayment('account', '2026-11-11', '2026-11-12', 42),
-    ).resolves.toBe(true);
-    await expect(
-      store.hasShopPayment('account', '2026-11-11', '2026-11-12', 43),
-    ).resolves.toBe(false);
+    await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12', 42)).resolves.toBe(
+      true,
+    );
+    await expect(store.hasShopPayment('account', '2026-11-11', '2026-11-12', 43)).resolves.toBe(
+      false,
+    );
     await expect(store.shopPaymentSats('account', '2026-11-11', '2026-11-12')).resolves.toBe(42);
     expect(query.mock.calls.at(-1)?.[0]).toContain('SUM(wallet_transfer.amount_sats)');
     expect(query.mock.calls.at(-1)?.[0]).toContain('EXISTS (');
@@ -614,9 +614,7 @@ describe('PostgresWalletTransferStore', () => {
     expect(query.mock.calls.at(-1)?.[0]).not.toContain(
       'CROSS JOIN LATERAL unnest(payment.counterparty_pubkeys)',
     );
-    expect(query.mock.calls.at(-1)?.[0]).toContain(
-      'unnest(wallet_transfer.counterparty_pubkeys)',
-    );
+    expect(query.mock.calls.at(-1)?.[0]).toContain('unnest(wallet_transfer.counterparty_pubkeys)');
     expect(query.mock.calls.at(-1)?.[0]).toContain('spark_pubkey_verified_at IS NOT NULL');
     expect(query.mock.calls.at(-1)?.[0]).toContain('ORDER BY replaced_at DESC, account_id');
     expect(query.mock.calls.at(-1)?.[0]).toContain("AT TIME ZONE 'UTC'");

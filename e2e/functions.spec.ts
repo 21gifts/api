@@ -5177,8 +5177,6 @@ test('Function: dailyShopSatsRequired — default boot serves HTTP', async ({ re
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: dailyShopSatsRequiredForGrant — default boot serves HTTP', async ({
-  request,
-}) => {
+test('Function: dailyShopSatsRequiredForGrant — default boot serves HTTP', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
