@@ -35,6 +35,9 @@ type ScenarioOptions = {
   recoveryRequired?: boolean;
   recovery?: boolean;
   shop?: boolean;
+  shopSats?: number;
+  spot?: boolean;
+  rosterAmountUsd?: number;
   media?: 'today' | 'old' | 'none';
   payments?: boolean;
 };
@@ -74,9 +77,9 @@ function scenario(options: ScenarioOptions = {}): {
         },
       },
       transfers: {
-        hasShopPayment: async () => {
+        hasShopPayment: async (_accountId, _from, _to, minSats = 1) => {
           reads.push('shop');
-          return options.shop ?? true;
+          return (options.shopSats ?? (options.shop === false ? 0 : 500)) >= minSats;
         },
       },
       messages: {
@@ -94,9 +97,21 @@ function scenario(options: ScenarioOptions = {}): {
       roster: {
         get: async () => {
           reads.push('roster');
-          return { paymentsEnabled: options.payments ?? true } as never;
+          return {
+            paymentsEnabled: options.payments ?? true,
+            recipients:
+              options.rosterAmountUsd === undefined
+                ? []
+                : [{ accountId: 'account', amountUsd: options.rosterAmountUsd }],
+          } as never;
         },
       },
+      fxSpot: {
+        latest: async () => {
+          reads.push('spot');
+          return options.spot === false ? null : { rates: { USD: '100000' } };
+        },
+      } as never,
       recoveryShareRequiredFrom: options.recoveryRequired === false ? null : '2026-11-12',
     },
     reads,
@@ -188,19 +203,28 @@ describe('loadFundingPayoutToday', () => {
       name: 'shop payment',
       options: { shop: false },
       reason: 'shop_payment',
-      reads: ['gifts', 'funding', 'recovery', 'shop'],
+      reads: ['gifts', 'funding', 'recovery', 'roster', 'spot', 'shop'],
     },
     {
       name: 'media post without any media',
       options: { media: 'none' },
       reason: 'media_post',
-      reads: ['gifts', 'funding', 'recovery', 'shop', 'media_latest'],
+      reads: ['gifts', 'funding', 'recovery', 'roster', 'spot', 'shop', 'media_latest'],
     },
     {
       name: 'media post from an older UTC day',
       options: { media: 'old' },
       reason: 'media_post',
-      reads: ['gifts', 'funding', 'recovery', 'shop', 'media_latest', 'media_row'],
+      reads: [
+        'gifts',
+        'funding',
+        'recovery',
+        'roster',
+        'spot',
+        'shop',
+        'media_latest',
+        'media_row',
+      ],
     },
   ];
 
@@ -222,23 +246,29 @@ describe('loadFundingPayoutToday', () => {
       state: 'due',
       reason: null,
     });
-    expect(reads).toEqual(['gifts', 'funding', 'shop', 'media_latest', 'media_row', 'roster']);
+    expect(reads).toEqual([
+      'gifts',
+      'funding',
+      'roster',
+      'spot',
+      'shop',
+      'media_latest',
+      'media_row',
+    ]);
   });
 
-  it('reports the payments switch only after every payout condition holds', async () => {
+  it('fails closed when the roster disables daily payments', async () => {
     const { account, deps, reads } = scenario({ payments: false });
     await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
-      state: 'due',
-      reason: 'payments_paused',
+      state: 'blocked',
+      reason: 'shop_payment',
     });
     expect(reads).toEqual([
       'gifts',
       'funding',
       'recovery',
-      'shop',
-      'media_latest',
-      'media_row',
       'roster',
+      'spot',
     ]);
   });
 
@@ -247,6 +277,30 @@ describe('loadFundingPayoutToday', () => {
     await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
       state: 'due',
       reason: null,
+    });
+  });
+
+  it('blocks when the shop spending is below half the daily grant', async () => {
+    const { account, deps } = scenario({ shopSats: 499 });
+    await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
+      state: 'blocked',
+      reason: 'shop_payment',
+    });
+  });
+
+  it('counts exactly half the daily grant as enough', async () => {
+    const { account, deps } = scenario({ rosterAmountUsd: 2, shopSats: 1000 });
+    await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
+      state: 'due',
+      reason: null,
+    });
+  });
+
+  it('fails closed without a stored spot', async () => {
+    const { account, deps } = scenario({ spot: false });
+    await expect(loadFundingPayoutToday(deps, account, NOW)).resolves.toEqual({
+      state: 'blocked',
+      reason: 'shop_payment',
     });
   });
 

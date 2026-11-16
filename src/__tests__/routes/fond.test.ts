@@ -10,6 +10,8 @@ import {
   type FondPayoutRow,
 } from '@/lib/fond-payout-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
+import { InMemoryDailyRosterStore } from '@/lib/daily-roster-store';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryMessageStore } from '@/lib/message-store';
@@ -254,6 +256,12 @@ async function makeApp(options: AppOptions = {}): Promise<{
         now,
         fetchImpl,
         fundingStore: options.fundingStore ?? new InMemoryFundingStore(),
+        rosterStore: new InMemoryDailyRosterStore(),
+        fxSpotStore: new InMemoryFxSpotStore({
+          asOf: '2026-11-09T00:00:00.000Z',
+          source: 'test',
+          rates: { USD: '100000' },
+        }),
         ...(options.walletTransferStore === undefined
           ? {}
           : { walletTransfers: options.walletTransferStore }),
@@ -1318,8 +1326,8 @@ describe('POST /fond/payouts/:id/invoice', () => {
   it('uses the booked payout day after a stale issuing lease crosses midnight', async () => {
     let clock = Date.parse('2026-11-09T23:58:00.000Z');
     const hasShopPayment = vi.fn(
-      async (_accountId: string, fromUtcDay: string, toUtcDay: string) =>
-        fromUtcDay === YESTERDAY && toUtcDay === TODAY,
+      async (_accountId: string, fromUtcDay: string, toUtcDay: string, minSats = 1) =>
+        fromUtcDay === YESTERDAY && toUtcDay === TODAY && minSats <= 500,
     );
     const paymentHash = 'cd'.repeat(32);
     const invoicePr = bolt11ForSats(1000, paymentHash);
@@ -1370,7 +1378,7 @@ describe('POST /fond/payouts/:id/invoice', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(hasShopPayment).toHaveBeenCalledWith('ada', YESTERDAY, TODAY);
+    expect(hasShopPayment).toHaveBeenCalledWith('ada', YESTERDAY, TODAY, 500);
     expect(hasShopPayment).toHaveBeenCalledOnce();
     expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', claimedAt: null });
   });

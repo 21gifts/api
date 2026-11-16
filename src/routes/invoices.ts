@@ -29,6 +29,8 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { normalizeAmountUsd, usdToMsat, type FiatAmounts } from '@/lib/money';
 import type { FundingStore } from '@/lib/funding-store';
+import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
+import { InMemoryFxSpotStore, type FxSpotStore } from '@/lib/fx-spot-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
@@ -294,6 +296,10 @@ export interface GiftActionDeps {
   >;
   /** First UTC day the 21.gifts recovery share is required for a payout. */
   recoveryShareRequiredFrom?: string | null;
+  /** Daily payout roster for the daily grant's 50 % shop-spend minimum. */
+  rosterStore?: Pick<DailyRosterStore, 'get'>;
+  /** Stored BTC-USD spot for the daily grant's 50 % shop-spend minimum. */
+  fxSpotStore?: Pick<FxSpotStore, 'latest'>;
 }
 
 /** Body fields the issue action reads. */
@@ -662,6 +668,8 @@ async function issueGiftInvoiceLocked(
   input: IssueGiftInvoiceInput,
 ): Promise<IssueGiftInvoiceResult> {
   const fundingStore = deps.fundingStore;
+  const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
+  const fxSpotStore = deps.fxSpotStore ?? new InMemoryFxSpotStore();
   let amountUsd: string | undefined;
   if (input.amountUsd !== undefined) {
     const normalized = normalizeAmountUsd(input.amountUsd);
@@ -769,6 +777,39 @@ async function issueGiftInvoiceLocked(
   const genuineWelcome = serverPayoutKind === 'welcome' && canonicalWelcome;
   let keepWelcomeReservation = false;
 
+  // Resolve a moderator-group reference before the funding gate: a resolved
+  // moderator payout keeps the 1-sat rule, while every unresolved reference
+  // is a daily payout and needs the 50 % minimum.
+  let resolvedGroupMessageId: string | undefined;
+  if (input.groupMessageId !== undefined) {
+    try {
+      const conversationStore = deps.conversationStore;
+      const row =
+        conversationStore === undefined
+          ? undefined
+          : await conversationStore.getMessageById(input.groupMessageId);
+      const thread =
+        conversationStore === undefined || row === undefined
+          ? undefined
+          : await conversationStore.getById(row.conversationId);
+      const accounts = await deps.authStore.listAccounts();
+      const platform = accounts.find((item) => item.isPlatform === true);
+      if (
+        conversationStore !== undefined &&
+        row !== undefined &&
+        thread !== undefined &&
+        thread.kind === 'moderator_group' &&
+        row.senderAccountId === account.id &&
+        !(isModeratorGroupMember(account) && !earnsModeratorGroupPay(account)) &&
+        platform !== undefined
+      ) {
+        resolvedGroupMessageId = input.groupMessageId;
+      }
+    } catch {
+      resolvedGroupMessageId = undefined;
+    }
+  }
+
   try {
     const { eligible } = await loadPayoutEligibility(
       fundingStore,
@@ -778,6 +819,12 @@ async function issueGiftInvoiceLocked(
       deps.recoveryShareRequiredFrom ?? null,
       genuineWelcome ? undefined : deps.walletTransfers,
       input.shopPaymentUtcDay,
+      undefined,
+      genuineWelcome
+        ? undefined
+        : resolvedGroupMessageId !== undefined
+          ? undefined
+          : { roster: rosterStore, fxSpot: fxSpotStore, address },
     );
     if (!eligible) {
       logEvent('invoice.funding_required', { address });
@@ -791,7 +838,6 @@ async function issueGiftInvoiceLocked(
       return { ok: false, status: 409, error: 'Welcome gift already paid' };
     }
 
-    let resolvedGroupMessageId: string | undefined;
     if (input.messageId !== undefined) {
       const message = forumMessage;
       if (
@@ -825,32 +871,6 @@ async function issueGiftInvoiceLocked(
       }
       if (input.groupMessageId !== undefined) {
         // Display only: a failing lookup must never block the payout.
-        try {
-          const conversationStore = deps.conversationStore;
-          const row =
-            conversationStore === undefined
-              ? undefined
-              : await conversationStore.getMessageById(input.groupMessageId);
-          const thread =
-            conversationStore === undefined || row === undefined
-              ? undefined
-              : await conversationStore.getById(row.conversationId);
-          const accounts = await deps.authStore.listAccounts();
-          const platform = accounts.find((item) => item.isPlatform === true);
-          if (
-            conversationStore !== undefined &&
-            row !== undefined &&
-            thread !== undefined &&
-            thread.kind === 'moderator_group' &&
-            row.senderAccountId === account.id &&
-            !(isModeratorGroupMember(account) && !earnsModeratorGroupPay(account)) &&
-            platform !== undefined
-          ) {
-            resolvedGroupMessageId = input.groupMessageId;
-          }
-        } catch {
-          resolvedGroupMessageId = undefined;
-        }
         if (resolvedGroupMessageId === undefined) {
           logEvent('invoice.group_message_ignored', { address });
         }

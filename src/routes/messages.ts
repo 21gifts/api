@@ -11,8 +11,9 @@ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import type { FxSpotQuote } from '@/lib/fx-spot';
 import { canonicalGoalAmount, type GoalCurrency, type GoalFiatCode } from '@/lib/goal-rate';
-import { effectiveStatus } from '@/lib/funding';
+import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { checkOperator } from '@/lib/operator';
@@ -335,6 +336,8 @@ export interface MessagesRouteDeps {
   fundingStore?: FundingStore;
   /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
   recoveryShareRequiredFrom?: string | null;
+  /** Daily payout roster for the daily grant's 50 % shop-spend minimum. */
+  rosterStore?: Pick<DailyRosterStore, 'get'>;
   /**
    * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the author's
    * username at or after the wallet verification stops a second welcome ping.
@@ -1486,6 +1489,13 @@ async function persistForumPost(
           deps.now(),
           deps.recoveryShareRequiredFrom ?? null,
           deps.walletTransfers,
+          utcDayKey(deps.now()),
+          undefined,
+          {
+            ...(deps.rosterStore === undefined ? {} : { roster: deps.rosterStore }),
+            ...(deps.fxSpot === undefined ? {} : { fxSpot: deps.fxSpot }),
+            address: spendAddress,
+          },
         );
         if (!eligible) {
           logEvent('spend.ping.skipped', { reason: reason ?? 'not_eligible' });

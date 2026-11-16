@@ -16,6 +16,7 @@ import type { SpendPing } from '@/lib/spend-ping';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import type { GiftStore } from '@/lib/gift-store';
 import type { DailyRosterStore } from '@/lib/daily-roster-store';
+import { InMemoryFxSpotStore, type FxSpotStore } from '@/lib/fx-spot-store';
 import { bearerToken, meRoutes } from '@/routes/me';
 import {
   PINNED,
@@ -59,7 +60,8 @@ interface MountOpts {
   fundingStore?: FundingStore;
   recoveryShareRequiredFrom?: string | null;
   spendPing?: SpendPing;
-  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment' | 'shopPaymentSats'>;
+  fxSpotStore?: Pick<FxSpotStore, 'latest'>;
   walletViewerPublicKey?: string | null;
   giftStore?: GiftStore;
   rosterStore?: Pick<DailyRosterStore, 'get'>;
@@ -88,11 +90,31 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
           : opts.recoveryShareRequiredFrom,
       ...(opts.spendPing === undefined ? {} : { spendPing: opts.spendPing }),
       ...(opts.walletTransfers === undefined ? {} : { walletTransfers: opts.walletTransfers }),
+      fxSpotStore: opts.fxSpotStore ?? dailySpot(),
       ...(opts.walletViewerPublicKey === undefined
         ? {}
         : { walletViewerPublicKey: opts.walletViewerPublicKey }),
     }),
   );
+}
+
+function dailySpot(): InMemoryFxSpotStore {
+  return new InMemoryFxSpotStore({
+    asOf: '2026-09-15T00:00:00.000Z',
+    source: 'test',
+    rates: { USD: '100000' },
+  });
+}
+
+function transferFake(sats: () => Promise<boolean> = async () => true): Pick<
+  WalletTransferStore,
+  'hasShopPayment' | 'shopPaymentSats'
+> {
+  const read = async (): Promise<number> => ((await sats()) ? 500 : 0);
+  return {
+    hasShopPayment: async (_id, _from, _to, minSats = 1) => (await read()) >= minSats,
+    shopPaymentSats: read,
+  };
 }
 
 const SPARK_PUBKEY = `02${'a'.repeat(64)}`;
@@ -301,10 +323,14 @@ describe('GET /me', () => {
         note: null,
       },
     ]);
-    const hasShopPayment = vi.fn(() => Promise.resolve(false));
+    const shopPaymentSats = vi.fn(async () => 0);
     const res = await mount(store, {
       fundingStore,
-      walletTransfers: { hasShopPayment },
+      walletTransfers: {
+        hasShopPayment: async (_id, _from, _to, minSats = 1) =>
+          (await shopPaymentSats()) >= minSats,
+        shopPaymentSats,
+      },
       walletViewerPublicKey: SPARK_PUBKEY,
     }).request('/me', { headers: AUTH });
     expect(res.status).toBe(200);
@@ -314,7 +340,7 @@ describe('GET /me', () => {
     };
     expect(body.walletViewerPublicKey).toBe(SPARK_PUBKEY);
     expect(body.funding.shopPaymentDue).toBe(true);
-    expect(hasShopPayment).toHaveBeenCalledOnce();
+    expect(shopPaymentSats).toHaveBeenCalledOnce();
   });
 
   it('clears shop-payment due after a verified payment and reports read failure as unknown', async () => {
@@ -335,7 +361,7 @@ describe('GET /me', () => {
     ]);
     const paid = await mount(store, {
       fundingStore,
-      walletTransfers: { hasShopPayment: async () => true },
+      walletTransfers: transferFake(),
     }).request('/me', { headers: AUTH });
     expect(
       ((await paid.json()) as { funding: { shopPaymentDue: boolean } }).funding.shopPaymentDue,
@@ -345,6 +371,9 @@ describe('GET /me', () => {
       fundingStore,
       walletTransfers: {
         hasShopPayment: async () => {
+          throw new Error('transfers unavailable');
+        },
+        shopPaymentSats: async () => {
           throw new Error('transfers unavailable');
         },
       },
@@ -375,7 +404,7 @@ describe('GET /me', () => {
     const res = await mount(store, {
       messages,
       fundingStore: admitted(),
-      walletTransfers: { hasShopPayment: async () => true },
+      walletTransfers: transferFake(),
       rosterStore: { get: async () => ({ paymentsEnabled: true }) as never },
       recoveryShareRequiredFrom: null,
     }).request('/me', { headers: AUTH });
@@ -2997,7 +3026,7 @@ describe('PUT /me/recovery-share', () => {
           fundingStore: admitted(),
           messages: await todayPhoto(),
           spendPing: { ping },
-          walletTransfers: { hasShopPayment },
+          walletTransfers: transferFake(hasShopPayment),
         }),
         body,
       );
@@ -3005,7 +3034,40 @@ describe('PUT /me/recovery-share', () => {
       expect(ping).toHaveBeenCalledTimes(1);
       expect(ping).toHaveBeenCalledWith('alice@example.test', MEMBER_PHOTO, 'daily', 'admitted');
       expect(readsDuringPing).toBe(0);
-      expect(hasShopPayment).toHaveBeenCalledTimes(2);
+      expect(hasShopPayment).toHaveBeenCalledOnce();
+    });
+
+    it('reads the shop sum, roster, and stored spot once across the ping and owner JSON', async () => {
+      const store = await memberStore();
+      const ping = vi.fn(async () => undefined);
+      const shopPaymentSats = vi.fn(async () => 500);
+      const rosterGet = vi.fn(
+        async () => ({ paymentsEnabled: true, recipients: [] }) as never,
+      );
+      const spotLatest = vi.fn(async () => ({ rates: { USD: '100000' } }) as never);
+      const res = await putShare(
+        mount(store, {
+          clock: gateClock,
+          walletEnabled: true,
+          recoveryShareKek: SHARE_KEK,
+          fundingStore: admitted(),
+          messages: await todayPhoto(),
+          spendPing: { ping },
+          walletTransfers: {
+            hasShopPayment: async (_id, _from, _to, minSats = 1) =>
+              (await shopPaymentSats()) >= minSats,
+            shopPaymentSats,
+          },
+          rosterStore: { get: rosterGet },
+          fxSpotStore: { latest: spotLatest },
+        }),
+        body,
+      );
+      expect(res.status).toBe(200);
+      expect(ping).toHaveBeenCalledOnce();
+      expect(shopPaymentSats).toHaveBeenCalledOnce();
+      expect(rosterGet).toHaveBeenCalledOnce();
+      expect(spotLatest).toHaveBeenCalledOnce();
     });
 
     it('does not ping until a recent verified shop payment exists', async () => {
@@ -3020,7 +3082,7 @@ describe('PUT /me/recovery-share', () => {
           fundingStore: admitted(),
           messages: await todayPhoto(),
           spendPing: { ping },
-          walletTransfers: { hasShopPayment },
+          walletTransfers: transferFake(hasShopPayment),
         }),
         body,
       );

@@ -16,7 +16,7 @@ daily-rate proportions are not a repayment pricing source. An open invoice and
 a settled part keep their stored sats. An unavailable spot leaves read-path sat
 fields null; an invoice path that needs those units answers 503.
 
-**Status**: living document. Last revised 2026-11-14 (the external spend worker path is removed: `PAYOUT_SIGNER=fond` queues payouts in `fond_payout` as before, unset or blank means no payout sink, and `spend` is rejected at boot; `GET /invoices/passkey`, `GET /invoices/eligible`, `GET /invoices/posted`, `POST /invoices`, `POST /invoices/proof`, `POST /spend/daily-instruction`, `GET` and `POST /funding/daily-roster/document`, and `POST /funding/daily-roster/worker/*` are removed; `SPEND_URL` is no longer read and `SPEND_API_TOKEN` is only the log reference key).
+**Status**: living document. Last revised 2026-11-16 (a daily grant is paid only when the member's qualifying server-verified shop payments on the payout UTC day and the day before sum to at least 50 % of that grant, rounded up in whole sats from the stored BTC-USD spot; moderator stipends keep the 1-sat minimum, the welcome gift keeps its exception, and a missing or unusable stored spot or a roster skip fails closed). Before that, 2026-11-14 (the external spend worker path is removed: `PAYOUT_SIGNER=fond` queues payouts in `fond_payout` as before, unset or blank means no payout sink, and `spend` is rejected at boot; `GET /invoices/passkey`, `GET /invoices/eligible`, `GET /invoices/posted`, `POST /invoices`, `POST /invoices/proof`, `POST /spend/daily-instruction`, `GET` and `POST /funding/daily-roster/document`, and `POST /funding/daily-roster/worker/*` are removed; `SPEND_URL` is no longer read and `SPEND_API_TOKEN` is only the log reference key).
 
 ---
 
@@ -2933,8 +2933,8 @@ stays `null`)).
 | `locale`                     | string \| null  | Owner UI language: `en`, `de`, `es`, or `fil`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the browser.                                                                                                                                                                                                                                                                                                                                                                               |
 | `fiat`                       | string \| null  | Owner fiat: `CHF`, `EUR`, `USD`, or `PHP`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the language default.                                                                                                                                                                                                                                                                                                                                                                          |
 | `funding`                    | object \| null  | Funding-program grant. `null` for `basis`. Otherwise always an object; no row and a withdrawn grant are both `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }` (never `withdrawn`). A failed owner grant read is `{ status: "unknown", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }`; it never fabricates `none`. `dailyPayoutStoppedNotice` is true only for the six legacy daily accounts with no grant row. Admitted includes live `reviewedByName`. |
-| `funding.shopPaymentDue`     | boolean \| null | Present inside non-`basis` `funding`. True exactly when the account is in the grant program today and has no completed server-verified payment to a live 21.gifts shop today or yesterday UTC; `null` when that transfer read failed or the grant read failed, because program membership is then unknown.                                                                                                                                                                                                                                                               |
-| `funding.payoutToday`        | object \| null  | Present inside non-`basis` `funding`. Exactly one explanation for today's daily grant: `{ state: "paid" \| "due" \| "blocked", reason }`, or `null` when a required store read failed. Paid daily and welcome gifts win first; otherwise the first missing condition is `verify`, `admission`, `wallet`, `recovery_share`, `shop_payment`, then `media_post`. A withdrawn grant is owner-visible `none`, stops at `blocked` / `admission`, and never reaches `due`. All conditions with no recorded payout are `due`; `payments_paused` is the only due reason.          |
+| `funding.shopPaymentDue`     | boolean \| null | Present inside non-`basis` `funding`. True exactly when the account is in the grant program today and its qualifying server-verified shop payments today and yesterday UTC sum to less than half its daily grant, rounded up in whole sats; `null` when that transfer, roster, or stored-spot read failed or the grant read failed, because the required amount or program membership is then unknown.                                                                                                                                                         |
+| `funding.payoutToday`        | object \| null  | Present inside non-`basis` `funding`. Exactly one explanation for today's daily grant: `{ state: "paid" \| "due" \| "blocked", reason }`, or `null` when a required store read failed. Paid daily and welcome gifts win first; otherwise the first missing condition is `verify`, `admission`, `wallet`, `recovery_share`, `shop_payment`, then `media_post`. A withdrawn grant is owner-visible `none`, stops at `blocked` / `admission`, and never reaches `due`. All conditions with no recorded payout are `due`; its reason is null.                                                                                 |
 | `grantPayoutToday`           | object \| null  | Compatibility field for `basis`, whose documented `funding: null` contract is unchanged. It carries the same payout object (normally `{ state: "blocked", reason: "verify" }`) for `basis` and is `null` for every other role. A recorded daily or welcome gift today still wins before the current role.                                                                                                                                                                                                                                                                |
 | `walletViewerPublicKey`      | string \| null  | The deployment's 66-lowercase-hex read-only Spark viewer identity key that the app grants. It can never move funds. Null when viewer initialization was unavailable.                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `walletRequired`             | boolean         | True when a seed-bearing passkey exists (new register/claim, seed finish, or a social recovery commit through `POST /lnurlpay/:pubkey/transfer` or a settling lookup). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                                                                                                                                                               |
@@ -2959,11 +2959,14 @@ replaces that day's daily payout. Otherwise the api stops at the first missing
 condition in this order: the role must no longer be `basis`
 (`verify`), the member must be in the grant program today (`admission`), the
 in-app wallet must be verified (`wallet`), a recovery share must exist when
-`recoveryShareRequired` applies (`recovery_share`), a verified shop payment
-must exist today or yesterday (`shop_payment`), and a live top-level photo or
-video post must exist today (`media_post`). When all six hold, no recorded
-payout is `due`; its reason is `payments_paused` only when the daily roster's
-`paymentsEnabled` switch is false, otherwise null. Each read is lazy. A failure
+`recoveryShareRequired` applies (`recovery_share`), qualifying verified shop
+payments today and yesterday must sum to at least half the daily grant rounded
+up (`shop_payment`), and a live top-level photo or video post must exist today
+(`media_post`). The grant USD is what `decideSpendInstruction` selects from the
+live roster and effective grant status; the stored `FxSpotStore.latest()` USD
+quote prices it. A disabled daily roster, a roster skip, or a missing/unusable
+stored spot fails closed at `shop_payment`. When all six hold, no recorded
+payout is `due` with a null reason. Each read is lazy. A failure
 of one of these reads makes the payout field null without failing `GET /me`
 and logs `funding.payout_today.failed { accountId }`. A failed grant read keeps
 the non-`basis` funding object with `status: "unknown"` and all grant-derived
@@ -6451,19 +6454,25 @@ for the read. The notice is not a source of payment data: paid status and
 amounts come only from the observed record.
 
 `eligibleToday` additionally requires, from deployment and with no start-day
-configuration, a `wallet_transfer` for that member with direction `out`, type
+configuration, `wallet_transfer` rows for that member with direction `out`, type
 `transfer`, status `completed`, and at least one external recipient that
-resolves to the till account of a live top-level `#21GiftsShop` note. Its updated time
-(creation time fallback) must be the payout UTC day or the day before. This
-condition applies to posts, zap-paid notes, spend pings, Fond gift invoices,
-operator replay, and moderator stipends. The one-time welcome gift is exempt
+resolves to the till account of a live top-level `#21GiftsShop` note. Their
+updated time (creation time fallback) must be the payout UTC day or the day
+before, and each transfer counts once even when several external recipients
+resolve to shops. For a daily payout the summed `amount_sats` must be at least
+half the daily grant, rounded up in whole sats from the stored BTC-USD spot
+(`FxSpotStore.latest()`, never an external fetch); a missing or unusable spot,
+or a roster that decides a skip, fails closed. Moderator stipends keep the
+1-sat minimum in the same two-day window. This condition applies to posts,
+zap-paid notes, spend pings, Fond gift invoices, operator replay, and
+moderator stipends. The one-time welcome gift is exempt
 only when server-owned facts show an exactly `verified` non-platform account with no stored
 welcome, comment exactly `Welcome`, neither `messageId` nor `groupMessageId`,
 and a normalized exact USD `1.00`, and `amountMsat` is at most the server's
 `usdToMsat("1.00", spot)` conversion plus the fixed 10% spot-drift tolerance.
 The conversion is the same whole-satoshi, half-up conversion used by Fond.
-Without a usable current spot, the exception fails closed and the recent shop
-payment is required. The public body has no payout-kind override;
+Without a usable current spot, the exception fails closed and the shop-payment
+condition is required. The public body has no payout-kind override;
 the internal `serverPayoutKind` cannot weaken these checks. Before using the
 exception, the API atomically reserves the account's entitlement in the durable,
 `db_change`-audited `welcome_invoice_reservation` table. A second active request
@@ -6471,9 +6480,9 @@ is **409** `{ "error": "Welcome invoice already open" }`, even when the account
 has a qualifying shop payment; a reservation-store failure is **503** and never
 falls through to ordinary eligibility. Issue failure or unpaid expiry releases the row. A
 roster `Welcome` with a message id or another amount
-is not the exception. A failed decision reports `no_shop_payment`. On every tick, while
-such a payment is in D-1..D, the member is eligible, today's media exists, and
-no daily payout is recorded today, the worker claims the account/UTC-day key
+is not the exception. A failed decision reports `no_shop_payment`. On every tick,
+while the qualifying shop-payment sum in D-1..D meets the daily minimum, the
+member is eligible, today's media exists, and no daily payout is recorded today, the worker claims the account/UTC-day key
 synchronously before its first asynchronous read and calls `pingTodayMedia`
 until a delivery is accepted. Two wallets therefore cannot send the same ping
 concurrently. Failed deliveries enter a separate catch-up backoff and
@@ -7132,8 +7141,10 @@ address is matched only as a member's wallet-backed receiving address (see
 verified wallet → **403** `Wallet required`; no such member or no passkey →
 **403** `Passkey required`. Not `eligibleToday` (grant from UTC 2026-10-01,
 from `RECOVERY_SHARE_REQUIRED_FROM` a 21.gifts recovery share for the current
-verified wallet, and a completed server-verified shop payment on the booked
-payout day or the day before) → **403** `Funding grant required`. The
+verified wallet, and qualifying server-verified shop payments on the booked
+payout day and the day before summing to at least half the daily grant,
+rounded up in whole sats; a kept `groupMessageId` (below) makes it a moderator
+stipend, which keeps the 1-sat minimum) → **403** `Funding grant required`. The
 one-time welcome gift skips only the shop-payment condition, for an exactly
 `verified` non-platform account that has not received its welcome gift, with
 USD `1.00`, comment `Welcome`, no `messageId` or `groupMessageId`, and
@@ -7738,8 +7749,9 @@ ping. `address` is the author's wallet-backed receiving address (no verified
 wallet → no ping). With `PAYOUT_SIGNER=fond` the api queues the decided instruction for `address` in `fond_payout` for the Fond member
 (see [Fond payouts](#fond-payouts-fond); awaited; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant and,
-from `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts recovery share, a completed
-server-verified shop payment today or yesterday UTC, **and** the new row has media (`hasPhoto` /
+from `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts recovery share, qualifying
+server-verified shop payments today and yesterday UTC summing to at least half
+the daily grant rounded up, **and** the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`).
 Otherwise no ping, log `spend.ping.skipped` / `no_shop_payment` for that
 missing condition, `not_eligible` for another ineligible condition, or
@@ -9389,8 +9401,10 @@ the caller has a receiving address (verified wallet; it is sent as
 `address`), `spendPing` is set, **and** the caller has a live
 living-room top-level post (not the profile note) whose `createdAt` is on
 the same UTC day **and** `eligibleToday` for the author's funding grant and,
-from `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts recovery share, and a completed
-server-verified shop payment today or yesterday UTC.
+from `RECOVERY_SHARE_REQUIRED_FROM`, a 21.gifts recovery share, and qualifying
+server-verified shop payments today and yesterday UTC summing to at least one
+sat. Moderator payouts keep the 1-sat rule; only daily payouts use half the
+daily grant.
 No such post → **200**, no ping, log `spend.ping.skipped` /
 `no_public_post`. Public post today but not funding-eligible → **200**, no
 ping, log `spend.ping.skipped` / `no_shop_payment` for that missing condition

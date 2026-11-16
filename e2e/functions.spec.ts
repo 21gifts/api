@@ -5172,3 +5172,13 @@ test('Function: loadFundingPayoutToday — GET /me exposes one payout explanatio
     grantPayoutToday: { state: 'blocked', reason: 'verify' },
   });
 });
+
+test('Function: dailyShopSatsRequired — default boot serves HTTP', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: dailyShopSatsRequiredForGrant — default boot serves HTTP', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});

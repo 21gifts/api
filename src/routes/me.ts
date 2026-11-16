@@ -18,6 +18,7 @@ import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
+import { InMemoryFxSpotStore, type FxSpotStore } from '@/lib/fx-spot-store';
 import { effectiveStatus, eligibleToday, recoveryShareRequired, utcDayKey } from '@/lib/funding';
 import { addUtcDays } from '@/lib/member-habit';
 import { pingTodayMedia } from '@/lib/funding-ping';
@@ -36,7 +37,10 @@ import {
   type MessageRow,
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { receivingAddress } from '@/lib/receiving-address';
+import { dailyShopSatsRequiredForGrant } from '@/lib/shop-spend-minimum';
 import type { SpendPing } from '@/lib/spend-ping';
+import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizeDisplayName } from '@/lib/name';
@@ -101,8 +105,10 @@ export interface MeRouteDeps {
   fundingStore?: FundingStore;
   /** Daily payout switch used by the owner-facing payout explanation. */
   rosterStore?: Pick<DailyRosterStore, 'get'>;
+  /** Stored BTC-USD spot for the daily grant's 50 % shop-spend minimum. */
+  fxSpotStore?: Pick<FxSpotStore, 'latest'>;
   /** Server-verified Spark transfers for funding eligibility and owner due status. */
-  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+  walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment' | 'shopPaymentSats'>;
   /** Deployment viewer identity key that the owner wallet grants. */
   walletViewerPublicKey?: string | null;
   /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
@@ -364,7 +370,7 @@ type MeOwnerResponse = Omit<OwnerAccountResponse, 'funding'> & {
 async function ownerJson(
   deps: MeRouteDeps,
   account: Account,
-  knownShopPayment?: boolean,
+  shop?: ShopRequestMemo,
 ): Promise<MeOwnerResponse> {
   const nowMs = deps.now();
   let payoutReadFailed = false;
@@ -405,22 +411,24 @@ async function ownerJson(
       };
     }
   }
-  const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
-  const walletTransfers = deps.walletTransfers ?? new InMemoryWalletTransferStore();
-  const shopPaymentFrom = addUtcDays(utcDayKey(nowMs), -1);
-  const shopPaymentTo = utcDayKey(nowMs);
-  let shopPaymentPromise =
-    knownShopPayment === undefined ? undefined : Promise.resolve(knownShopPayment);
-  const readShopPayment = (): Promise<boolean> => {
-    shopPaymentPromise ??= walletTransfers.hasShopPayment(
-      account.id,
-      shopPaymentFrom,
-      shopPaymentTo,
-    );
-    return shopPaymentPromise;
+  let fundingPromise: Promise<Awaited<ReturnType<FundingStore['getByAccountId']>>> | undefined;
+  const fundingStore: Pick<FundingStore, 'getByAccountId'> = {
+    getByAccountId: (accountId) => {
+      fundingPromise ??= (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
+        accountId,
+      );
+      return fundingPromise;
+    },
   };
-  const cachedWalletTransfers: Pick<WalletTransferStore, 'hasShopPayment'> = {
-    hasShopPayment: () => readShopPayment(),
+  const shopMemo = shop ?? memoizedShopRequest(deps, account.id, nowMs);
+  const { dailyShop, transfers: cachedWalletTransfers, readShopSats } = shopMemo;
+  let shopMinimumPromise: Promise<number | null> | undefined;
+  const readShopMinimum = (): Promise<number | null> => {
+    shopMinimumPromise ??= (async () => {
+      const grant = await fundingStore.getByAccountId(account.id);
+      return storedDailyMinimum(deps, account, effectiveStatus(grant, nowMs), dailyShop);
+    })();
+    return shopMinimumPromise;
   };
   let payoutToday: FundingPayoutToday | null = null;
   if (!payoutReadFailed) {
@@ -432,7 +440,8 @@ async function ownerJson(
           auth: deps.store,
           transfers: cachedWalletTransfers,
           messages: deps.messages,
-          roster: deps.rosterStore ?? new InMemoryDailyRosterStore(),
+          roster: dailyShop.roster,
+          fxSpot: dailyShop.fxSpot,
           recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom ?? null,
         },
         account,
@@ -451,7 +460,8 @@ async function ownerJson(
   let shopPaymentDue: boolean | null = ownerFundingReadFailed ? null : inProgram;
   if (!ownerFundingReadFailed && inProgram) {
     try {
-      shopPaymentDue = !(await readShopPayment());
+      const minimum = await readShopMinimum();
+      shopPaymentDue = minimum === null || (await readShopSats()) < minimum;
     } catch {
       shopPaymentDue = null;
     }
@@ -462,6 +472,107 @@ async function ownerJson(
     grantPayoutToday: owner.funding === null ? payoutToday : null,
     walletViewerPublicKey: deps.walletViewerPublicKey ?? null,
   };
+}
+
+/** Memoized daily roster and stored spot reads for one owner response. */
+interface DailyShopStores {
+  roster: Pick<DailyRosterStore, 'get'>;
+  fxSpot: Pick<FxSpotStore, 'latest'>;
+}
+
+/** One request's memoized shop sum, roster, and stored-spot reads. */
+interface ShopRequestMemo {
+  dailyShop: DailyShopStores;
+  transfers: Pick<WalletTransferStore, 'hasShopPayment' | 'shopPaymentSats'>;
+  readShopSats: () => Promise<number>;
+}
+
+/**
+ * Build the shop reads for one `/me` request. The transfer sum, daily roster,
+ * and stored spot are each read at most once, including across a recovery-share
+ * ping and the owner JSON that follows it.
+ *
+ * @param deps - `/me` collaborators with optional transfers, roster, and spot.
+ * @param accountId - Paying account id.
+ * @param nowMs - Epoch milliseconds whose UTC day and preceding day are the window.
+ * @returns Memoized transfer, roster, and spot views for this request.
+ */
+function memoizedShopRequest(
+  deps: MeRouteDeps,
+  accountId: string,
+  nowMs: number,
+): ShopRequestMemo {
+  const walletTransfers = deps.walletTransfers ?? new InMemoryWalletTransferStore();
+  const dailyShop = memoizedDailyShopStores(deps);
+  const shopPaymentFrom = addUtcDays(utcDayKey(nowMs), -1);
+  const shopPaymentTo = utcDayKey(nowMs);
+  let shopSatsPromise: Promise<number> | undefined;
+  const readShopSats = (): Promise<number> => {
+    shopSatsPromise ??= walletTransfers.shopPaymentSats(
+      accountId,
+      shopPaymentFrom,
+      shopPaymentTo,
+    );
+    return shopSatsPromise;
+  };
+  return {
+    dailyShop,
+    transfers: {
+      hasShopPayment: async (_accountId, _from, _to, minSats = 1) =>
+        (await readShopSats()) >= minSats,
+      shopPaymentSats: () => readShopSats(),
+    },
+    readShopSats,
+  };
+}
+
+/**
+ * Wrap the live daily roster and stored spot stores so one request reads each
+ * at most once.
+ *
+ * @param deps - `/me` collaborators with the optional roster and spot stores.
+ * @returns Memoized store views; an omitted store contributes its empty
+ *   in-memory default, which fails closed because no spot is stored.
+ */
+function memoizedDailyShopStores(deps: MeRouteDeps): DailyShopStores {
+  const baseRoster = deps.rosterStore ?? new InMemoryDailyRosterStore();
+  const baseFxSpot = deps.fxSpotStore ?? new InMemoryFxSpotStore();
+  let rosterPromise: ReturnType<typeof baseRoster.get> | undefined;
+  let fxSpotPromise: ReturnType<typeof baseFxSpot.latest> | undefined;
+  return {
+    roster: {
+      get: () => (rosterPromise ??= baseRoster.get()),
+    },
+    fxSpot: {
+      latest: () => (fxSpotPromise ??= baseFxSpot.latest()),
+    },
+  };
+}
+
+/**
+ * The daily grant's required shop sats from the stored roster and spot.
+ *
+ * @param deps - `/me` collaborators with the optional roster and spot stores.
+ * @param account - Paying account.
+ * @param grantStatus - Effective daily grant status.
+ * @param dailyShop - Memoized roster and spot views for this request.
+ * @returns The required whole sats, or `null` when it cannot be computed.
+ * @throws Whatever the roster or spot store throws.
+ */
+async function storedDailyMinimum(
+  deps: MeRouteDeps,
+  account: Account,
+  grantStatus: SpendGrantStatus,
+  dailyShop: DailyShopStores,
+): Promise<number | null> {
+  const address = receivingAddress(account, deps.lnurlServer);
+  return dailyShopSatsRequiredForGrant({
+    roster: await dailyShop.roster.get(),
+    spotUsd: (await dailyShop.fxSpot.latest())?.rates.USD ?? null,
+    accountId: account.id,
+    ...(address === null ? {} : { address: address.address }),
+    grantStatus,
+  });
 }
 
 /**
@@ -476,32 +587,39 @@ async function ownerJson(
  * @param lnurlServer - LNURL server config (the share routes exist only with it).
  * @param account - The account, read before the share write.
  * @param nowMs - Clock of the share write.
+ * @param shop - Memoized shop sum, roster, and stored spot for this request.
  */
 async function pingAfterShareStored(
   deps: MeRouteDeps,
   lnurlServer: LnurlServerConfig,
   account: Account,
   nowMs: number,
-): Promise<boolean | undefined> {
+  shop: ShopRequestMemo,
+): Promise<void> {
   const spendPing = deps.spendPing;
   const requiredFrom = deps.recoveryShareRequiredFrom ?? null;
   if (spendPing === undefined || !recoveryShareRequired(nowMs, requiredFrom)) {
-    return undefined;
+    return;
   }
   try {
     const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
       account.id,
     );
-    const shopPaymentRecent =
-      deps.walletTransfers === undefined
-        ? undefined
-        : await deps.walletTransfers.hasShopPayment(
-            account.id,
-            addUtcDays(utcDayKey(nowMs), -1),
-            utcDayKey(nowMs),
-          );
-    if (!eligibleToday(account.role, grant, nowMs, true, requiredFrom, shopPaymentRecent ?? true)) {
-      return shopPaymentRecent;
+    const { dailyShop, transfers, readShopSats } = shop;
+    if (deps.walletTransfers !== undefined) {
+      const minimum = await storedDailyMinimum(
+        deps,
+        account,
+        effectiveStatus(grant, nowMs),
+        dailyShop,
+      );
+      const shopPaymentSats = await readShopSats();
+      if (minimum === null || shopPaymentSats < minimum) {
+        return;
+      }
+    }
+    if (!eligibleToday(account.role, grant, nowMs, true, requiredFrom, true)) {
+      return;
     }
     await pingTodayMedia(
       {
@@ -509,17 +627,17 @@ async function pingAfterShareStored(
         lnurlServer,
         messageStore: deps.messages,
         authStore: deps.store,
-        ...(deps.walletTransfers === undefined ? {} : { walletTransfers: deps.walletTransfers }),
+        ...(deps.walletTransfers === undefined ? {} : { walletTransfers: transfers }),
+        roster: dailyShop.roster,
+        fxSpot: dailyShop.fxSpot,
       },
       account,
       nowMs,
       effectiveStatus(grant, nowMs),
       false,
     );
-    return shopPaymentRecent;
   } catch {
     logEvent('funding.daily_ping.failed', { accountId: account.id });
-    return undefined;
   }
 }
 
@@ -1375,11 +1493,12 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           accountId: current.id,
           replaced: result === 'replaced',
         });
-        const shopPaymentRecent =
-          result === 'stored'
-            ? await pingAfterShareStored(deps, lnurlServer, current, nowMs)
-            : undefined;
-        return c.json(await ownerJson(deps, current, shopPaymentRecent), 200);
+        const shop =
+          result === 'stored' ? memoizedShopRequest(deps, current.id, nowMs) : undefined;
+        if (shop !== undefined) {
+          await pingAfterShareStored(deps, lnurlServer, current, nowMs, shop);
+        }
+        return c.json(await ownerJson(deps, current, shop), 200);
       } catch (error) {
         logEvent('account.recovery_share.failed', {
           accountId: account.id,

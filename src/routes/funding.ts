@@ -43,6 +43,7 @@ import {
   type DailyRosterPublic,
 } from '@/lib/daily-roster';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import { isStaffRole } from '@/lib/trust';
 import { normalizeUsername } from '@/lib/username';
@@ -84,6 +85,8 @@ export interface FundingRouteDeps {
    * Daily payout roster. Omitted → a fresh in-memory store.
    */
   rosterStore?: DailyRosterStore;
+  /** Stored BTC-USD spot for the daily grant's 50 % shop-spend minimum. */
+  fxSpotStore?: Pick<FxSpotStore, 'latest'>;
   /** Outbound gifts. Daily rows mark a payout day collected. */
   gifts: GiftStore;
   /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
@@ -794,7 +797,17 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         logEvent('funding.trial', { accountId: subject.id, actorId: staff.caller.id });
-        await pingTodayMedia(deps, subject, nowMs, effectiveStatus(grant, nowMs), true);
+        await pingTodayMedia(
+          {
+            ...deps,
+            ...(deps.rosterStore === undefined ? {} : { roster: deps.rosterStore }),
+            ...(deps.fxSpotStore === undefined ? {} : { fxSpot: deps.fxSpotStore }),
+          },
+          subject,
+          nowMs,
+          effectiveStatus(grant, nowMs),
+          true,
+        );
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {
         logEvent('funding.write.failed');
@@ -852,7 +865,17 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         }
         logEvent('funding.admitted', { accountId: subject.id, actorId: staff.caller.id });
         if (status === 'pending') {
-          await pingTodayMedia(deps, subject, nowMs, effectiveStatus(grant, nowMs), true);
+          await pingTodayMedia(
+            {
+              ...deps,
+              ...(deps.rosterStore === undefined ? {} : { roster: deps.rosterStore }),
+              ...(deps.fxSpotStore === undefined ? {} : { fxSpot: deps.fxSpotStore }),
+            },
+            subject,
+            nowMs,
+            effectiveStatus(grant, nowMs),
+            true,
+          );
         }
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {

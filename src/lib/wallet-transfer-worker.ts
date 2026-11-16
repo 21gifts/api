@@ -1,14 +1,15 @@
 /** Serialized background synchronization of every current and previous Spark wallet. */
 
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { pingTodayMedia, type TodayMediaPingDeps } from '@/lib/funding-ping';
-import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import { loadPayoutEligibility, type DailyShopMinimumDeps } from '@/lib/payout-eligibility';
 import { logEvent } from '@/lib/log';
 import { addUtcDays } from '@/lib/member-habit';
 import { bytesToHex } from '@/lib/nostr/kek';
+import { receivingAddress } from '@/lib/receiving-address';
 import type { SparkViewer, SparkViewerTransfer } from '@/lib/spark-viewer';
 import type { WalletStore } from '@/lib/wallet-store';
 import type {
@@ -366,35 +367,37 @@ async function syncWallet(
     successful.add(catchUpKey);
     let keepCatchUpClaim = false;
     try {
-      if (await deps.transfers.hasShopPayment(wallet.accountId, yesterday, today)) {
-        const account = await deps.auth.getAccount(wallet.accountId);
-        if (
-          account !== undefined &&
-          !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
-        ) {
-          const nowMs = deps.now();
-          const payout = await loadPayoutEligibility(
-            deps.funding,
-            deps.auth,
+      const account = await deps.auth.getAccount(wallet.accountId);
+      if (
+        account !== undefined &&
+        !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
+      ) {
+        const nowMs = deps.now();
+        const memo = catchUpMemo(deps, wallet.accountId, account, yesterday, today);
+        const payout = await loadPayoutEligibility(
+          deps.funding,
+          deps.auth,
+          account,
+          nowMs,
+          deps.ping.recoveryShareRequiredFrom ?? null,
+          memo.transfers,
+          today,
+          1,
+          memo.dailyShop,
+        );
+        if (payout.eligible) {
+          const result = await pingTodayMedia(
+            memo.ping,
             account,
             nowMs,
-            deps.ping.recoveryShareRequiredFrom ?? null,
-            deps.transfers,
+            effectiveStatus(payout.grant, nowMs),
+            true,
           );
-          if (payout.eligible) {
-            const result = await pingTodayMedia(
-              deps.ping,
-              account,
-              nowMs,
-              effectiveStatus(payout.grant, nowMs),
-              true,
-            );
-            if (result === 'failed') {
-              delayCatchUpRetry(retries, catchUpKey, nowMs);
-            } else if (result === 'sent') {
-              retries.delete(catchUpKey);
-              keepCatchUpClaim = true;
-            }
+          if (result === 'failed') {
+            delayCatchUpRetry(retries, catchUpKey, nowMs);
+          } else if (result === 'sent') {
+            retries.delete(catchUpKey);
+            keepCatchUpClaim = true;
           }
         }
       }
@@ -694,4 +697,69 @@ function shouldStopTransferPaging(page: {
 }): boolean {
   const rawCount = page.rawCount ?? page.transfers.length;
   return rawCount < WALLET_TRANSFER_PAGE_SIZE || page.offset < 0;
+}
+
+/**
+ * One memoized shop-spend read and daily-minimum store pair for a catch-up ping.
+ *
+ * @param deps - Worker collaborators.
+ * @param accountId - Paying account id.
+ * @param account - Paying account (the daily minimum needs its address).
+ * @param fromUtcDay - First window day.
+ * @param toUtcDay - Last window day.
+ * @returns Memoized views of the transfer sum, the daily roster and stored
+ *   spot, and the ping deps that reuse them.
+ */
+function catchUpMemo(
+  deps: WalletTransferWorkerDeps,
+  accountId: string,
+  account: Account,
+  fromUtcDay: string,
+  toUtcDay: string,
+): {
+  transfers: Pick<WalletTransferStore, 'hasShopPayment'>;
+  dailyShop: DailyShopMinimumDeps;
+  ping: TodayMediaPingDeps;
+} {
+  let sats: Promise<number> | undefined;
+  const readSats = (): Promise<number> =>
+    (sats ??= deps.transfers.shopPaymentSats(accountId, fromUtcDay, toUtcDay));
+  const transfers: Pick<WalletTransferStore, 'hasShopPayment'> = {
+    hasShopPayment: async (_id, _from, _to, minSats = 1) => (await readSats()) >= minSats,
+  };
+  let rosterRead:
+    | Promise<Awaited<ReturnType<NonNullable<TodayMediaPingDeps['roster']>['get']>>>
+    | undefined;
+  const roster = deps.ping.roster;
+  const rosterView =
+    roster === undefined
+      ? undefined
+      : {
+          get: () => (rosterRead ??= roster.get()),
+        };
+  let spotRead:
+    | Promise<Awaited<ReturnType<NonNullable<TodayMediaPingDeps['fxSpot']>['latest']>>>
+    | undefined;
+  const fxSpot = deps.ping.fxSpot;
+  const spotView =
+    fxSpot === undefined
+      ? undefined
+      : {
+          latest: () => (spotRead ??= fxSpot.latest()),
+        };
+  const address = receivingAddress(account, deps.ping.lnurlServer);
+  return {
+    transfers,
+    dailyShop: {
+      ...(rosterView === undefined ? {} : { roster: rosterView }),
+      ...(spotView === undefined ? {} : { fxSpot: spotView }),
+      ...(address === null ? {} : { address: address.address }),
+    },
+    ping: {
+      ...deps.ping,
+      ...(rosterView === undefined ? {} : { roster: rosterView }),
+      ...(spotView === undefined ? {} : { fxSpot: spotView }),
+      walletTransfers: transfers,
+    },
+  };
 }

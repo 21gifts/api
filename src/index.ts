@@ -305,6 +305,8 @@ if (import.meta.main) {
             authStore,
             recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
             walletTransfers: walletTransferStore,
+            roster: rosterStore,
+            fxSpot: fxSpotStore,
           },
           now: Date.now,
         });
@@ -418,6 +420,8 @@ if (import.meta.main) {
     ...(spendPing === undefined ? {} : { spendPing }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
     ...(walletTransferStore === undefined ? {} : { walletTransfers: walletTransferStore }),
+    roster: rosterStore,
+    fxSpot: fxSpotStore,
     fiatRates,
     ...(lnurlServer === undefined ? {} : { lnurlServer }),
   };
@@ -492,6 +496,8 @@ if (import.meta.main) {
           conversationStore,
           fundingStore: appFundingStore,
           ...(walletTransferStore === undefined ? {} : { walletTransfers: walletTransferStore }),
+          rosterStore,
+          fxSpotStore,
           recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
           gifts: appGiftStore,
           giftStore: appGiftStore,

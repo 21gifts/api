@@ -33,6 +33,7 @@ import {
   walletLnurlFetch,
 } from '@/__tests__/helpers/wallet-lnurl';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -73,7 +74,9 @@ function fakeWalletTransferStore(shopPayment = true): WalletTransferStore {
     }),
     upsertTokenTransaction: async () => undefined,
     markFullSync: async () => undefined,
-    hasShopPayment: async () => shopPayment,
+    hasShopPayment: async (_id, _from, _to, minSats = 1) =>
+      (shopPayment ? 500 : 0) >= minSats,
+    shopPaymentSats: async () => (shopPayment ? 500 : 0),
   };
 }
 
@@ -105,11 +108,21 @@ function actionDeps(overrides: Partial<GiftActionDeps> = {}): GiftActionDeps {
     lnurlServer: LNURL_SERVER,
     conversationStore: new InMemoryConversationStore(),
     fundingStore: admittedStore(),
+    fxSpotStore: dailySpot(),
     recoveryShareRequiredFrom: null,
     gifts: giftStore,
     giftStore,
     ...overrides,
   };
+}
+
+/** One stored spot, so daily payouts can compute their 50 % minimum. */
+function dailySpot(): InMemoryFxSpotStore {
+  return new InMemoryFxSpotStore({
+    asOf: '2026-09-15T00:00:00.000Z',
+    source: 'test',
+    rates: { USD: '100000' },
+  });
 }
 
 /** Gift recorder that keeps every recorded row. */

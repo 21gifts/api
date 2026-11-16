@@ -37,9 +37,11 @@ import {
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
-import { effectiveStatus } from '@/lib/funding';
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
+import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import { latestTodayMediaPostId } from '@/lib/funding-ping';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { notifyForumPost, notifyForumReply, notifyHeart, notifyZap } from '@/lib/notification';
@@ -631,6 +633,8 @@ export async function settleInvoiceManually(args: {
   replyLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
   walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+  roster?: Pick<DailyRosterStore, 'get'>;
+  fxSpot?: Pick<FxSpotStore, 'latest'>;
   recoveryShareRequiredFrom?: string | null;
   conversations?: ConversationStore;
   lnurlServer?: LnurlServerConfig;
@@ -924,6 +928,8 @@ export async function settleInvoiceManually(args: {
           ? {}
           : { notificationStore: args.notificationStore }),
         ...(args.spendPing === undefined ? {} : { spendPing: args.spendPing }),
+        ...(args.roster === undefined ? {} : { roster: args.roster }),
+        ...(args.fxSpot === undefined ? {} : { fxSpot: args.fxSpot }),
         ...(args.postLimiter === undefined ? {} : { postLimiter: args.postLimiter }),
         ...(args.replyLimiter === undefined ? {} : { replyLimiter: args.replyLimiter }),
         ...(args.fundingStore === undefined ? {} : { fundingStore: args.fundingStore }),
@@ -1379,6 +1385,8 @@ export async function indexOpenZapReceipts(args: {
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
   walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+  roster?: Pick<DailyRosterStore, 'get'>;
+  fxSpot?: Pick<FxSpotStore, 'latest'>;
   recoveryShareRequiredFrom?: string | null;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
@@ -1508,6 +1516,8 @@ async function queryAndIngestZapReceipts(
     replyLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
     walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+    roster?: Pick<DailyRosterStore, 'get'>;
+    fxSpot?: Pick<FxSpotStore, 'latest'>;
     recoveryShareRequiredFrom?: string | null;
     fiatRates?: FiatRateBook;
     /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
@@ -1625,6 +1635,8 @@ async function ingestOneReceipt(
     replyLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
     walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+    roster?: Pick<DailyRosterStore, 'get'>;
+    fxSpot?: Pick<FxSpotStore, 'latest'>;
     recoveryShareRequiredFrom?: string | null;
     /** Optional crosses. Absent means the spot snapshot uses empty crosses. */
     fiatRates?: FiatRateBook;
@@ -2412,6 +2424,8 @@ interface BaseGiftReplyDeps {
   replyLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
   walletTransfers?: Pick<WalletTransferStore, 'hasShopPayment'>;
+  roster?: Pick<DailyRosterStore, 'get'>;
+  fxSpot?: Pick<FxSpotStore, 'latest'>;
   recoveryShareRequiredFrom?: string | null;
   lnurlServer?: LnurlServerConfig;
 }
@@ -2986,6 +3000,13 @@ async function insertGiftReply(
         args.now(),
         args.recoveryShareRequiredFrom ?? null,
         args.walletTransfers,
+        utcDayKey(args.now()),
+        undefined,
+        {
+          ...(args.roster === undefined ? {} : { roster: args.roster }),
+          ...(args.fxSpot === undefined ? {} : { fxSpot: args.fxSpot }),
+          address: spendAddress,
+        },
       );
       if (!eligible) {
         logEvent('spend.ping.skipped', { reason: reason ?? 'not_eligible' });
