@@ -73,6 +73,7 @@ describe('runWalletTransferTick', () => {
       },
       upsertTokenTransaction: vi.fn(async () => undefined),
       markFullSync: vi.fn(async () => undefined),
+      shopPaymentSats: vi.fn(async () => 500),
       hasShopPayment: vi.fn(async () => true),
     };
     const transfers = vi
@@ -152,6 +153,10 @@ describe('runWalletTransferTick', () => {
         },
         authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
         walletTransfers: transferStore,
+        roster: {
+          get: async () => ({ paymentsEnabled: true, recipients: [] }) as never,
+        },
+        fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       },
       now: () => NOW,
     });
@@ -210,6 +215,10 @@ describe('runWalletTransferTick', () => {
         },
         authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
         walletTransfers: transferStore,
+        roster: {
+          get: async () => ({ paymentsEnabled: true, recipients: [] }) as never,
+        },
+        fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       },
       now: () => NOW,
     });
@@ -222,6 +231,7 @@ describe('runWalletTransferTick', () => {
     const upsertTokenTransaction = vi.fn(async () => undefined);
     const markFullSync = vi.fn(async () => undefined);
     const hasShopPayment = vi.fn(async () => true);
+    const shopPaymentSats = vi.fn(async () => 500);
     const recordBalance = vi.fn(async () => undefined);
     const balance = vi.fn(async () => 34);
     const ping = vi.fn(async () => undefined);
@@ -291,6 +301,7 @@ describe('runWalletTransferTick', () => {
         upsertTokenTransaction,
         markFullSync,
         hasShopPayment,
+        shopPaymentSats,
       },
       balances: { recordBalance },
       auth: {
@@ -330,6 +341,10 @@ describe('runWalletTransferTick', () => {
         },
         authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
         walletTransfers: { hasShopPayment },
+        roster: {
+          get: async () => ({ paymentsEnabled: true, recipients: [] }) as never,
+        },
+        fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       },
       now: () => NOW,
     };
@@ -356,7 +371,7 @@ describe('runWalletTransferTick', () => {
     finishLate({ transactions: [resolvedTransaction], done: true });
     await vi.advanceTimersByTimeAsync(0);
     expect((await runWalletTransferTick(deps)).size).toBe(0);
-    expect(hasShopPayment).toHaveBeenCalled();
+    expect(shopPaymentSats).toHaveBeenCalled();
     expect(ping).toHaveBeenCalledOnce();
     expect(balance).toHaveBeenCalledTimes(3);
     expect(recordBalance).toHaveBeenCalledTimes(3);
@@ -426,6 +441,7 @@ describe('runWalletTransferTick', () => {
         }),
         upsertTokenTransaction: noTokenWrite,
         markFullSync,
+        shopPaymentSats: async () => 0,
         hasShopPayment: async () => false,
       },
       balances: { recordBalance: async () => undefined },
@@ -466,6 +482,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 0,
       hasShopPayment: async () => false,
     };
     const base = {
@@ -524,6 +541,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync,
+      shopPaymentSats: async () => 500,
       hasShopPayment: async () => true,
     };
     const account = {
@@ -593,6 +611,10 @@ describe('runWalletTransferTick', () => {
         },
         authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
         walletTransfers: store,
+        roster: {
+          get: async () => ({ paymentsEnabled: true, recipients: [] }) as never,
+        },
+        fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       },
       now: () => now,
     };
@@ -646,6 +668,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 500,
       hasShopPayment: async () => true,
     };
     return {
@@ -686,6 +709,10 @@ describe('runWalletTransferTick', () => {
         },
         authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
         walletTransfers: store,
+        roster: {
+          get: async () => ({ paymentsEnabled: true, recipients: [] }) as never,
+        },
+        fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       },
       now,
     };
@@ -707,6 +734,64 @@ describe('runWalletTransferTick', () => {
 
     expect((await runWalletTransferTick(deps)).size).toBe(0);
     expect(ping).toHaveBeenCalledOnce();
+  });
+
+  it('reads the catch-up shop sum, roster, and stored spot once for one payout decision', async () => {
+    const ping = vi.fn(async () => ({ status: 'accepted' as const }));
+    const deps = catchUpTestDeps(() => NOW, ping);
+    const shopPaymentSats = vi.fn(async () => 500);
+    const getRoster = vi.fn(async () => ({ paymentsEnabled: true, recipients: [] }) as never);
+    const latestSpot = vi.fn(async () => ({ rates: { USD: '100000' } }) as never);
+    deps.transfers.shopPaymentSats = shopPaymentSats;
+    deps.ping.roster = { get: getRoster };
+    deps.ping.fxSpot = { latest: latestSpot };
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+
+    expect(ping).toHaveBeenCalledOnce();
+    expect(shopPaymentSats).toHaveBeenCalledOnce();
+    expect(getRoster).toHaveBeenCalledOnce();
+    expect(latestSpot).toHaveBeenCalledOnce();
+  });
+
+  it('fails a catch-up ping closed when the roster or stored spot is omitted', async () => {
+    const ping = vi.fn(async () => ({ status: 'accepted' as const }));
+    const deps = catchUpTestDeps(() => NOW, ping);
+    const shopPaymentSats = vi.fn(async () => 500);
+    deps.transfers.shopPaymentSats = shopPaymentSats;
+    delete deps.ping.roster;
+    delete deps.ping.fxSpot;
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+
+    expect(ping).not.toHaveBeenCalled();
+    expect(shopPaymentSats).toHaveBeenCalledOnce();
+  });
+
+  it('does not ping when the shop sum is below half the daily grant', async () => {
+    const ping = vi.fn(async () => ({ status: 'accepted' as const }));
+    const deps = catchUpTestDeps(() => NOW, ping);
+    deps.transfers.shopPaymentSats = vi.fn(async () => 499);
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('skips the account and gift reads when the window has no shop payment', async () => {
+    const ping = vi.fn(async () => ({ status: 'accepted' as const }));
+    const deps = catchUpTestDeps(() => NOW, ping);
+    const getAccount = vi.fn(deps.auth.getAccount);
+    const listOutbound = vi.fn(async () => []);
+    deps.transfers.shopPaymentSats = vi.fn(async () => 0);
+    deps.auth = { ...deps.auth, getAccount };
+    deps.gifts = { listOutbound } as never;
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+
+    expect(ping).not.toHaveBeenCalled();
+    expect(getAccount).not.toHaveBeenCalled();
+    expect(listOutbound).not.toHaveBeenCalled();
   });
 
   it('drops a previous UTC day catch-up retry before attempting the new day', async () => {
@@ -778,6 +863,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: vi.fn(async () => 500),
       hasShopPayment: vi.fn(async () => true),
     };
     const account = {
@@ -831,6 +917,10 @@ describe('runWalletTransferTick', () => {
         },
         authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
         walletTransfers: store,
+        roster: {
+          get: async () => ({ paymentsEnabled: true, recipients: [] }) as never,
+        },
+        fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       },
       now: () => now,
     };
@@ -874,6 +964,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 500,
       hasShopPayment: async () => true,
     };
     const account = {
@@ -924,6 +1015,10 @@ describe('runWalletTransferTick', () => {
         },
         authStore: { hasRecoveryShareForVerifiedWallet: async () => true },
         walletTransfers: store,
+        roster: {
+          get: async () => ({ paymentsEnabled: true, recipients: [] }) as never,
+        },
+        fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) as never },
       },
       now: () => NOW,
     });
@@ -1142,6 +1237,7 @@ describe('runWalletTransferTick', () => {
       },
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 0,
       hasShopPayment: async () => false,
     };
     const recordBalance = vi.fn(async () => undefined);
@@ -1265,6 +1361,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 0,
       hasShopPayment: async () => false,
     };
     const transfers = vi.fn(async () => ({ transfers: [transfer()], offset: -1, rawCount: 1 }));
@@ -1312,6 +1409,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 0,
       hasShopPayment: async () => false,
     };
     const failed = await runWalletTransferTick({
@@ -1357,6 +1455,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 0,
       hasShopPayment: async () => false,
     };
     const base = {
@@ -1427,6 +1526,7 @@ describe('runWalletTransferTick', () => {
       }),
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 0,
       hasShopPayment: async () => false,
     };
     const pending = runWalletTransferTick({
@@ -1509,6 +1609,7 @@ describe('startWalletTransferWorker', () => {
       })),
       upsertTokenTransaction: vi.fn(noTokenWrite),
       markFullSync: vi.fn(noFullSyncWrite),
+      shopPaymentSats: vi.fn(async () => 0),
       hasShopPayment: vi.fn(async () => false),
     };
     const handle = startWalletTransferWorker({
@@ -1573,6 +1674,7 @@ describe('startWalletTransferWorker', () => {
           }),
           upsertTokenTransaction: noTokenWrite,
           markFullSync: noFullSyncWrite,
+          shopPaymentSats: async () => 0,
           hasShopPayment: async () => false,
         },
         balances: { recordBalance: async () => undefined },
@@ -1631,6 +1733,7 @@ describe('startWalletTransferWorker', () => {
           }),
           upsertTokenTransaction: noTokenWrite,
           markFullSync: noFullSyncWrite,
+          shopPaymentSats: async () => 0,
           hasShopPayment: async () => false,
         },
         balances: { recordBalance: async () => undefined },
@@ -1690,6 +1793,7 @@ describe('startWalletTransferWorker', () => {
           }),
           upsertTokenTransaction: noTokenWrite,
           markFullSync: noFullSyncWrite,
+          shopPaymentSats: async () => 0,
           hasShopPayment: async () => false,
         },
         balances: { recordBalance: async () => undefined },
@@ -1746,6 +1850,7 @@ describe('startWalletTransferWorker', () => {
           }),
           upsertTokenTransaction: noTokenWrite,
           markFullSync: noFullSyncWrite,
+          shopPaymentSats: async () => 0,
           hasShopPayment: async () => false,
         },
         balances: { recordBalance: async () => undefined },
@@ -1805,6 +1910,7 @@ describe('wallet transfer worker edge decisions', () => {
       },
       upsertTokenTransaction: noTokenWrite,
       markFullSync: noFullSyncWrite,
+      shopPaymentSats: async () => 0,
       hasShopPayment: async () => false,
     };
     const failed = await runWalletTransferTick({
@@ -2118,6 +2224,7 @@ describe('startWalletTransferWorker readNow', () => {
       })),
       upsertTokenTransaction: vi.fn(noTokenWrite),
       markFullSync: vi.fn(noFullSyncWrite),
+      shopPaymentSats: vi.fn(async () => 0),
       hasShopPayment: vi.fn(async () => false),
     };
     const handle = startWalletTransferWorker({

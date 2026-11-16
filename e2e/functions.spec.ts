@@ -5172,3 +5172,27 @@ test('Function: loadFundingPayoutToday — GET /me exposes one payout explanatio
     grantPayoutToday: { state: 'blocked', reason: 'verify' },
   });
 });
+
+test('Function: dailyShopSatsRequired — default member stops at verify before the shop minimum', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  expect(await me.json()).toMatchObject({
+    funding: null,
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
+});
+
+test('Function: dailyShopSatsRequiredForGrant — default member stops at verify before the roster amount', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  expect(await me.json()).toMatchObject({
+    funding: null,
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
+});

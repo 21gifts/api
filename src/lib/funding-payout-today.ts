@@ -3,13 +3,20 @@
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { roleAtLeast } from '@/lib/auth/roles';
 import type { DailyRosterStore } from '@/lib/daily-roster-store';
-import { inGrantProgramToday, recoveryShareRequired, utcDayKey } from '@/lib/funding';
+import {
+  effectiveStatus,
+  inGrantProgramToday,
+  recoveryShareRequired,
+  utcDayKey,
+} from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 import type { GiftRow } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { latestTodayMediaPostId } from '@/lib/funding-ping';
 import { addUtcDays } from '@/lib/member-habit';
 import type { MessageStore } from '@/lib/message-store';
+import { dailyShopSatsRequiredForGrant } from '@/lib/shop-spend-minimum';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
 import { isWelcomeRecipient } from '@/lib/welcome-media';
 
@@ -38,6 +45,8 @@ export interface FundingPayoutTodayDeps {
   transfers: Pick<WalletTransferStore, 'hasShopPayment'>;
   messages: Pick<MessageStore, 'latestLiveTopLevelMediaId' | 'getById'>;
   roster: Pick<DailyRosterStore, 'get'>;
+  /** Stored BTC-USD spot for the daily grant's 50 % shop-spend minimum. */
+  fxSpot: Pick<FxSpotStore, 'latest'>;
   recoveryShareRequiredFrom: string | null;
 }
 
@@ -113,13 +122,25 @@ export async function loadFundingPayoutToday(
   ) {
     return { state: 'blocked', reason: 'recovery_share' };
   }
-  if (!(await deps.transfers.hasShopPayment(account.id, addUtcDays(today, -1), today))) {
+  const roster = await deps.roster.get();
+  const spot = await deps.fxSpot.latest();
+  // The paused switch is reported last; the minimum does not depend on it.
+  const minimum = dailyShopSatsRequiredForGrant({
+    roster,
+    spot,
+    accountId: account.id,
+    grantStatus: effectiveStatus(grant, nowMs),
+  });
+  if (
+    minimum === null ||
+    !(await deps.transfers.hasShopPayment(account.id, addUtcDays(today, -1), today, minimum))
+  ) {
     return { state: 'blocked', reason: 'shop_payment' };
   }
   if ((await latestTodayMediaPostId(deps.messages, account.id, nowMs)) === null) {
     return { state: 'blocked', reason: 'media_post' };
   }
-  if (!(await deps.roster.get()).paymentsEnabled) {
+  if (!roster.paymentsEnabled) {
     return { state: 'due', reason: 'payments_paused' };
   }
   return { state: 'due', reason: null };

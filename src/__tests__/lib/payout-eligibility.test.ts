@@ -60,6 +60,194 @@ async function load(
 }
 
 describe('loadPayoutEligibility', () => {
+  it('passes an explicit minimum through to the shop sum', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        GATE_DAY,
+        500,
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: true });
+    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-30', '2026-10-01', 500);
+  });
+
+  it('keeps the 1-sat minimum for a moderator payout', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'moderator' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: true });
+    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-30', '2026-10-01', 1);
+  });
+
+  it('takes half the daily grant from the roster and never fetches a spot', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    const roster = { get: vi.fn(async () => ({ paymentsEnabled: true, recipients: [] })) };
+    const fxSpot = { latest: vi.fn(async () => ({ rates: { USD: '100000' } })) };
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        GATE_DAY,
+        1,
+        { roster: roster as never, fxSpot: fxSpot as never },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: true });
+    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-30', '2026-10-01', 500);
+    expect(roster.get).toHaveBeenCalledOnce();
+    expect(fxSpot.latest).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed when the daily minimum cannot be computed', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        GATE_DAY,
+        1,
+        { roster: { get: async () => ({ paymentsEnabled: true, recipients: [] }) } as never },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: false, reason: 'no_shop_payment' });
+    expect(hasShopPayment).not.toHaveBeenCalled();
+  });
+
+  it('matches a daily roster row by the recipient address', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        GATE_DAY,
+        1,
+        {
+          roster: {
+            get: async () =>
+              ({
+                paymentsEnabled: true,
+                recipients: [{ address: 'ada@example.test', amountUsd: 2 }],
+              }) as never,
+          },
+          fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) as never },
+          address: 'ada@example.test',
+        },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: true });
+    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-30', '2026-10-01', 1000);
+  });
+
+  it('fails closed without a roster or spot for a daily payout', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        GATE_DAY,
+        1,
+        { fxSpot: { latest: async () => ({ rates: { USD: '100000' } }) } as never },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: false, reason: 'no_shop_payment' });
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        GATE_DAY,
+        1,
+        { roster: { get: async () => ({ paymentsEnabled: true, recipients: [] }) } as never },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: false, reason: 'no_shop_payment' });
+    expect(hasShopPayment).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the stored spot store has no quote', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    const roster = {
+      get: vi.fn(async () => ({ paymentsEnabled: true, recipients: [] })),
+    };
+    const fxSpot = { latest: vi.fn(async () => null) };
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        GATE_DAY,
+        1,
+        { roster: roster as never, fxSpot: fxSpot as never },
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: false, reason: 'no_shop_payment' });
+    expect(roster.get).toHaveBeenCalledOnce();
+    expect(fxSpot.latest).toHaveBeenCalledOnce();
+    expect(hasShopPayment).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for an explicit null minimum', async () => {
+    const admitted = grant();
+    const s = stores(admitted, true);
+    const hasShopPayment = vi.fn(async () => true);
+    await expect(
+      loadPayoutEligibility(
+        s.fundingStore,
+        s.auth,
+        { id: 'acc', role: 'verified' },
+        GATE_MS,
+        GATE_DAY,
+        { hasShopPayment },
+        GATE_DAY,
+        null,
+      ),
+    ).resolves.toEqual({ grant: admitted, eligible: false, reason: 'no_shop_payment' });
+    expect(hasShopPayment).not.toHaveBeenCalled();
+  });
+
   it('lazily reads the recent shop payment and returns its refusal reason', async () => {
     const admitted = grant();
     const s = stores(admitted, true);
@@ -74,7 +262,7 @@ describe('loadPayoutEligibility', () => {
         { hasShopPayment },
       ),
     ).resolves.toEqual({ grant: admitted, eligible: false, reason: 'no_shop_payment' });
-    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-30', '2026-10-01');
+    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-30', '2026-10-01', 1);
   });
 
   it('uses an explicit booked UTC day for a historical payout payment window', async () => {
@@ -92,7 +280,7 @@ describe('loadPayoutEligibility', () => {
         '2026-09-29',
       ),
     ).resolves.toEqual({ grant: admitted, eligible: true });
-    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-28', '2026-09-29');
+    expect(hasShopPayment).toHaveBeenCalledWith('acc', '2026-09-28', '2026-09-29', 1);
   });
 
   it('does not read shop transfers when the grant already refuses', async () => {

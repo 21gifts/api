@@ -1,14 +1,15 @@
 /** Serialized background synchronization of every current and previous Spark wallet. */
 
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { pingTodayMedia, type TodayMediaPingDeps } from '@/lib/funding-ping';
-import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import { loadPayoutEligibility, type DailyShopMinimumDeps } from '@/lib/payout-eligibility';
 import { logEvent } from '@/lib/log';
 import { addUtcDays } from '@/lib/member-habit';
 import { bytesToHex } from '@/lib/nostr/kek';
+import { receivingAddress } from '@/lib/receiving-address';
 import type { SparkViewer, SparkViewerTransfer } from '@/lib/spark-viewer';
 import type { WalletStore } from '@/lib/wallet-store';
 import type {
@@ -366,24 +367,31 @@ async function syncWallet(
     successful.add(catchUpKey);
     let keepCatchUpClaim = false;
     try {
-      if (await deps.transfers.hasShopPayment(wallet.accountId, yesterday, today)) {
+      // Every daily minimum is at least 1 sat, so a window without any shop
+      // payment skips the account and gift reads.
+      const shopPayments = memoizedShopPayments(deps.transfers);
+      if (await shopPayments.hasShopPayment(wallet.accountId, yesterday, today)) {
         const account = await deps.auth.getAccount(wallet.accountId);
         if (
           account !== undefined &&
           !(await hasRecordedPayoutToday(deps.gifts, account.username, today))
         ) {
           const nowMs = deps.now();
+          const memo = catchUpMemo(deps, account, shopPayments);
           const payout = await loadPayoutEligibility(
             deps.funding,
             deps.auth,
             account,
             nowMs,
             deps.ping.recoveryShareRequiredFrom ?? null,
-            deps.transfers,
+            shopPayments,
+            today,
+            1,
+            memo.dailyShop,
           );
           if (payout.eligible) {
             const result = await pingTodayMedia(
-              deps.ping,
+              memo.ping,
               account,
               nowMs,
               effectiveStatus(payout.grant, nowMs),
@@ -694,4 +702,78 @@ function shouldStopTransferPaging(page: {
 }): boolean {
   const rawCount = page.rawCount ?? page.transfers.length;
   return rawCount < WALLET_TRANSFER_PAGE_SIZE || page.offset < 0;
+}
+
+/**
+ * Shop-payment checks that read the summed sats of each account and window
+ * once, however many minimums are compared against it.
+ *
+ * @param store - Transfer store that sums qualifying shop payments.
+ * @returns A `hasShopPayment` view over memoized sums.
+ */
+function memoizedShopPayments(
+  store: Pick<WalletTransferStore, 'shopPaymentSats'>,
+): Pick<WalletTransferStore, 'hasShopPayment'> {
+  const sums = new Map<string, Promise<number>>();
+  return {
+    hasShopPayment: async (accountId, fromUtcDay, toUtcDay, minSats = 1) => {
+      const key = `${accountId}\u0000${fromUtcDay}\u0000${toUtcDay}`;
+      let sum = sums.get(key);
+      if (sum === undefined) {
+        sum = store.shopPaymentSats(accountId, fromUtcDay, toUtcDay);
+        sums.set(key, sum);
+      }
+      return (await sum) >= minSats;
+    },
+  };
+}
+
+/**
+ * Memoized daily roster and stored spot views for one catch-up ping.
+ *
+ * @param deps - Worker collaborators.
+ * @param account - Paying account (the daily minimum needs its address).
+ * @param transfers - Memoized shop-payment checks for this sync.
+ * @returns The daily-minimum collaborators and the ping deps that reuse them.
+ */
+function catchUpMemo(
+  deps: WalletTransferWorkerDeps,
+  account: Account,
+  transfers: Pick<WalletTransferStore, 'hasShopPayment'>,
+): {
+  dailyShop: DailyShopMinimumDeps;
+  ping: TodayMediaPingDeps;
+} {
+  let rosterRead:
+    Promise<Awaited<ReturnType<NonNullable<TodayMediaPingDeps['roster']>['get']>>> | undefined;
+  const roster = deps.ping.roster;
+  const rosterView =
+    roster === undefined
+      ? undefined
+      : {
+          get: () => (rosterRead ??= roster.get()),
+        };
+  let spotRead:
+    Promise<Awaited<ReturnType<NonNullable<TodayMediaPingDeps['fxSpot']>['latest']>>> | undefined;
+  const fxSpot = deps.ping.fxSpot;
+  const spotView =
+    fxSpot === undefined
+      ? undefined
+      : {
+          latest: () => (spotRead ??= fxSpot.latest()),
+        };
+  const address = receivingAddress(account, deps.ping.lnurlServer);
+  return {
+    dailyShop: {
+      ...(rosterView === undefined ? {} : { roster: rosterView }),
+      ...(spotView === undefined ? {} : { fxSpot: spotView }),
+      ...(address === null ? {} : { address: address.address }),
+    },
+    ping: {
+      ...deps.ping,
+      ...(rosterView === undefined ? {} : { roster: rosterView }),
+      ...(spotView === undefined ? {} : { fxSpot: spotView }),
+      walletTransfers: transfers,
+    },
+  };
 }

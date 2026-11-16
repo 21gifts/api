@@ -4,6 +4,8 @@ import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { pingTodayMedia, type TodayMediaPingDeps } from '@/lib/funding-ping';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import { InMemoryDailyRosterStore } from '@/lib/daily-roster-store';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER, WALLET_PUBKEY, createWalletAccount } from '@/__tests__/helpers/wallet-lnurl';
@@ -278,6 +280,12 @@ describe('pingTodayMedia', () => {
       {
         ...deps(authStore, messageStore, ping),
         walletTransfers: { hasShopPayment: async () => false },
+        roster: new InMemoryDailyRosterStore(),
+        fxSpot: new InMemoryFxSpotStore({
+          asOf: '2026-11-01T00:00:00.000Z',
+          source: 'test',
+          rates: { USD: '100000' },
+        }),
       },
       account,
       GATE_MS,
@@ -285,6 +293,82 @@ describe('pingTodayMedia', () => {
       true,
     );
     expect(latest).not.toHaveBeenCalled();
+    expect(ping).not.toHaveBeenCalled();
+    expect(events()).toEqual([
+      expect.objectContaining({ event: 'spend.ping.skipped', reason: 'no_shop_payment' }),
+    ]);
+  });
+
+  it('requires half the daily grant in shop sats', async () => {
+    const { authStore, account } = await member({ share: true });
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, PHOTO_A, new Date(GATE_MS));
+    const ping = vi.fn(async () => undefined);
+    const hasShopPayment = vi.fn(
+      async (_accountId: string, _from: string, _to: string, minSats = 1) => minSats <= 500,
+    );
+    await pingTodayMedia(
+      {
+        ...deps(authStore, messageStore, ping),
+        walletTransfers: { hasShopPayment },
+        roster: new InMemoryDailyRosterStore(),
+        fxSpot: new InMemoryFxSpotStore({
+          asOf: '2026-11-01T00:00:00.000Z',
+          source: 'test',
+          rates: { USD: '100000' },
+        }),
+      },
+      account,
+      GATE_MS,
+      'admitted',
+      true,
+    );
+    expect(hasShopPayment).toHaveBeenCalledWith(ACCOUNT_ID, '2026-09-30', '2026-10-01', 500);
+    expect(ping).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed with a roster but no stored spot', async () => {
+    const { authStore, account } = await member({ share: true });
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, PHOTO_A, new Date(GATE_MS));
+    const ping = vi.fn(async () => undefined);
+    const hasShopPayment = vi.fn(
+      async (_accountId: string, _from: string, _to: string, minSats = 1) => minSats <= 500,
+    );
+    await pingTodayMedia(
+      {
+        ...deps(authStore, messageStore, ping),
+        walletTransfers: { hasShopPayment },
+        roster: new InMemoryDailyRosterStore(),
+      },
+      account,
+      GATE_MS,
+      'admitted',
+      true,
+    );
+    expect(hasShopPayment).not.toHaveBeenCalled();
+    expect(ping).not.toHaveBeenCalled();
+    expect(events()).toEqual([
+      expect.objectContaining({ event: 'spend.ping.skipped', reason: 'no_shop_payment' }),
+    ]);
+  });
+
+  it('fails closed without roster or spot', async () => {
+    const { authStore, account } = await member({ share: true });
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, PHOTO_A, new Date(GATE_MS));
+    const ping = vi.fn(async () => undefined);
+    const hasShopPayment = vi.fn(
+      async (_accountId: string, _from: string, _to: string, minSats = 1) => minSats <= 500,
+    );
+    await pingTodayMedia(
+      { ...deps(authStore, messageStore, ping), walletTransfers: { hasShopPayment } },
+      account,
+      GATE_MS,
+      'admitted',
+      true,
+    );
+    expect(hasShopPayment).not.toHaveBeenCalled();
     expect(ping).not.toHaveBeenCalled();
     expect(events()).toEqual([
       expect.objectContaining({ event: 'spend.ping.skipped', reason: 'no_shop_payment' }),
