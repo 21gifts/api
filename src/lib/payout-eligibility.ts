@@ -60,7 +60,7 @@ export interface DailyShopMinimumDeps {
  *   whenever it cannot be computed, so the payout fails closed.
  * @returns The stored grant (for `effectiveStatus`) and {@link eligibleToday}
  *   with the share fact.
- * @throws Whatever either store throws.
+ * @throws Whatever the funding, auth, roster, spot, or transfer store throws.
  */
 export async function loadPayoutEligibility(
   fundingStore: Pick<FundingStore, 'getByAccountId'>,

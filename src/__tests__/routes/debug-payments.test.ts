@@ -1483,7 +1483,9 @@ describe('debugPaymentsRoutes', () => {
         recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
         walletTransfers: {
-          hasShopPayment: async (_id, _from, _to, minSats = 1) => minSats <= 500,
+          // Only the daily minimum of the 1 USD default grant at 100 000 USD/BTC
+          // passes, so a call that dropped the 50 % minimum fails the test.
+          hasShopPayment: async (_id, _from, _to, minSats = 1) => minSats === 500,
         },
         rosterStore: { get: async () => ({ paymentsEnabled: true, recipients: [] }) as never },
         fxSpotStore: { latest: async () => ({ rates: { USD: '100000' } }) as never },
@@ -1591,7 +1593,9 @@ describe('debugPaymentsRoutes', () => {
         recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
         walletTransfers: {
-          hasShopPayment: async (_id, _from, _to, minSats = 1) => minSats <= 500,
+          // Only the daily minimum of the 1 USD default grant at 100 000 USD/BTC
+          // passes, so a call that dropped the 50 % minimum fails the test.
+          hasShopPayment: async (_id, _from, _to, minSats = 1) => minSats === 500,
         },
         rosterStore: { get: async () => ({ paymentsEnabled: true, recipients: [] }) as never },
         fxSpotStore: { latest: async () => ({ rates: { USD: '100000' } }) as never },

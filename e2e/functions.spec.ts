@@ -3413,6 +3413,8 @@ test('Function: ownerFundingStatus — GET /me reads none and POST /funding/with
     reviewedByName: null,
     dailyPayoutStoppedNotice: false,
     shopPaymentDue: false,
+    shopPaymentSats: null,
+    shopPaymentRequiredSats: null,
     payoutToday: { state: 'blocked', reason: 'admission' },
   });
   const none = await request.post('/funding/withdraw', { headers, data: { accountId: member.id } });
@@ -5173,26 +5175,69 @@ test('Function: loadFundingPayoutToday — GET /me exposes one payout explanatio
   });
 });
 
-test('Function: dailyShopSatsRequired — default member stops at verify before the shop minimum', async ({
+/** One-pixel PNG for an About me photo. */
+const ONE_PIXEL_PNG =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+/**
+ * A verified member with About me photo and location who applied and got a
+ * trial day from a moderator, so `GET /me` prices today's shop minimum.
+ */
+async function trialMember(
+  request: APIRequestContext,
+): Promise<{ authorization: string; id: string }> {
+  const member = await memberSession(request);
+  const headers = { authorization: member.authorization };
+  const verified = await request.patch(`/debug/accounts/${member.id}`, {
+    headers: await operatorHeaders(request, 'admin'),
+    data: { role: 'verified' },
+  });
+  expect(verified.status()).toBe(200);
+  expect((await request.post('/me/rules-agreement', { headers })).status()).toBe(200);
+  const about = await request.put('/me/about', {
+    headers,
+    data: {
+      text: 'I build on Bitcoin and pay in the shops of my town.',
+      photo: { contentType: 'image/png', data: ONE_PIXEL_PNG },
+    },
+  });
+  expect(about.status()).toBe(200);
+  const located = await request.post('/me/location', { headers, data: { location: 'Zurich' } });
+  expect(located.status()).toBe(200);
+  expect((await request.post('/funding/apply', { headers })).status()).toBe(200);
+  const moderator = await rosterRoleSession(request, 'moderator');
+  const trial = await request.post('/funding/trial', {
+    headers: { authorization: moderator.authorization },
+    data: { accountId: member.id },
+  });
+  expect(trial.status()).toBe(200);
+  return member;
+}
+
+test('Function: dailyShopSatsRequired — a trial member without a stored spot owes the shop payment', async ({
   request,
 }) => {
-  const member = await memberSession(request);
+  const member = await trialMember(request);
   const me = await request.get('/me', { headers: { authorization: member.authorization } });
   expect(me.status()).toBe(200);
-  expect(await me.json()).toMatchObject({
-    funding: null,
-    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  expect(((await me.json()) as { funding: unknown }).funding).toMatchObject({
+    status: 'trial',
+    shopPaymentDue: true,
+    shopPaymentSats: 0,
+    shopPaymentRequiredSats: null,
+    payoutToday: { state: 'blocked', reason: 'wallet' },
   });
 });
 
-test('Function: dailyShopSatsRequiredForGrant — default member stops at verify before the roster amount', async ({
+test('Function: dailyShopSatsRequiredForGrant — the trial default amount has no minimum without a stored spot', async ({
   request,
 }) => {
-  const member = await memberSession(request);
+  const member = await trialMember(request);
   const me = await request.get('/me', { headers: { authorization: member.authorization } });
   expect(me.status()).toBe(200);
-  expect(await me.json()).toMatchObject({
-    funding: null,
-    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  expect(((await me.json()) as { funding: unknown }).funding).toMatchObject({
+    status: 'trial',
+    shopPaymentSats: 0,
+    shopPaymentRequiredSats: null,
   });
 });
