@@ -25,6 +25,7 @@ const NOW = Date.parse('2026-10-30T01:30:00.000Z');
 const PLATFORM = 'p0000000-0000-4000-8000-000000000000';
 const ADA = 'a0000000-0000-4000-8000-000000000001';
 const BOB = 'b0000000-0000-4000-8000-000000000002';
+const FOND = 'f0000000-0000-4000-8000-000000000003';
 
 function id(n: number): string {
   return `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -650,6 +651,59 @@ describe('replayPayoutWindow', () => {
     const result = await h.run();
     expect(result.events).toEqual([
       expect.objectContaining({ reason: 'not_eligible', detail: 'no_public_post' }),
+    ]);
+  });
+
+  it('does not replay a gift/stipend line as a moderator trigger, in dry run or run', async () => {
+    const h = await harness({ grants: [admitted(ADA), admitted(FOND)] });
+    await h.member(ADA, 'ada', 'moderator');
+    await h.member(FOND, 'fond', 'fond');
+    await h.post(id(1), ADA, '2026-10-29T07:00:00.000Z', false);
+    await h.post(id(2), FOND, '2026-10-29T07:00:00.000Z', false);
+    const group = await h.conversations.ensureModeratorGroup(PLATFORM, new Date(FROM));
+    const say = async (
+      messageId: string,
+      sender: string,
+      at: string,
+      giftForMessageId?: string | null,
+    ): Promise<void> => {
+      await h.conversations.appendMessage({
+        id: messageId,
+        conversationId: group.id,
+        text: 'hi',
+        createdAt: new Date(at),
+        senderAccountId: sender,
+        senderPubkey: null,
+        name: 'Member',
+        ...unsignedConversationDefaults(),
+        ...(giftForMessageId === undefined ? {} : { giftForMessageId }),
+      });
+    };
+    // The stipend line the Fond account posts for its own payout is not a trigger.
+    await say('g-stipend', FOND, '2026-10-29T23:04:00.000Z', id(9));
+    // A normal member message stays a trigger; null and '' are not gift lines.
+    await say('g-ada', ADA, '2026-10-29T23:05:00.000Z', null);
+    await say('g-ada-2', ADA, '2026-10-29T23:06:00.000Z', '');
+    await say('g-fond', FOND, '2026-10-29T23:07:00.000Z', null);
+
+    const dry = await h.run(true);
+    expect(dry.events.map((e) => [e.eventId, e.status, e.detail])).toEqual([
+      ['g-ada', 'would_pay', undefined],
+      ['g-ada-2', 'skipped', 'this_run'],
+      ['g-fond', 'would_pay', undefined],
+    ]);
+    expect(h.spend.pingOnDay).not.toHaveBeenCalled();
+
+    const result = await h.run();
+    expect(result.events.map((e) => [e.eventId, e.status, e.detail])).toEqual([
+      ['g-ada', 'paid', undefined],
+      ['g-ada-2', 'skipped', 'this_run'],
+      ['g-fond', 'paid', undefined],
+    ]);
+    expect(result.events.some((e) => e.eventId === 'g-stipend')).toBe(false);
+    expect(h.spend.pingOnDay.mock.calls).toEqual([
+      ['ada@example.test', 'g-ada', DAY, undefined, 'moderator'],
+      ['fond@example.test', 'g-fond', DAY, undefined, 'moderator'],
     ]);
   });
 

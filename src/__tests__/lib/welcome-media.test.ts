@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
+import { resolveFondUsername } from '@/lib/config';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { accountWelcomed, syncWelcomePing, welcomeSweepCandidates } from '@/lib/welcome-media';
@@ -929,6 +930,121 @@ describe('accountWelcomed', () => {
       await accountWelcomed({ auth: NO_PLATFORM, messages, gifts: listOnly, account: ada }),
     ).toBe(true);
     expect(await accountWelcomed({ auth: NO_PLATFORM, messages, account: ada })).toBe(false);
+  });
+
+  it('counts a Fond Welcome reply as welcomed', async () => {
+    const fondUsername = resolveFondUsername(process.env);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(
+      account({ id: 'plat', role: 'basis', isPlatform: true, viewKey: 'f'.repeat(64) }),
+    );
+    await auth.createAccount(
+      account({
+        id: 'fond-acc',
+        role: 'fond',
+        username: fondUsername,
+        viewKey: 'e'.repeat(64),
+      }),
+    );
+    const messages = await photoStore();
+    await messages.create({
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      accountId: 'fond-acc',
+      name: 'Tondo Fond',
+      text: 'Welcome',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(true);
+    expect(await accountWelcomed({ auth, messages, account: { ...ada, id: 'other' } })).toBe(false);
+  });
+
+  it('counts a Fond Welcome reply when no platform account is configured', async () => {
+    const fondUsername = resolveFondUsername(process.env);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(
+      account({ id: 'fond-acc', role: 'fond', username: fondUsername, viewKey: 'e'.repeat(64) }),
+    );
+    const messages = await photoStore();
+    await messages.create({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      accountId: 'fond-acc',
+      name: 'Tondo Fond',
+      text: ' Welcome ',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(true);
+    expect(await accountWelcomed({ auth, messages, account: { ...ada, id: 'other' } })).toBe(false);
+  });
+
+  it('counts the platform reply once and does not treat the platform as Fond', async () => {
+    const fondUsername = resolveFondUsername(process.env);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(
+      account({
+        id: 'plat',
+        role: 'founder',
+        isPlatform: true,
+        username: fondUsername,
+        viewKey: 'f'.repeat(64),
+      }),
+    );
+    const messages = await photoStore();
+    await messages.create({
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      accountId: 'plat',
+      name: '21.gifts',
+      text: 'Welcome',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
+    const hasWelcome = vi.spyOn(messages, 'accountHasWelcomeGift');
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(true);
+    expect(hasWelcome).toHaveBeenCalledTimes(1);
+    expect(hasWelcome).toHaveBeenCalledWith('acc', 'plat');
+  });
+
+  it('ignores a Fond Welcome reply from a role below fond', async () => {
+    const fondUsername = resolveFondUsername(process.env);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(
+      account({ id: 'plat', role: 'basis', isPlatform: true, viewKey: 'f'.repeat(64) }),
+    );
+    await auth.createAccount(
+      account({
+        id: 'low-acc',
+        role: 'verified',
+        username: fondUsername,
+        viewKey: 'e'.repeat(64),
+      }),
+    );
+    const messages = await photoStore();
+    await messages.create({
+      id: 'ffffffff-ffff-4fff-8fff-fffffffffff0',
+      accountId: 'low-acc',
+      name: 'Low Role',
+      text: 'Welcome',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(false);
   });
 
   it('counts a platform Welcome reply', async () => {

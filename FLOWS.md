@@ -291,7 +291,9 @@ is funding-eligible today and the new row has media (`hasPhoto` /
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 the welcome gift is once per account: an account that already has a
-platform `Welcome` reply under one of its notes, a recorded `welcome` gift paid to its legacy
+`Welcome` reply under one of its notes from the platform account or the
+configured Fond account that passes `canSignFondPayouts`, a recorded `welcome`
+gift paid to its legacy
 external address, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification, is not pinged again; becoming
 exactly `verified` while non-platform and saving About me while welcome-eligible also welcome-ping; while an operator has turned
