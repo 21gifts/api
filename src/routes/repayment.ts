@@ -2163,8 +2163,8 @@ async function lenderWaiting(
 }
 
 /**
- * One public row of `GET /loans/open` before the remainder is dropped.
- * `remaining` orders the row and is not part of the response.
+ * One public row of `GET /loans/open` before `sortKey` is dropped.
+ * `sortKey` orders the row and is not part of the response.
  */
 interface OpenLoanRow {
   messageId: string;
