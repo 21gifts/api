@@ -3,6 +3,17 @@ import { Hono } from 'hono';
 import type { ContactRow } from '@/lib/contact';
 import { InMemoryContactStore, type ContactStore } from '@/lib/contact-store';
 import { debugContactsRoutes } from '@/routes/debug-contacts';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
+const UNCONFIGURED = new OperatorLogin({
+  signers: null,
+  store: new InMemoryOperatorLoginStore(),
+  now: Date.now,
+});
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -25,20 +36,20 @@ describe('debugContactsRoutes', () => {
   it('returns 503 when debug is not configured', async () => {
     const app = new Hono().route(
       '/debug/contacts',
-      debugContactsRoutes({ store: new InMemoryContactStore(), debugToken: undefined }),
+      debugContactsRoutes({ store: new InMemoryContactStore() }),
     );
     const res = await app.request('/debug/contacts');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 when the token is blank', async () => {
+  it('returns 503 when the key login is not configured', async () => {
     const app = new Hono().route(
       '/debug/contacts',
-      debugContactsRoutes({ store: new InMemoryContactStore(), debugToken: '  ' }),
+      debugContactsRoutes({ store: new InMemoryContactStore(), operatorLogin: UNCONFIGURED }),
     );
     const res = await app.request('/debug/contacts', {
-      headers: { authorization: 'Bearer   ' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
   });
@@ -46,7 +57,10 @@ describe('debugContactsRoutes', () => {
   it('returns 401 without a matching bearer', async () => {
     const app = new Hono().route(
       '/debug/contacts',
-      debugContactsRoutes({ store: new InMemoryContactStore(), debugToken: 'secret' }),
+      debugContactsRoutes({
+        store: new InMemoryContactStore(),
+        operatorLogin: OP_KEYS.operatorLogin,
+      }),
     );
     const res = await app.request('/debug/contacts');
     expect(res.status).toBe(401);
@@ -56,7 +70,10 @@ describe('debugContactsRoutes', () => {
   it('returns 401 for a wrong bearer', async () => {
     const app = new Hono().route(
       '/debug/contacts',
-      debugContactsRoutes({ store: new InMemoryContactStore(), debugToken: 'secret' }),
+      debugContactsRoutes({
+        store: new InMemoryContactStore(),
+        operatorLogin: OP_KEYS.operatorLogin,
+      }),
     );
     const res = await app.request('/debug/contacts', {
       headers: { authorization: 'Bearer wrong' },
@@ -82,10 +99,10 @@ describe('debugContactsRoutes', () => {
     const store = new InMemoryContactStore([early, late]);
     const app = new Hono().route(
       '/debug/contacts',
-      debugContactsRoutes({ store, debugToken: 'secret' }),
+      debugContactsRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/contacts', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -113,10 +130,10 @@ describe('debugContactsRoutes', () => {
     };
     const app = new Hono().route(
       '/debug/contacts',
-      debugContactsRoutes({ store: throwing, debugToken: 'secret' }),
+      debugContactsRoutes({ store: throwing, operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/contacts', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Contact is unavailable' });

@@ -8,7 +8,8 @@ import {
 } from '@/lib/debug-db';
 import { debugDbRoutes } from '@/routes/debug-db';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import type { OperatorLogin } from '@/lib/operator-login';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
 import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
 
 const OP_KEYS = await seededOperatorLogin();
@@ -35,11 +36,7 @@ function store(partial: Partial<DebugDbStore> = {}): DebugDbStore {
   };
 }
 
-function app(deps: {
-  store: DebugDbStore | undefined;
-  debugToken: string | undefined;
-  operatorLogin?: OperatorLogin;
-}): Hono {
+function app(deps: { store: DebugDbStore | undefined; operatorLogin?: OperatorLogin }): Hono {
   return new Hono().route('/debug/db', debugDbRoutes(deps));
 }
 
@@ -55,47 +52,61 @@ describe('debugDbRoutes', () => {
   });
 
   it('returns 503 when debug is not configured', async () => {
-    const res = await app({ store: store(), debugToken: undefined }).request('/debug/db');
+    const res = await app({ store: store() }).request('/debug/db');
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 when the debug token is blank', async () => {
-    const res = await app({ store: store(), debugToken: '   ' }).request('/debug/db', {
-      headers: { authorization: 'Bearer    ' },
+  it('returns 503 when the key login has no signers loaded', async () => {
+    const operatorLogin = new OperatorLogin({
+      signers: null,
+      store: new InMemoryOperatorLoginStore(),
+      now: Date.now,
+    });
+    const res = await app({ store: store(), operatorLogin }).request('/debug/db', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
   });
 
-  it('returns 401 when the bearer does not match', async () => {
-    const res = await app({ store: store(), debugToken: 'secret' }).request('/debug/db', {
-      headers: { authorization: 'Bearer other' },
-    });
+  it('returns 401 when the bearer is no key token', async () => {
+    const res = await app({ store: store(), operatorLogin: OP_KEYS.operatorLogin }).request(
+      '/debug/db',
+      {
+        headers: { authorization: 'Bearer other' },
+      },
+    );
     expect(res.status).toBe(401);
     await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
   });
 
   it('returns 401 when the bearer token is empty', async () => {
-    const res = await app({ store: store(), debugToken: 'secret' }).request('/debug/db', {
-      headers: { authorization: 'Bearer \u00a0' },
-    });
+    const res = await app({ store: store(), operatorLogin: OP_KEYS.operatorLogin }).request(
+      '/debug/db',
+      {
+        headers: { authorization: 'Bearer \u00a0' },
+      },
+    );
     expect(res.status).toBe(401);
     await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
   });
 
   it('returns 400 when a cursor is sent without a table', async () => {
-    const res = await app({ store: store(), debugToken: 'secret' }).request(
+    const res = await app({ store: store(), operatorLogin: OP_KEYS.operatorLogin }).request(
       '/debug/db?cursor=abc',
-      { headers: { authorization: 'Bearer secret' } },
+      { headers: { authorization: `Bearer ${OP_READ}` } },
     );
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toEqual({ error: 'Invalid cursor' });
   });
 
   it('returns 503 when no database is configured', async () => {
-    const res = await app({ store: undefined, debugToken: 'secret' }).request('/debug/db', {
-      headers: { authorization: 'Bearer secret' },
-    });
+    const res = await app({ store: undefined, operatorLogin: OP_KEYS.operatorLogin }).request(
+      '/debug/db',
+      {
+        headers: { authorization: `Bearer ${OP_READ}` },
+      },
+    );
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toEqual({ error: 'Database is not configured' });
   });
@@ -104,46 +115,13 @@ describe('debugDbRoutes', () => {
     const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
     const res = await app({
       store: store({ listTables: () => Promise.resolve(tables) }),
-      debugToken: 'secret',
-    }).request('/debug/db', { headers: { authorization: 'Bearer secret' } });
+      operatorLogin: OP_KEYS.operatorLogin,
+    }).request('/debug/db', { headers: { authorization: `Bearer ${OP_READ}` } });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({ tables });
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'debug.db.listed', count: 1 }),
     );
-  });
-
-  it('lists tables when only the key login is configured and a read key token matches', async () => {
-    const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
-    const res = await app({
-      store: store({ listTables: () => Promise.resolve(tables) }),
-      debugToken: undefined,
-      operatorLogin: OP_KEYS.operatorLogin,
-    }).request('/debug/db', { headers: { authorization: `Bearer ${OP_READ}` } });
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ tables });
-  });
-
-  it('lists tables when DEBUG_TOKEN matches while a key login is also loaded', async () => {
-    const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
-    const res = await app({
-      store: store({ listTables: () => Promise.resolve(tables) }),
-      debugToken: 'secret',
-      operatorLogin: OP_KEYS.operatorLogin,
-    }).request('/debug/db', { headers: { authorization: 'Bearer secret' } });
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ tables });
-  });
-
-  it('lists tables when DEBUG_TOKEN and a key login are configured and a read key token matches', async () => {
-    const tables: DebugDbTable[] = [{ name: 'message', rowCount: 3 }];
-    const res = await app({
-      store: store({ listTables: () => Promise.resolve(tables) }),
-      debugToken: 'secret',
-      operatorLogin: OP_KEYS.operatorLogin,
-    }).request('/debug/db', { headers: { authorization: `Bearer ${OP_READ}` } });
-    expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ tables });
   });
 
   it('limits a software-developer session to the wallet history tables and the Fond deposit address', async () => {
@@ -182,7 +160,7 @@ describe('debugDbRoutes', () => {
       '/debug/db',
       debugDbRoutes({
         store: debugStore,
-        debugToken: 'operator',
+        operatorLogin: OP_KEYS.operatorLogin,
         authStore,
         now: () => 1,
       }),
@@ -245,7 +223,7 @@ describe('debugDbRoutes', () => {
     }
     const client = new Hono().route(
       '/debug/db',
-      debugDbRoutes({ store: store(), debugToken: 'operator', authStore }),
+      debugDbRoutes({ store: store(), operatorLogin: OP_KEYS.operatorLogin, authStore }),
     );
     const lower = await client.request('/debug/db', {
       headers: { authorization: 'Bearer verified-session' },
@@ -262,12 +240,11 @@ describe('debugDbRoutes', () => {
     expect(head.status).toBe(401);
   });
 
-  it('returns 401 when only the key login is configured and the bearer is no key token', async () => {
+  it('returns 401 when the bearer header is missing', async () => {
     const res = await app({
       store: store(),
-      debugToken: undefined,
       operatorLogin: OP_KEYS.operatorLogin,
-    }).request('/debug/db', { headers: { authorization: 'Bearer other' } });
+    }).request('/debug/db');
     expect(res.status).toBe(401);
     await expect(res.json()).resolves.toEqual({ error: 'Unauthorized' });
   });
@@ -285,9 +262,9 @@ describe('debugDbRoutes', () => {
           : undefined,
       ),
     );
-    const client = app({ store: store({ readPage }), debugToken: 'secret' });
+    const client = app({ store: store({ readPage }), operatorLogin: OP_KEYS.operatorLogin });
     const ok = await client.request('/debug/db?table=message', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(ok.status).toBe(200);
     await expect(ok.json()).resolves.toEqual({
@@ -299,7 +276,7 @@ describe('debugDbRoutes', () => {
       expect.objectContaining({ event: 'debug.db.page', table: 'message', count: 1 }),
     );
     const missing = await client.request('/debug/db?table=nope', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(missing.status).toBe(404);
     await expect(missing.json()).resolves.toEqual({ error: 'Not found' });
@@ -314,9 +291,9 @@ describe('debugDbRoutes', () => {
     };
     const res = await app({
       store: store({ readPage: () => Promise.resolve(page) }),
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
     }).request('/debug/db?table=message&cursor=prev', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual(page);
@@ -327,10 +304,10 @@ describe('debugDbRoutes', () => {
       store: store({
         readPage: () => Promise.reject(new DebugDbCursorError()),
       }),
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
     });
     const cursor = await bad.request('/debug/db?table=message&cursor=nope', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(cursor.status).toBe(400);
     await expect(cursor.json()).resolves.toEqual({ error: 'Invalid cursor' });
@@ -340,15 +317,15 @@ describe('debugDbRoutes', () => {
         listTables: () => Promise.reject(new Error('down')),
         readPage: () => Promise.reject(new Error('down')),
       }),
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
     });
     const listed = await broken.request('/debug/db', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(listed.status).toBe(503);
     await expect(listed.json()).resolves.toEqual({ error: 'Database is unavailable' });
     const paged = await broken.request('/debug/db?table=message', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(paged.status).toBe(503);
     expect(parsedEvents(warn).filter((event) => event['event'] === 'debug.db.failed')).toHaveLength(

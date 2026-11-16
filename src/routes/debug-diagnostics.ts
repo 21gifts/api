@@ -10,18 +10,17 @@ import { logEvent } from '@/lib/log';
 
 /**
  * Operator debug surface. Read-only listing of diagnostic_event rows.
- * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  */
 
 /**
  * Build the `/debug/diagnostics` route group.
  *
- * @param deps - Diagnostic store and optional debug token.
+ * @param deps - Diagnostic store and optional key login.
  * @returns A Hono app exposing `GET /`.
  */
 export function debugDiagnosticsRoutes(deps: {
   store: DiagnosticStore;
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }): Hono {

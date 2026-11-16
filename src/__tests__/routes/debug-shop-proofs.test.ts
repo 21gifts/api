@@ -12,12 +12,22 @@ import {
   seed,
   uid,
 } from '@/__tests__/helpers/shop-proof-fixture';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
 
-const TOKEN = 'debug-token';
+const OP_KEYS = await seededOperatorLogin();
+const LOGIN = OP_KEYS.operatorLogin;
+const TOKEN = OP_KEYS.tokens.write;
+const UNCONFIGURED = new OperatorLogin({
+  signers: null,
+  store: new InMemoryOperatorLoginStore(),
+  now: Date.now,
+});
 const AUTH = { authorization: `Bearer ${TOKEN}` };
 
-function mount(shop: ShopPayments, debugToken: string | undefined): Hono {
-  return new Hono().route('/debug/shop-proofs', debugShopProofsRoutes({ shop, debugToken }));
+function mount(shop: ShopPayments, operatorLogin: OperatorLogin | undefined): Hono {
+  return new Hono().route('/debug/shop-proofs', debugShopProofsRoutes({ shop, operatorLogin }));
 }
 
 function retry(app: Hono, id: string, headers: Record<string, string> = AUTH): Promise<Response> {
@@ -33,8 +43,8 @@ afterEach(() => {
 describe('POST /debug/shop-proofs/:id/retry', () => {
   it('answers 503 when debug is not configured', async () => {
     const { shop } = harness();
-    for (const token of [undefined, '', '   ']) {
-      const res = await retry(mount(shop, token), uid(1));
+    for (const login of [undefined, UNCONFIGURED]) {
+      const res = await retry(mount(shop, login), uid(1));
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'Debug is not configured' });
     }
@@ -42,7 +52,7 @@ describe('POST /debug/shop-proofs/:id/retry', () => {
 
   it('answers 401 without the right bearer token', async () => {
     const { shop } = harness();
-    const app = mount(shop, TOKEN);
+    const app = mount(shop, LOGIN);
     for (const headers of [{}, { authorization: 'Bearer wrong' }, { authorization: TOKEN }]) {
       const res = await retry(app, uid(1), headers);
       expect(res.status).toBe(401);
@@ -50,10 +60,19 @@ describe('POST /debug/shop-proofs/:id/retry', () => {
     }
   });
 
+  it('answers 403 for a read key token', async () => {
+    const { shop } = harness();
+    const res = await retry(mount(shop, LOGIN), uid(1), {
+      authorization: `Bearer ${OP_KEYS.tokens.read}`,
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
   it('answers 404 for a malformed id without reading the store', async () => {
     const { shop } = harness();
     const spy = vi.spyOn(shopProof, 'retryStuckProof');
-    const res = await retry(mount(shop, TOKEN), 'not-a-uuid');
+    const res = await retry(mount(shop, LOGIN), 'not-a-uuid');
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
     expect(spy).not.toHaveBeenCalled();
@@ -61,7 +80,7 @@ describe('POST /debug/shop-proofs/:id/retry', () => {
 
   it('answers 404 for an unknown proof', async () => {
     const { shop } = harness();
-    const res = await retry(mount(shop, TOKEN), uid(0x999));
+    const res = await retry(mount(shop, LOGIN), uid(0x999));
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
@@ -69,7 +88,7 @@ describe('POST /debug/shop-proofs/:id/retry', () => {
   it('answers 409 for a proof that is not stuck', async () => {
     const h = harness();
     const { proofId } = await stuckProofSeed(h, null);
-    const res = await retry(mount(h.shop, TOKEN), proofId);
+    const res = await retry(mount(h.shop, LOGIN), proofId);
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'The proof is not stuck' });
   });
@@ -78,7 +97,7 @@ describe('POST /debug/shop-proofs/:id/retry', () => {
     const h = harness();
     const { proofId } = await stuckProofSeed(h, 'stuck');
     const spy = vi.spyOn(shopProof, 'retryStuckProof');
-    const res = await retry(mount(h.shop, TOKEN), proofId.toUpperCase());
+    const res = await retry(mount(h.shop, LOGIN), proofId.toUpperCase());
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ id: proofId, result: null });
     expect(spy).toHaveBeenCalledWith(h.shop, proofId);

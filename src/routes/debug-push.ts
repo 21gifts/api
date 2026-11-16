@@ -1,6 +1,6 @@
 /**
  * Operator debug ping that enqueues a test Web Push for one account.
- * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  */
 
 import { Hono } from 'hono';
@@ -18,8 +18,6 @@ export interface DebugPushRouteDeps {
   pushStore: PushStore;
   /** Clock returning epoch milliseconds. */
   now: () => number;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
   /**
@@ -34,7 +32,7 @@ export interface DebugPushRouteDeps {
  *
  * Mounted at `/debug/push-ping` so the public path is `POST /debug/push-ping`.
  *
- * @param deps - Auth store, push store, clock, debug token, VAPID public key.
+ * @param deps - Auth store, push store, clock, key login, VAPID public key.
  * @returns A Hono app exposing `POST /`.
  */
 export function debugPushRoutes(deps: DebugPushRouteDeps): Hono {

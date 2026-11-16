@@ -1,6 +1,6 @@
 /**
  * Operator debug action that reopens the blocking passkey-renew dialog.
- * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  */
 
 import { Hono } from 'hono';
@@ -13,8 +13,6 @@ import { logEvent } from '@/lib/log';
 export interface DebugPasskeyRenewRouteDeps {
   /** Shared auth persistence port. */
   authStore: AuthStore;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -27,7 +25,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * Mounted at `/debug/passkey-renew` so the public path is
  * `POST /debug/passkey-renew/reopen`.
  *
- * @param deps - Auth store and optional debug token.
+ * @param deps - Auth store and optional key login.
  * @returns A Hono app exposing `POST /reopen`.
  */
 export function debugPasskeyRenewRoutes(deps: DebugPasskeyRenewRouteDeps): Hono {

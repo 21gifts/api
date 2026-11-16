@@ -3,6 +3,9 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore, type NotificationLevel } from '@/lib/auth/store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { debugPushBroadcastRoutes } from '@/routes/debug-push-broadcast';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
 
 const { logEvent } = vi.hoisted(() => ({ logEvent: vi.fn() }));
 vi.mock('@/lib/log', async (importOriginal) => ({
@@ -11,12 +14,17 @@ vi.mock('@/lib/log', async (importOriginal) => ({
 }));
 
 const now = (): number => 1_700_000_000_000;
-const AUTH = { authorization: 'Bearer secret', 'content-type': 'application/json' };
+const OP_KEYS = await seededOperatorLogin();
+const AUTH = {
+  authorization: `Bearer ${OP_KEYS.tokens.admin}`,
+  'content-type': 'application/json',
+};
+const READER = { authorization: `Bearer ${OP_KEYS.tokens.read}` };
 
 function mount(args: {
   authStore: InMemoryAuthStore;
   pushStore: InMemoryPushStore;
-  debugToken?: string;
+  operatorLogin?: OperatorLogin;
   vapidPublicKey?: string | undefined;
 }): Hono {
   return new Hono().route(
@@ -25,7 +33,7 @@ function mount(args: {
       authStore: args.authStore,
       pushStore: args.pushStore,
       now,
-      debugToken: args.debugToken ?? 'secret',
+      operatorLogin: args.operatorLogin ?? OP_KEYS.operatorLogin,
       vapidPublicKey: 'vapidPublicKey' in args ? args.vapidPublicKey : 'vapid',
     }),
   );
@@ -113,7 +121,18 @@ function post(app: Hono, body: unknown, headers: Record<string, string> = AUTH):
 describe('debug push broadcast auth', () => {
   it('returns 503 before JSON when debug is not configured', async () => {
     const { authStore, pushStore } = await seeded();
-    const res = await post(mount({ authStore, pushStore, debugToken: ' ' }), 'not-json');
+    const res = await post(
+      mount({
+        authStore,
+        pushStore,
+        operatorLogin: new OperatorLogin({
+          signers: null,
+          store: new InMemoryOperatorLoginStore(),
+          now: Date.now,
+        }),
+      }),
+      'not-json',
+    );
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
@@ -126,6 +145,15 @@ describe('debug push broadcast auth', () => {
     const res = await app.request('/debug/push-broadcast/x', { headers });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 403 for a write key token on POST', async () => {
+    const { authStore, pushStore } = await seeded();
+    const res = await post(mount({ authStore, pushStore }), 'not-json', {
+      authorization: `Bearer ${OP_KEYS.tokens.write}`,
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
   });
 });
 
@@ -333,7 +361,7 @@ describe('GET /debug/push-broadcast/:id', () => {
     await pushStore.recordDelivered(first?.id ?? '', ['https://push.example/1']);
     await pushStore.markSent(first?.id ?? '', now());
     const res = await app.request(`/debug/push-broadcast/${sent.id.toUpperCase()}`, {
-      headers: AUTH,
+      headers: READER,
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -366,7 +394,7 @@ describe('GET /debug/push-broadcast/:id', () => {
     const res = await mount({ authStore, pushStore }).request(
       `/debug/push-broadcast/${messageId}`,
       {
-        headers: AUTH,
+        headers: READER,
       },
     );
     expect(res.status).toBe(404);
@@ -376,7 +404,7 @@ describe('GET /debug/push-broadcast/:id', () => {
     const { authStore, pushStore } = await seeded();
     const app = mount({ authStore, pushStore });
     for (const id of ['not-a-uuid', '0b6c3f4e-2a1d-4c5b-9e8f-7a6b5c4d3e2f']) {
-      const res = await app.request(`/debug/push-broadcast/${id}`, { headers: AUTH });
+      const res = await app.request(`/debug/push-broadcast/${id}`, { headers: READER });
       expect(res.status).toBe(404);
       expect(await res.json()).toEqual({ error: 'Not found' });
     }

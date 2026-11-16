@@ -9,11 +9,17 @@ import { InMemoryGiftStore } from '@/lib/gift-store';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryShopIdentityStore } from '@/lib/shop-identity';
 import { InMemoryTrustStore } from '@/lib/trust-store';
 import { debugCatalogRoutes } from '@/routes/debug-catalog';
 import { LNURL_SERVER, createWalletAccount } from '@/__tests__/helpers/wallet-lnurl';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import type { OperatorLogin } from '@/lib/operator-login';
 
-function mount(debugToken: string | undefined, auth = new InMemoryAuthStore()): Hono {
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
+
+function mount(operatorLogin: OperatorLogin | undefined, auth = new InMemoryAuthStore()): Hono {
   return new Hono().route(
     '/debug/dump',
     debugCatalogRoutes({
@@ -25,7 +31,7 @@ function mount(debugToken: string | undefined, auth = new InMemoryAuthStore()): 
       push: new InMemoryPushStore(),
       trust: new InMemoryTrustStore(),
       gifts: new InMemoryGiftStore(),
-      debugToken,
+      operatorLogin,
     }),
   );
 }
@@ -48,8 +54,12 @@ describe('debugCatalogRoutes', () => {
   });
 
   it('returns 401 without a matching bearer', async () => {
-    const res = await mount('secret').request('/debug/dump');
+    const res = await mount(OP_KEYS.operatorLogin).request('/debug/dump');
     expect(res.status).toBe(401);
+    const unknown = await mount(OP_KEYS.operatorLogin).request('/debug/dump', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(unknown.status).toBe(401);
   });
 
   it('dumps each account with its wallet receiving address when the LNURL server is set', async () => {
@@ -62,11 +72,11 @@ describe('debugCatalogRoutes', () => {
         messages: new InMemoryMessageStore(),
         contacts: new InMemoryContactStore(),
         lnurlServer: LNURL_SERVER,
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
       }),
     );
     const res = await app.request('/debug/dump/account', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { rows: Array<{ lightningAddress: string | null }> };
@@ -74,8 +84,8 @@ describe('debugCatalogRoutes', () => {
   });
 
   it('returns 404 for an unknown table', async () => {
-    const res = await mount('secret').request('/debug/dump/not_a_table', {
-      headers: { authorization: 'Bearer secret' },
+    const res = await mount(OP_KEYS.operatorLogin).request('/debug/dump/not_a_table', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(404);
   });
@@ -100,8 +110,8 @@ describe('debugCatalogRoutes', () => {
       accountId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       createdAt: 2,
     });
-    const res = await mount('secret', auth).request('/debug/dump/passkey_credential', {
-      headers: { authorization: 'Bearer secret' },
+    const res = await mount(OP_KEYS.operatorLogin, auth).request('/debug/dump/passkey_credential', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -115,8 +125,8 @@ describe('debugCatalogRoutes', () => {
   });
 
   it('lists every allowlisted table on GET /', async () => {
-    const res = await mount('secret').request('/debug/dump', {
-      headers: { authorization: 'Bearer secret' },
+    const res = await mount(OP_KEYS.operatorLogin).request('/debug/dump', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { tables: Record<string, unknown[]> };
@@ -125,6 +135,29 @@ describe('debugCatalogRoutes', () => {
     expect(body.tables['auth_session']).toEqual([]);
     expect(body.tables['api_log']).toEqual([]);
     expect(body.tables['pos_charge']).toEqual([]);
+  });
+
+  it('reads shop_identity rows from the wired shop store', async () => {
+    const messages = new InMemoryMessageStore();
+    const shops = new InMemoryShopIdentityStore(messages);
+    const listDebug = vi.spyOn(shops, 'listDebug');
+    const res = await new Hono()
+      .route(
+        '/debug/dump',
+        debugCatalogRoutes({
+          auth: new InMemoryAuthStore(),
+          messages,
+          contacts: new InMemoryContactStore(),
+          shops,
+          operatorLogin: OP_KEYS.operatorLogin,
+        }),
+      )
+      .request('/debug/dump/shop_identity', {
+        headers: { authorization: `Bearer ${OP_READ}` },
+      });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ table: 'shop_identity', rows: [] });
+    expect(listDebug).toHaveBeenCalledOnce();
   });
 
   it('dumps pos_charge rows when the store is wired', async () => {
@@ -154,11 +187,11 @@ describe('debugCatalogRoutes', () => {
           messages: new InMemoryMessageStore(),
           contacts: new InMemoryContactStore(),
           pos,
-          debugToken: 'secret',
+          operatorLogin: OP_KEYS.operatorLogin,
         }),
       )
       .request('/debug/dump/pos_charge', {
-        headers: { authorization: 'Bearer secret' },
+        headers: { authorization: `Bearer ${OP_READ}` },
       });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -192,14 +225,14 @@ describe('debugCatalogRoutes', () => {
           auth: new InMemoryAuthStore(),
           messages: new InMemoryMessageStore(),
           contacts: new InMemoryContactStore(),
-          debugToken: 'secret',
+          operatorLogin: OP_KEYS.operatorLogin,
           listBtcUsdDaily: async () => [{ day: '2026-09-01' }],
           listUsdFiatDaily: async () => [{ quote: 'CHF' }],
           listDbChange: async () => [{ id: 1 }],
         }),
       )
       .request('/debug/dump/btc_usd_daily', {
-        headers: { authorization: 'Bearer secret' },
+        headers: { authorization: `Bearer ${OP_READ}` },
       });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -235,11 +268,11 @@ describe('debugCatalogRoutes', () => {
               origin: null,
             },
           ]),
-          debugToken: 'secret',
+          operatorLogin: OP_KEYS.operatorLogin,
         }),
       )
       .request('/debug/dump/api_log', {
-        headers: { authorization: 'Bearer secret' },
+        headers: { authorization: `Bearer ${OP_READ}` },
       });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { table: string; rows: Array<{ path: string }> };
@@ -262,12 +295,12 @@ describe('debugCatalogRoutes', () => {
   it('returns 503 when a store throw escapes the dump', async () => {
     const auth = new InMemoryAuthStore();
     vi.spyOn(auth, 'listAccounts').mockRejectedValue(new Error('boom'));
-    const res = await mount('secret', auth).request('/debug/dump', {
-      headers: { authorization: 'Bearer secret' },
+    const res = await mount(OP_KEYS.operatorLogin, auth).request('/debug/dump', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
-    const tableRes = await mount('secret', auth).request('/debug/dump/account', {
-      headers: { authorization: 'Bearer secret' },
+    const tableRes = await mount(OP_KEYS.operatorLogin, auth).request('/debug/dump/account', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(tableRes.status).toBe(503);
   });

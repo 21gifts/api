@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { API_LOG_LIST_LIMIT, InMemoryApiLogStore, type ApiLogRow } from '@/lib/api-log';
 import { debugApiLogRoutes } from '@/routes/debug-api-log';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -42,7 +46,7 @@ describe('debugApiLogRoutes', () => {
   it('returns 503 when debug is not configured', async () => {
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store: new InMemoryApiLogStore(), debugToken: undefined }),
+      debugApiLogRoutes({ store: new InMemoryApiLogStore() }),
     );
     const res = await app.request('/debug/api-log');
     expect(res.status).toBe(503);
@@ -52,21 +56,25 @@ describe('debugApiLogRoutes', () => {
   it('returns 401 without a matching bearer', async () => {
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store: new InMemoryApiLogStore(), debugToken: 'secret' }),
+      debugApiLogRoutes({ store: new InMemoryApiLogStore(), operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/api-log');
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    const unknown = await app.request('/debug/api-log', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(unknown.status).toBe(401);
   });
 
   it('lists logs newest-first for a valid bearer', async () => {
     const store = new InMemoryApiLogStore([ROW]);
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store, debugToken: 'secret' }),
+      debugApiLogRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/api-log', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -106,10 +114,10 @@ describe('debugApiLogRoutes', () => {
     };
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store, debugToken: 'secret' }),
+      debugApiLogRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/api-log', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Log is unavailable' });
@@ -125,10 +133,10 @@ describe('debugApiLogRoutes', () => {
     const store = new InMemoryApiLogStore(rows);
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store, debugToken: 'secret' }),
+      debugApiLogRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
     );
     const first = await app.request('/debug/api-log', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(first.status).toBe(200);
     const firstBody = (await first.json()) as {
@@ -140,7 +148,7 @@ describe('debugApiLogRoutes', () => {
     const last = firstBody.logs[firstBody.logs.length - 1]!;
     const second = await app.request(
       `/debug/api-log?before=${encodeURIComponent(last.createdAt)}&beforeId=${encodeURIComponent(last.id)}`,
-      { headers: { authorization: 'Bearer secret' } },
+      { headers: { authorization: `Bearer ${OP_READ}` } },
     );
     expect(second.status).toBe(200);
     const secondBody = (await second.json()) as {
@@ -161,10 +169,10 @@ describe('debugApiLogRoutes', () => {
     ]);
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store, debugToken: 'secret' }),
+      debugApiLogRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request(`/debug/api-log?accountId=${accountA}`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -194,10 +202,10 @@ describe('debugApiLogRoutes', () => {
   it('returns 400 for a bad accountId', async () => {
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store: new InMemoryApiLogStore(), debugToken: 'secret' }),
+      debugApiLogRoutes({ store: new InMemoryApiLogStore(), operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/api-log?accountId=not-a-uuid', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Invalid account' });
@@ -206,10 +214,10 @@ describe('debugApiLogRoutes', () => {
   it('returns 400 when before is present without beforeId', async () => {
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store: new InMemoryApiLogStore(), debugToken: 'secret' }),
+      debugApiLogRoutes({ store: new InMemoryApiLogStore(), operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/api-log?before=2026-09-19T15:16:52.530Z', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Invalid cursor' });
@@ -218,10 +226,10 @@ describe('debugApiLogRoutes', () => {
   it('returns 400 when beforeId is present without before', async () => {
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store: new InMemoryApiLogStore(), debugToken: 'secret' }),
+      debugApiLogRoutes({ store: new InMemoryApiLogStore(), operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/api-log?beforeId=00000000-0000-4000-8000-000000000001', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Invalid cursor' });
@@ -230,11 +238,11 @@ describe('debugApiLogRoutes', () => {
   it('returns 400 when before is not a date', async () => {
     const app = new Hono().route(
       '/debug/api-log',
-      debugApiLogRoutes({ store: new InMemoryApiLogStore(), debugToken: 'secret' }),
+      debugApiLogRoutes({ store: new InMemoryApiLogStore(), operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request(
       '/debug/api-log?before=yesterday&beforeId=00000000-0000-4000-8000-000000000001',
-      { headers: { authorization: 'Bearer secret' } },
+      { headers: { authorization: `Bearer ${OP_READ}` } },
     );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Invalid cursor' });

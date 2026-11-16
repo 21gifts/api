@@ -17,10 +17,16 @@ import {
   seedPinnedAccount,
 } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import type { OperatorLevel } from '@/lib/operator';
 
 const ORIGIN = 'http://localhost:3000';
-const DEBUG = 'gate-debug-token';
-const OPERATOR = { authorization: `Bearer ${DEBUG}`, 'content-type': 'application/json' };
+const OP_KEYS = await seededOperatorLogin();
+
+/** Headers of an operator request with the key token of `level`. */
+function operator(level: OperatorLevel): Record<string, string> {
+  return { authorization: `Bearer ${OP_KEYS.tokens[level]}`, 'content-type': 'application/json' };
+}
 const PROVISIONED_ID = '00000000-0000-4000-8000-0000000000a1';
 const VIEW_KEY = 'b'.repeat(64);
 const LOGINS_CLOSED = { error: LOGINS_CLOSED_ERROR, code: LOGINS_CLOSED_CODE };
@@ -42,7 +48,8 @@ function harness(env: Record<string, string> = {}): Harness {
     allowedOrigins: [ORIGIN],
     webAuthnRpId: 'localhost',
     passkeyCeremony: new FakePasskeyCeremony({ challenge: PINNED.challenge }),
-    debugToken: DEBUG,
+    operatorSigners: OP_KEYS.operatorSigners,
+    operatorLoginStore: OP_KEYS.operatorLoginStore,
     env,
     fetchImpl: scriptedLnurlFetch({ recover: () => lookupHolds('ada') }).fetchImpl,
   });
@@ -123,7 +130,7 @@ async function login(app: Hono, build?: string): Promise<Response> {
 async function setLogins(app: Hono, open: boolean): Promise<void> {
   const res = await app.request('/debug/logins', {
     method: 'PUT',
-    headers: OPERATOR,
+    headers: operator('write'),
     body: JSON.stringify({ open }),
   });
   expect(res.status).toBe(200);
@@ -132,7 +139,7 @@ async function setLogins(app: Hono, open: boolean): Promise<void> {
 async function allow(app: Hono, accountId: string): Promise<void> {
   const res = await app.request('/debug/logins/allowlist', {
     method: 'POST',
-    headers: OPERATOR,
+    headers: operator('write'),
     body: JSON.stringify({ accountId }),
   });
   expect(res.status).toBe(200);
@@ -212,7 +219,7 @@ describe('login gate via createApp', () => {
       const registered = await register(app);
       expect(registered.begin.status).toBe(503);
       expect(await store.listPasskeyChallenges()).toEqual([]);
-      const state = await app.request('/debug/logins', { headers: OPERATOR });
+      const state = await app.request('/debug/logins', { headers: operator('read') });
       expect(await state.json()).toEqual({
         open: false,
         source: 'default',
@@ -312,7 +319,7 @@ describe('login gate via createApp', () => {
       await provision(store);
       const res = await app.request(`/debug/accounts/${PROVISIONED_ID}/session`, {
         method: 'POST',
-        headers: OPERATOR,
+        headers: operator('admin'),
       });
       expect(res.status).toBe(200);
     });
@@ -414,7 +421,10 @@ describe('login gate via createApp', () => {
       const first = await register(app);
       const second = await login(app);
       const secondToken = ((await second.json()) as { token: string }).token;
-      const res = await app.request('/debug/sessions', { method: 'DELETE', headers: OPERATOR });
+      const res = await app.request('/debug/sessions', {
+        method: 'DELETE',
+        headers: operator('admin'),
+      });
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ deleted: 2 });
       expect((await me(app, first.token as string)).status).toBe(401);

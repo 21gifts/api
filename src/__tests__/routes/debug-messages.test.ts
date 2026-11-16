@@ -10,6 +10,13 @@ import {
   videoFilePath,
 } from '@/lib/video';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
+const OP_WRITE = OP_KEYS.tokens.write;
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -88,8 +95,8 @@ function videoRow(overrides: Partial<MessageRow> = {}): MessageRow {
   };
 }
 
-function mount(store: MessageStore, debugToken: string | undefined): Hono {
-  return new Hono().route('/debug/messages', debugMessagesRoutes({ store, debugToken }));
+function mount(store: MessageStore, operatorLogin: OperatorLogin | undefined): Hono {
+  return new Hono().route('/debug/messages', debugMessagesRoutes({ store, operatorLogin }));
 }
 
 describe('debugMessagesRoutes', () => {
@@ -110,24 +117,47 @@ describe('debugMessagesRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 when the token is blank', async () => {
-    const app = mount(new InMemoryMessageStore(), '  ');
+  it('returns 503 when the key login has no signers loaded', async () => {
+    const operatorLogin = new OperatorLogin({
+      signers: null,
+      store: new InMemoryOperatorLoginStore(),
+      now: Date.now,
+    });
+    const app = mount(new InMemoryMessageStore(), operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer   ' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
     expect(res.status).toBe(503);
   });
 
+  it('returns 403 for a read key token on the write routes', async () => {
+    const app = mount(new InMemoryMessageStore([videoRow()]), OP_KEYS.operatorLogin);
+    const headers = { authorization: `Bearer ${OP_READ}` };
+    const video = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
+      method: 'PUT',
+      headers,
+      body: mp4Bytes(),
+    });
+    expect(video.status).toBe(403);
+    expect(await video.json()).toEqual({ error: 'Forbidden' });
+    const restore = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
+      method: 'POST',
+      headers,
+    });
+    expect(restore.status).toBe(403);
+    expect(await restore.json()).toEqual({ error: 'Forbidden' });
+  });
+
   it('returns 401 without a matching bearer', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, { method: 'PUT' });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
   it('returns 401 for a wrong bearer even when a body is present', async () => {
-    const app = mount(new InMemoryMessageStore([videoRow()]), 'secret');
+    const app = mount(new InMemoryMessageStore([videoRow()]), OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
       headers: { authorization: 'Bearer wrong' },
@@ -138,10 +168,10 @@ describe('debugMessagesRoutes', () => {
   });
 
   it('returns 404 for a non-UUID id with a valid bearer', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request('/debug/messages/not-a-uuid/video', {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: mp4Bytes(),
     });
     expect(res.status).toBe(404);
@@ -149,10 +179,10 @@ describe('debugMessagesRoutes', () => {
   });
 
   it('returns 404 for an unknown id with a valid bearer', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: mp4Bytes(),
     });
     expect(res.status).toBe(404);
@@ -161,10 +191,10 @@ describe('debugMessagesRoutes', () => {
 
   it('returns 409 when the message has no video', async () => {
     const store = new InMemoryMessageStore([videoRow({ hasVideo: false, videoContentType: null })]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: mp4Bytes(),
     });
     expect(res.status).toBe(409);
@@ -173,10 +203,10 @@ describe('debugMessagesRoutes', () => {
 
   it('returns 409 when hasVideo is true but videoContentType is null', async () => {
     const store = new InMemoryMessageStore([videoRow({ hasVideo: true, videoContentType: null })]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: mp4Bytes(),
     });
     expect(res.status).toBe(409);
@@ -185,10 +215,10 @@ describe('debugMessagesRoutes', () => {
 
   it('returns 400 for an empty body', async () => {
     const store = new InMemoryMessageStore([videoRow()]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: new Uint8Array(),
     });
     expect(res.status).toBe(400);
@@ -197,10 +227,10 @@ describe('debugMessagesRoutes', () => {
 
   it('returns 400 for garbage bytes', async () => {
     const store = new InMemoryMessageStore([videoRow()]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: new Uint8Array([1, 2, 3, 4]),
     });
     expect(res.status).toBe(400);
@@ -209,12 +239,12 @@ describe('debugMessagesRoutes', () => {
 
   it('returns 400 for an oversize body', async () => {
     const store = new InMemoryMessageStore([videoRow()]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const huge = new Uint8Array(MESSAGE_VIDEO_MAX_BYTES + 1);
     huge.set([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: huge,
     });
     expect(res.status).toBe(400);
@@ -225,10 +255,10 @@ describe('debugMessagesRoutes', () => {
     const store = new InMemoryMessageStore([
       videoRow({ hasVideo: true, videoContentType: 'video/mp4' }),
     ]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: movBytes(),
     });
     expect(res.status).toBe(409);
@@ -237,11 +267,11 @@ describe('debugMessagesRoutes', () => {
 
   it('writes the video file and returns 204 on the happy path', async () => {
     const store = new InMemoryMessageStore([videoRow()]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const body = mp4Bytes();
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body,
     });
     expect(res.status).toBe(204);
@@ -271,10 +301,10 @@ describe('debugMessagesRoutes', () => {
         throw new Error('boom');
       },
     } as unknown as MessageStore;
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${VIDEO_ID}/video`, {
       method: 'PUT',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
       body: mp4Bytes(),
     });
     expect(res.status).toBe(503);
@@ -285,7 +315,7 @@ describe('debugMessagesRoutes', () => {
   });
 
   it('returns 401 on GET list, get, and photo without a matching bearer', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     for (const path of [
       '/debug/messages',
       `/debug/messages/${HIDDEN_ID}`,
@@ -310,9 +340,9 @@ describe('debugMessagesRoutes', () => {
         createdAt: new Date('2026-08-02T00:00:00.000Z'),
       }),
     ]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request('/debug/messages', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<Record<string, unknown>> };
@@ -337,9 +367,9 @@ describe('debugMessagesRoutes', () => {
         accountId: null,
       }),
     );
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
@@ -367,9 +397,9 @@ describe('debugMessagesRoutes', () => {
       undefined,
       [{ ...JPEG2, takenAt: '2025-06-07T08:09:10' }, JPEG2],
     );
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const listed = await app.request('/debug/messages', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(listed.status).toBe(200);
     const listBody = (await listed.json()) as { messages: Array<Record<string, unknown>> };
@@ -395,7 +425,7 @@ describe('debugMessagesRoutes', () => {
       }),
     );
     const one = await app.request(`/debug/messages/${HIDDEN_PHOTO_ID}`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(one.status).toBe(200);
     expect(await one.json()).toEqual(
@@ -420,18 +450,18 @@ describe('debugMessagesRoutes', () => {
   });
 
   it('returns 404 for an unknown UUID on GET by id', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${UNKNOWN_ID}`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
   it('returns 404 for a non-UUID id on GET by id', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request('/debug/messages/not-a-uuid', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
@@ -466,9 +496,9 @@ describe('debugMessagesRoutes', () => {
       }),
       WEBP,
     );
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const jpegRes = await app.request(`/debug/messages/${HIDDEN_PHOTO_ID}/photo`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(jpegRes.status).toBe(200);
     expect(jpegRes.headers.get('Content-Type')).toBe('image/jpeg');
@@ -478,13 +508,13 @@ describe('debugMessagesRoutes', () => {
     expect(new Uint8Array(await jpegRes.arrayBuffer())).toEqual(JPEG.bytes);
 
     const pngRes = await app.request(`/debug/messages/${HIDDEN_PNG_ID}/photo`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(pngRes.status).toBe(200);
     expect(pngRes.headers.get('Content-Disposition')).toBe('inline; filename="photo.png"');
 
     const webpRes = await app.request(`/debug/messages/${HIDDEN_WEBP_ID}/photo`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(webpRes.status).toBe(200);
     expect(webpRes.headers.get('Content-Disposition')).toBe('inline; filename="photo.webp"');
@@ -509,9 +539,9 @@ describe('debugMessagesRoutes', () => {
       undefined,
       [JPEG2],
     );
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_EXTRA_ID}/photo/1.jpg`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('image/jpeg');
@@ -543,9 +573,9 @@ describe('debugMessagesRoutes', () => {
       undefined,
       [WEBP],
     );
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const pngRes = await app.request(`/debug/messages/${HIDDEN_EXTRA_PNG_ID}/photo/1.png`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(pngRes.status).toBe(200);
     expect(pngRes.headers.get('Content-Type')).toBe('image/png');
@@ -553,7 +583,7 @@ describe('debugMessagesRoutes', () => {
     expect(new Uint8Array(await pngRes.arrayBuffer())).toEqual(PNG.bytes);
 
     const webpRes = await app.request(`/debug/messages/${HIDDEN_EXTRA_WEBP_ID}/photo/1.webp`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(webpRes.status).toBe(200);
     expect(webpRes.headers.get('Content-Type')).toBe('image/webp');
@@ -570,23 +600,23 @@ describe('debugMessagesRoutes', () => {
         hasPhoto: false,
       }),
     );
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/photo`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Photo not found' });
   });
 
   it('returns 404 photo for a missing row or non-UUID id', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const missing = await app.request(`/debug/messages/${UNKNOWN_ID}/photo`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(missing.status).toBe(404);
     expect(await missing.json()).toEqual({ error: 'Photo not found' });
     const bad = await app.request('/debug/messages/not-a-uuid/photo', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(bad.status).toBe(404);
     expect(await bad.json()).toEqual({ error: 'Photo not found' });
@@ -598,9 +628,9 @@ describe('debugMessagesRoutes', () => {
         throw new Error('boom');
       },
     } as unknown as MessageStore;
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request('/debug/messages', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
@@ -613,9 +643,9 @@ describe('debugMessagesRoutes', () => {
         throw new Error('boom');
       },
     } as unknown as MessageStore;
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
@@ -628,9 +658,9 @@ describe('debugMessagesRoutes', () => {
         throw new Error('boom');
       },
     } as unknown as MessageStore;
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/photo`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
@@ -645,9 +675,9 @@ describe('debugMessagesRoutes', () => {
         throw new Error('boom');
       },
     } as unknown as MessageStore;
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/photo/1.jpg`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
@@ -664,7 +694,7 @@ describe('debugMessagesRoutes', () => {
   });
 
   it('returns 401 extra still without a matching bearer', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/photo/1.jpg`);
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
@@ -673,8 +703,8 @@ describe('debugMessagesRoutes', () => {
   it('returns 404 extra still for a bad file, missing row, or photo 0 only', async () => {
     const store = new InMemoryMessageStore();
     await store.create(forumRow({ id: HIDDEN_ID, text: 'one' }), JPEG);
-    const app = mount(store, 'secret');
-    const headers = { authorization: 'Bearer secret' };
+    const app = mount(store, OP_KEYS.operatorLogin);
+    const headers = { authorization: `Bearer ${OP_READ}` };
     const badFile = await app.request(`/debug/messages/${HIDDEN_ID}/photo/0.jpg`, { headers });
     expect(badFile.status).toBe(404);
     expect(await badFile.json()).toEqual({ error: 'Photo not found' });
@@ -700,27 +730,27 @@ describe('debugMessagesRoutes', () => {
   });
 
   it('returns 401 on restore without a matching bearer', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, { method: 'POST' });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
   it('returns 404 for a non-UUID id on restore', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request('/debug/messages/not-a-uuid/restore', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
   it('returns 404 for an unknown UUID on restore', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${UNKNOWN_ID}/restore`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
@@ -758,10 +788,10 @@ describe('debugMessagesRoutes', () => {
     await store.markDeleted(REPLY_ID, HIDDEN_AT, 'staff');
     await store.blockPubkeyAndHideRows('ab'.repeat(32), HIDDEN_AT, 'staff', HIDDEN_ID);
     expect(await store.listBlockedPubkeys()).toEqual(['ab'.repeat(32)]);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
     expect(res.status).toBe(204);
     expect(await res.text()).toBe('');
@@ -802,10 +832,10 @@ describe('debugMessagesRoutes', () => {
     expect(await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff')).toBe(true);
     expect(await store.blockPubkeyAndHideRows(pubkey, HIDDEN_AT, 'staff', HIDDEN_ID)).toBe(1);
 
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${cascadedId}/restore`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
 
     expect(res.status).toBe(204);
@@ -838,10 +868,10 @@ describe('debugMessagesRoutes', () => {
     expect(await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff')).toBe(true);
     expect(await store.blockPubkeyAndHideRows(pubkey, HIDDEN_AT, 'staff', HIDDEN_ID)).toBe(1);
 
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
 
     expect(res.status).toBe(204);
@@ -870,10 +900,10 @@ describe('debugMessagesRoutes', () => {
         deletedBy: 'staff',
       }),
     );
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
     expect(res.status).toBe(204);
     expect(await res.text()).toBe('');
@@ -898,10 +928,10 @@ describe('debugMessagesRoutes', () => {
         throw new Error('boom');
       },
     } as unknown as MessageStore;
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
@@ -938,11 +968,16 @@ describe('debugMessagesRoutes', () => {
     expect((await shops.getByMessageId(HIDDEN_ID))?.ocpPlaceGeneration).toBe(2);
     const app = new Hono().route(
       '/debug/messages',
-      debugMessagesRoutes({ store, debugToken: 'secret', shopIdentities: shops, shopKek: kek }),
+      debugMessagesRoutes({
+        store,
+        operatorLogin: OP_KEYS.operatorLogin,
+        shopIdentities: shops,
+        shopKek: kek,
+      }),
     );
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
     expect(res.status).toBe(204);
     // The restore raised it again: the place request re-lists the shop.
@@ -972,10 +1007,10 @@ describe('debugMessagesRoutes', () => {
       },
     });
     await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_KEYS.operatorLogin);
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_WRITE}` },
     });
     expect(res.status).toBe(204);
   });
@@ -1050,14 +1085,14 @@ describe('shop identity hooks', () => {
         '/debug/messages',
         debugMessagesRoutes({
           store: messages,
-          debugToken: 'dbg',
+          operatorLogin: OP_KEYS.operatorLogin,
           shopIdentities: identities(messages),
           ...(kek === undefined ? {} : { shopKek: kek }),
         }),
       );
       const res = await app.request(`/debug/messages/${SHOP_ID}/restore`, {
         method: 'POST',
-        headers: { authorization: 'Bearer dbg' },
+        headers: { authorization: `Bearer ${OP_WRITE}` },
       });
       return { status: res.status, messages };
     }

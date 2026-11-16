@@ -150,7 +150,7 @@ function fakeStore(overrides: Partial<DailyRosterStore> = {}): DailyRosterStore 
 function mount(
   authStore: InMemoryAuthStore,
   rosterStore?: DailyRosterStore,
-  tokens: { debugToken?: string; operatorLogin?: OperatorLogin } = {},
+  tokens: { operatorLogin?: OperatorLogin } = {},
 ): Hono {
   return new Hono().route(
     '/funding',
@@ -1168,7 +1168,7 @@ describe('daily payout roster routes', () => {
 });
 
 describe('GET /funding/daily-roster with an operator token', () => {
-  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
+  const TOKENS = { operatorLogin: OP_KEYS.operatorLogin };
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -1179,23 +1179,19 @@ describe('GET /funding/daily-roster with an operator token', () => {
     warn.mockRestore();
   });
 
-  it.each(['op-write', OP_READ])(
-    'reads the roster with %s and logs no account id',
-    async (token) => {
-      const res = await get(
-        mount(await seeded(), fakeStore(), TOKENS),
-        '/funding/daily-roster',
-        token,
-      );
-      expect(res.status).toBe(200);
-      const listed = parsedEvents(warn).filter(
-        (entry) => entry['event'] === 'funding.daily_roster',
-      );
-      expect(listed).toHaveLength(1);
-      expect(listed[0]).toMatchObject({ operator: true, action: 'read' });
-      expect(listed[0]).not.toHaveProperty('accountId');
-    },
-  );
+  it('reads the roster with a read key token and logs no account id', async () => {
+    const token = OP_READ;
+    const res = await get(
+      mount(await seeded(), fakeStore(), TOKENS),
+      '/funding/daily-roster',
+      token,
+    );
+    expect(res.status).toBe(200);
+    const listed = parsedEvents(warn).filter((entry) => entry['event'] === 'funding.daily_roster');
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({ operator: true, action: 'read' });
+    expect(listed[0]).not.toHaveProperty('accountId');
+  });
 
   it('returns 502 and logs the operator when the roster store throws', async () => {
     const store = fakeStore({ get: () => Promise.reject(new Error('down')) });
@@ -1211,13 +1207,14 @@ describe('GET /funding/daily-roster with an operator token', () => {
   it('keeps the session gate for a wrong operator bearer and a moderator', async () => {
     const app = mount(await seeded(), fakeStore(), TOKENS);
     expect((await get(app, '/funding/daily-roster', 'op-other')).status).toBe(401);
+    expect((await get(app, '/funding/daily-roster', 'e2e-debug-token')).status).toBe(401);
     expect((await get(app, '/funding/daily-roster', 'mod')).status).toBe(403);
     expect((await get(app, '/funding/daily-roster', 'founder')).status).toBe(200);
   });
 });
 
 describe('GET /funding/daily-roster/links', () => {
-  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
+  const TOKENS = { operatorLogin: OP_KEYS.operatorLogin };
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -1228,43 +1225,51 @@ describe('GET /funding/daily-roster/links', () => {
     warn.mockRestore();
   });
 
-  it.each(['op-write', OP_READ])(
-    'lists linked counts, unlinked rows, and sums with %s',
-    async (token) => {
-      const store = new InMemoryDailyRosterStore();
-      await store.importDocument({ recipients: [{ address: 'gone@example.com', amountUsd: 3 }] });
-      await store.addRecipient(VERIFIED, 2);
-      await store.addModerator(MOD, 5);
-      const res = await get(
-        mount(await seeded(), store, TOKENS),
-        '/funding/daily-roster/links',
-        token,
-      );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({
-        rows: 3,
-        linked: 2,
-        unlinked: [{ bucket: 'daily', address: 'gone@example.com', amountUsd: 3 }],
-        buckets: {
-          daily: { rows: 2, linked: 1, totalUsd: 5, linkedUsd: 2 },
-          moderator: { rows: 1, linked: 1, totalUsd: 5, linkedUsd: 5 },
-        },
-      });
-      const logged = parsedEvents(warn);
-      expect(logged).toContainEqual(
-        expect.objectContaining({ event: 'funding.daily_roster', operator: true, action: 'links' }),
-      );
-      expect(JSON.stringify(logged)).not.toContain('gone@example.com');
-    },
-  );
+  it('lists linked counts, unlinked rows, and sums with a read key token', async () => {
+    const token = OP_READ;
+    const store = new InMemoryDailyRosterStore();
+    await store.importDocument({ recipients: [{ address: 'gone@example.com', amountUsd: 3 }] });
+    await store.addRecipient(VERIFIED, 2);
+    await store.addModerator(MOD, 5);
+    const res = await get(
+      mount(await seeded(), store, TOKENS),
+      '/funding/daily-roster/links',
+      token,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      rows: 3,
+      linked: 2,
+      unlinked: [{ bucket: 'daily', address: 'gone@example.com', amountUsd: 3 }],
+      buckets: {
+        daily: { rows: 2, linked: 1, totalUsd: 5, linkedUsd: 2 },
+        moderator: { rows: 1, linked: 1, totalUsd: 5, linkedUsd: 5 },
+      },
+    });
+    const logged = parsedEvents(warn);
+    expect(logged).toContainEqual(
+      expect.objectContaining({ event: 'funding.daily_roster', operator: true, action: 'links' }),
+    );
+    expect(JSON.stringify(logged)).not.toContain('gone@example.com');
+  });
 
   it('refuses a session, a wrong token, and no token', async () => {
     const app = mount(await seeded(), fakeStore(), TOKENS);
-    for (const token of ['founder', 'op-other', undefined]) {
+    for (const token of ['founder', 'op-other', 'e2e-debug-token', undefined]) {
       const res = await get(app, '/funding/daily-roster/links', token);
       expect(res.status).toBe(401);
       expect(await res.json()).toEqual({ error: 'Unauthorized' });
     }
+  });
+
+  it('answers 503 when no operator key login is configured', async () => {
+    const res = await get(
+      mount(await seeded(), fakeStore()),
+      '/funding/daily-roster/links',
+      OP_READ,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
   it('returns 502 and logs the operator when the store throws', async () => {

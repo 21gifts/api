@@ -1,8 +1,7 @@
 /**
  * Classify an Authorization header for the HTTP audit log.
  *
- * The debug token is compared with the same constant-time helper as the
- * debug routes. Key tokens of the operator SSH key login go through
+ * Key tokens of the operator SSH key login go through
  * {@link OperatorLogin.resolveBearer}. Session tokens go through
  * {@link resolveSession}.
  */
@@ -10,7 +9,6 @@
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
 import type { ApiLogAuthKind } from '@/lib/api-log';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import type { OperatorKeyGrant, OperatorLogin } from '@/lib/operator-login';
 
 function sessionBearerToken(header: string | undefined): string | null {
@@ -34,26 +32,22 @@ export interface RequestAuth {
 /**
  * Classify `Authorization` as debug, session, or none.
  *
- * `DEBUG_TOKEN` is `debug` without an operator. A valid key token of the SSH
- * key login is `debug` with the operator name. When `keyGrant` is given (the
+ * A valid key token of the SSH key login is `debug` with the operator name;
+ * it is the only bearer classed `debug`. When `keyGrant` is given (the
  * grant resolved when the request arrived, or `null` for no key token), it is
  * used as is and the token row is not looked up again.
  *
- * @param args - Header, stores, clock, the configured debug token, the optional key login, and the optional `keyGrant` carried from the request start.
+ * @param args - Header, stores, clock, the optional key login, and the optional `keyGrant` carried from the request start.
  * @returns Auth kind, optional account id, and the operator name of a key token. Never returns the token.
+ * @throws Rejects when the operator token store or the session store rejects a lookup.
  */
 export async function resolveRequestAuth(args: {
   authorizationHeader: string | undefined;
   authStore: AuthStore;
   now: number;
-  debugToken: string | undefined;
   operatorLogin?: OperatorLogin | undefined;
   keyGrant?: OperatorKeyGrant | null | undefined;
 }): Promise<RequestAuth> {
-  const debugToken = args.debugToken?.trim() ?? '';
-  if (debugToken !== '' && bearerMatchesDebugToken(debugToken, args.authorizationHeader)) {
-    return { accountId: null, authKind: 'debug', operator: null };
-  }
   const grant =
     args.keyGrant !== undefined
       ? args.keyGrant

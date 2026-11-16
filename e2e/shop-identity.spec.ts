@@ -1,9 +1,9 @@
 import { deflateSync } from 'node:zlib';
 import { expect, test, type APIRequestContext } from '@playwright/test';
+import { operatorHeaders } from './helpers/operator-keys';
 import { nip19 } from 'nostr-tools';
 
 const PUBLIC_CACHE = 'public, max-age=60';
-const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 const ADDRESS = {
   street: 'Bahnhofstrasse',
   houseNumber: '1',
@@ -96,7 +96,7 @@ async function listedShop(request: APIRequestContext, tag: string): Promise<List
   const authorName = `E2eShopMod${tag}${stamp}`;
   const tillName = `E2eTill${tag}${stamp}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: {
       accounts: [
         { name: authorName, username: `e2e-shopmod-${stamp}`.slice(0, 32) },
@@ -105,7 +105,9 @@ async function listedShop(request: APIRequestContext, tag: string): Promise<List
     },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const accounts = (
     (await listed.json()) as {
@@ -117,12 +119,14 @@ async function listedShop(request: APIRequestContext, tag: string): Promise<List
   expect(author).toBeDefined();
   expect(till?.username).toBeTruthy();
 
-  const session = await request.post(`/debug/accounts/${author?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${author?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const auth = { authorization: `Bearer ${((await session.json()) as { token: string }).token}` };
   expect((await request.post('/me/rules-agreement', { headers: auth })).status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${author?.id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role: 'moderator' },
   });
   expect(promoted.status()).toBe(200);
@@ -162,7 +166,9 @@ async function listedShop(request: APIRequestContext, tag: string): Promise<List
  * @returns The profile note id.
  */
 async function profileNoteId(request: APIRequestContext, accountId: string): Promise<string> {
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const row = (
     (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
@@ -182,24 +188,28 @@ async function freshModerator(
   const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eTagMod${tag}${stamp}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: {
       accounts: [{ name, username: `e2e-tagmod-${stamp}`.slice(0, 32) }],
     },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const author = (
     (await listed.json()) as { accounts: Array<{ id: string; name: string }> }
   ).accounts.find((row) => row.name === name);
   expect(author).toBeDefined();
-  const session = await request.post(`/debug/accounts/${author?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${author?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const auth = { authorization: `Bearer ${((await session.json()) as { token: string }).token}` };
   expect((await request.post('/me/rules-agreement', { headers: auth })).status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${author?.id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role: 'moderator' },
   });
   expect(promoted.status()).toBe(200);
@@ -290,7 +300,7 @@ async function shopWithoutPin(
   const authorName = `E2eOpenMod${tag}${stamp}`;
   const tillName = `E2eOpenTill${tag}${stamp}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: {
       accounts: [
         { name: authorName, username: `e2e-openmod-${stamp}`.slice(0, 32) },
@@ -299,7 +309,9 @@ async function shopWithoutPin(
     },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const accounts = (
     (await listed.json()) as {
@@ -311,7 +323,7 @@ async function shopWithoutPin(
   expect(author?.id).toBeTruthy();
   expect(till?.username).toBeTruthy();
   const posted = await request.post('/debug/shop-notes', {
-    headers: { ...DEBUG, 'content-type': 'application/json' },
+    headers: { ...(await operatorHeaders(request, 'write')), 'content-type': 'application/json' },
     data: { text, shopUsername: till?.username, authorId: author?.id },
   });
   expect(posted.status()).toBe(200);
@@ -382,7 +394,7 @@ test('e2e: listed shop is 200, hex is 301, hide is 410, restore is 200 again', a
   expect(await gone.json()).toEqual({ error: 'Shop is no longer listed', npub: shop.npub });
 
   const restored = await request.post(`/debug/messages/${shop.noteId}/restore`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
   });
   expect(restored.status()).toBe(204);
   expect((await getShop(request, shop.npub)).shop.npub).toBe(shop.npub);
@@ -636,7 +648,7 @@ test('Function: shopKeyMustBeAdopted — POST /debug/shop-keys rejects a note ou
   request,
 }) => {
   const res = await request.post('/debug/shop-keys', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: {
       messageId: '00000000-0000-4000-8000-000000000001',
       secret: '11'.repeat(32),

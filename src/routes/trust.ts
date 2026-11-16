@@ -60,8 +60,6 @@ export interface TrustRouteDeps {
    * `canSignFondPayouts`).
    */
   giftStore?: Pick<GiftStore, 'listOutbound'>;
-  /** `DEBUG_TOKEN` (every operator level), or unset. */
-  debugToken?: string;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }

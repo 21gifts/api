@@ -11,19 +11,8 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: undefined,
       authStore: new InMemoryAuthStore(),
       now: 1,
-      debugToken: 'debug',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
-  });
-
-  it('classifies a matching debug token', async () => {
-    const auth = await resolveRequestAuth({
-      authorizationHeader: 'Bearer debug',
-      authStore: new InMemoryAuthStore(),
-      now: 1,
-      debugToken: 'debug',
-    });
-    expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: null });
   });
 
   it('returns none for an empty Bearer token', async () => {
@@ -31,7 +20,6 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: 'Bearer ',
       authStore: new InMemoryAuthStore(),
       now: 1,
-      debugToken: 'debug',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
@@ -41,7 +29,6 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: 'Bearer not-a-known-token',
       authStore: new InMemoryAuthStore(),
       now: 1,
-      debugToken: 'debug',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
@@ -69,7 +56,6 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: `Bearer ${minted.token}`,
       authStore: store,
       now: 1 + SESSION_TTL_MS + 1,
-      debugToken: 'debug',
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
@@ -97,7 +83,6 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: `Bearer ${minted.token}`,
       authStore: store,
       now: 1,
-      debugToken: 'debug',
     });
     expect(auth).toEqual({ accountId: 'acc', authKind: 'session', operator: null });
   });
@@ -108,22 +93,20 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: `Bearer ${keys.tokens.write}`,
       authStore: new InMemoryAuthStore(),
       now: 1,
-      debugToken: 'debug',
       operatorLogin: keys.operatorLogin,
     });
     expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: 'op-write' });
   });
 
-  it('keeps DEBUG_TOKEN as debug without an operator next to a key login', async () => {
+  it('returns none for a bearer that is no key or session token', async () => {
     const keys = await seededOperatorLogin();
     const auth = await resolveRequestAuth({
-      authorizationHeader: 'Bearer debug',
+      authorizationHeader: 'Bearer e2e-debug-token',
       authStore: new InMemoryAuthStore(),
       now: 1,
-      debugToken: 'debug',
       operatorLogin: keys.operatorLogin,
     });
-    expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: null });
+    expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
 
   it('falls through to sessions for an unknown key token', async () => {
@@ -132,7 +115,6 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: `Bearer op_${'q'.repeat(43)}`,
       authStore: new InMemoryAuthStore(),
       now: 1,
-      debugToken: 'debug',
       operatorLogin: keys.operatorLogin,
     });
     expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
@@ -145,7 +127,6 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: `Bearer ${keys.tokens.admin}`,
       authStore: new InMemoryAuthStore(),
       now: 1,
-      debugToken: 'debug',
       operatorLogin: keys.operatorLogin,
       keyGrant: { operator: 'carried', keyFingerprint: 'SHA256:x', level: 'admin' },
     });
@@ -154,7 +135,6 @@ describe('resolveRequestAuth', () => {
       authorizationHeader: 'Bearer not-a-known-token',
       authStore: new InMemoryAuthStore(),
       now: 1,
-      debugToken: 'debug',
       operatorLogin: keys.operatorLogin,
       keyGrant: null,
     });

@@ -68,8 +68,8 @@ import { bearerToken } from '@/routes/me';
 
 /**
  * `/conversations` — signed-in private messaging (member↔member, member↔platform,
- * member↔Damus, closed moderator_group). Nothing public. DEBUG_TOKEN cannot
- * read member PNs.
+ * member↔Damus, closed moderator_group). Nothing public. An operator key
+ * token cannot read member PNs.
  */
 
 /** Collaborators the `/conversations` routes need. */

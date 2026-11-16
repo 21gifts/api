@@ -1,7 +1,6 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
+import { operatorHeaders } from './helpers/operator-keys';
 import { startFreshWalletStatsServer } from './helpers/fresh-wallet-stats-server';
-
-const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 
 async function memberSession(
   request: APIRequestContext,
@@ -12,13 +11,15 @@ async function memberSession(
   // The handle keeps the full millisecond time; at most the last random hex digit is cut at 32.
   const username = `e2e-fn-trust-${stamp}`.slice(0, 32);
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: {
       accounts: [{ name, username }],
     },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const accounts = (
     (await listed.json()) as {
       accounts: Array<{ id: string; name: string; username: string | null }>;
@@ -26,7 +27,9 @@ async function memberSession(
   ).accounts;
   const row = accounts.find((item) => item.username === username);
   expect(row).toBeDefined();
-  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   return { authorization: `Bearer ${token}`, id: row?.id ?? '' };
@@ -103,11 +106,13 @@ async function rosterRoleSession(
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eRoster${stamp}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
@@ -115,14 +120,16 @@ async function rosterRoleSession(
   expect(row?.id).toBeTruthy();
   const id = row?.id ?? '';
   const patched = await request.patch(`/debug/accounts/${id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role },
   });
   expect(patched.status()).toBe(200);
   const patchedBody = (await patched.json()) as { id: string; role: string };
   expect(patchedBody.id).toBe(id);
   expect(patchedBody.role).toBe(role);
-  const session = await request.post(`/debug/accounts/${id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   return { authorization: `Bearer ${token}`, id };
@@ -131,7 +138,7 @@ async function rosterRoleSession(
 /** Bare GET /trust-chain lists every founder. A mirror must not leave that role on the shared server. */
 async function releaseRosterFounder(request: APIRequestContext, id: string): Promise<void> {
   const cleared = await request.patch(`/debug/accounts/${id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role: 'basis' },
   });
   expect(cleared.status()).toBe(200);
@@ -143,7 +150,7 @@ async function walletlessMember(request: APIRequestContext): Promise<string> {
   const name = `E2eFnPay${stamp.slice(-8)}`;
   const username = `e2e-fn-pay-${stamp}`.slice(0, 32);
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name, username }] },
   });
   expect(provision.status()).toBe(200);
@@ -174,7 +181,9 @@ test('Function: accountWelcomed — POST /fond/payouts/:id/invoice is 404 when P
 test('Function: isWelcomeRecipient — welcome dry-run applies the shared rule', async ({
   request,
 }) => {
-  const res = await request.get('/debug/welcome-sweep', { headers: DEBUG });
+  const res = await request.get('/debug/welcome-sweep', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(res.status()).toBe(200);
 });
 
@@ -182,7 +191,9 @@ test('Function: welcomeSweepCandidates — dry-run lists nobody without the LNUR
   request,
 }) => {
   expect((await request.get('/debug/welcome-sweep')).status()).toBe(401);
-  const res = await request.get('/debug/welcome-sweep', { headers: DEBUG });
+  const res = await request.get('/debug/welcome-sweep', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(res.status()).toBe(200);
   expect(await res.json()).toMatchObject({ spendPing: false, wouldPing: [] });
 });
@@ -190,20 +201,20 @@ test('Function: welcomeSweepCandidates — dry-run lists nobody without the LNUR
 test('welcome sweep switch turns on and off', async ({ request }) => {
   try {
     const on = await request.put('/debug/welcome-sweep', {
-      headers: DEBUG,
+      headers: await operatorHeaders(request, 'write'),
       data: { enabled: true },
     });
     expect(on.status()).toBe(200);
     expect(await on.json()).toEqual({ enabled: true });
   } finally {
     const off = await request.put('/debug/welcome-sweep', {
-      headers: DEBUG,
+      headers: await operatorHeaders(request, 'write'),
       data: { enabled: false },
     });
     expect(await off.json()).toEqual({ enabled: false });
   }
   const bad = await request.put('/debug/welcome-sweep', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { enabled: 'yes' },
   });
   expect(bad.status()).toBe(400);
@@ -306,7 +317,9 @@ test('Function: setAddressRefKey — default boot has no key and the diagnostic 
   const address = 'addressref-e2e@host.invalid';
   const res = await request.get('/lightning-address?address=' + encodeURIComponent(address));
   expect(res.status()).toBe(502);
-  const list = await request.get('/debug/diagnostics', { headers: DEBUG });
+  const list = await request.get('/debug/diagnostics', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(list.status()).toBe(200);
   const body = (await list.json()) as {
     logs: { event: string; fields: Record<string, unknown> }[];
@@ -752,16 +765,20 @@ test('Function: LnurlRelayRateLimiter — the 31st relay request in a minute is 
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   const name = `E2eRelayLimit${stamp}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name, username: `e2e-relay-${stamp}`.slice(0, 32) }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const row = accounts.find((item) => item.name === name);
   expect(row).toBeDefined();
-  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const authorization = `Bearer ${((await session.json()) as { token: string }).token}`;
   const statuses: number[] = [];
@@ -828,21 +845,21 @@ test('Function: migrateAuthSchema — default boot has no DATABASE_URL', async (
   expect(res.status()).toBe(200);
 });
 
-test('Function: debugRoutes — POST /debug/accounts with the e2e token is 200', async ({
+test('Function: debugRoutes — POST /debug/accounts with an operator key token is 200', async ({
   request,
 }) => {
   const res = await request.post('/debug/accounts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name: 'Ada' }] },
   });
   expect(res.status()).toBe(200);
 });
 
-test('Function: debugRoutes — GET /debug/accounts with the e2e token is 200', async ({
+test('Function: debugRoutes — GET /debug/accounts with an operator key token is 200', async ({
   request,
 }) => {
   const res = await request.get('/debug/accounts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { accounts: unknown[] };
@@ -853,7 +870,7 @@ test('Function: mergeAccounts — POST /debug/accounts/merge is 503 on default b
   request,
 }) => {
   const res = await request.post('/debug/accounts/merge', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: {
       from: '00000000-0000-4000-8000-000000000001',
       into: '00000000-0000-4000-8000-000000000002',
@@ -863,22 +880,16 @@ test('Function: mergeAccounts — POST /debug/accounts/merge is 503 on default b
   expect(((await res.json()) as { error: string }).error).toBe('Merge is unavailable');
 });
 
-test('Function: bearerMatchesDebugToken — GET /debug/accounts without bearer is 401', async ({
+test('Function: requireOperator — key tokens reach GET /debug/db and an admin route, no or a wrong bearer is 401', async ({
   request,
 }) => {
-  const res = await request.get('/debug/accounts');
-  expect(res.status()).toBe(401);
-  const wrong = await request.get('/debug/accounts', {
+  expect((await request.get('/debug/accounts')).status()).toBe(401);
+  const wrongList = await request.get('/debug/accounts', {
     headers: { authorization: 'Bearer wrong-token' },
   });
-  expect(wrong.status()).toBe(401);
-});
-
-test('Function: requireOperator — DEBUG_TOKEN reaches GET /debug/db and an admin route, a wrong bearer is 401', async ({
-  request,
-}) => {
+  expect(wrongList.status()).toBe(401);
   const ok = await request.get('/debug/db', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(ok.status()).toBe(503);
   expect(((await ok.json()) as { error: string }).error).toBe('Database is not configured');
@@ -888,7 +899,7 @@ test('Function: requireOperator — DEBUG_TOKEN reaches GET /debug/db and an adm
   expect(wrong.status()).toBe(401);
   expect(((await wrong.json()) as { error: string }).error).toBe('Unauthorized');
   const admin = await request.post('/debug/shop-keys', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'admin'),
     data: {},
   });
   expect(admin.status()).not.toBe(401);
@@ -903,7 +914,7 @@ test('Function: compareAccountsForList — debug listing is ordered by createdAt
   request,
 }) => {
   const res = await request.get('/debug/accounts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { accounts: Array<{ createdAt: number }> };
@@ -1020,7 +1031,7 @@ async function verifiedAskSession(request: APIRequestContext): Promise<{ authori
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const name = `Ask${stamp.replace(/[^a-z0-9]/gi, '')}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: {
       accounts: [
         {
@@ -1031,19 +1042,23 @@ async function verifiedAskSession(request: APIRequestContext): Promise<{ authori
     },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const row = accounts.find((item) => item.name === name);
   expect(row).toBeDefined();
-  const minted = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  const minted = await request.post(`/debug/accounts/${row?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(minted.status()).toBe(200);
   const token = ((await minted.json()) as { token: string }).token;
   const auth = { authorization: `Bearer ${token}` };
   const agreed = await request.post('/me/rules-agreement', { headers: auth });
   expect(agreed.status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${row?.id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role: 'verified' },
   });
   expect(promoted.status()).toBe(200);
@@ -1315,7 +1330,7 @@ test('Function: readClientRequestMeta — GET /info stores validated client head
   });
   expect(res.status()).toBe(200);
   const listed = await request.get('/debug/api-log', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(listed.status()).toBe(200);
   const body = (await listed.json()) as {
@@ -1355,7 +1370,7 @@ test('Function: presentClientFields — POST /diagnostics stores present client 
   });
   expect(res.status()).toBe(204);
   const listed = await request.get('/debug/diagnostics', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(listed.status()).toBe(200);
   const body = (await listed.json()) as {
@@ -1496,7 +1511,7 @@ test('Function: replayPayoutWindow — POST /debug/spend-ping window without spe
   request,
 }) => {
   const res = await request.post('/debug/spend-ping', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { from: '2026-10-29T23:00:00.000Z', to: '2026-10-30T00:00:00.000Z', dryRun: true },
   });
   expect(res.status()).toBe(503);
@@ -1676,7 +1691,7 @@ test('Function: debugPasskeyRenewRoutes — POST /debug/passkey-renew/reopen wit
   request,
 }) => {
   const res = await request.post('/debug/passkey-renew/reopen', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'write'),
     data: { accountId: '00000000-0000-4000-8000-000000000001' },
   });
   expect(res.status()).toBe(404);
@@ -2177,7 +2192,7 @@ test('Function: recipientHandleFromAddress — POST /fond/payouts/:id/invoice is
 
 test('Function: serializeAccount — GET /debug/accounts listing is 200', async ({ request }) => {
   const res = await request.get('/debug/accounts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
@@ -2939,7 +2954,7 @@ test('Function: serializeDebugAccount — GET /debug/accounts listing is 200', a
   request,
 }) => {
   const res = await request.get('/debug/accounts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { accounts: Array<Record<string, unknown>> };
@@ -3012,7 +3027,7 @@ test('Function: earnsModeratorGroupPay — the replay gate is unreachable withou
   request,
 }) => {
   const res = await request.post('/debug/spend-ping', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { from: '2026-10-29T23:00:00.000Z', to: '2026-10-30T00:00:00.000Z', dryRun: true },
   });
   expect(res.status()).toBe(503);
@@ -3040,7 +3055,7 @@ test('Function: roleAtLeast — confirm leaves an initiator unchanged when the c
   const callerName = `E2eRankCaller${stamp.slice(0, 8)}`;
   const subjectName = `E2eRankSubject${stamp.slice(0, 8)}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: {
       accounts: [
         {
@@ -3055,7 +3070,9 @@ test('Function: roleAtLeast — confirm leaves an initiator unchanged when the c
     },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
@@ -3068,7 +3085,7 @@ test('Function: roleAtLeast — confirm leaves an initiator unchanged when the c
   expect(
     (
       await request.patch(`/debug/accounts/${callerId}`, {
-        headers: DEBUG,
+        headers: await operatorHeaders(request, 'admin'),
         data: { role: 'moderator' },
       })
     ).status(),
@@ -3076,16 +3093,18 @@ test('Function: roleAtLeast — confirm leaves an initiator unchanged when the c
   expect(
     (
       await request.patch(`/debug/accounts/${subjectId}`, {
-        headers: DEBUG,
+        headers: await operatorHeaders(request, 'admin'),
         data: { role: 'initiator' },
       })
     ).status(),
   ).toBe(200);
-  const session = await request.post(`/debug/accounts/${callerId}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${callerId}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   const edge = await request.post('/debug/trust-edges', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { subjectId, actorId: callerId, kind: 'moderator_confirm' },
   });
   expect(edge.status()).toBe(200);
@@ -3381,7 +3400,7 @@ test('Function: ownerFundingStatus — GET /me reads none and POST /funding/with
   expect(basis.status()).toBe(403);
   expect(await basis.json()).toEqual({ error: 'Forbidden' });
   const patched = await request.patch(`/debug/accounts/${member.id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role: 'verified' },
   });
   expect(patched.status()).toBe(200);
@@ -3541,7 +3560,9 @@ async function moderatorShopNote(
     data: { text: 'My shop sells coffee and bread for sats #21GiftsShop' },
   });
   expect(saved.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const row = (
     (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
   ).accounts.find((item) => item.id === id);
@@ -3563,7 +3584,7 @@ async function pinSession(
 ): Promise<{ auth: { authorization: string }; id: string }> {
   const adaName = `E2ePin${stamp}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: {
       accounts: [
         {
@@ -3574,20 +3595,24 @@ async function pinSession(
     },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const ada = accounts.find((row) => row.name === adaName);
   expect(ada).toBeDefined();
-  const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${ada?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   const auth = { authorization: `Bearer ${token}` };
   const agreed = await request.post('/me/rules-agreement', { headers: auth });
   expect(agreed.status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${ada!.id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { role },
   });
   expect(promoted.status()).toBe(200);
@@ -4518,7 +4543,7 @@ async function waitRouteOff(request: APIRequestContext): Promise<void> {
 
 async function retryRouteOff(request: APIRequestContext): Promise<void> {
   const res = await request.post('/debug/shop-proofs/00000000-0000-4000-8000-000000000000/retry', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
   });
   expect(res.status()).toBe(404);
   expect(await res.text()).toBe('404 Not Found');

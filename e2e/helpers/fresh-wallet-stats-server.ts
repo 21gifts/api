@@ -6,8 +6,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request as playwrightRequest, type APIRequestContext } from '@playwright/test';
 import { DEFAULT_BOOT_ENV, PINNED_OFF } from './pinned-env';
+import { E2E_SIGNING_NAMESPACE, e2eOperatorKeys, registerOperatorBaseURL } from './operator-keys';
 
-/** A dedicated memory-boot API and its isolated request context. */
+/**
+ * A dedicated memory-boot API and its isolated request context. It loads the
+ * allowed-signers files of the default boot, so `operatorHeaders` on its
+ * request context logs in there.
+ */
 export interface FreshWalletStatsServer {
   /** Request context whose relative paths resolve to the fresh API. */
   request: APIRequestContext;
@@ -54,11 +59,16 @@ async function stopChild(child: ChildProcess): Promise<void> {
  * Start a dedicated default-mode API for one test, so public totals have no data from other specs.
  *
  * @returns Request context bound to the fresh API and a close function.
+ * @throws When no free port can be had, the throwaway operator keys cannot be
+ *   made, no media directory can be had, the request context cannot be
+ *   created, the process cannot be spawned, exits before `GET /healthz`
+ *   answers, or does not become healthy in time.
  */
 export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsServer> {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const port = await freePort();
   const baseURL = `http://127.0.0.1:${port}`;
+  const { signersDir } = e2eOperatorKeys();
   const mediaDir = mkdtempSync(join(tmpdir(), '21gifts-e2e-wallet-stats-'));
   const child = spawn('bun', ['src/index.ts'], {
     cwd: root,
@@ -68,7 +78,8 @@ export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsSer
       ...DEFAULT_BOOT_ENV,
       BIND_ADDR: `127.0.0.1:${port}`,
       PUBLIC_BASE_URL: baseURL,
-      DEBUG_TOKEN: 'e2e-debug-token',
+      DEBUG_ALLOWED_SIGNERS_DIR: signersDir,
+      DEBUG_SIGNING_NAMESPACE: E2E_SIGNING_NAMESPACE,
       CORS_ALLOWED_ORIGINS: baseURL,
       MEDIA_DIR: mediaDir,
     },
@@ -88,6 +99,7 @@ export async function startFreshWalletStatsServer(): Promise<FreshWalletStatsSer
   let context: APIRequestContext;
   try {
     context = await playwrightRequest.newContext({ baseURL });
+    registerOperatorBaseURL(context, baseURL);
   } catch (error) {
     await stopChild(child);
     rmSync(mediaDir, { recursive: true, force: true });

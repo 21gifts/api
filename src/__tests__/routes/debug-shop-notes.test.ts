@@ -4,6 +4,17 @@ import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InMemoryShopIdentityStore, type ShopIdentityStore } from '@/lib/shop-identity';
 import { debugShopNoteRoutes, type DebugShopNoteRouteDeps } from '@/routes/debug-shop-notes';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_WRITE = OP_KEYS.tokens.write;
+const UNCONFIGURED = new OperatorLogin({
+  signers: null,
+  store: new InMemoryOperatorLoginStore(),
+  now: Date.now,
+});
 
 const AUTHOR = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const TILL = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -40,7 +51,7 @@ function mount(overrides: Partial<DebugShopNoteRouteDeps> = {}): {
       messages,
       identities,
       kek: KEK,
-      debugToken: 'secret',
+      operatorLogin: OP_KEYS.operatorLogin,
       now: () => 1_700_000_000_000,
       ...overrides,
     }),
@@ -59,45 +70,52 @@ function body(overrides: Record<string, unknown> = {}): string {
 }
 
 describe('POST /debug/shop-notes', () => {
-  it('returns 503 before JSON when debug is unset or blank', async () => {
-    const unset = mount({ debugToken: undefined });
-    const blank = mount({ debugToken: '  ' });
-    expect((await post(unset.app, 'not-json', 'secret')).status).toBe(503);
-    expect(await (await post(blank.app, 'not-json', 'secret')).json()).toEqual({
+  it('returns 503 before JSON without a configured key login', async () => {
+    const unset = mount({ operatorLogin: undefined });
+    const blank = mount({ operatorLogin: UNCONFIGURED });
+    expect((await post(unset.app, 'not-json', OP_WRITE)).status).toBe(503);
+    expect(await (await post(blank.app, 'not-json', OP_WRITE)).json()).toEqual({
       error: 'Debug is not configured',
     });
   });
 
-  it('returns 401 when the debug token is wrong', async () => {
+  it('returns 401 when the bearer is not a valid key token', async () => {
     const { app } = mount();
     const res = await post(app, 'not-json', 'wrong');
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
   });
 
+  it('returns 403 before JSON for a read key token', async () => {
+    const { app } = mount();
+    const res = await post(app, 'not-json', OP_KEYS.tokens.read);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
   it('returns 503 when the shop KEK is missing or short', async () => {
     const missing = mount({ kek: undefined });
     const short = mount({ kek: new Uint8Array(16) });
-    expect((await post(missing.app, 'not-json', 'secret')).status).toBe(503);
-    expect(await (await post(short.app, 'not-json', 'secret')).json()).toEqual({
+    expect((await post(missing.app, 'not-json', OP_WRITE)).status).toBe(503);
+    expect(await (await post(short.app, 'not-json', OP_WRITE)).json()).toEqual({
       error: 'Shop keys are not configured',
     });
   });
 
   it('returns 400 when the note is not a shop with a till and an author', async () => {
     const { app } = mount();
-    expect((await post(app, 'not-json', 'secret')).status).toBe(400);
-    expect((await post(app, body({ text: '   ' }), 'secret')).status).toBe(400);
-    expect((await post(app, body({ text: 'hello' }), 'secret')).status).toBe(400);
-    expect((await post(app, body({ shopUsername: '_' }), 'secret')).status).toBe(400);
-    const badAuthor = await post(app, body({ authorId: 'nope' }), 'secret');
+    expect((await post(app, 'not-json', OP_WRITE)).status).toBe(400);
+    expect((await post(app, body({ text: '   ' }), OP_WRITE)).status).toBe(400);
+    expect((await post(app, body({ text: 'hello' }), OP_WRITE)).status).toBe(400);
+    expect((await post(app, body({ shopUsername: '_' }), OP_WRITE)).status).toBe(400);
+    const badAuthor = await post(app, body({ authorId: 'nope' }), OP_WRITE);
     expect(badAuthor.status).toBe(400);
     expect(await badAuthor.json()).toEqual({ error: 'Invalid shop note' });
   });
 
   it('returns 404 when the till or the author is missing', async () => {
     const missing = mount();
-    expect((await post(missing.app, body(), 'secret')).status).toBe(404);
+    expect((await post(missing.app, body(), OP_WRITE)).status).toBe(404);
 
     const blankName = mount({
       auth: {
@@ -105,7 +123,7 @@ describe('POST /debug/shop-notes', () => {
         getAccount: async () => account({ id: AUTHOR }),
       } as unknown as InMemoryAuthStore,
     });
-    expect((await post(blankName.app, body(), 'secret')).status).toBe(404);
+    expect((await post(blankName.app, body(), OP_WRITE)).status).toBe(404);
 
     const nameless = mount({
       auth: {
@@ -113,11 +131,11 @@ describe('POST /debug/shop-notes', () => {
         getAccount: async () => account({ id: AUTHOR }),
       } as unknown as InMemoryAuthStore,
     });
-    expect((await post(nameless.app, body(), 'secret')).status).toBe(404);
+    expect((await post(nameless.app, body(), OP_WRITE)).status).toBe(404);
 
     const { app, auth } = mount();
     await auth.createAccount(account({ id: TILL, username: 'till', name: 'Till' }));
-    const noAuthor = await post(app, body(), 'secret');
+    const noAuthor = await post(app, body(), OP_WRITE);
     expect(noAuthor.status).toBe(404);
     expect(await noAuthor.json()).toEqual({ error: 'Not found' });
   });
@@ -135,7 +153,7 @@ describe('POST /debug/shop-notes', () => {
         },
       } as unknown as MessageStore,
     });
-    const failed = await post(down.app, body(), 'secret');
+    const failed = await post(down.app, body(), OP_WRITE);
     expect(failed.status).toBe(503);
     expect(await failed.json()).toEqual({ error: 'Shop note was not stored' });
 
@@ -144,7 +162,7 @@ describe('POST /debug/shop-notes', () => {
     });
     await auth.createAccount(account({ id: AUTHOR }));
     await auth.createAccount(account({ id: TILL, username: 'till', name: 'Till' }));
-    const res = await post(app, body(), 'secret');
+    const res = await post(app, body(), OP_WRITE);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Shop key was not created' });
     warn.mockRestore();
@@ -155,7 +173,7 @@ describe('POST /debug/shop-notes', () => {
     const named = mount();
     await named.auth.createAccount(account({ id: AUTHOR, name: 'Ada' }));
     await named.auth.createAccount(account({ id: TILL, username: 'till', name: 'Till' }));
-    const first = await post(named.app, body(), 'secret');
+    const first = await post(named.app, body(), OP_WRITE);
     expect(first.status).toBe(200);
     const stored = (await first.json()) as { id: string; shopNpub: string };
     expect(stored.shopNpub).toMatch(/^npub1[02-9ac-hj-np-z]{58}$/);
@@ -171,7 +189,7 @@ describe('POST /debug/shop-notes', () => {
     const second = await post(
       unnamed.app,
       body({ text: 'Corner stall\n\n#21GiftsShop' }),
-      'secret',
+      OP_WRITE,
     );
     expect(second.status).toBe(200);
     const again = (await second.json()) as { id: string };

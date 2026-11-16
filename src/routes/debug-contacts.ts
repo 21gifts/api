@@ -8,15 +8,13 @@ import { MESSAGE_LIST_LIMIT } from '@/lib/message';
 
 /**
  * Operator debug surface. Read-only listing of private contact messages.
- * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  */
 
 /** Collaborators the debug contact routes need. */
 export interface DebugContactsRouteDeps {
   /** Contact persistence port. */
   store: ContactStore;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -24,7 +22,7 @@ export interface DebugContactsRouteDeps {
 /**
  * Build the `/debug/contacts` route group.
  *
- * @param deps - Contact store and optional debug token.
+ * @param deps - Contact store and optional key login.
  * @returns A Hono app exposing `GET /`.
  */
 export function debugContactsRoutes(deps: DebugContactsRouteDeps): Hono {

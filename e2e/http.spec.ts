@@ -1,6 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-
-const DEBUG = { authorization: 'Bearer e2e-debug-token' };
+import { operatorHeaders } from './helpers/operator-keys';
 
 async function memberSession(request: APIRequestContext): Promise<{ authorization: string }> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -9,13 +8,15 @@ async function memberSession(request: APIRequestContext): Promise<{ authorizatio
   // `e2e-trust-` plus the full stamp fits in 32 characters, so the handle stays whole.
   const username = `e2e-trust-${stamp}`.slice(0, 32);
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: {
       accounts: [{ name, username }],
     },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const accounts = (
     (await listed.json()) as {
       accounts: Array<{ id: string; name: string; username: string | null }>;
@@ -23,7 +24,9 @@ async function memberSession(request: APIRequestContext): Promise<{ authorizatio
   ).accounts;
   const row = accounts.find((item) => item.username === username);
   expect(row).toBeDefined();
-  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   return { authorization: `Bearer ${token}` };
@@ -184,16 +187,20 @@ async function holderSession(
 ): Promise<{ authorization: string }> {
   const name = `E2eHolder${tag}${Math.random().toString(16).slice(2, 12)}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const row = accounts.find((item) => item.name === name);
   expect(row).toBeDefined();
-  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   return { authorization: `Bearer ${((await session.json()) as { token: string }).token}` };
 }
@@ -913,9 +920,9 @@ test('POST /debug/accounts without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('POST /debug/accounts with the e2e token provisions a guest', async ({ request }) => {
+test('POST /debug/accounts with an operator key token provisions a guest', async ({ request }) => {
   const res = await request.post('/debug/accounts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name: 'Ada' }] },
   });
   expect(res.status()).toBe(200);
@@ -930,7 +937,7 @@ test('POST /debug/accounts with the e2e token provisions a guest', async ({ requ
 
 test('POST /debug/accounts refuses an external address field', async ({ request }) => {
   const res = await request.post('/debug/accounts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@example.com' }] },
   });
   expect(res.status()).toBe(400);
@@ -954,17 +961,19 @@ test('Function: decodeWalletPaymentCursor — a malformed wallet cursor is 400',
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eCursor${stamp.slice(0, 8)}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name, username: `e2e-cursor-${stamp}`.slice(0, 32) }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const account = accounts.find((row) => row.name === name);
   expect(account).toBeDefined();
   const res = await request.get(`/debug/accounts/${account?.id}/wallet?cursor=not-a-cursor`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(400);
 });
@@ -975,16 +984,20 @@ test('Function: debugWalletRoutes — GET /debug/accounts/:id/wallet shows balan
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eWallet${stamp.slice(0, 8)}`;
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name, username: `e2e-wallet-${stamp}`.slice(0, 32) }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
     .accounts;
   const account = accounts.find((row) => row.name === name);
   expect(account).toBeDefined();
-  const session = await request.post(`/debug/accounts/${account?.id}/session`, { headers: DEBUG });
+  const session = await request.post(`/debug/accounts/${account?.id}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(session.status()).toBe(200);
   const token = ((await session.json()) as { token: string }).token;
   const report = await request.post('/me/wallet/report', {
@@ -1006,7 +1019,9 @@ test('Function: debugWalletRoutes — GET /debug/accounts/:id/wallet shows balan
     },
   });
   expect(report.status()).toBe(200);
-  const res = await request.get(`/debug/accounts/${account?.id}/wallet`, { headers: DEBUG });
+  const res = await request.get(`/debug/accounts/${account?.id}/wallet`, {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as {
     accountId: string;
@@ -1039,9 +1054,9 @@ test('GET /debug/trust-edges without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('GET /debug/accounts with the e2e token lists accounts', async ({ request }) => {
+test('GET /debug/accounts with an operator key token lists accounts', async ({ request }) => {
   const res = await request.get('/debug/accounts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { accounts: unknown[] };
@@ -1062,11 +1077,13 @@ test('PATCH /debug/accounts/:id renames and refuses the session in two calls', a
   const username = `e2e-rename-${stamp}`.slice(0, 32);
   const renamed = `e2e-renamed-${stamp}`.slice(0, 32);
   const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'write'),
     data: { accounts: [{ name: `E2eRename ${stamp}`, username }] },
   });
   expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(listed.status()).toBe(200);
   const accounts = ((await listed.json()) as { accounts: Array<{ id: string; username: string }> })
     .accounts;
@@ -1074,7 +1091,7 @@ test('PATCH /debug/accounts/:id renames and refuses the session in two calls', a
   expect(typeof id).toBe('string');
 
   const res = await request.patch(`/debug/accounts/${id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { username: ` ${renamed.toUpperCase()} ` },
   });
   expect(res.status()).toBe(200);
@@ -1082,13 +1099,15 @@ test('PATCH /debug/accounts/:id renames and refuses the session in two calls', a
   expect(body.username).toBe(renamed);
 
   const refused = await request.patch(`/debug/accounts/${id}`, {
-    headers: DEBUG,
+    headers: await operatorHeaders(request, 'admin'),
     data: { sessionRefused: true },
   });
   expect(refused.status()).toBe(200);
   expect(((await refused.json()) as { sessionRefused: boolean }).sessionRefused).toBe(true);
 
-  const renamedLookup = await request.get('/debug/accounts', { headers: DEBUG });
+  const renamedLookup = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(renamedLookup.status()).toBe(200);
   const after = (
     (await renamedLookup.json()) as {
@@ -1143,18 +1162,18 @@ test('GET /debug/messages/:id/photo/:file without bearer is 401', async ({ reque
   expect(res.status()).toBe(401);
 });
 
-test('GET /debug/contacts with the e2e token lists contacts', async ({ request }) => {
+test('GET /debug/contacts with an operator key token lists contacts', async ({ request }) => {
   const res = await request.get('/debug/contacts', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { contacts: unknown[] };
   expect(Array.isArray(body.contacts)).toBe(true);
 });
 
-test('GET /debug/api-log with the e2e token lists logs', async ({ request }) => {
+test('GET /debug/api-log with an operator key token lists logs', async ({ request }) => {
   const res = await request.get('/debug/api-log', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as { logs: unknown[] };
@@ -1369,9 +1388,11 @@ test('POST /debug/push-ping without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('POST /debug/push-ping with the e2e token and no VAPID is 503', async ({ request }) => {
+test('POST /debug/push-ping with an operator key token and no VAPID is 503', async ({
+  request,
+}) => {
   const res = await request.post('/debug/push-ping', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'write'),
     data: { accountId: '00000000-0000-0000-0000-000000000001' },
   });
   expect(res.status()).toBe(503);
@@ -1385,7 +1406,7 @@ test('POST /debug/push-broadcast without bearer is 401', async ({ request }) => 
 test('Function: debugPushBroadcastRoutes — dry run counts recipients, a bad link is 400', async ({
   request,
 }) => {
-  const headers = { authorization: 'Bearer e2e-debug-token' };
+  const headers = await operatorHeaders(request, 'admin');
   const dry = await request.post('/debug/push-broadcast', {
     headers,
     data: { title: 'Update', body: 'Hello', link: '/welcome', dryRun: true },
@@ -1403,7 +1424,7 @@ test('Function: listAccountIdsWithLiveSubscriptions — a dry run counts no live
   request,
 }) => {
   const res = await request.post('/debug/push-broadcast', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'admin'),
     data: { title: 'Update', body: 'Hello', usernames: ['nobody-here'], dryRun: true },
   });
   expect(res.status()).toBe(404);
@@ -1412,7 +1433,7 @@ test('Function: listAccountIdsWithLiveSubscriptions — a dry run counts no live
     usernames: ['nobody-here'],
   });
   const all = await request.post('/debug/push-broadcast', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'admin'),
     data: { title: 'Update', body: 'Hello', dryRun: true },
   });
   expect(await all.json()).toEqual({ dryRun: true, recipients: 0 });
@@ -1422,7 +1443,7 @@ test('Function: enqueueBroadcastPush — a send without VAPID is 503 and queues 
   request,
 }) => {
   const res = await request.post('/debug/push-broadcast', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'admin'),
     data: { title: 'Update', body: 'Hello' },
   });
   expect(res.status()).toBe(503);
@@ -1438,7 +1459,7 @@ test('POST /webhooks/lnurl is not mounted when LNURL_WEBHOOK_SECRET is blank', a
 
 test('GET /debug/push-broadcast/:id for an unknown id is 404', async ({ request }) => {
   const res = await request.get('/debug/push-broadcast/:id', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'read'),
   });
   expect(res.status()).toBe(404);
   expect(await res.json()).toEqual({ error: 'Not found' });
@@ -1450,11 +1471,11 @@ test('POST /debug/passkey-renew/reopen without bearer is 401', async ({ request 
   expect(await res.json()).toEqual({ error: 'Unauthorized' });
 });
 
-test('POST /debug/passkey-renew/reopen with the e2e token and an unknown account is 404', async ({
+test('POST /debug/passkey-renew/reopen with an operator key token and an unknown account is 404', async ({
   request,
 }) => {
   const res = await request.post('/debug/passkey-renew/reopen', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'write'),
     data: { accountId: '00000000-0000-4000-8000-000000000001' },
   });
   expect(res.status()).toBe(404);
@@ -1541,7 +1562,9 @@ test('GET /funding/withdrawals is operator-only', async ({ request }) => {
   const none = await request.get('/funding/withdrawals');
   expect(none.status()).toBe(401);
   expect(await none.json()).toEqual({ error: 'Unauthorized' });
-  const operator = await request.get('/funding/withdrawals', { headers: DEBUG });
+  const operator = await request.get('/funding/withdrawals', {
+    headers: await operatorHeaders(request, 'read'),
+  });
   expect(operator.status()).toBe(200);
   expect(Array.isArray(((await operator.json()) as { withdrawals: unknown }).withdrawals)).toBe(
     true,
@@ -1624,9 +1647,11 @@ test('POST /debug/trust-edges without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('POST /debug/trust-edges with the e2e token and a bad body is 400', async ({ request }) => {
+test('POST /debug/trust-edges with an operator key token and a bad body is 400', async ({
+  request,
+}) => {
   const res = await request.post('/debug/trust-edges', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'write'),
     data: {},
   });
   expect(res.status()).toBe(400);
@@ -1637,9 +1662,11 @@ test('DELETE /debug/trust-edges without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('DELETE /debug/trust-edges with the e2e token and a bad body is 400', async ({ request }) => {
+test('DELETE /debug/trust-edges with an operator key token and a bad body is 400', async ({
+  request,
+}) => {
   const res = await request.delete('/debug/trust-edges', {
-    headers: { authorization: 'Bearer e2e-debug-token' },
+    headers: await operatorHeaders(request, 'write'),
     data: {},
   });
   expect(res.status()).toBe(400);
@@ -1732,7 +1759,9 @@ test('GET /lnurlp/wait/:payment is 404 when LNURL server is off', async ({ reque
 });
 
 test('POST /debug/shop-proofs/:id/retry is 404 when LNURL server is off', async ({ request }) => {
-  const res = await request.post('/debug/shop-proofs/:id/retry', { headers: DEBUG });
+  const res = await request.post('/debug/shop-proofs/:id/retry', {
+    headers: await operatorHeaders(request, 'write'),
+  });
   expect(res.status()).toBe(404);
   expect(await res.text()).toBe('404 Not Found');
 });

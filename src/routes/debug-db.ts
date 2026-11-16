@@ -9,7 +9,7 @@ import { roleAtLeast } from '@/lib/auth/roles';
 
 /**
  * Operator debug surface for the whole database.
- * Authenticated by `DEBUG_TOKEN` or an operator key token of any level
+ * Authenticated by an operator key token of any level
  * (Bearer). It declares `read` through `requireOperator`. A member session
  * of role `software_developer` or higher reads only the wallet tables.
  * `GET /` lists ordinary public tables or one keyset page. It does not
@@ -20,8 +20,6 @@ import { roleAtLeast } from '@/lib/auth/roles';
 export interface DebugDbRouteDeps {
   /** Catalog reader, or `undefined` when this process has no SQL client. */
   store: DebugDbStore | undefined;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
   /** Live member sessions used for software-developer wallet-table access. */
@@ -52,7 +50,7 @@ function bearer(header: string | undefined): string | null {
  * No `table` returns `{ tables }`. `table` returns one page and omits
  * `nextCursor` when there is no further page. `cursor` without `table` is 400.
  *
- * @param deps - Optional store, `DEBUG_TOKEN`, optional key login, and the session store and clock of the software-developer path.
+ * @param deps - Optional store, optional key login, and the session store and clock of the software-developer path.
  * @returns A Hono app exposing `GET /`.
  */
 export function debugDbRoutes(deps: DebugDbRouteDeps): Hono {

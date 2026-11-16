@@ -2,9 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { debugExternalRoutes } from '@/routes/debug-external';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
 
-function mount(store: MessageStore, debugToken: string | undefined): Hono {
-  return new Hono().route('/debug/external-pubkeys', debugExternalRoutes({ store, debugToken }));
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
+const UNCONFIGURED = new OperatorLogin({
+  signers: null,
+  store: new InMemoryOperatorLoginStore(),
+  now: Date.now,
+});
+
+function mount(store: MessageStore, operatorLogin: OperatorLogin | undefined): Hono {
+  return new Hono().route('/debug/external-pubkeys', debugExternalRoutes({ store, operatorLogin }));
 }
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -25,16 +36,16 @@ describe('debugExternalRoutes', () => {
     warn.mockRestore();
   });
 
-  it('returns 503 when debug is missing or blank', async () => {
-    for (const token of [undefined, '  ']) {
-      const res = await mount(new InMemoryMessageStore(), token).request('/debug/external-pubkeys');
+  it('returns 503 without a configured key login', async () => {
+    for (const login of [undefined, UNCONFIGURED]) {
+      const res = await mount(new InMemoryMessageStore(), login).request('/debug/external-pubkeys');
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({ error: 'Debug is not configured' });
     }
   });
 
   it('returns 401 without the matching bearer', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_KEYS.operatorLogin);
     const missing = await app.request('/debug/external-pubkeys');
     expect(missing.status).toBe(401);
     expect(await missing.json()).toEqual({ error: 'Unauthorized' });
@@ -62,8 +73,8 @@ describe('debugExternalRoutes', () => {
       'staff-new',
       'message-new',
     );
-    const res = await mount(store, 'secret').request('/debug/external-pubkeys', {
-      headers: { authorization: 'Bearer secret' },
+    const res = await mount(store, OP_KEYS.operatorLogin).request('/debug/external-pubkeys', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -106,8 +117,8 @@ describe('debugExternalRoutes', () => {
       },
       listBlockedPubkeyRows: async () => [],
     } as unknown as MessageStore;
-    const res = await mount(store, 'secret').request('/debug/external-pubkeys', {
-      headers: { authorization: 'Bearer secret' },
+    const res = await mount(store, OP_KEYS.operatorLogin).request('/debug/external-pubkeys', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'External pubkeys are unavailable' });

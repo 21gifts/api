@@ -48,8 +48,6 @@ export interface DebugCatalogRouteDeps {
   listDbChange?: (limit: number) => Promise<unknown[]>;
   /** LNURL server config for each account's receiving address; omitted → none. */
   lnurlServer?: LnurlServerConfig;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -102,7 +100,7 @@ function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {
 /**
  * Build the `/debug/dump` route group (GET-only operator catalog).
  *
- * @param deps - Stores and optional debug token.
+ * @param deps - Stores and optional key login.
  * @returns A Hono app exposing `GET /` and `GET /:table`.
  */
 export function debugCatalogRoutes(deps: DebugCatalogRouteDeps): Hono {

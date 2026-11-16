@@ -10,7 +10,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Operator backfill and delete of stored trust edges. Authenticated by
- * `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session. Does not change
+ * an operator key token of the SSH key login (Bearer), not by an end-user session. Does not change
  * `account.role`.
  */
 
@@ -20,8 +20,6 @@ export interface DebugTrustRouteDeps {
   store: AuthStore;
   /** Trust-edge persistence port. */
   trustStore: TrustStore;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (injected for testability). */
@@ -56,7 +54,7 @@ const deleteBody = z.object({
 /**
  * Build the `/debug/trust-edges` route group.
  *
- * @param deps - Auth store, trust store, optional debug token, optional `now`.
+ * @param deps - Auth store, trust store, optional key login, optional `now`.
  * @returns A Hono app exposing `GET /`, `POST /`, and `DELETE /`.
  */
 export function debugTrustRoutes(deps: DebugTrustRouteDeps): Hono {
