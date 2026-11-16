@@ -38,7 +38,7 @@ import {
 } from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { DailyRosterStore } from '@/lib/daily-roster-store';
-import { effectiveStatus, utcDayKey } from '@/lib/funding';
+import { effectiveStatus } from '@/lib/funding';
 import { latestTodayMediaPostId } from '@/lib/funding-ping';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { FxSpotStore } from '@/lib/fx-spot-store';
@@ -3000,7 +3000,7 @@ async function insertGiftReply(
         args.now(),
         args.recoveryShareRequiredFrom ?? null,
         args.walletTransfers,
-        utcDayKey(args.now()),
+        undefined,
         undefined,
         {
           ...(args.roster === undefined ? {} : { roster: args.roster }),

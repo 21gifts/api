@@ -11,7 +11,7 @@ import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import type { FxSpotQuote } from '@/lib/fx-spot';
 import { canonicalGoalAmount, type GoalCurrency, type GoalFiatCode } from '@/lib/goal-rate';
-import { effectiveStatus, utcDayKey } from '@/lib/funding';
+import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
@@ -1489,7 +1489,7 @@ async function persistForumPost(
           deps.now(),
           deps.recoveryShareRequiredFrom ?? null,
           deps.walletTransfers,
-          utcDayKey(deps.now()),
+          undefined,
           undefined,
           {
             ...(deps.rosterStore === undefined ? {} : { roster: deps.rosterStore }),

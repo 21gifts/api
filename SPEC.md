@@ -7145,7 +7145,11 @@ from `RECOVERY_SHARE_REQUIRED_FROM` a 21.gifts recovery share for the current
 verified wallet, and qualifying server-verified shop payments on the booked
 payout day and the day before summing to at least half the daily grant,
 rounded up in whole sats; a kept `groupMessageId` (below) makes it a moderator
-stipend, which keeps the 1-sat minimum) → **403** `Funding grant required`. The
+stipend, and a Fond row of kind `welcome` stays a welcome payout, both of which
+keep the 1-sat minimum) → **403** `Funding grant required`. A daily payout
+without a stored BTC-USD quote with a USD rate answers **503** `Price
+unavailable`, so the Fond row stays owed and is retried. A failing
+`groupMessageId` lookup never blocks the payout and keeps the 1-sat minimum. The
 one-time welcome gift skips only the shop-payment condition, for an exactly
 `verified` non-platform account that has not received its welcome gift, with
 USD `1.00`, comment `Welcome`, no `messageId` or `groupMessageId`, and

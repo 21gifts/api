@@ -768,6 +768,16 @@ describe('runWalletTransferTick', () => {
     expect(shopPaymentSats).toHaveBeenCalledOnce();
   });
 
+  it('does not ping when the shop sum is below half the daily grant', async () => {
+    const ping = vi.fn(async () => ({ status: 'accepted' as const }));
+    const deps = catchUpTestDeps(() => NOW, ping);
+    deps.transfers.shopPaymentSats = vi.fn(async () => 499);
+
+    expect((await runWalletTransferTick(deps)).size).toBe(0);
+
+    expect(ping).not.toHaveBeenCalled();
+  });
+
   it('skips the account and gift reads when the window has no shop payment', async () => {
     const ping = vi.fn(async () => ({ status: 'accepted' as const }));
     const deps = catchUpTestDeps(() => NOW, ping);

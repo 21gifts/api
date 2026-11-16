@@ -124,10 +124,9 @@ export async function loadFundingPayoutToday(
   }
   const roster = await deps.roster.get();
   const spot = await deps.fxSpot.latest();
-  // The paused switch is reported last, so the minimum is the one the grant
-  // needs once daily payments run again.
+  // The paused switch is reported last; the minimum does not depend on it.
   const minimum = dailyShopSatsRequiredForGrant({
-    roster: { ...roster, paymentsEnabled: true },
+    roster,
     spot,
     accountId: account.id,
     grantStatus: effectiveStatus(grant, nowMs),

@@ -5173,10 +5173,26 @@ test('Function: loadFundingPayoutToday — GET /me exposes one payout explanatio
   });
 });
 
-test('Function: dailyShopSatsRequired — default boot serves HTTP', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
+test('Function: dailyShopSatsRequired — default member stops at verify before the shop minimum', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  expect(await me.json()).toMatchObject({
+    funding: null,
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
 });
 
-test('Function: dailyShopSatsRequiredForGrant — default boot serves HTTP', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
+test('Function: dailyShopSatsRequiredForGrant — default member stops at verify before the roster amount', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  expect(await me.json()).toMatchObject({
+    funding: null,
+    grantPayoutToday: { state: 'blocked', reason: 'verify' },
+  });
 });

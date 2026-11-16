@@ -3465,8 +3465,16 @@ describe('issueGiftInvoice welcome exception and funding gate', () => {
 
   it.each([
     ['an empty spot store', new InMemoryFxSpotStore()],
+    [
+      'a stored quote without a USD rate',
+      new InMemoryFxSpotStore({
+        asOf: '2026-09-15T00:00:00.000Z',
+        source: 'test',
+        rates: { EUR: '90000' },
+      }),
+    ],
     ['no spot store', undefined],
-  ])('refuses a daily invoice with %s', async (_label, fxSpotStore) => {
+  ])('answers a retryable 503 for a daily invoice with %s', async (_label, fxSpotStore) => {
     const fetchImpl = vi.fn<FetchFn>(happyFetch());
     const deps = await gateDeps({ fetchImpl }, true);
     if (fxSpotStore === undefined) {
@@ -3476,10 +3484,73 @@ describe('issueGiftInvoice welcome exception and funding gate', () => {
     }
     expect(await issueGiftInvoice(deps, { address: ADDRESS, amountMsat: 1000 })).toEqual({
       ok: false,
+      status: 503,
+      error: 'Price unavailable',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  /** Gate deps with the platform account and a moderator-group trigger by `acc-alice`. */
+  async function groupDeps(
+    overrides: Partial<GiftActionDeps> = {},
+  ): Promise<GiftActionDeps & { conversationStore: InMemoryConversationStore }> {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    return {
+      ...actionDeps({
+        authStore,
+        messageStore: uuidPostStore(),
+        fetchImpl: vi.fn<FetchFn>(happyFetch()),
+        now: () => GATE_MS,
+        rosterStore: await twoDollarRoster(),
+        walletTransfers: shopSats(1),
+        ...overrides,
+      }),
+      conversationStore,
+    };
+  }
+
+  const STIPEND = {
+    address: ADDRESS,
+    amountMsat: 1000,
+    groupMessageId: GROUP_MSG_ID,
+    comment: '21gifts moderator',
+  };
+
+  it('keeps the 1-sat rule for a resolved moderator-group stipend', async () => {
+    expect((await issueGiftInvoice(await groupDeps(), STIPEND)).ok).toBe(true);
+  });
+
+  it('needs half the daily grant when the moderator-group reference does not resolve', async () => {
+    const deps = await groupDeps();
+    deps.conversationStore = new InMemoryConversationStore();
+    expect(await issueGiftInvoice(deps, STIPEND)).toEqual({
+      ok: false,
       status: 403,
       error: 'Funding grant required',
     });
-    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('keeps the 1-sat rule when the moderator-group lookup fails', async () => {
+    const deps = await groupDeps();
+    vi.spyOn(deps.conversationStore, 'getMessageById').mockRejectedValue(new Error('down'));
+    expect((await issueGiftInvoice(deps, STIPEND)).ok).toBe(true);
+  });
+
+  it('keeps the 1-sat rule for a welcome row whose exception does not apply', async () => {
+    const deps = await gateDeps({
+      fetchImpl: vi.fn<FetchFn>(happyFetch()),
+      rosterStore: await twoDollarRoster(),
+      walletTransfers: shopSats(1),
+    });
+    const result = await issueGiftInvoice(deps, {
+      address: ADDRESS,
+      amountMsat: 1000,
+      serverPayoutKind: 'welcome',
+    });
+    expect(result.ok).toBe(true);
   });
 });
 

@@ -39,7 +39,9 @@ export function dailyShopSatsRequired(amountUsd: number, spotUsd: string | null)
  * Minimum shop spending for one account's daily grant, from the live roster.
  *
  * The grant USD is exactly what {@link decideSpendInstruction} decides for a
- * daily payout with the account's effective grant status. A roster that
+ * daily payout with the account's effective grant status. The roster's
+ * `paymentsEnabled` switch does not change the minimum: a pause is decided
+ * where the payout is decided, as before the minimum existed. A roster that
  * decides a skip, a missing stored spot or one without a USD rate, or an
  * unconvertible amount returns `null` so the caller can fail closed.
  *
@@ -59,7 +61,7 @@ export function dailyShopSatsRequiredForGrant(input: {
     address: input.address ?? '',
     accountId: input.accountId,
     kind: 'daily',
-    roster: input.roster,
+    roster: { ...input.roster, paymentsEnabled: true },
     grantStatus: input.grantStatus,
   });
   if ('skip' in decided) {

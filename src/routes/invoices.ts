@@ -46,6 +46,7 @@ import {
   type WelcomeInvoiceReservationStore,
 } from '@/lib/welcome-reservation';
 import { MESSAGE_ID_RE } from '@/routes/messages';
+import { FOND_PRICE_UNAVAILABLE } from '@/routes/fond';
 
 /**
  * Gift invoice actions the Fond routes and the Fond paid worker share: check
@@ -779,8 +780,10 @@ async function issueGiftInvoiceLocked(
 
   // Resolve a moderator-group reference before the funding gate: a resolved
   // moderator payout keeps the 1-sat rule, while every unresolved reference
-  // is a daily payout and needs the 50 % minimum.
+  // is a daily payout and needs the 50 % minimum. A failing lookup never
+  // blocks the payout and keeps the 1-sat rule it had before the minimum.
   let resolvedGroupMessageId: string | undefined;
+  let groupLookupFailed = false;
   if (input.groupMessageId !== undefined) {
     try {
       const conversationStore = deps.conversationStore;
@@ -806,11 +809,25 @@ async function issueGiftInvoiceLocked(
         resolvedGroupMessageId = input.groupMessageId;
       }
     } catch {
-      resolvedGroupMessageId = undefined;
+      groupLookupFailed = true;
     }
   }
+  // A welcome row keeps the 1-sat rule even when its exception does not
+  // apply; only a daily payout needs half its grant.
+  const dailyPayout =
+    !genuineWelcome &&
+    input.serverPayoutKind !== 'welcome' &&
+    resolvedGroupMessageId === undefined &&
+    !groupLookupFailed;
 
   try {
+    // A missing stored quote is temporary: answer a retryable 503 instead of
+    // refusing a payout that may already be queued.
+    const storedSpot = dailyPayout ? await fxSpotStore.latest() : null;
+    if (dailyPayout && storedSpot?.rates.USD === undefined) {
+      logEvent('invoice.spot_unavailable', { address });
+      return { ok: false, status: 503, error: FOND_PRICE_UNAVAILABLE };
+    }
     const { eligible } = await loadPayoutEligibility(
       fundingStore,
       deps.authStore,
@@ -820,11 +837,9 @@ async function issueGiftInvoiceLocked(
       genuineWelcome ? undefined : deps.walletTransfers,
       input.shopPaymentUtcDay,
       undefined,
-      genuineWelcome
-        ? undefined
-        : resolvedGroupMessageId !== undefined
-          ? undefined
-          : { roster: rosterStore, fxSpot: fxSpotStore, address },
+      dailyPayout
+        ? { roster: rosterStore, fxSpot: { latest: async () => storedSpot }, address }
+        : undefined,
     );
     if (!eligible) {
       logEvent('invoice.funding_required', { address });
@@ -870,7 +885,8 @@ async function issueGiftInvoiceLocked(
         return { ok: false, status: 403, error: 'Forum post required' };
       }
       if (input.groupMessageId !== undefined) {
-        // Display only: a failing lookup must never block the payout.
+        // Display only: an unresolved reference is not shown. A failing lookup
+        // never blocks the payout.
         if (resolvedGroupMessageId === undefined) {
           logEvent('invoice.group_message_ignored', { address });
         }

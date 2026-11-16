@@ -87,6 +87,9 @@ describe('dailyShopSatsRequiredForGrant', () => {
         grantStatus: 'withdrawn',
       }),
     ).toBeNull();
+  });
+
+  it('keeps the minimum while the roster pauses daily payments', () => {
     expect(
       dailyShopSatsRequiredForGrant({
         roster: roster({ paymentsEnabled: false }),
@@ -94,7 +97,7 @@ describe('dailyShopSatsRequiredForGrant', () => {
         accountId: 'acc',
         grantStatus: 'admitted',
       }),
-    ).toBeNull();
+    ).toBe(500);
   });
 
   it('fails closed without a stored spot or without its USD rate', () => {

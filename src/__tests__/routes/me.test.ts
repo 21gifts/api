@@ -414,6 +414,37 @@ describe('GET /me', () => {
     expect(body.funding.shopPaymentDue).toBe(false);
   });
 
+  it('keeps both payout fields on the same minimum while daily payments are paused', async () => {
+    const store = await seededStore({ wallet: true });
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const messages = new InMemoryMessageStore();
+    await messages.create(
+      {
+        id: '00000000-0000-4000-8000-000000000001',
+        accountId: 'acc',
+        name: 'Alice',
+        text: 'today',
+        createdAt: new Date(now()),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+    );
+    const res = await mount(store, {
+      messages,
+      fundingStore: admitted(),
+      walletTransfers: transferFake(),
+      rosterStore: { get: async () => ({ paymentsEnabled: false }) as never },
+      recoveryShareRequiredFrom: null,
+    }).request('/me', { headers: AUTH });
+    const body = (await res.json()) as {
+      funding: { payoutToday: unknown; shopPaymentDue: boolean };
+    };
+    expect(body.funding.payoutToday).toEqual({ state: 'due', reason: 'payments_paused' });
+    expect(body.funding.shopPaymentDue).toBe(false);
+  });
+
   it('returns an unknown payout state and logs when a payout fact read fails', async () => {
     const store = await seededStore();
     const existing = await store.getAccount('acc');
