@@ -17,7 +17,7 @@ export type GiftInvoiceFetchResult =
 export interface RequestGiftInvoiceArgs {
   /** Already-normalised LUD-16 address. */
   address: string;
-  /** Amount in millisatoshis (spend sends the final amount). */
+  /** Amount in millisatoshis (the caller passes the final amount). */
   amountMsat: number;
   /** Optional LUD-12 comment. Omitted from the callback when unset. */
   comment?: string;

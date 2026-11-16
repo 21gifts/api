@@ -14,7 +14,7 @@ export interface GiftRecord {
   recipientWosUser: string;
   /** Unique BOLT11 payment request (`pr`). */
   lightningInvoice: string;
-  /** Spend comment / description. */
+  /** Payout comment / description. */
   description: string;
   /** Daily funding, welcome gift, or moderator stipend. */
   kind: GiftKind;
@@ -27,7 +27,7 @@ export interface GiftRecord {
 /**
  * Persistence for a newly proven outbound gift.
  *
- * Failures must not fail `POST /invoices/proof` — the Lightning pay already
+ * Failures must not fail the payout settlement — the Lightning pay already
  * happened. Callers log and continue.
  */
 export interface GiftRecorder {

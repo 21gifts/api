@@ -21,9 +21,7 @@ import { debugRoutes } from '@/routes/debug';
 import { giftsStatsRoutes } from '@/routes/stats';
 import { walletStatsRoutes } from '@/routes/wallets';
 import { giftsRoutes } from '@/routes/gifts';
-import { invoiceRoutes } from '@/routes/invoices';
 import { fondRoutes } from '@/routes/fond';
-import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { messagesRoutes } from '@/routes/messages';
 import { resolveActivityPing } from '@/lib/ocp-activity';
 import { translateRoutes } from '@/routes/translate';
@@ -140,7 +138,6 @@ import {
   type WelcomeInvoiceReservationStore,
 } from '@/lib/welcome-reservation';
 import type { InvoiceStore } from '@/lib/invoice-store';
-import type { GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
 import { requestLog, setAddressRefKey, setDiagnosticSink } from '@/lib/log';
@@ -256,8 +253,8 @@ export interface AppDeps {
   memberEventStore?: MemberEventStore;
   /**
    * Outbound gifts for public statistics; the same store tells the welcome
-   * check (invoices, trust, me, messages) that a welcome gift was already paid
-   * (default: empty {@link InMemoryGiftStore}).
+   * check (the `/fond` gift actions, trust, me, messages) that a welcome gift
+   * was already paid (default: empty {@link InMemoryGiftStore}).
    */
   giftStore?: GiftStore;
   /**
@@ -274,17 +271,16 @@ export interface AppDeps {
    */
   passkeyCeremony?: PasskeyCeremony;
   /**
-   * Spend-worker shared secret (default: `process.env.SPEND_API_TOKEN`).
-   * Unset → `GET /invoices/passkey`, `GET /invoices/eligible`, `GET /invoices/posted`, `POST /invoices`,
-   * and `POST /invoices/proof` return 503.
+   * Key that turns `address` into `addressRef` on log lines (default:
+   * `process.env.SPEND_API_TOKEN`); unset or blank prints the address marker.
+   * It authenticates no request.
    */
   spendApiToken?: string;
   /**
    * Payout ping after a new top-level forum post or a `moderator_group`
-   * persist (default: `resolveSpendPing` with env, fetch, gift store, clock,
-   * roster store, payout store, accounts, and LNURL server). With
-   * `PAYOUT_SIGNER` unset/`spend`, unset `SPEND_URL` or `SPEND_API_TOKEN`
-   * omits it; `PAYOUT_SIGNER=fond` needs neither and queues into
+   * persist (default: `resolveSpendPing` with env, gift store, clock,
+   * roster store, payout store, accounts, and LNURL server). Unset or blank
+   * `PAYOUT_SIGNER` omits it; `PAYOUT_SIGNER=fond` queues into
    * `fond_payout`. `POST /messages` and `POST /conversations/:id` still 200
    * when omitted.
    */
@@ -308,7 +304,7 @@ export interface AppDeps {
   fondPayoutStore?: FondPayoutStore;
   /**
    * Payout signer (default: `resolvePayoutSigner(env)`). `fond` queues
-   * decided instructions instead of POSTing to spend.
+   * decided instructions for the Fond member; `none` has no payout sink.
    */
   payoutSigner?: PayoutSigner;
   /**
@@ -335,15 +331,10 @@ export interface AppDeps {
    * default limiters (1/s, 20/h).
    */
   invoiceRateCaps?: InvoiceRateCaps | null;
-  /** Gift invoices issued for the spend worker (default: in-memory). */
+  /** Gift invoices issued for Fond payouts (default: in-memory). */
   invoiceStore?: InvoiceStore;
   /** Atomic welcome-exception entitlement reservations (default: in-memory). */
   welcomeInvoiceReservationStore?: WelcomeInvoiceReservationStore;
-  /**
-   * Persist proven spend gifts into `gift` (default: no-op). Boot injects
-   * {@link SqlGiftRecorder} when `DATABASE_URL` is set.
-   */
-  giftRecorder?: GiftRecorder;
   /**
    * Historical BTC-USD rates for gift stats (default: empty
    * {@link InMemoryBtcUsdStore} — empty boots stay empty 200).
@@ -520,7 +511,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   operatorLoginStore (optional; default {@link InMemoryOperatorLoginStore};
  *   SQL boot injects {@link PostgresOperatorLoginStore}),
  *   mergeDb, gift store,
- *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
+ *   BTC-USD rates, USD-fiat rates, message store,
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
  *   memberHabitStore (optional; default InMemoryMemberHabitStore; SQL boot
@@ -528,7 +519,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   conversation store, notification store, push store, trust store,
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
- *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`; `debugPaymentsRoutes` also
+ *   `/messages`, `/conversations`, `/fond`, and `debugPaymentsRoutes`; `debugPaymentsRoutes` also
  *   receives the conversation, trust, and gift stores for the window replay), vapidPublicKey, nostrKek,
  *   shopKek (optional; default nostrKek; new shop keys in `/messages`, `/me`,
  *   and `/debug/messages`),
@@ -538,9 +529,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   is mounted at `/webhooks` only when `LNURL_WEBHOOK_SECRET` is set),
  *   sparkInvoiceStore (used only when free in-app payments are on; default
  *   {@link InMemorySparkInvoiceStore}), WebAuthn RP,
- *   spend token, spend ping, daily roster store (optional; default a fresh
- *   {@link InMemoryDailyRosterStore}, shared by funding routes,
- *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter
+ *   log reference key, spend ping, daily roster store (optional; default a fresh
+ *   {@link InMemoryDailyRosterStore}, shared by funding routes and the default
+ *   spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), replyLimiter (optional; default
  *   `new PostRateLimiter(REPLY_POST_CAPS)`, shared the same way), invoiceRateCaps (optional; default
@@ -565,8 +556,9 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * @throws {@link Error}
  * When `LOGINS_OPEN_DEFAULT` is set to a value other than `open` or `closed`,
  * `RECOVERY_SHARE_REQUIRED_FROM` to anything but an ISO date,
- * `PAYOUT_SIGNER` to anything but `spend` or `fond` unless both
- * `payoutSigner` and `spendPing` are injected, or, on a local test boot
+ * `PAYOUT_SIGNER` to anything but `fond` (unset or blank is allowed;
+ * `spend` throws too) unless both `payoutSigner` and `spendPing` are
+ * injected, or, on a local test boot
  * without an injected `invoiceRateCaps`, `TEST_INVOICE_BURST_CAP` or
  * `TEST_INVOICE_HOUR_CAP` to anything but an integer from the default
  * through 100000.
@@ -708,15 +700,14 @@ export function createApp(deps: AppDeps = {}): Hono {
   const webAuthnRpId = deps.webAuthnRpId ?? process.env['WEBAUTHN_RP_ID'];
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
-  const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
-  setAddressRefKey(spendApiToken);
+  setAddressRefKey(deps.spendApiToken ?? process.env['SPEND_API_TOKEN']);
   const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
   const fondPayoutStore = deps.fondPayoutStore ?? new InMemoryFondPayoutStore();
   const payoutSigner = deps.payoutSigner ?? resolvePayoutSigner(env);
   const fondUsername = deps.fondUsername ?? resolveFondUsername(env);
   const spendPing =
     deps.spendPing ??
-    resolveSpendPing(env, fetchImpl, {
+    resolveSpendPing(env, {
       gifts: giftStore,
       now,
       rosterStore,
@@ -729,11 +720,10 @@ export function createApp(deps: AppDeps = {}): Hono {
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const welcomeInvoiceReservationStore =
     deps.welcomeInvoiceReservationStore ?? new InMemoryWelcomeInvoiceReservationStore();
-  const giftRecorder = deps.giftRecorder;
 
   const app = new Hono();
 
-  app.use('*', requestLog({ apiLogStore, authStore: store, spendApiToken, operatorLogin, now }));
+  app.use('*', requestLog({ apiLogStore, authStore: store, operatorLogin, now }));
   // NIP-05 must stay CORS `*` for any Origin (Damus / browsers). Register this
   // before the restrictive allowlist cors so `*` is applied last on the way out
   // (Hono middleware registered first wraps later middleware).
@@ -1134,7 +1124,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...receivingDeps,
       now,
       gifts: giftStore,
-      ...(spendApiToken === undefined ? {} : { spendApiToken }),
       rosterStore,
       ...(spendPing === undefined ? {} : { spendPing }),
       operatorLogin,
@@ -1290,27 +1279,6 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route(
-    '/invoices',
-    invoiceRoutes({
-      spendApiToken,
-      store: invoiceStore,
-      welcomeReservations: welcomeInvoiceReservationStore,
-      walletTransfers: walletTransferStore,
-      authStore: store,
-      messageStore,
-      now,
-      fetchImpl,
-      conversationStore,
-      fundingStore,
-      recoveryShareRequiredFrom,
-      fiatRates,
-      gifts: giftStore,
-      ...receivingDeps,
-      giftStore,
-      ...(giftRecorder === undefined ? {} : { giftRecorder }),
-    }),
-  );
-  app.route(
     '/fond',
     fondRoutes({
       authStore: store,
@@ -1336,23 +1304,7 @@ export function createApp(deps: AppDeps = {}): Hono {
         recoveryShareRequiredFrom,
         gifts: giftStore,
         giftStore,
-        ...(giftRecorder === undefined ? {} : { giftRecorder }),
       },
-    }),
-  );
-  app.route(
-    '/spend',
-    spendInstructionRoutes({
-      spendApiToken,
-      authStore: store,
-      walletTransfers: walletTransferStore,
-      messageStore,
-      fundingStore,
-      recoveryShareRequiredFrom,
-      gifts: giftStore,
-      rosterStore,
-      now,
-      ...receivingDeps,
     }),
   );
 

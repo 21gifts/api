@@ -47,7 +47,7 @@ let addressRefKey: string | null = null;
  * The key is trimmed. `undefined`, `null`, and a blank value clear it; the
  * console line then prints the fixed marker `[address]` for `address`.
  *
- * @param key - Server secret (`SPEND_API_TOKEN`), or nothing to clear.
+ * @param key - Log reference key (`SPEND_API_TOKEN`), or nothing to clear.
  * @returns void
  */
 export function setAddressRefKey(key: string | null | undefined): void {
@@ -181,8 +181,6 @@ export interface RequestLogDeps {
   apiLogStore: ApiLogStore;
   /** Auth persistence for session classification. */
   authStore: AuthStore;
-  /** Spend-worker shared secret, or `undefined` when spend auth is disabled. */
-  spendApiToken: string | undefined;
   /** SSH key login whose key tokens are logged with their operator name. */
   operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
@@ -224,7 +222,7 @@ interface RequestLogCapture {
  * Auth failure still stores `authKind: 'none'`. A store failure logs
  * `api_log.write.failed` and does not throw.
  *
- * @param deps - Audit store, auth store, spend token, optional key login, and optional clock.
+ * @param deps - Audit store, auth store, optional key login, and optional clock.
  * @param captured - Method, path, status, duration, and client metadata.
  * @returns Resolves when the write has finished or failed.
  */
@@ -236,7 +234,6 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
   try {
     const auth = await resolveRequestAuth({
       authorizationHeader: captured.authorizationHeader,
-      spendApiToken: deps.spendApiToken,
       operatorLogin: deps.operatorLogin,
       keyGrant: captured.keyGrant,
       authStore: deps.authStore,
@@ -286,7 +283,7 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
  * costs no lookup there. A failed lookup logs `api_log.key_lookup.failed`
  * and is not repeated: the row is then classified without a key token.
  *
- * @param deps - Audit store, auth store, spend token, optional key login, and optional clock.
+ * @param deps - Audit store, auth store, optional key login, and optional clock.
  * @returns Middleware that emits `http.request` with method, path, status, and ms.
  */
 export function requestLog(deps: RequestLogDeps): MiddlewareHandler {

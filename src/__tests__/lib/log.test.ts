@@ -271,7 +271,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        spendApiToken: undefined,
         awaitWrite: true,
       }),
     );
@@ -410,7 +409,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        spendApiToken: undefined,
         operatorLogin: keys.operatorLogin,
         now: () => clock,
         awaitWrite: true,
@@ -429,7 +427,7 @@ describe('requestLog', () => {
     expect(rows[0]?.createdAt.getTime()).toBe(clock);
   });
 
-  it('stores spend for the spend token and none for any other non-key, non-session bearer', async () => {
+  it('stores none for any bearer that is no key or session token', async () => {
     const keys = await seededOperatorLogin();
     const store = new InMemoryApiLogStore();
     const app = new Hono();
@@ -438,7 +436,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        spendApiToken: 'spend-secret',
         operatorLogin: keys.operatorLogin,
         awaitWrite: true,
       }),
@@ -449,7 +446,7 @@ describe('requestLog', () => {
     const rows = await store.listLatest(10);
     expect(rows.map((row) => [row.authKind, row.operator]).sort()).toEqual([
       ['none', null],
-      ['spend', null],
+      ['none', null],
     ]);
   });
 
@@ -463,7 +460,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        spendApiToken: undefined,
         operatorLogin: keys.operatorLogin,
         now: () => clock,
         awaitWrite: true,
@@ -499,7 +495,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        spendApiToken: undefined,
         operatorLogin: failing,
         awaitWrite: true,
       }),
@@ -525,7 +520,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore,
-        spendApiToken: undefined,
         awaitWrite: true,
       }),
     );
@@ -561,7 +555,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        spendApiToken: undefined,
       }),
     );
     app.get('/info', (c) => c.text('info'));
@@ -592,7 +585,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        spendApiToken: undefined,
         awaitWrite: true,
       }),
     );
@@ -646,7 +638,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore,
-        spendApiToken: undefined,
         awaitWrite: true,
         now: () => 1,
       }),

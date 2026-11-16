@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import * as bolt11 from 'light-bolt11-decoder';
 
 /**
- * Fields the spend-invoice path needs from a BOLT11 string.
+ * Fields the gift invoice path needs from a BOLT11 string.
  */
 export interface DecodedBolt11 {
   /** 32-byte payment hash, lowercase hex. */

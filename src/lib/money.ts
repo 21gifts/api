@@ -358,7 +358,7 @@ export function quoteFromLargestSibling(
 }
 
 /**
- * Normalize a spend-worker USD amount to two decimals.
+ * Normalize a decided payout USD amount to two decimals.
  *
  * Accepts `"5"` / `"5.1"` / `"5.00"` with value `> 0` and `<= 100000`.
  * Integer cents only — no IEEE float.
@@ -374,7 +374,7 @@ export function normalizeAmountUsd(raw: string): string | null {
   return usdCentsToString(cents);
 }
 
-/** Two-decimal shown CHF/EUR/PHP. Not capped at the spend-worker USD ceiling. */
+/** Two-decimal shown CHF/EUR/PHP. Not capped at the payout USD ceiling. */
 function normalizeShownCross(raw: string): string | null {
   const cents = centsFromAmount(raw);
   if (cents === null || cents <= 0 || !Number.isSafeInteger(cents)) {
@@ -448,7 +448,7 @@ function quoteFromUsdCents(usdCents: number, rate: string | undefined): string |
  * Freeze CHF/EUR/PHP from an already-normalized USD amount.
  *
  * The USD string is the value stored at payment time (the caller-supplied
- * spend amount), not a later UTC-day close. A missing cross is `null`; this
+ * amount), not a later UTC-day close. A missing cross is `null`; this
  * function does not throw when a cross is missing.
  *
  * @param amountUsd - Already-normalized two-decimal USD (e.g. `"5.00"`).

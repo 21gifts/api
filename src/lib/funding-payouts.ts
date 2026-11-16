@@ -7,8 +7,8 @@ import type { GiftRow } from '@/lib/gift';
  *
  * `blocked` is not entitled that UTC day. `missed` is entitled and no daily
  * payout was recorded. `paid` is a `daily` gift that UTC day. This is the
- * post-gate grant rule. Cleared trial or admission history and the spend
- * roster are not reconstructed. A withdrawn grant is never `missed`. A welcome gift does not change the cell.
+ * post-gate grant rule. Cleared trial or admission history and the former
+ * external roster are not reconstructed. A withdrawn grant is never `missed`. A welcome gift does not change the cell.
  * Moderator stipends are ignored.
  */
 export type PayoutDayCell = 'blocked' | 'missed' | 'paid';

@@ -145,8 +145,9 @@ export interface BootStores {
    */
   giftStore: GiftStore | undefined;
   /**
-   * Inserts proven spend gifts into `gift`, or `undefined` when no SQL
-   * client was opened so `createApp` keeps the no-op recorder.
+   * Inserts proven gifts into `gift`, or `undefined` when no SQL client was
+   * opened. `src/index.ts` passes it to the Fond paid worker; without it,
+   * `persistProvenGift` uses `NoopGiftRecorder`.
    */
   giftRecorder: GiftRecorder | undefined;
   /** BTC-USD rate book (memory when no SQL; Postgres otherwise). */

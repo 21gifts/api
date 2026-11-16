@@ -117,7 +117,7 @@ export interface FondPayoutInvoice {
 /**
  * Persistence port for `fond_payout`.
  *
- * `enqueue` follows spend's dedupe: at most one `daily`/`moderator` row per
+ * `enqueue` dedupes: at most one `daily`/`moderator` row per
  * `(utc_day, kind, address)` and one `welcome` row per `(kind, address)`.
  */
 export interface FondPayoutStore {

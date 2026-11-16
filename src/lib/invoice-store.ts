@@ -1,17 +1,17 @@
 import { GIFT_INVOICE_TTL_MS } from '@/lib/config';
 
 /**
- * In-memory gift invoices issued for the spend worker.
+ * In-memory gift invoices issued for Fond payouts.
  *
  * Same persistence story as auth: process-local, gone on restart. Unpaid
  * invoices expire after `GIFT_INVOICE_TTL_MS` (checked at read time). `sweep`
- * drops unpaid rows after expiry plus one extra TTL so 409 still works in
- * that window; paid rows stay for proof idempotency.
+ * drops unpaid rows after expiry plus one extra TTL so the in-memory map stays
+ * bounded; rows marked paid are kept.
  */
 
-/** One BOLT11 fetched from a recipient Lightning Address, awaiting proof. */
+/** One BOLT11 fetched from a recipient Lightning Address for a payout. */
 export interface GiftInvoice {
-  /** 32 hex chars, unguessable id returned to the spend worker. */
+  /** 32 hex chars, unguessable invoice id. */
   id: string;
   /** Recipient Lightning Address used to fetch `pr`. */
   address: string;
@@ -29,14 +29,14 @@ export interface GiftInvoice {
   paidAt?: number;
   /** Preimage that settled the invoice, lowercase hex. */
   preimage?: string;
-  /** Forum post to attach a gift-reply under on proof. */
+  /** Forum post to attach a gift-reply under on settlement. */
   messageId?: string;
-  /** Moderator-group conversation message to attach the stipend gift under on proof. */
+  /** Moderator-group conversation message to attach the stipend gift under on settlement. */
   groupMessageId?: string;
   /** LUD-12 comment / gift-reply text (may be `''`). */
   comment?: string;
   /**
-   * Spend-worker USD amount already normalized to two decimals (`"5.00"`).
+   * Decided USD amount already normalized to two decimals (`"5.00"`).
    * Absent when the issue request did not send `amountUsd`.
    */
   amountUsd?: string;
@@ -55,7 +55,7 @@ export interface InvoiceStore {
    */
   put(invoice: GiftInvoice): void;
   /**
-   * Look up by id. Does not hide expired rows — the route decides 409 vs 404.
+   * Look up by id. Does not hide expired rows; the caller checks `expiresAt`.
    *
    * @param id - Invoice id.
    * @returns The record, or `undefined`.
@@ -70,7 +70,7 @@ export interface InvoiceStore {
    */
   markPaid(id: string, preimage: string, now: number): void;
   /**
-   * Drop unpaid rows whose 409 tombstone window has elapsed.
+   * Drop unpaid rows whose expiry plus one extra TTL has elapsed.
    *
    * @param now - Clock, epoch milliseconds.
    */
