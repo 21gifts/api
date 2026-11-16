@@ -38,14 +38,11 @@ import {
   DAILY_ROSTER_UNKNOWN_PERSON,
   DailyRosterRequestError,
   normalizeDailyRosterComment,
-  withPayoutAddresses,
   withRecipientIdentities,
   type DailyRosterDocument,
-  type DailyRosterPayoutDocument,
   type DailyRosterPublic,
 } from '@/lib/daily-roster';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
-import { checkSpendAuth } from '@/lib/spend-auth';
 import { receivingAddress } from '@/lib/receiving-address';
 import { isStaffRole } from '@/lib/trust';
 import { normalizeUsername } from '@/lib/username';
@@ -87,11 +84,6 @@ export interface FundingRouteDeps {
    * Daily payout roster. Omitted → a fresh in-memory store.
    */
   rosterStore?: DailyRosterStore;
-  /**
-   * Spend-worker shared secret for the full-document roster routes and the
-   * worker write routes. Unset → those routes return 503 like the invoices.
-   */
-  spendApiToken?: string;
   /** Outbound gifts. Daily rows mark a payout day collected. */
   gifts: GiftStore;
   /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
@@ -156,7 +148,7 @@ function rosterKey(body: {
 /**
  * True when a JSON value has a string `username` or `address`. Update uses
  * this so a bad amount is `Invalid address or amount` and a missing key is
- * `Unknown address`, matching spend.
+ * `Unknown address`.
  *
  * @param raw - Parsed JSON, or `null` when the body was not JSON.
  * @returns Whether `username` or `address` is a string.
@@ -252,20 +244,6 @@ async function rosterAccountId(deps: FundingRouteDeps, key: string): Promise<str
     throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
   }
   return account.id;
-}
-
-/**
- * Spend document of a stored roster: each row with its payout address now.
- *
- * @param deps - Route collaborators.
- * @param roster - Stored document.
- * @returns The spend document.
- */
-function payoutDocument(
-  deps: FundingRouteDeps,
-  roster: DailyRosterDocument,
-): Promise<DailyRosterPayoutDocument> {
-  return withPayoutAddresses(roster, (id) => deps.authStore.getAccount(id), deps.lnurlServer);
 }
 
 /** Logged roster action. Never a comment or a Lightning address. */
@@ -449,57 +427,6 @@ async function openDailyRoster(
   return { caller };
 }
 
-/**
- * Map {@link checkSpendAuth} to a Hono JSON response, or `null` when ok.
- *
- * @param status - Auth check result.
- * @param json - Hono `c.json` bound to the request.
- * @returns 503/401 response, or `null` to continue.
- */
-function spendAuthGate(
-  status: ReturnType<typeof checkSpendAuth>,
-  json: (body: { error: string }, status: 401 | 503) => Response,
-): Response | null {
-  if (status === 'unconfigured') {
-    return json({ error: 'Spend invoices are not configured' }, 503);
-  }
-  if (status === 'unauthorized') {
-    return json({ error: 'Unauthorized' }, 401);
-  }
-  return null;
-}
-
-/**
- * Spend Bearer then the stored document with payout addresses. Store 400
- * stays `{ error }`.
- *
- * @param c - Hono context.
- * @param deps - Route collaborators (spend token, account lookup, LNURL server).
- * @param call - Store read or write.
- * @returns 200 spend document, 401/503 from {@link spendAuthGate}, 400, or 502.
- */
-async function answerSpendDocument(
-  c: Context,
-  deps: FundingRouteDeps,
-  call: () => Promise<DailyRosterDocument>,
-): Promise<Response> {
-  const denied = spendAuthGate(
-    checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
-    (body, status) => c.json(body, status),
-  );
-  if (denied !== null) {
-    return denied;
-  }
-  try {
-    return c.json(await payoutDocument(deps, await call()), 200);
-  } catch (err) {
-    if (err instanceof DailyRosterRequestError && err.status === 400) {
-      return c.json({ error: err.error }, 400);
-    }
-    return c.json({ error: DAILY_ROSTER_UNAVAILABLE }, 502);
-  }
-}
-
 /** Roster log fields: the session actor, or `operator` for a token read. */
 type RosterLogFields =
   { accountId: string; action: DailyRosterAction } | { operator: true; action: DailyRosterAction };
@@ -516,7 +443,7 @@ function rosterLogFields(caller: Account | null, action: DailyRosterAction): Ros
 }
 
 /**
- * Call spend and map failures. Success and 502 log the actor id and action only.
+ * Call the roster store and map failures. Success and 502 log the actor id and action only.
  *
  * @param deps - Route collaborators (auth store and LNURL server for the edit key).
  * @param caller - Initiator or founder, or `null` for an operator-token read.
@@ -586,19 +513,8 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `POST /funding/daily-roster/recipients/delete`,
  * `POST /funding/daily-roster/moderators`,
  * `POST /funding/daily-roster/moderators/update`,
- * `POST /funding/daily-roster/moderators/delete`,
- * `POST /funding/daily-roster/moderators/payments`,
- * `GET /funding/daily-roster/document`,
- * `POST /funding/daily-roster/document`,
- * `POST /funding/daily-roster/worker/comment`,
- * `POST /funding/daily-roster/worker/payments`,
- * `POST /funding/daily-roster/worker/recipients`,
- * `POST /funding/daily-roster/worker/recipients/update`,
- * `POST /funding/daily-roster/worker/recipients/delete`,
- * `POST /funding/daily-roster/worker/moderators`,
- * `POST /funding/daily-roster/worker/moderators/update`,
- * `POST /funding/daily-roster/worker/moderators/delete`, and
- * `POST /funding/daily-roster/worker/moderators/payments`.
+ * `POST /funding/daily-roster/moderators/delete`, and
+ * `POST /funding/daily-roster/moderators/payments`.
  *
  * `POST /apply` is open to `verified` and above. It runs the About-me,
  * photo, location, and grant write. That walk returns 400
@@ -628,7 +544,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `{ error: 'All grant places are taken' }`.
  *
  * @param deps - Auth store, funding store, message store, gift store, clock,
- *   optional spend ping, optional roster store, optional spend token,
+ *   optional spend ping, optional roster store,
  *   optional LNURL server, and optional admission round.
  * @returns A Hono app with member apply and withdrawal, staff review, the public places
  *   count, and daily roster routes.
@@ -1087,113 +1003,6 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         logEvent('funding.daily_roster.failed', rosterLogFields(null, 'links'));
         return c.json({ error: DAILY_ROSTER_UNAVAILABLE }, 502);
       }
-    })
-    .get('/daily-roster/document', async (c) => {
-      return answerSpendDocument(c, deps, () => rosterStore.get());
-    })
-    .post('/daily-roster/document', async (c) => {
-      return answerSpendDocument(c, deps, async () =>
-        rosterStore.importDocument(await c.req.json().catch(() => null)),
-      );
-    })
-    .post('/daily-roster/worker/comment', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const parsed = rosterCommentBody.safeParse(await c.req.json().catch(() => null));
-        if (!parsed.success) {
-          throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_COMMENT);
-        }
-        const comment = normalizeDailyRosterComment(parsed.data.comment);
-        if (comment === undefined) {
-          throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_COMMENT);
-        }
-        return rosterStore.setComment(comment);
-      });
-    })
-    .post('/daily-roster/worker/payments', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const parsed = rosterPaymentsBody.safeParse(await c.req.json().catch(() => null));
-        if (!parsed.success) {
-          throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_PAYMENTS);
-        }
-        return rosterStore.setPaymentsEnabled(parsed.data.enabled);
-      });
-    })
-    .post('/daily-roster/worker/recipients', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const parsed = rosterRecipientBody.safeParse(await c.req.json().catch(() => null));
-        const key = parsed.success ? rosterKey(parsed.data) : undefined;
-        if (!parsed.success || key === undefined) {
-          throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_ADDRESS);
-        }
-        return rosterStore.addRecipient(await rosterAccountId(deps, key), parsed.data.amountUsd);
-      });
-    })
-    .post('/daily-roster/worker/recipients/update', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const raw = await c.req.json().catch(() => null);
-        const parsed = rosterRecipientBody.safeParse(raw);
-        const key = parsed.success ? rosterKey(parsed.data) : undefined;
-        if (!parsed.success || key === undefined) {
-          throw new DailyRosterRequestError(
-            400,
-            rawKeyIsString(raw) ? DAILY_ROSTER_INVALID_ADDRESS : DAILY_ROSTER_UNKNOWN_ADDRESS,
-          );
-        }
-        return rosterStore.updateRecipient(await rosterAccountId(deps, key), parsed.data.amountUsd);
-      });
-    })
-    .post('/daily-roster/worker/recipients/delete', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const parsed = rosterDeleteBody.safeParse(await c.req.json().catch(() => null));
-        const key = parsed.success ? rosterKey(parsed.data) : undefined;
-        if (key === undefined) {
-          throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
-        }
-        return rosterStore.deleteRecipient(await rosterAccountId(deps, key));
-      });
-    })
-    .post('/daily-roster/worker/moderators', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const parsed = rosterRecipientBody.safeParse(await c.req.json().catch(() => null));
-        const key = parsed.success ? rosterKey(parsed.data) : undefined;
-        if (!parsed.success || key === undefined) {
-          throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_ADDRESS);
-        }
-        return rosterStore.addModerator(await rosterAccountId(deps, key), parsed.data.amountUsd);
-      });
-    })
-    .post('/daily-roster/worker/moderators/update', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const raw = await c.req.json().catch(() => null);
-        const parsed = rosterRecipientBody.safeParse(raw);
-        const key = parsed.success ? rosterKey(parsed.data) : undefined;
-        if (!parsed.success || key === undefined) {
-          throw new DailyRosterRequestError(
-            400,
-            rawKeyIsString(raw) ? DAILY_ROSTER_INVALID_ADDRESS : DAILY_ROSTER_UNKNOWN_ADDRESS,
-          );
-        }
-        return rosterStore.updateModerator(await rosterAccountId(deps, key), parsed.data.amountUsd);
-      });
-    })
-    .post('/daily-roster/worker/moderators/delete', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const parsed = rosterDeleteBody.safeParse(await c.req.json().catch(() => null));
-        const key = parsed.success ? rosterKey(parsed.data) : undefined;
-        if (key === undefined) {
-          throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
-        }
-        return rosterStore.deleteModerator(await rosterAccountId(deps, key));
-      });
-    })
-    .post('/daily-roster/worker/moderators/payments', async (c) => {
-      return answerSpendDocument(c, deps, async () => {
-        const parsed = rosterPaymentsBody.safeParse(await c.req.json().catch(() => null));
-        if (!parsed.success) {
-          throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_PAYMENTS);
-        }
-        return rosterStore.setModeratorPaymentsEnabled(parsed.data.enabled);
-      });
     })
     .post('/daily-roster/comment', async (c) => {
       const opened = await openDailyRoster(deps, c.req.header('authorization'));

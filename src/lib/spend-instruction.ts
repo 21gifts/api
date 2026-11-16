@@ -15,13 +15,12 @@ export type SpendGrantStatus = 'none' | 'pending' | 'trial' | 'admitted' | 'reje
  * Decide whether this ping carries a USD amount and comment.
  *
  * A roster row with an `accountId` (the stored roster) is matched by
- * `input.accountId`; a row with only an `address` (the live roster spend
- * serves before one is stored) by `input.address`.
+ * `input.accountId`; a row with only an `address` by `input.address`.
  *
  * @param input - Recipient address, the recipient's account id when known,
  *   ping kind, roster JSON, optional daily grant status, and optional
  *   same-UTC-day welcome flag.
- * @returns The amount and comment to POST, or a skip reason.
+ * @returns The amount and comment to deliver, or a skip reason.
  */
 export function decideSpendInstruction(input: {
   address: string;
@@ -84,75 +83,6 @@ export function decideSpendInstruction(input: {
     return { skip: 'not_listed' };
   }
   return { amountUsd: row.amountUsd, comment: '21gifts moderator' };
-}
-
-/**
- * Decide whether the spend worker should pay a daily gift from already-known
- * facts: passkey, post, today's media, eligibility, and the live roster.
- *
- * @param input - Recipient address, the recipient's account id when known,
- *   passkey / post / today's-media / funding facts, roster JSON, optional daily grant
- *   status, and optional same-UTC-day welcome flag.
- * @returns A skip reason, or the amount, comment, and required today's-media id.
- */
-export function decideCliDailyInstruction(input: {
-  address: string;
-  accountId?: string;
-  hasPasskey: boolean;
-  hasPosted: boolean;
-  hasMedia: boolean;
-  eligible: boolean;
-  messageId: string | null;
-  roster: unknown;
-  grantStatus?: SpendGrantStatus;
-  welcomePaidOnUtcDay?: boolean;
-}):
-  | {
-      action: 'skip';
-      reason:
-        | 'no_passkey'
-        | 'no_post'
-        | 'no_media'
-        | 'not_eligible'
-        | 'payments_disabled'
-        | 'not_listed'
-        | 'undecided'
-        | 'welcome_paid';
-    }
-  | { action: 'pay'; amountUsd: number; comment: string; messageId: string } {
-  if (!input.hasPasskey) {
-    return { action: 'skip', reason: 'no_passkey' };
-  }
-  if (!input.hasPosted) {
-    return { action: 'skip', reason: 'no_post' };
-  }
-  const messageId =
-    typeof input.messageId === 'string' && input.messageId !== '' ? input.messageId : null;
-  if (!input.hasMedia || messageId === null) {
-    return { action: 'skip', reason: 'no_media' };
-  }
-  if (!input.eligible) {
-    return { action: 'skip', reason: 'not_eligible' };
-  }
-  const decided = decideSpendInstruction({
-    address: input.address,
-    ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
-    kind: 'daily',
-    roster: input.roster,
-    ...(input.grantStatus === undefined ? {} : { grantStatus: input.grantStatus }),
-    ...(input.welcomePaidOnUtcDay === undefined
-      ? {}
-      : { welcomePaidOnUtcDay: input.welcomePaidOnUtcDay }),
-  });
-  if ('skip' in decided) {
-    return { action: 'skip', reason: decided.skip };
-  }
-  return {
-    action: 'pay',
-    amountUsd: decided.amountUsd,
-    comment: decided.comment,
-    messageId,
-  };
 }
 
 /**

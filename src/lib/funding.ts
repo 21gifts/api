@@ -124,7 +124,7 @@ export function effectiveStatus(
 }
 
 /**
- * Effective status as the member and the spend worker see it: a withdrawn
+ * Effective status as the member sees it: a withdrawn
  * grant reads exactly like no grant (`'none'`). Staff views keep
  * {@link effectiveStatus}, which reports `'withdrawn'`.
  *
@@ -287,7 +287,7 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
 }
 
 /**
- * Whether the account may receive a spend ping / spend invoice today.
+ * Whether the account may receive a spend ping / payout invoice today.
  *
  * `basis` is always false; `fond` is eligible. Before
  * {@link FUNDING_REQUIRED_FROM_UTC}, every other role is true (passkey and

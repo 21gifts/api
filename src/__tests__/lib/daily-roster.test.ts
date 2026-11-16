@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DailyRosterRequestError,
   normalizeDailyRosterComment,
-  withPayoutAddresses,
   withRecipientIdentities,
   type DailyRosterAccount,
   type DailyRosterDocument,
@@ -117,52 +116,5 @@ describe('withRecipientIdentities', () => {
     await expect(
       withRecipientIdentities(ROSTER, () => Promise.reject(new Error('db')), LNURL_SERVER),
     ).rejects.toThrow('db');
-  });
-});
-
-describe('withPayoutAddresses', () => {
-  it('resolves each payout address now and leaves it null without a verified wallet or a username', async () => {
-    expect(await withPayoutAddresses(ROSTER, lookup, LNURL_SERVER)).toEqual({
-      comment: 'thanks',
-      paymentsEnabled: true,
-      moderatorPaymentsEnabled: false,
-      defaultAmountUsd: 1,
-      recipients: [
-        { accountId: ADA, username: 'ada', address: `ada@${LNURL_SERVER.host}`, amountUsd: 2 },
-        { accountId: BEA, username: 'bea', address: null, amountUsd: 3 },
-        { accountId: CID, username: null, address: null, amountUsd: 4 },
-      ],
-      moderators: [
-        { accountId: ADA, username: 'ada', address: `ada@${LNURL_SERVER.host}`, amountUsd: 5 },
-      ],
-    });
-  });
-
-  it('follows a later wallet verification', async () => {
-    const accounts: Record<string, DailyRosterAccount> = {
-      [BEA]: { name: 'Bea', username: 'bea', sparkPubkey: null, sparkPubkeyVerifiedAt: null },
-    };
-    const only = { ...ROSTER, recipients: [{ accountId: BEA, amountUsd: 3 }], moderators: [] };
-    const read = (id: string): Promise<DailyRosterAccount | undefined> =>
-      Promise.resolve(accounts[id]);
-    expect((await withPayoutAddresses(only, read, LNURL_SERVER)).recipients[0]?.address).toBeNull();
-    accounts[BEA] = {
-      name: 'Bea',
-      username: 'bea',
-      sparkPubkey: WALLET_PUBKEY,
-      sparkPubkeyVerifiedAt: 2,
-    };
-    expect((await withPayoutAddresses(only, read, LNURL_SERVER)).recipients[0]?.address).toBe(
-      `bea@${LNURL_SERVER.host}`,
-    );
-  });
-
-  it('gives no address for a missing account or with the LNURL server off', async () => {
-    const off = await withPayoutAddresses(ROSTER, lookup, undefined);
-    expect(off.recipients.map((row) => row.address)).toEqual([null, null, null]);
-    const missing = await withPayoutAddresses(ROSTER, async () => undefined, LNURL_SERVER);
-    expect(missing.moderators).toEqual([
-      { accountId: ADA, username: null, address: null, amountUsd: 5 },
-    ]);
   });
 });

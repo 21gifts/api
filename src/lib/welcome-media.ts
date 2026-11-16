@@ -223,7 +223,8 @@ export async function welcomeSweepCandidates(args: {
 }
 
 /**
- * Tell spend an eligible account is owed the one-time welcome gift.
+ * Ping the payout signer that an eligible account is owed the one-time
+ * welcome gift.
  *
  * Pass `account` after a new top-level post, an About-me save, or a
  * verification. Omit `account` for the sweep, which pings every account

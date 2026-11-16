@@ -29,7 +29,7 @@ export const GIFT_INVOICE_MAX_MSAT = 10_000_000_000;
 /** Maximum whole-sat heart amount, matching the gift invoice ceiling. */
 export const HEART_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
 
-/** Lifetime of an unpaid gift invoice awaiting proof, in milliseconds. */
+/** Lifetime of an unpaid gift invoice, in milliseconds. */
 export const GIFT_INVOICE_TTL_MS = 15 * 60 * 1000;
 
 /**
@@ -376,8 +376,8 @@ export function resolveShopPaymentConfig(
   };
 }
 
-/** Which collaborator delivers a decided payout instruction. */
-export type PayoutSigner = 'spend' | 'fond';
+/** Which collaborator delivers a decided payout instruction; `none` means no payout sink. */
+export type PayoutSigner = 'none' | 'fond';
 
 /** Default account allowed on the `/fond/*` routes. */
 export const DEFAULT_FOND_USERNAME = 'tondo-fond';
@@ -385,17 +385,18 @@ export const DEFAULT_FOND_USERNAME = 'tondo-fond';
 /**
  * Resolve `PAYOUT_SIGNER`.
  *
- * Unset, blank, or `spend` → `'spend'` (the legacy HTTP spend ping).
+ * Unset or blank → `'none'` (no payout sink; payout pings are skipped).
  * `fond` → `'fond'` (the queue a Fond member pays from its own wallet).
  *
  * @param env - Environment slice.
  * @returns The payout signer.
- * @throws Error with message `Invalid PAYOUT_SIGNER` for any other value.
+ * @throws Error with message `Invalid PAYOUT_SIGNER` for any other value,
+ *   including `spend`.
  */
 export function resolvePayoutSigner(env: Record<string, string | undefined>): PayoutSigner {
   const raw = (env['PAYOUT_SIGNER'] ?? '').trim().toLowerCase();
-  if (raw === '' || raw === 'spend') {
-    return 'spend';
+  if (raw === '') {
+    return 'none';
   }
   if (raw === 'fond') {
     return 'fond';

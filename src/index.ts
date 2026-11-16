@@ -239,7 +239,7 @@ if (import.meta.main) {
       ? new WebsocketNostrPublisher(relayPool)
       : undefined;
   const lnurlServer = resolveLnurlServerConfig(process.env) ?? undefined;
-  const spendPing = resolveSpendPing(process.env, globalThis.fetch, {
+  const spendPing = resolveSpendPing(process.env, {
     rosterStore,
     fondPayoutStore,
     accounts: authStore,
@@ -327,7 +327,6 @@ if (import.meta.main) {
     messageStore: forumMessages,
     shopIdentityStore: shopIdentities,
     giftStore: appGiftStore,
-    ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(boot.translationStore === undefined ? {} : { translationStore: boot.translationStore }),
     ...(boot.conversationTranslationStore === undefined
       ? {}

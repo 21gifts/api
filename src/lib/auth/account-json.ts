@@ -92,7 +92,7 @@ export interface OwnerAccountResponse extends AccountResponse {
   missing: AccountMissingField[];
   /**
    * True when there is a live non-profile forum row or About me is a real bio
-   * (`aboutMe` non-null). Not the spend predicate.
+   * (`aboutMe` non-null). Not the payout predicate.
    */
   hasPosted: boolean;
   /**
@@ -656,8 +656,8 @@ export function serializeDebugAccountDetail(
  * @param account - Stored account.
  * @param hasPosted - True when there is a live non-profile forum row or About
  *   me is a real bio (`aboutMe` non-null). Name-copy, photo-only, missing, and
- *   soft-hidden notes do not count. This owner flag is not the spend predicate
- *   (`accountHasLiveTopLevelPost` / GET /invoices/posted stays unchanged).
+ *   soft-hidden notes do not count. This owner flag is not the payout predicate
+ *   (`accountHasLiveTopLevelPost` stays unchanged).
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
  * @param funding - Owner funding JSON, or `null` for `basis`. Defaults to
@@ -755,8 +755,8 @@ export interface OwnerFundingLookup {
  * {@link serializeOwnerAccount}. `hasPosted` is true when there is a live
  * non-profile forum row or About me is a real bio (`aboutMe` non-null).
  * Name-copy, photo-only, missing, and soft-hidden notes do not count. This
- * owner flag is not the spend predicate (`accountHasLiveTopLevelPost` /
- * GET /invoices/posted stays unchanged). HTTP callers (`meRoutes`,
+ * owner flag is not the payout predicate (`accountHasLiveTopLevelPost`
+ * stays unchanged). HTTP callers (`meRoutes`,
  * `authRoutes`) use this helper so they cannot drift. Does not wrap store
  * errors.
  *

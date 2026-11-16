@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GiftRow } from '@/lib/gift';
-import {
-  decideCliDailyInstruction,
-  decideSpendInstruction,
-  welcomeGiftPaidOnUtcDay,
-} from '@/lib/spend-instruction';
+import { decideSpendInstruction, welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
 
 const ADDRESS = 'ada@walletofsatoshi.com';
 
@@ -749,146 +745,6 @@ describe('decideSpendInstruction', () => {
   });
 });
 
-describe('decideCliDailyInstruction', () => {
-  const listed = {
-    comment: 'thanks',
-    paymentsEnabled: true,
-    recipients: [{ address: ADDRESS, amountUsd: 2 }],
-  };
-  const base = {
-    address: ADDRESS,
-    hasPasskey: true,
-    hasPosted: true,
-    hasMedia: true,
-    eligible: true,
-    messageId: 'post-1',
-    roster: listed,
-  };
-
-  it('returns no_passkey when hasPasskey is false', () => {
-    expect(decideCliDailyInstruction({ ...base, hasPasskey: false })).toEqual({
-      action: 'skip',
-      reason: 'no_passkey',
-    });
-  });
-
-  it('returns no_post when hasPosted is false', () => {
-    expect(decideCliDailyInstruction({ ...base, hasPosted: false })).toEqual({
-      action: 'skip',
-      reason: 'no_post',
-    });
-  });
-
-  it('returns no_media when hasMedia is false', () => {
-    expect(decideCliDailyInstruction({ ...base, hasMedia: false })).toEqual({
-      action: 'skip',
-      reason: 'no_media',
-    });
-  });
-
-  it('returns not_eligible when eligible is false', () => {
-    expect(decideCliDailyInstruction({ ...base, eligible: false })).toEqual({
-      action: 'skip',
-      reason: 'not_eligible',
-    });
-  });
-
-  it('returns payments_disabled from decideSpendInstruction', () => {
-    expect(
-      decideCliDailyInstruction({
-        ...base,
-        roster: { ...listed, paymentsEnabled: false },
-      }),
-    ).toEqual({ action: 'skip', reason: 'payments_disabled' });
-  });
-
-  it('returns not_listed from decideSpendInstruction', () => {
-    expect(
-      decideCliDailyInstruction({
-        ...base,
-        grantStatus: 'rejected',
-        roster: { comment: 'thanks', paymentsEnabled: true, recipients: [] },
-      }),
-    ).toEqual({ action: 'skip', reason: 'not_listed' });
-  });
-
-  it('returns undecided from decideSpendInstruction', () => {
-    expect(
-      decideCliDailyInstruction({
-        ...base,
-        roster: { comment: 'thanks', paymentsEnabled: true, recipients: [] },
-      }),
-    ).toEqual({ action: 'skip', reason: 'undecided' });
-  });
-
-  it('returns welcome_paid from decideSpendInstruction', () => {
-    expect(
-      decideCliDailyInstruction({
-        ...base,
-        welcomePaidOnUtcDay: true,
-      }),
-    ).toEqual({ action: 'skip', reason: 'welcome_paid' });
-  });
-
-  it('returns a pay with a non-empty messageId', () => {
-    expect(decideCliDailyInstruction(base)).toEqual({
-      action: 'pay',
-      amountUsd: 2,
-      comment: 'thanks',
-      messageId: 'post-1',
-    });
-  });
-
-  it('returns no_media when messageId is null', () => {
-    expect(decideCliDailyInstruction({ ...base, messageId: null })).toEqual({
-      action: 'skip',
-      reason: 'no_media',
-    });
-  });
-
-  it('returns no_media when messageId is empty', () => {
-    expect(decideCliDailyInstruction({ ...base, messageId: '' })).toEqual({
-      action: 'skip',
-      reason: 'no_media',
-    });
-  });
-
-  it('returns a Welcome pay when welcomePaidOnUtcDay is true', () => {
-    expect(
-      decideCliDailyInstruction({
-        ...base,
-        welcomePaidOnUtcDay: true,
-        roster: { ...listed, comment: 'Welcome' },
-      }),
-    ).toEqual({
-      action: 'pay',
-      amountUsd: 2,
-      comment: 'Welcome',
-      messageId: 'post-1',
-    });
-  });
-
-  it('forwards grantStatus into decideSpendInstruction when provided', () => {
-    expect(
-      decideCliDailyInstruction({
-        ...base,
-        grantStatus: 'admitted',
-        roster: {
-          comment: 'thanks',
-          paymentsEnabled: true,
-          defaultAmountUsd: 9,
-          recipients: [],
-        },
-      }),
-    ).toEqual({
-      action: 'pay',
-      amountUsd: 9,
-      comment: 'thanks',
-      messageId: 'post-1',
-    });
-  });
-});
-
 describe('welcomeGiftPaidOnUtcDay', () => {
   const day = '2026-09-20';
 
@@ -982,21 +838,5 @@ describe('stored roster rows by account', () => {
     expect(
       decideSpendInstruction({ address: ADDRESS, accountId: BEA, kind: 'moderator', roster }),
     ).toEqual({ skip: 'not_listed' });
-  });
-
-  it('passes the account id through the daily instruction', () => {
-    expect(
-      decideCliDailyInstruction({
-        address: 'ada@21.gifts',
-        accountId: ADA,
-        hasPasskey: true,
-        hasPosted: true,
-        hasMedia: true,
-        eligible: true,
-        messageId: 'post-ada',
-        roster,
-        grantStatus: 'none',
-      }),
-    ).toEqual({ action: 'pay', amountUsd: 3, comment: 'thanks', messageId: 'post-ada' });
   });
 });

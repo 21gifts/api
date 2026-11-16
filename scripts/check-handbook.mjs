@@ -162,7 +162,6 @@ function extractEndpoints() {
     'debug-logins.ts': '/debug',
     'debug-auth.ts': '/debug/auth',
     'well-known.ts': '/.well-known',
-    'spend-instruction-route.ts': '/spend',
     'lnurl-server.ts': '',
   };
   const methodRe = /\.(get|post|delete|put|patch)\((['"])(\/[-A-Za-z0-9_./:]*)\2/g;
