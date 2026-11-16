@@ -1,16 +1,17 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import {
   API_LOG_LIST_LIMIT,
   serializeDebugApiLog,
   type ApiLogPageQuery,
   type ApiLogStore,
 } from '@/lib/api-log';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 
 /**
  * Operator debug surface. Read-only listing of HTTP audit rows.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  */
 
 /** Collaborators the debug api-log routes need. */
@@ -19,6 +20,8 @@ export interface DebugApiLogRouteDeps {
   store: ApiLogStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,14 +33,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * @returns A Hono app exposing `GET /`.
  */
 export function debugApiLogRoutes(deps: DebugApiLogRouteDeps): Hono {
-  return new Hono().get('/', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().get('/', requireOperator('read', deps), async (c) => {
     const query: ApiLogPageQuery = {};
     const accountIdRaw = c.req.query('accountId');
     if (accountIdRaw !== undefined) {

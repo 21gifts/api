@@ -1,13 +1,13 @@
 /**
  * Operator login controls: the login switch, its allowlist, and ending every
- * session. Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * session. Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  */
 
 import { Hono } from 'hono';
-import type { MiddlewareHandler } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import type { LoginGate } from '@/lib/login-gate';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_ID_RE } from '@/routes/messages';
@@ -22,6 +22,8 @@ export interface DebugLoginsRouteDeps {
   now: () => number;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /** Body of `PUT /debug/logins`. */
@@ -32,20 +34,6 @@ const allowlistBody = z.object({ accountId: z.string().regex(MESSAGE_ID_RE) }).s
 
 const SWITCH_BODY_ERROR = 'Expected a JSON body with an "open" boolean';
 const ALLOWLIST_BODY_ERROR = 'Expected a JSON body with an "accountId" uuid';
-
-/** Shared 503/401 gate for every route here (before JSON). */
-function requireDebugToken(deps: DebugLoginsRouteDeps): MiddlewareHandler {
-  return async (c, next) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    await next();
-  };
-}
 
 /**
  * Current switch plus allowlist, as every switch and allowlist route answers.
@@ -82,11 +70,13 @@ async function loginsBody(gate: LoginGate): Promise<{
  */
 export function debugLoginsRoutes(deps: DebugLoginsRouteDeps): Hono {
   return new Hono()
-    .use('/logins', requireDebugToken(deps))
-    .use('/logins/*', requireDebugToken(deps))
-    .use('/sessions', requireDebugToken(deps))
-    .get('/logins', async (c) => c.json(await loginsBody(deps.loginGate), 200))
-    .put('/logins', async (c) => {
+    .use('/logins', requireOperator('read', deps))
+    .use('/logins/*', requireOperator('read', deps))
+    .use('/sessions', requireOperator('read', deps))
+    .get('/logins', requireOperator('read', deps), async (c) =>
+      c.json(await loginsBody(deps.loginGate), 200),
+    )
+    .put('/logins', requireOperator('write', deps), async (c) => {
       const parsed = switchBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: SWITCH_BODY_ERROR }, 400);
@@ -95,7 +85,7 @@ export function debugLoginsRoutes(deps: DebugLoginsRouteDeps): Hono {
       logEvent('debug.logins.set', { open: parsed.data.open });
       return c.json(await loginsBody(deps.loginGate), 200);
     })
-    .post('/logins/allowlist', async (c) => {
+    .post('/logins/allowlist', requireOperator('write', deps), async (c) => {
       const parsed = allowlistBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json({ error: ALLOWLIST_BODY_ERROR }, 400);
@@ -108,7 +98,7 @@ export function debugLoginsRoutes(deps: DebugLoginsRouteDeps): Hono {
       logEvent('debug.logins.allowlist.add', { accountId, added });
       return c.json({ added, ...(await loginsBody(deps.loginGate)) }, 200);
     })
-    .delete('/logins/allowlist/:accountId', async (c) => {
+    .delete('/logins/allowlist/:accountId', requireOperator('write', deps), async (c) => {
       const raw = c.req.param('accountId');
       if (!MESSAGE_ID_RE.test(raw)) {
         return c.json({ error: 'Not found' }, 404);
@@ -118,7 +108,7 @@ export function debugLoginsRoutes(deps: DebugLoginsRouteDeps): Hono {
       logEvent('debug.logins.allowlist.remove', { accountId, removed });
       return c.json({ removed, ...(await loginsBody(deps.loginGate)) }, 200);
     })
-    .delete('/sessions', async (c) => {
+    .delete('/sessions', requireOperator('admin', deps), async (c) => {
       const deleted = await deps.authStore.deleteAllSessions();
       logEvent('debug.sessions.deleted', { deleted });
       return c.json({ deleted }, 200);

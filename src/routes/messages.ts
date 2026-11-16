@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { resolveSession } from '@/lib/auth/service';
@@ -14,7 +15,7 @@ import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
-import { isOperatorBearer } from '@/lib/debug-token';
+import { checkOperator } from '@/lib/operator';
 import type { GiftStore } from '@/lib/gift-store';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
@@ -393,10 +394,10 @@ export interface MessagesRouteDeps {
    * that path needs the quote; a BTC ask still stores the typed sats.
    */
   fxSpot?: { latest(): Promise<FxSpotQuote | null> };
-  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  /** `DEBUG_TOKEN` (every operator level), or unset. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 const defaultPostLimiter = new PostRateLimiter();
@@ -3162,7 +3163,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     })
     .get('/:id/edits', async (c) => {
       const header = c.req.header('authorization');
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+      if ((await checkOperator('read', deps, header)) !== true) {
         const account = await authedAccount(deps, header);
         if (account === null) {
           return c.json({ error: 'Unauthorized' }, 401);
@@ -3218,7 +3219,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     })
     .get('/hidden', async (c) => {
       const header = c.req.header('authorization');
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+      if ((await checkOperator('read', deps, header)) !== true) {
         const account = await authedAccount(deps, header);
         if (account === null) {
           return c.json({ error: 'Unauthorized' }, 401);

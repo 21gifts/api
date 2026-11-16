@@ -61,6 +61,8 @@ describe('FOND_PAYOUT_SCHEMA_SQL', () => {
     expect(all).toMatch(/\(utc_day, kind, address\)\s+WHERE kind IN \('daily', 'moderator'\)/);
     expect(all).toMatch(/CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_welcome_uidx/);
     expect(all).toMatch(/\(kind, address\)\s+WHERE kind = 'welcome'/);
+    expect(all).toContain('CREATE TABLE IF NOT EXISTS fond_deposit_address');
+    expect(all).toContain('account_id uuid PRIMARY KEY REFERENCES account (id)');
   });
 });
 
@@ -355,6 +357,17 @@ describe('InMemoryFondPayoutStore', () => {
       failure: null,
       claimedAt: null,
     });
+  });
+
+  it('stores one deposit address per account, reports changes, and replaces it', async () => {
+    const store = new InMemoryFondPayoutStore();
+    expect(await store.depositAddress('fond')).toBeNull();
+    expect(await store.setDepositAddress('fond', 'bc1qa')).toBe(true);
+    expect(await store.setDepositAddress('fond', 'bc1qa')).toBe(false);
+    expect(await store.setDepositAddress('other', 'bc1qb')).toBe(true);
+    expect(await store.setDepositAddress('fond', 'bc1qc')).toBe(true);
+    expect(await store.depositAddress('fond')).toBe('bc1qc');
+    expect(await store.depositAddress('other')).toBe('bc1qb');
   });
 });
 
@@ -762,5 +775,36 @@ describe('PostgresFondPayoutStore', () => {
       amountMsat: 1_000_000,
     });
     expect(sql.queries[0]?.params).toEqual(['row', 'i', 'h', 'b', null, 1_000_000]);
+  });
+
+  it('reads the deposit address of one account', async () => {
+    const sql = new MockSql();
+    sql.queryResults = [[{ address: 'bc1qa' }], []];
+    const store = new PostgresFondPayoutStore(sql);
+    expect(await store.depositAddress('fond')).toBe('bc1qa');
+    expect(await store.depositAddress('other')).toBeNull();
+    expect(sql.queries[0]).toEqual({
+      text: 'SELECT address FROM fond_deposit_address WHERE account_id = $1',
+      params: ['fond'],
+    });
+    expect(sql.queries[1]?.params).toEqual(['other']);
+  });
+
+  it('upserts the deposit address only when it differs', async () => {
+    const sql = new MockSql();
+    sql.queryResults = [[{ account_id: 'fond' }], []];
+    const store = new PostgresFondPayoutStore(sql);
+    expect(await store.setDepositAddress('fond', 'bc1qa')).toBe(true);
+    expect(await store.setDepositAddress('fond', 'bc1qa')).toBe(false);
+    expect(sql.queries[0]?.text).toContain(
+      'INSERT INTO fond_deposit_address (account_id, address)',
+    );
+    expect(sql.queries[0]?.text).toContain(
+      'ON CONFLICT (account_id) DO UPDATE SET address = EXCLUDED.address, updated_at = now()',
+    );
+    expect(sql.queries[0]?.text).toContain(
+      'WHERE fond_deposit_address.address IS DISTINCT FROM EXCLUDED.address',
+    );
+    expect(sql.queries[0]?.params).toEqual(['fond', 'bc1qa']);
   });
 });

@@ -28,7 +28,9 @@ export const PINNED_OFF = {
   LNURL_WEBHOOK_SECRET: '',
   // Refused port: GET /fx/spot stays the empty result, independent of the network.
   BTC_FIAT_SPOT_URL: 'http://127.0.0.1:9/',
-  DEBUG_READ_TOKEN: '',
+  // The operator login with SSH keys stays off unless a boot sets both.
+  DEBUG_ALLOWED_SIGNERS_DIR: '',
+  DEBUG_SIGNING_NAMESPACE: '',
   WEBAUTHN_RP_ID: 'localhost',
 } as const;
 

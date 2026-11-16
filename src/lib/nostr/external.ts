@@ -631,7 +631,8 @@ const EXTERNAL_HOUR_MS = 60 * 60 * 1000;
 const EXTERNAL_IDLE_MS = 48 * EXTERNAL_HOUR_MS;
 
 /**
- * In-process per-pubkey and global sliding limits for external Nostr replies.
+ * In-process per-pubkey and global sliding limits for external Nostr replies
+ * or admitted direct messages from external pubkeys (one instance each).
  * Successful acquisitions can be released when persistence fails.
  */
 export class ExternalIngestLimiter {
@@ -639,7 +640,8 @@ export class ExternalIngestLimiter {
   readonly #global: IngestHits = { hours: [], days: new Map(), lastHitAt: 0 };
 
   /**
-   * Check and record an external reply against per-pubkey and global limits.
+   * Check and record an external reply or direct message against per-pubkey
+   * and global limits.
    *
    * @param pubkey - External author pubkey.
    * @param nowMs - Current epoch milliseconds.

@@ -4,6 +4,9 @@ import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import {
   InMemoryWalletTransferStore,
   PostgresWalletTransferStore,
+  type TillReceiptCharge,
+  type TillReceiptContext,
+  type TillReceiptQuery,
   type WalletTransferRecord,
   type WalletTokenTransactionRecord,
 } from '@/lib/wallet-transfer-store';
@@ -453,6 +456,65 @@ describe('InMemoryWalletTransferStore', () => {
   });
 });
 
+describe('InMemoryWalletTransferStore.findObservedCounterparties', () => {
+  it('names only the resolved other account of the caller’s completed observed transfers', async () => {
+    const PREVIOUS = `03${'e'.repeat(64)}`;
+    const SECOND_WALLET = `02${'f'.repeat(64)}`;
+    const store = new InMemoryWalletTransferStore({
+      verifiedAccountForPubkey: async (pubkey) =>
+        pubkey === MEMBER
+          ? 'member-account'
+          : pubkey === SHOP
+            ? 'shop-account'
+            : pubkey === OWNER
+              ? 'me'
+              : null,
+      previousAccountForPubkey: async (pubkey) => (pubkey === PREVIOUS ? 'previous-account' : null),
+    });
+    const completed = (partial: Partial<WalletTransferRecord>): WalletTransferRecord =>
+      row({ accountId: 'me', status: 'completed', counterpartyPubkey: MEMBER, ...partial });
+    for (const record of [
+      completed({ transferId: 'out' }),
+      completed({ transferId: 'in', direction: 'in', counterpartyPubkey: PREVIOUS }),
+      completed({ transferId: 'pending', status: 'pending' }),
+      completed({ transferId: 'lightning', type: 'preimage_swap' }),
+      completed({ transferId: 'self', counterpartyPubkey: OWNER }),
+      completed({ transferId: 'unresolved', counterpartyPubkey: UNKNOWN }),
+      completed({ transferId: 'multi', counterpartyPubkeys: [MEMBER, SHOP] }),
+      completed({ transferId: 'two-wallets' }),
+      completed({
+        transferId: 'two-wallets',
+        walletPubkey: SECOND_WALLET,
+        counterpartyPubkey: SHOP,
+      }),
+      completed({ transferId: 'foreign', accountId: 'other' }),
+    ]) {
+      await store.upsertTransfer(record);
+    }
+    const found = await store.findObservedCounterparties('me', [
+      { id: 'out', direction: 'out' },
+      { id: 'in', direction: 'in' },
+      { id: 'pending', direction: 'out' },
+      { id: 'lightning', direction: 'out' },
+      { id: 'self', direction: 'out' },
+      { id: 'unresolved', direction: 'out' },
+      { id: 'multi', direction: 'out' },
+      { id: 'two-wallets', direction: 'out' },
+      { id: 'foreign', direction: 'out' },
+      { id: 'out-as-in', direction: 'in' },
+      { id: 'missing', direction: 'out' },
+    ]);
+    expect([...found]).toEqual([
+      ['out', ['member-account']],
+      ['in', ['previous-account']],
+      ['two-wallets', ['member-account', 'shop-account']],
+    ]);
+    expect([
+      ...(await store.findObservedCounterparties('me', [{ id: 'out', direction: 'in' }])),
+    ]).toEqual([]);
+  });
+});
+
 describe('PostgresWalletTransferStore', () => {
   it('lists wallets, maps sync state, and runs the one-statement shop query', async () => {
     const query = vi.fn(async (text: string) => {
@@ -688,5 +750,349 @@ describe('PostgresWalletTransferStore', () => {
       updated: true,
       shopPaymentBecameCompleted: false,
     });
+  });
+});
+
+describe('PostgresWalletTransferStore.findObservedCounterparties', () => {
+  it('resolves verified or previous owners in one bound query and groups them by id', async () => {
+    const query = vi.fn(async (): Promise<unknown[]> => [
+      { id: 'a', account_id: 'x' },
+      { id: 'a', account_id: 'y' },
+      { id: 'b', account_id: 'z' },
+    ]);
+    const sql = { query, execute: vi.fn(async () => undefined) } as unknown as SqlClient;
+    const found = await new PostgresWalletTransferStore(sql).findObservedCounterparties('me', [
+      { id: 'a', direction: 'out' },
+      { id: 'b', direction: 'in' },
+      { id: 'bad\u0000id', direction: 'in' },
+    ]);
+    expect([...found]).toEqual([
+      ['a', ['x', 'y']],
+      ['b', ['z']],
+    ]);
+    expect(query).toHaveBeenCalledTimes(1);
+    const [text, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual([
+      'me',
+      postgresTextArrayLiteral(['a', 'b']),
+      postgresTextArrayLiteral(['out', 'in']),
+    ]);
+    expect(text).toContain("transfer.type = 'transfer'");
+    expect(text).toContain("transfer.status = 'completed'");
+    expect(text).toContain('transfer.counterparty_pubkeys <@ ARRAY[transfer.counterparty_pubkey]');
+    expect(text).toContain('spark_pubkey_verified_at IS NOT NULL');
+    expect(text).toContain('ORDER BY replaced_at DESC, account_id');
+    expect(text).toContain('resolved.account_id <> transfer.account_id');
+  });
+});
+
+describe('InMemoryWalletTransferStore.listTillReceipts', () => {
+  const NOW = Date.parse('2026-11-12T12:00:00.000Z');
+  const DAY = 24 * 60 * 60 * 1000;
+  const ALLOW = 300_000;
+  const PREVIOUS = `03${'e'.repeat(64)}`;
+  const PAYER = `02${'f'.repeat(64)}`;
+  const MERGED = `02${'9'.repeat(64)}`;
+  const FOREIGN = `03${'8'.repeat(64)}`;
+  const HASH_A = 'aa'.repeat(32);
+  const HASH_B = 'bb'.repeat(32);
+  const HASH_C = 'cc'.repeat(32);
+  const query = (partial: Partial<TillReceiptQuery> = {}): TillReceiptQuery => ({
+    accountId: 'account',
+    sinceMs: NOW - DAY,
+    nowMs: NOW,
+    clockAllowanceMs: ALLOW,
+    limit: 20,
+    ...partial,
+  });
+  const at = (minutesBeforeNow: number): Date => new Date(NOW - minutesBeforeNow * 60_000);
+  const receipt = (
+    transferId: string,
+    minutesBeforeNow: number,
+    partial: Partial<WalletTransferRecord> = {},
+  ): WalletTransferRecord =>
+    row({
+      transferId,
+      direction: 'in',
+      type: 'preimage_swap',
+      status: 'completed',
+      counterpartyPubkey: PAYER,
+      counterpartyPubkeys: [PAYER],
+      transferCreatedAt: at(minutesBeforeNow),
+      ...partial,
+    });
+
+  async function storeWith(
+    rows: WalletTransferRecord[],
+    context: Partial<TillReceiptContext> = {},
+  ): Promise<InMemoryWalletTransferStore> {
+    const contexts: string[] = [];
+    const store = new InMemoryWalletTransferStore({
+      tillContext: async (accountId) => {
+        contexts.push(accountId);
+        return { ownWalletKeys: [], charges: [], reports: [], ...context };
+      },
+    });
+    for (const entry of rows) await store.upsertTransfer(entry);
+    return store;
+  }
+
+  it('lists completed incoming Lightning and Spark receipts of the account, newest first', async () => {
+    const store = await storeWith(
+      [
+        receipt('ln', 10, { amountSats: 2100 }),
+        receipt('spark', 20, { type: 'transfer', amountSats: 21 }),
+        receipt('old', 24 * 60 + 1),
+        receipt('future-edge', -5),
+        receipt('future', -6),
+        receipt('undated', 5, { transferCreatedAt: null }),
+        receipt('other-account', 5, { accountId: 'other' }),
+        receipt('sent', 5, { direction: 'out' }),
+        receipt('pending', 5, { status: 'pending' }),
+        receipt('exit', 5, { type: 'cooperative_exit' }),
+        receipt('deposit', 5, { type: 'utxo_swap' }),
+        receipt('leaf-swap', 5, { type: 'swap' }),
+        receipt('from-previous', 5, { type: 'transfer', counterpartyPubkeys: [PREVIOUS] }),
+        receipt('self', 5, { type: 'transfer', counterpartyPubkeys: [OWNER] }),
+        // An account merge moved in the transfers of wallet MERGED, not its wallet row.
+        receipt('merged-side', 6, {
+          walletPubkey: MERGED,
+          direction: 'out',
+          counterpartyPubkeys: [OWNER],
+        }),
+        receipt('from-merged', 6, { type: 'transfer', counterpartyPubkeys: [MERGED] }),
+        receipt('other-account-wallet', 6, { accountId: 'other', walletPubkey: FOREIGN }),
+        receipt('from-foreign', 7, { type: 'transfer', counterpartyPubkeys: [FOREIGN] }),
+      ],
+      { ownWalletKeys: [PREVIOUS] },
+    );
+    await expect(store.listTillReceipts(query())).resolves.toEqual([
+      { id: 'future-edge', amountSats: 21, receivedAt: at(-5), kind: 'lightning' },
+      { id: 'from-foreign', amountSats: 21, receivedAt: at(7), kind: 'spark' },
+      { id: 'ln', amountSats: 2100, receivedAt: at(10), kind: 'lightning' },
+      { id: 'spark', amountSats: 21, receivedAt: at(20), kind: 'spark' },
+    ]);
+    await expect(store.listTillReceipts(query({ limit: 1 }))).resolves.toHaveLength(1);
+  });
+
+  it('defaults to an empty context and merges one transfer seen in two wallets', async () => {
+    const store = new InMemoryWalletTransferStore();
+    await store.upsertTransfer(receipt('both', 10, { amountSats: 10 }));
+    await store.upsertTransfer(receipt('both', 12, { walletPubkey: PREVIOUS, amountSats: 11 }));
+    // One transfer id stored with two types in two wallets is still one Lightning entry.
+    await store.upsertTransfer(receipt('mixed', 40, { type: 'transfer' }));
+    await store.upsertTransfer(receipt('mixed', 41, { walletPubkey: PREVIOUS }));
+    await store.upsertTransfer(receipt('mixed-spark-last', 42, { walletPubkey: PREVIOUS }));
+    await store.upsertTransfer(receipt('mixed-spark-last', 43, { type: 'transfer' }));
+    await store.upsertTransfer(receipt('a-tie', 30));
+    await store.upsertTransfer(receipt('b-tie', 30));
+    await store.upsertTransfer(receipt('c-tie', 30));
+    await expect(store.listTillReceipts(query())).resolves.toEqual([
+      { id: 'both', amountSats: 21, receivedAt: at(12), kind: 'lightning' },
+      { id: 'c-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
+      { id: 'b-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
+      { id: 'a-tie', amountSats: 21, receivedAt: at(30), kind: 'lightning' },
+      { id: 'mixed', amountSats: 42, receivedAt: at(41), kind: 'lightning' },
+      { id: 'mixed-spark-last', amountSats: 42, receivedAt: at(43), kind: 'lightning' },
+    ]);
+  });
+
+  it('shows a payment that settled an open or paid charge only as that charge', async () => {
+    const store = await storeWith(
+      [
+        receipt('spark-paid', 10, { type: 'transfer', sparkInvoice: ' SPARK1PAID ' }),
+        // A sibling row of the settling transfer without the invoice is not listed either.
+        receipt('spark-paid', 10, { walletPubkey: PREVIOUS }),
+        receipt('spark-cancelled', 11, { type: 'transfer', sparkInvoice: 'spark1cancelled' }),
+        receipt('spark-old-paid', 12, { type: 'transfer', sparkInvoice: 'spark1old' }),
+        receipt('ln-pending', 13),
+        receipt('ln-expired', 14),
+        receipt('ln-out-report', 15),
+      ],
+      {
+        charges: [
+          { status: 'paid', sparkInvoice: 'spark1paid', paidAt: at(9), invoices: [] },
+          { status: 'cancelled', sparkInvoice: 'spark1cancelled', paidAt: null, invoices: [] },
+          { status: 'paid', sparkInvoice: 'spark1old', paidAt: at(24 * 60 + 6), invoices: [] },
+          { status: 'paid', sparkInvoice: null, paidAt: null, invoices: [] },
+          {
+            status: 'pending',
+            sparkInvoice: null,
+            paidAt: null,
+            invoices: [{ paymentHash: HASH_A, createdAt: at(16) }],
+          },
+          {
+            status: 'expired',
+            sparkInvoice: null,
+            paidAt: null,
+            invoices: [{ paymentHash: HASH_B, createdAt: at(16) }],
+          },
+        ],
+        reports: [
+          { paymentId: 'ln-pending', direction: 'in', paymentHash: HASH_A.toUpperCase() },
+          { paymentId: 'ln-expired', direction: 'in', paymentHash: HASH_B },
+          { paymentId: 'ln-out-report', direction: 'out', paymentHash: HASH_A },
+          { paymentId: 'ln-out-report', direction: 'in', paymentHash: HASH_C },
+          { paymentId: 'no-hash', direction: 'in', paymentHash: null },
+        ],
+      },
+    );
+    await expect(store.listTillReceipts(query())).resolves.toEqual([
+      { id: 'spark-cancelled', amountSats: 21, receivedAt: at(11), kind: 'spark' },
+      { id: 'spark-old-paid', amountSats: 21, receivedAt: at(12), kind: 'spark' },
+      { id: 'ln-expired', amountSats: 21, receivedAt: at(14), kind: 'lightning' },
+      { id: 'ln-out-report', amountSats: 21, receivedAt: at(15), kind: 'lightning' },
+    ]);
+  });
+
+  it('withholds an unreported Lightning receipt inside the lifetime of a charge whose payment is not known', async () => {
+    const charge = (partial: Partial<TillReceiptCharge>): TillReceiptCharge => ({
+      status: 'paid',
+      sparkInvoice: null,
+      paidAt: at(30),
+      invoices: [
+        { paymentHash: HASH_A, createdAt: at(40) },
+        { paymentHash: HASH_B, createdAt: at(35) },
+      ],
+      ...partial,
+    });
+    const rows = [
+      receipt('before', 46),
+      receipt('first-edge', 45),
+      receipt('inside', 33),
+      receipt('last-edge', 25),
+      receipt('after', 24),
+      receipt('spark-inside', 33, { type: 'transfer' }),
+      receipt('reported-inside', 34),
+      // One transfer id in two wallets: the withheld Lightning row withholds the whole payment.
+      receipt('mixed-inside', 33, { walletPubkey: PREVIOUS, type: 'transfer' }),
+      receipt('mixed-inside', 33),
+    ];
+    const reports = [
+      { paymentId: 'reported-inside', direction: 'in' as const, paymentHash: HASH_C },
+    ];
+    const unknown = await storeWith(rows, { charges: [charge({})], reports });
+    expect((await unknown.listTillReceipts(query())).map((entry) => entry.id)).toEqual([
+      'after',
+      'spark-inside',
+      'reported-inside',
+      'before',
+    ]);
+
+    const open = await storeWith([receipt('open', 1)], {
+      charges: [charge({ status: 'pending', paidAt: null })],
+    });
+    await expect(open.listTillReceipts(query())).resolves.toEqual([]);
+
+    const noInvoices = await storeWith([receipt('inside', 33)], {
+      charges: [charge({ invoices: [] })],
+    });
+    await expect(noInvoices.listTillReceipts(query())).resolves.toHaveLength(1);
+
+    const linkedByReport = await storeWith([...rows, receipt('settling', 32)], {
+      charges: [charge({})],
+      reports: [...reports, { paymentId: 'settling', direction: 'in', paymentHash: HASH_B }],
+    });
+    expect((await linkedByReport.listTillReceipts(query())).map((entry) => entry.id)).toEqual([
+      'after',
+      'last-edge',
+      'spark-inside',
+      'mixed-inside',
+      'inside',
+      'reported-inside',
+      'first-edge',
+      'before',
+    ]);
+
+    const linkedBySpark = await storeWith(
+      [
+        receipt('inside', 33),
+        receipt('spark-settling', 31, {
+          type: 'transfer',
+          sparkInvoice: 'SPARK1CHARGE',
+        }),
+        receipt('other-account-settling', 31, {
+          accountId: 'other',
+          type: 'transfer',
+          sparkInvoice: 'spark1other',
+        }),
+      ],
+      {
+        charges: [charge({ sparkInvoice: 'spark1charge' })],
+      },
+    );
+    expect((await linkedBySpark.listTillReceipts(query())).map((entry) => entry.id)).toEqual([
+      'inside',
+    ]);
+
+    const otherAccountOnly = await storeWith(
+      [
+        receipt('inside', 33),
+        receipt('foreign', 31, {
+          accountId: 'other',
+          type: 'transfer',
+          sparkInvoice: 'spark1charge',
+        }),
+        receipt('sent', 31, { direction: 'out', type: 'transfer', sparkInvoice: 'spark1charge' }),
+        receipt('pending', 31, {
+          status: 'pending',
+          type: 'transfer',
+          sparkInvoice: 'spark1charge',
+        }),
+      ],
+      { charges: [charge({ sparkInvoice: 'spark1charge' })] },
+    );
+    await expect(otherAccountOnly.listTillReceipts(query())).resolves.toEqual([]);
+  });
+});
+
+describe('PostgresWalletTransferStore.listTillReceipts', () => {
+  it('runs one bound query and maps rows', async () => {
+    const query = vi.fn(async (): Promise<unknown[]> => [
+      {
+        id: 'b',
+        lightning: true,
+        amount_sats: '2100',
+        received_at: '2026-11-12T10:00:00.000Z',
+      },
+      {
+        id: 'a',
+        lightning: false,
+        amount_sats: 21,
+        received_at: new Date('2026-11-12T09:00:00.000Z'),
+      },
+    ]);
+    const sql = { query, execute: vi.fn(async () => undefined) } as unknown as SqlClient;
+    const found = await new PostgresWalletTransferStore(sql).listTillReceipts({
+      accountId: 'me',
+      sinceMs: Date.parse('2026-11-11T12:00:00.000Z'),
+      nowMs: Date.parse('2026-11-12T12:00:00.000Z'),
+      clockAllowanceMs: 300_000,
+      limit: 20,
+    });
+    expect(found).toEqual([
+      {
+        id: 'b',
+        amountSats: 2100,
+        receivedAt: new Date('2026-11-12T10:00:00.000Z'),
+        kind: 'lightning',
+      },
+      { id: 'a', amountSats: 21, receivedAt: new Date('2026-11-12T09:00:00.000Z'), kind: 'spark' },
+    ]);
+    expect(query).toHaveBeenCalledTimes(1);
+    const [text, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual([
+      'me',
+      new Date('2026-11-11T12:00:00.000Z'),
+      new Date('2026-11-12T12:00:00.000Z'),
+      300_000,
+      20,
+    ]);
+    expect(text).toContain("t.direction = 'in'");
+    expect(text).toContain("t.status = 'completed'");
+    expect(text).toContain("t.type IN ('preimage_swap', 'transfer')");
+    expect(text).toContain('LIMIT $5');
+    expect(text).toContain('GROUP BY transfer_id\n');
+    expect(text).toContain("bool_or(type = 'preimage_swap') AS lightning");
   });
 });

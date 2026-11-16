@@ -1,7 +1,8 @@
 /** Operator-only inspection of entitled and blocked external Nostr pubkeys. */
 
 import { Hono } from 'hono';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -12,6 +13,8 @@ export interface DebugExternalRouteDeps {
   store: MessageStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /**
@@ -21,13 +24,7 @@ export interface DebugExternalRouteDeps {
  * @returns A Hono app with the bearer-gated external identity list.
  */
 export function debugExternalRoutes(deps: DebugExternalRouteDeps): Hono {
-  return new Hono().get('/', async (c) => {
-    if (deps.debugToken === undefined || deps.debugToken.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(deps.debugToken, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().get('/', requireOperator('read', deps), async (c) => {
     try {
       const [zappers, blocked] = await Promise.all([
         deps.store.listZappers(MESSAGE_LIST_LIMIT),

@@ -7,6 +7,7 @@ import type {
   WalletPaymentClass,
   WalletPaymentCategory,
 } from '@/lib/wallet-category';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import type {
   ReportedWalletPayment,
   WalletPaymentDirection,
@@ -59,6 +60,21 @@ export interface WalletPaymentCursor {
 
 /** Persistence contract for wallet report data. */
 export interface WalletStore {
+  /**
+   * Find which of the caller's payments the caller reported as completed with that direction.
+   *
+   * @param accountId - Caller account id.
+   * @param keys - Payment ids and directions.
+   * @returns The payment ids of the matching completed rows of the caller.
+   * @throws Propagates storage failures.
+   */
+  findCompletedPayments(
+    accountId: string,
+    keys: readonly {
+      id: string;
+      direction: 'in' | 'out';
+    }[],
+  ): Promise<Set<string>>;
   /**
    * Append one balance snapshot.
    *
@@ -385,6 +401,27 @@ export class InMemoryWalletStore implements WalletStore {
   constructor(accountKind?: (accountId: string) => Promise<WalletAccountKind>) {
     this.#accountKind =
       accountKind ?? ((): Promise<WalletAccountKind> => Promise.resolve('member'));
+  }
+
+  /**
+   * Find the caller's completed payments by payment id and direction.
+   * @param accountId - Caller account id.
+   * @param keys - Payment ids and directions.
+   * @returns The payment ids of the matching completed rows of the caller.
+   */
+  findCompletedPayments(
+    accountId: string,
+    keys: readonly {
+      id: string;
+      direction: 'in' | 'out';
+    }[],
+  ): Promise<Set<string>> {
+    const found = new Set<string>();
+    for (const key of keys) {
+      const own = this.#payments.get(`${accountId}\u0000${key.id}`)?.row;
+      if (own?.direction === key.direction && own.status === 'completed') found.add(key.id);
+    }
+    return Promise.resolve(found);
   }
 
   /**
@@ -751,6 +788,36 @@ export class PostgresWalletStore implements WalletStore {
    * @param sql - Parameter-bound SQL client for an already migrated database.
    */
   constructor(private readonly sql: SqlClient) {}
+
+  /**
+   * Find the caller's completed payments by payment id and direction in one query.
+   * @param accountId - Caller account id.
+   * @param keys - Payment ids and directions.
+   * @returns The payment ids of the matching completed rows of the caller.
+   * @throws Propagates SQL failures.
+   */
+  async findCompletedPayments(
+    accountId: string,
+    keys: readonly {
+      id: string;
+      direction: 'in' | 'out';
+    }[],
+  ): Promise<Set<string>> {
+    // PostgreSQL text cannot contain NUL, so such ids cannot have stored rows.
+    const searchableKeys = keys.filter((key) => !key.id.includes('\u0000'));
+    const rows = await this.sql.query<{ id: string }>(
+      `SELECT own.payment_id AS id
+FROM unnest($2::text[], $3::text[]) AS k(id, direction)
+JOIN wallet_payment own ON own.account_id = $1 AND own.payment_id = k.id
+  AND own.direction = k.direction AND own.status = 'completed'`,
+      [
+        accountId,
+        postgresTextArrayLiteral(searchableKeys.map((key) => key.id)),
+        postgresTextArrayLiteral(searchableKeys.map((key) => key.direction)),
+      ],
+    );
+    return new Set(rows.map((row) => row.id));
+  }
 
   /**
    * Insert one immutable balance snapshot.

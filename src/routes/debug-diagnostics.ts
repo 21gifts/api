@@ -1,15 +1,16 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import {
   DIAGNOSTIC_LIST_LIMIT,
   serializeDebugDiagnostic,
   type DiagnosticStore,
 } from '@/lib/diagnostic-log';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 
 /**
  * Operator debug surface. Read-only listing of diagnostic_event rows.
- * Authenticated by `DEBUG_TOKEN` (Bearer), not by an end-user session.
+ * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
  */
 
 /**
@@ -21,15 +22,10 @@ import { logEvent } from '@/lib/log';
 export function debugDiagnosticsRoutes(deps: {
   store: DiagnosticStore;
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }): Hono {
-  return new Hono().get('/', async (c) => {
-    const token = deps.debugToken;
-    if (token === undefined || token.trim() === '') {
-      return c.json({ error: 'Debug is not configured' }, 503);
-    }
-    if (!bearerMatchesDebugToken(token, c.req.header('authorization'))) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
+  return new Hono().get('/', requireOperator('read', deps), async (c) => {
     try {
       const rows = await deps.store.listLatest(DIAGNOSTIC_LIST_LIMIT);
       logEvent('debug.diagnostics.listed', { count: rows.length });

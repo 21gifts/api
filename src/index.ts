@@ -211,6 +211,7 @@ if (import.meta.main) {
     welcomeInvoiceReservationStore,
     sparkViewer,
     walletViewerPublicKey,
+    usageStore,
     memberEventStore,
     trustStore,
     fundingStore,
@@ -286,6 +287,27 @@ if (import.meta.main) {
           now: Date.now,
         });
   const welcomeSweep: WelcomeSweepSwitch = { enabled: false };
+  // Started before the app serves, so a signed payment notice can read the receiving wallet at once.
+  const walletTransferWorker =
+    walletTransferStore === undefined || walletStore === undefined || sparkViewer === undefined
+      ? undefined
+      : startWalletTransferWorker({
+          viewer: sparkViewer,
+          transfers: walletTransferStore,
+          balances: walletStore,
+          auth: authStore,
+          funding: appFundingStore,
+          gifts: appGiftStore,
+          ping: {
+            ...(spendPing === undefined ? {} : { spendPing }),
+            ...(lnurlServer === undefined ? {} : { lnurlServer }),
+            messageStore: forumMessages,
+            authStore,
+            recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
+            walletTransfers: walletTransferStore,
+          },
+          now: Date.now,
+        });
   const app = createApp({
     welcomeSweep,
     ...(shopPayments === undefined ? {} : { shopPayments }),
@@ -299,6 +321,9 @@ if (import.meta.main) {
     ...(welcomeInvoiceReservationStore === undefined ? {} : { welcomeInvoiceReservationStore }),
     env: process.env,
     ...(boot.loginGateStore === undefined ? {} : { loginGateStore: boot.loginGateStore }),
+    ...(boot.operatorLoginStore === undefined
+      ? {}
+      : { operatorLoginStore: boot.operatorLoginStore }),
     messageStore: forumMessages,
     shopIdentityStore: shopIdentities,
     giftStore: appGiftStore,
@@ -320,8 +345,16 @@ if (import.meta.main) {
     ...(apiLogStore === undefined ? {} : { apiLogStore }),
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
     ...(walletStore === undefined ? {} : { walletStore }),
-    ...(walletTransferStore === undefined ? {} : { walletTransferStore }),
+    ...(walletTransferStore === undefined
+      ? {}
+      : {
+          walletTransferStore,
+          walletCounterparties: walletTransferStore,
+          tillReceipts: walletTransferStore,
+        }),
+    ...(walletTransferWorker === undefined ? {} : { walletReadNow: walletTransferWorker.readNow }),
     walletViewerPublicKey,
+    ...(usageStore === undefined ? {} : { usageStore }),
     ...(memberEventStore === undefined ? {} : { memberEventStore }),
     conversationStore,
     notificationStore,
@@ -368,26 +401,6 @@ if (import.meta.main) {
     url: resolveFxSpotUrl(process.env),
     now: Date.now,
   });
-  const walletTransferWorker =
-    walletTransferStore === undefined || walletStore === undefined || sparkViewer === undefined
-      ? undefined
-      : startWalletTransferWorker({
-          viewer: sparkViewer,
-          transfers: walletTransferStore,
-          balances: walletStore,
-          auth: authStore,
-          funding: appFundingStore,
-          gifts: appGiftStore,
-          ping: {
-            ...(spendPing === undefined ? {} : { spendPing }),
-            ...(lnurlServer === undefined ? {} : { lnurlServer }),
-            messageStore: forumMessages,
-            authStore,
-            recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
-            walletTransfers: walletTransferStore,
-          },
-          now: Date.now,
-        });
   // Always started: ticks send nothing without VAPID, but the hourly sweep
   // still drops subscriptions whose session ended and old outbox rows.
   startPushWorker({ store: pushStore, sender, now: Date.now, authStore }, PUSH_WORKER_INTERVAL_MS);

@@ -1,4 +1,5 @@
 import { Hono, type Context } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
@@ -7,7 +8,7 @@ import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
-import { isOperatorBearer } from '@/lib/debug-token';
+import { checkOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { loadMemberProfileNote, memberPublicMessages } from '@/lib/member-public-feed';
 import type { MessageStore } from '@/lib/message-store';
@@ -56,10 +57,10 @@ export interface MembersRouteDeps {
    * Missing fiat never 503s the page.
    */
   fiatRates?: FiatRateBook;
-  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  /** `DEBUG_TOKEN` (every operator level), or unset. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /** Auth or member-load outcome. */
@@ -139,7 +140,7 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
 
   return new Hono()
     .get('/:accountId/activity', async (c) => {
-      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+      if ((await checkOperator('read', deps, c.req.header('authorization'))) !== true) {
         const auth = await requireForumRead(deps, c);
         if (!auth.ok) {
           return auth.response;

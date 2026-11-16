@@ -15,6 +15,7 @@ import {
   WEBHOOK_SECRET,
 } from './e2e/shop-payment/stand-ins/ports';
 import { DEFAULT_BOOT_ENV, PINNED_OFF } from './e2e/helpers/pinned-env';
+import { E2E_SIGNING_NAMESPACE, e2eOperatorKeys } from './e2e/helpers/operator-keys';
 
 /**
  * HTTP end-to-end tests against `bun src/index.ts` (request-only; no browser).
@@ -53,6 +54,10 @@ const selected = selectedProjects();
 const runDefault = selected.has('default');
 const runShop = selected.has('shop-payment');
 
+// Throwaway operator keys for the SSH key login of the default boot (made at
+// config load, never committed); `e2e/debug-auth.spec.ts` signs with them.
+const operatorKeys = runDefault ? e2eOperatorKeys() : undefined;
+
 const defaultServer = {
   command: 'bun src/index.ts',
   url: 'http://127.0.0.1:3000/healthz',
@@ -65,6 +70,8 @@ const defaultServer = {
     BIND_ADDR: '127.0.0.1:3000',
     PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
     DEBUG_TOKEN: 'e2e-debug-token',
+    DEBUG_ALLOWED_SIGNERS_DIR: operatorKeys?.signersDir ?? '',
+    DEBUG_SIGNING_NAMESPACE: E2E_SIGNING_NAMESPACE,
     CORS_ALLOWED_ORIGINS: 'http://localhost:3000,http://127.0.0.1:3000',
     MEDIA_DIR: join(tmpdir(), '21gifts-e2e-media'),
   },

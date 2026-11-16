@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SESSION_TTL_MS } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { issueSession } from '@/lib/auth/service';
 import { resolveRequestAuth } from '@/lib/request-auth';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
 
 describe('resolveRequestAuth', () => {
   it('returns none without a bearer', async () => {
@@ -13,7 +14,7 @@ describe('resolveRequestAuth', () => {
       debugToken: 'debug',
       spendApiToken: 'spend',
     });
-    expect(auth).toEqual({ accountId: null, authKind: 'none' });
+    expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
 
   it('classifies a matching debug token', async () => {
@@ -24,7 +25,7 @@ describe('resolveRequestAuth', () => {
       debugToken: 'debug',
       spendApiToken: 'spend',
     });
-    expect(auth).toEqual({ accountId: null, authKind: 'debug' });
+    expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: null });
   });
 
   it('classifies a matching spend token when debug does not match', async () => {
@@ -35,7 +36,7 @@ describe('resolveRequestAuth', () => {
       debugToken: 'debug',
       spendApiToken: 'spend',
     });
-    expect(auth).toEqual({ accountId: null, authKind: 'spend' });
+    expect(auth).toEqual({ accountId: null, authKind: 'spend', operator: null });
   });
 
   it('returns none for an empty Bearer token', async () => {
@@ -46,7 +47,7 @@ describe('resolveRequestAuth', () => {
       debugToken: 'debug',
       spendApiToken: 'spend',
     });
-    expect(auth).toEqual({ accountId: null, authKind: 'none' });
+    expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
 
   it('returns none for an unknown bearer', async () => {
@@ -57,7 +58,7 @@ describe('resolveRequestAuth', () => {
       debugToken: 'debug',
       spendApiToken: 'spend',
     });
-    expect(auth).toEqual({ accountId: null, authKind: 'none' });
+    expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
 
   it('returns none for an expired session', async () => {
@@ -86,7 +87,7 @@ describe('resolveRequestAuth', () => {
       debugToken: 'debug',
       spendApiToken: 'spend',
     });
-    expect(auth).toEqual({ accountId: null, authKind: 'none' });
+    expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
   });
 
   it('classifies a live session', async () => {
@@ -115,6 +116,71 @@ describe('resolveRequestAuth', () => {
       debugToken: 'debug',
       spendApiToken: 'spend',
     });
-    expect(auth).toEqual({ accountId: 'acc', authKind: 'session' });
+    expect(auth).toEqual({ accountId: 'acc', authKind: 'session', operator: null });
+  });
+
+  it('classifies a key token as debug with its operator name', async () => {
+    const keys = await seededOperatorLogin();
+    const auth = await resolveRequestAuth({
+      authorizationHeader: `Bearer ${keys.tokens.write}`,
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+      operatorLogin: keys.operatorLogin,
+    });
+    expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: 'op-write' });
+  });
+
+  it('keeps DEBUG_TOKEN as debug without an operator next to a key login', async () => {
+    const keys = await seededOperatorLogin();
+    const auth = await resolveRequestAuth({
+      authorizationHeader: 'Bearer debug',
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+      operatorLogin: keys.operatorLogin,
+    });
+    expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: null });
+  });
+
+  it('falls through to sessions for an unknown key token', async () => {
+    const keys = await seededOperatorLogin();
+    const auth = await resolveRequestAuth({
+      authorizationHeader: `Bearer op_${'q'.repeat(43)}`,
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+      operatorLogin: keys.operatorLogin,
+    });
+    expect(auth).toEqual({ accountId: null, authKind: 'none', operator: null });
+  });
+
+  it('uses a grant carried from the request start without looking the token up again', async () => {
+    const keys = await seededOperatorLogin();
+    const resolve = vi.spyOn(keys.operatorLogin, 'resolveBearer');
+    const auth = await resolveRequestAuth({
+      authorizationHeader: `Bearer ${keys.tokens.admin}`,
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+      operatorLogin: keys.operatorLogin,
+      keyGrant: { operator: 'carried', keyFingerprint: 'SHA256:x', level: 'admin' },
+    });
+    expect(auth).toEqual({ accountId: null, authKind: 'debug', operator: 'carried' });
+    const none = await resolveRequestAuth({
+      authorizationHeader: 'Bearer not-a-known-token',
+      authStore: new InMemoryAuthStore(),
+      now: 1,
+      debugToken: 'debug',
+      spendApiToken: 'spend',
+      operatorLogin: keys.operatorLogin,
+      keyGrant: null,
+    });
+    expect(none).toEqual({ accountId: null, authKind: 'none', operator: null });
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

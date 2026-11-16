@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { OperatorLogin } from '@/lib/operator-login';
 import { z } from 'zod';
 import { roleAtLeast } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
@@ -7,7 +8,7 @@ import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { GiftStore } from '@/lib/gift-store';
 import type { ConversationStore } from '@/lib/conversation-store';
-import { isOperatorBearer } from '@/lib/debug-token';
+import { checkOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import { notifyModeratorAppointed, notifyModeratorProposed } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
@@ -57,10 +58,10 @@ export interface TrustRouteDeps {
    * the platform `Welcome` reply counts.
    */
   giftStore?: Pick<GiftStore, 'listOutbound'>;
-  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  /** `DEBUG_TOKEN` (every operator level), or unset. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
-  debugReadToken?: string;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
 }
 
 /**
@@ -160,7 +161,7 @@ export function trustRoutes(deps: TrustRouteDeps): Hono {
     .get('/proposals', async (c) => {
       try {
         const header = c.req.header('authorization');
-        if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+        if ((await checkOperator('read', deps, header)) !== true) {
           const caller = await authedAccount(deps, header);
           if (caller === null) {
             return c.json({ error: 'Unauthorized' }, 401);

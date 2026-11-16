@@ -1158,10 +1158,13 @@ function uniqueFirstSeen(values: readonly string[]): string[] {
  *
  * Empty `tags` is a no-op. Tags are uniqued first-seen, then chunked 30
  * per outbox row. A throwing `enqueue` logs `push.dismiss.failed` and
- * continues with later chunks. Does not throw.
+ * continues with later chunks; it does not throw, unless `strict` is true,
+ * which rethrows the first failure after logging it (for a caller whose
+ * transaction must roll back with it).
  *
- * @param args - Push store, account, tags, clock, badge unread, optional skip endpoint.
+ * @param args - Push store, account, tags, clock, badge unread, optional skip endpoint, optional `strict`.
  * @returns Resolves after every chunk is attempted.
+ * @throws The `enqueue` failure, only when `strict` is true.
  */
 export async function enqueueNotificationDismiss(args: {
   pushStore: PushStore;
@@ -1170,6 +1173,7 @@ export async function enqueueNotificationDismiss(args: {
   nowMs: number;
   unreadCount: number;
   skipEndpoint?: string;
+  strict?: boolean;
 }): Promise<void> {
   const unique = uniqueFirstSeen(args.tags);
   if (unique.length === 0) {
@@ -1201,8 +1205,11 @@ export async function enqueueNotificationDismiss(args: {
     };
     try {
       await args.pushStore.enqueue(row);
-    } catch {
+    } catch (error) {
       logEvent('push.dismiss.failed');
+      if (args.strict === true) {
+        throw error;
+      }
     }
   }
 }

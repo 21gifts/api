@@ -3,14 +3,15 @@
  * row (including soft-hidden notes and replies), serve hidden photo bytes,
  * restore a missing forum-video file for an already-existing message with
  * `hasVideo`, and unhide a soft-hidden row (`POST /:id/restore`). Authenticated
- * by `DEBUG_TOKEN` (Bearer), not by an end-user session. Does not create rows.
+ * by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session. Does not create rows.
  * Video restore does not change DB. Unhide clears `deletedAt` / `deletedBy`
  * and removes the pubkey block tied to that message via
  * `unblockPubkeyByMessage`.
  */
 
 import { Hono } from 'hono';
-import { bearerMatchesDebugToken } from '@/lib/debug-token';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { requireOperator } from '@/lib/operator';
 import { logEvent } from '@/lib/log';
 import {
   MESSAGE_LIST_LIMIT,
@@ -33,6 +34,8 @@ export interface DebugMessagesRouteDeps {
   store: MessageStore;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** SSH key login whose short-lived tokens this route accepts. */
+  operatorLogin?: OperatorLogin | undefined;
   /**
    * Shop identities. With `shopKek`, a restore that makes the note a
    * public shop creates its key. The restore write queues the
@@ -41,20 +44,6 @@ export interface DebugMessagesRouteDeps {
   shopIdentities?: ShopIdentityStore;
   /** Key-encryption key for new shop keys. */
   shopKek?: Uint8Array;
-}
-
-/** Shared 503/401 gate matching other `/debug/*` routes. */
-function gateDebugToken(
-  debugToken: string | undefined,
-  authorization: string | undefined,
-): { ok: true } | { ok: false; status: 503 | 401; body: { error: string } } {
-  if (debugToken === undefined || debugToken.trim() === '') {
-    return { ok: false, status: 503, body: { error: 'Debug is not configured' } };
-  }
-  if (!bearerMatchesDebugToken(debugToken, authorization)) {
-    return { ok: false, status: 401, body: { error: 'Unauthorized' } };
-  }
-  return { ok: true };
 }
 
 async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMessagePhotoMeta> {
@@ -87,11 +76,7 @@ async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMes
  */
 export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
   return new Hono()
-    .get('/', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/', requireOperator('read', deps), async (c) => {
       try {
         const rows = await deps.store.listDebug(MESSAGE_LIST_LIMIT);
         const messages = [];
@@ -105,11 +90,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .get('/:id/photo/:file', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/:id/photo/:file', requireOperator('read', deps), async (c) => {
       const id = c.req.param('id');
       const match = /^([1-9])\.(jpg|jpeg|png|webp)$/.exec(c.req.param('file'));
       if (!MESSAGE_ID_RE.test(id) || match === null) {
@@ -145,11 +126,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .get('/:id', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/:id', requireOperator('read', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
@@ -166,11 +143,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .get('/:id/photo', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .get('/:id/photo', requireOperator('read', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Photo not found' }, 404);
@@ -205,12 +178,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .put('/:id/video', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
-
+    .put('/:id/video', requireOperator('write', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
@@ -252,11 +220,7 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
-    .post('/:id/restore', async (c) => {
-      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
-      if (!gate.ok) {
-        return c.json(gate.body, gate.status);
-      }
+    .post('/:id/restore', requireOperator('write', deps), async (c) => {
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
         return c.json({ error: 'Not found' }, 404);
