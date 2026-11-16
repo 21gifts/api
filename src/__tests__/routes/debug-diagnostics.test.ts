@@ -2,6 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
 import { debugDiagnosticsRoutes } from '@/routes/debug-diagnostics';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
+const UNCONFIGURED = new OperatorLogin({
+  signers: null,
+  store: new InMemoryOperatorLoginStore(),
+  now: Date.now,
+});
 
 describe('debugDiagnosticsRoutes', () => {
   let warn: ReturnType<typeof vi.spyOn>;
@@ -14,11 +25,11 @@ describe('debugDiagnosticsRoutes', () => {
     warn.mockRestore();
   });
 
-  function debugApp(store: DiagnosticStore, debugToken: string | undefined): Hono {
-    return new Hono().route('/debug/diagnostics', debugDiagnosticsRoutes({ store, debugToken }));
+  function debugApp(store: DiagnosticStore, operatorLogin: OperatorLogin | undefined): Hono {
+    return new Hono().route('/debug/diagnostics', debugDiagnosticsRoutes({ store, operatorLogin }));
   }
 
-  it('returns 503 when debugToken is undefined', async () => {
+  it('returns 503 without a key login', async () => {
     const res = await debugApp(new InMemoryDiagnosticStore(), undefined).request(
       '/debug/diagnostics',
     );
@@ -26,14 +37,16 @@ describe('debugDiagnosticsRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 when debugToken is blank', async () => {
-    const res = await debugApp(new InMemoryDiagnosticStore(), '').request('/debug/diagnostics');
+  it('returns 503 when the key login is not configured', async () => {
+    const res = await debugApp(new InMemoryDiagnosticStore(), UNCONFIGURED).request(
+      '/debug/diagnostics',
+    );
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
   it('returns 401 without a bearer', async () => {
-    const res = await debugApp(new InMemoryDiagnosticStore(), 'secret').request(
+    const res = await debugApp(new InMemoryDiagnosticStore(), OP_KEYS.operatorLogin).request(
       '/debug/diagnostics',
     );
     expect(res.status).toBe(401);
@@ -41,7 +54,7 @@ describe('debugDiagnosticsRoutes', () => {
   });
 
   it('returns 401 with a wrong bearer', async () => {
-    const res = await debugApp(new InMemoryDiagnosticStore(), 'secret').request(
+    const res = await debugApp(new InMemoryDiagnosticStore(), OP_KEYS.operatorLogin).request(
       '/debug/diagnostics',
       { headers: { authorization: 'Bearer nope' } },
     );
@@ -65,8 +78,8 @@ describe('debugDiagnosticsRoutes', () => {
       event: 'server.b',
       fields: {},
     });
-    const res = await debugApp(store, 'secret').request('/debug/diagnostics', {
-      headers: { authorization: 'Bearer secret' },
+    const res = await debugApp(store, OP_KEYS.operatorLogin).request('/debug/diagnostics', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
@@ -96,8 +109,8 @@ describe('debugDiagnosticsRoutes', () => {
         throw new Error('disk');
       },
     };
-    const res = await debugApp(store, 'secret').request('/debug/diagnostics', {
-      headers: { authorization: 'Bearer secret' },
+    const res = await debugApp(store, OP_KEYS.operatorLogin).request('/debug/diagnostics', {
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Log is unavailable' });

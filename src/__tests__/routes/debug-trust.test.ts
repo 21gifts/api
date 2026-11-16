@@ -3,6 +3,18 @@ import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { debugTrustRoutes } from '@/routes/debug-trust';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+import { OperatorLogin } from '@/lib/operator-login';
+import { InMemoryOperatorLoginStore } from '@/lib/operator-login-store';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
+const OP_WRITE = OP_KEYS.tokens.write;
+const UNCONFIGURED = new OperatorLogin({
+  signers: null,
+  store: new InMemoryOperatorLoginStore(),
+  now: Date.now,
+});
 
 const now = (): number => Date.parse('2026-09-12T12:00:00.000Z');
 const SUBJECT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -38,7 +50,7 @@ async function seeded(): Promise<InMemoryAuthStore> {
 function mount(
   store: InMemoryAuthStore,
   trustStore: TrustStore,
-  debugToken: string | undefined | null = 'secret',
+  operatorLogin: OperatorLogin | null = OP_KEYS.operatorLogin,
   clock: (() => number) | undefined = now,
 ): Hono {
   return new Hono().route(
@@ -46,7 +58,7 @@ function mount(
     debugTrustRoutes({
       store,
       trustStore,
-      debugToken: debugToken === null ? undefined : debugToken,
+      ...(operatorLogin === null ? {} : { operatorLogin }),
       ...(clock === undefined ? {} : { now: clock }),
     }),
   );
@@ -107,7 +119,7 @@ describe('GET /debug/trust-edges', () => {
     });
     const app = mount(store, trustStore);
     const res = await app.request('/debug/trust-edges', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { edges: Array<{ id: string; kind: string }> };
@@ -128,7 +140,7 @@ describe('GET /debug/trust-edges', () => {
       deleteEdgeById: async () => undefined,
     };
     const res = await mount(new InMemoryAuthStore(), throwing).request('/debug/trust-edges', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Trust chain is unavailable' });
@@ -152,17 +164,17 @@ describe('POST /debug/trust-edges', () => {
   it('returns 503 when debug is not configured', async () => {
     const res = await post(
       mount(new InMemoryAuthStore(), new InMemoryTrustStore(), null),
-      'secret',
+      OP_WRITE,
       { subjectId: SUBJECT, actorId: ACTOR, kind: 'verify' },
     );
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 when the token is blank', async () => {
+  it('returns 503 when the key login is not configured', async () => {
     const res = await post(
-      mount(new InMemoryAuthStore(), new InMemoryTrustStore(), '  '),
-      'secret',
+      mount(new InMemoryAuthStore(), new InMemoryTrustStore(), UNCONFIGURED),
+      OP_WRITE,
       { subjectId: SUBJECT, actorId: ACTOR, kind: 'verify' },
     );
     expect(res.status).toBe(503);
@@ -187,8 +199,18 @@ describe('POST /debug/trust-edges', () => {
     expect(res.status).toBe(401);
   });
 
+  it('returns 403 for a read key token', async () => {
+    const res = await post(mount(new InMemoryAuthStore(), new InMemoryTrustStore()), OP_READ, {
+      subjectId: SUBJECT,
+      actorId: ACTOR,
+      kind: 'verify',
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Forbidden' });
+  });
+
   it('returns 400 for a bad body', async () => {
-    const res = await post(mount(await seeded(), new InMemoryTrustStore()), 'secret', {
+    const res = await post(mount(await seeded(), new InMemoryTrustStore()), OP_WRITE, {
       subjectId: SUBJECT,
     });
     expect(res.status).toBe(400);
@@ -198,7 +220,7 @@ describe('POST /debug/trust-edges', () => {
   });
 
   it('returns 400 for an unknown kind', async () => {
-    const res = await post(mount(await seeded(), new InMemoryTrustStore()), 'secret', {
+    const res = await post(mount(await seeded(), new InMemoryTrustStore()), OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'nope',
@@ -207,7 +229,7 @@ describe('POST /debug/trust-edges', () => {
   });
 
   it('returns 404 for a non-uuid id', async () => {
-    const res = await post(mount(await seeded(), new InMemoryTrustStore()), 'secret', {
+    const res = await post(mount(await seeded(), new InMemoryTrustStore()), OP_WRITE, {
       subjectId: 'bad',
       actorId: ACTOR,
       kind: 'verify',
@@ -219,7 +241,7 @@ describe('POST /debug/trust-edges', () => {
   it('returns 404 when the subject is missing', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount(account({ id: ACTOR, role: 'founder' }));
-    const res = await post(mount(store, new InMemoryTrustStore()), 'secret', {
+    const res = await post(mount(store, new InMemoryTrustStore()), OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'verify',
@@ -230,7 +252,7 @@ describe('POST /debug/trust-edges', () => {
   it('returns 404 when the actor is missing', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount(account({ id: SUBJECT, role: 'basis' }));
-    const res = await post(mount(store, new InMemoryTrustStore()), 'secret', {
+    const res = await post(mount(store, new InMemoryTrustStore()), OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'verify',
@@ -240,7 +262,7 @@ describe('POST /debug/trust-edges', () => {
 
   it('returns 409 when subjectId equals actorId', async () => {
     const store = await seeded();
-    const res = await post(mount(store, new InMemoryTrustStore()), 'secret', {
+    const res = await post(mount(store, new InMemoryTrustStore()), OP_WRITE, {
       subjectId: SUBJECT,
       actorId: SUBJECT,
       kind: 'verify',
@@ -252,7 +274,7 @@ describe('POST /debug/trust-edges', () => {
   it('inserts the edge without changing account.role and returns ISO createdAt', async () => {
     const store = await seeded();
     const trustStore = new InMemoryTrustStore();
-    const res = await post(mount(store, trustStore), 'secret', {
+    const res = await post(mount(store, trustStore), OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'verify',
@@ -281,13 +303,13 @@ describe('POST /debug/trust-edges', () => {
     const store = await seeded();
     const trustStore = new InMemoryTrustStore();
     const app = mount(store, trustStore);
-    const first = await post(app, 'secret', {
+    const first = await post(app, OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'moderator_reject',
     });
     expect(first.status).toBe(200);
-    const second = await post(app, 'secret', {
+    const second = await post(app, OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'moderator_reject',
@@ -303,13 +325,13 @@ describe('POST /debug/trust-edges', () => {
     const store = await seeded();
     const trustStore = new InMemoryTrustStore();
     const app = mount(store, trustStore);
-    const first = await post(app, 'secret', {
+    const first = await post(app, OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'moderator_propose',
     });
     expect(first.status).toBe(200);
-    const second = await post(app, 'secret', {
+    const second = await post(app, OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'moderator_propose',
@@ -327,13 +349,13 @@ describe('POST /debug/trust-edges', () => {
       const store = await seeded();
       const trustStore = new InMemoryTrustStore();
       const app = mount(store, trustStore);
-      const first = await post(app, 'secret', {
+      const first = await post(app, OP_WRITE, {
         subjectId: SUBJECT,
         actorId: ACTOR,
         kind,
       });
       expect(first.status).toBe(200);
-      const second = await post(app, 'secret', {
+      const second = await post(app, OP_WRITE, {
         subjectId: SUBJECT,
         actorId: ACTOR,
         kind,
@@ -352,7 +374,7 @@ describe('POST /debug/trust-edges', () => {
       }
       return inner(id);
     });
-    const res = await post(mount(store, new InMemoryTrustStore()), 'secret', {
+    const res = await post(mount(store, new InMemoryTrustStore()), OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'verify',
@@ -375,7 +397,7 @@ describe('POST /debug/trust-edges', () => {
       deleteEdge: async () => undefined,
       deleteEdgeById: async () => undefined,
     };
-    const res = await post(mount(await seeded(), throwing), 'secret', {
+    const res = await post(mount(await seeded(), throwing), OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'moderator_confirm',
@@ -391,9 +413,13 @@ describe('POST /debug/trust-edges', () => {
     const store = await seeded();
     const app = new Hono().route(
       '/debug/trust-edges',
-      debugTrustRoutes({ store, trustStore: new InMemoryTrustStore(), debugToken: 'secret' }),
+      debugTrustRoutes({
+        store,
+        trustStore: new InMemoryTrustStore(),
+        operatorLogin: OP_KEYS.operatorLogin,
+      }),
     );
-    const res = await post(app, 'secret', {
+    const res = await post(app, OP_WRITE, {
       subjectId: SUBJECT,
       actorId: ACTOR,
       kind: 'moderator_appoint',
@@ -424,7 +450,7 @@ describe('DELETE /debug/trust-edges', () => {
   });
 
   it('returns 400 for a bad body', async () => {
-    const res = await del(mount(await seeded(), new InMemoryTrustStore()), 'secret', {});
+    const res = await del(mount(await seeded(), new InMemoryTrustStore()), OP_WRITE, {});
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: 'Expected a JSON body with "subjectId" and "kind" strings',
@@ -432,7 +458,7 @@ describe('DELETE /debug/trust-edges', () => {
   });
 
   it('returns 404 for a non-uuid subjectId', async () => {
-    const res = await del(mount(await seeded(), new InMemoryTrustStore()), 'secret', {
+    const res = await del(mount(await seeded(), new InMemoryTrustStore()), OP_WRITE, {
       subjectId: 'nope',
       kind: 'moderator_confirm',
     });
@@ -440,7 +466,7 @@ describe('DELETE /debug/trust-edges', () => {
   });
 
   it('returns 404 when no edge matches', async () => {
-    const res = await del(mount(await seeded(), new InMemoryTrustStore()), 'secret', {
+    const res = await del(mount(await seeded(), new InMemoryTrustStore()), OP_WRITE, {
       subjectId: SUBJECT,
       kind: 'moderator_confirm',
     });
@@ -458,7 +484,7 @@ describe('DELETE /debug/trust-edges', () => {
       kind: 'moderator_confirm',
       createdAt: now(),
     });
-    const res = await del(mount(store, trustStore), 'secret', {
+    const res = await del(mount(store, trustStore), OP_WRITE, {
       subjectId: SUBJECT,
       kind: 'moderator_confirm',
     });
@@ -488,7 +514,7 @@ describe('DELETE /debug/trust-edges', () => {
       },
       deleteEdgeById: async () => undefined,
     };
-    const res = await del(mount(await seeded(), throwing), 'secret', {
+    const res = await del(mount(await seeded(), throwing), OP_WRITE, {
       subjectId: SUBJECT,
       kind: 'moderator_confirm',
     });

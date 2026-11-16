@@ -7,15 +7,13 @@ import { normalizeUuid } from '@/lib/uuid';
 
 /**
  * Operator debug surface for shop payment proofs. Authenticated by
- * `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * an operator key token of the SSH key login (Bearer), not by an end-user session.
  */
 
 /** Collaborators the debug shop proof routes need. */
 export interface DebugShopProofsRouteDeps {
   /** Shop payment service. */
   shop: ShopPayments;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -27,7 +25,7 @@ export interface DebugShopProofsRouteDeps {
  * `give_up_at` 24 h ahead, and logs `shop.proof.retried`. A malformed or
  * unknown id is **404**; a proof that is not `stuck` is **409**.
  *
- * @param deps - Shop payment service and optional debug token.
+ * @param deps - Shop payment service and optional key login.
  * @returns A Hono app exposing `POST /:id/retry`.
  */
 export function debugShopProofsRoutes(deps: DebugShopProofsRouteDeps): Hono {

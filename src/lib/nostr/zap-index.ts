@@ -592,7 +592,7 @@ function zapIngestRow(args: {
 /**
  * Manually settle a successful forum invoice under operator authority.
  *
- * `DEBUG_TOKEN` is the authority for the route caller; the required note is
+ * An admin operator key token is the authority for the route caller; the required note is
  * durable operator evidence. A supplied preimage is additionally verified
  * against the payment hash and stored only in the synthetic receipt tags.
  * A pre-existing legacy partial normal credit may resume even when the note

@@ -191,6 +191,7 @@ describe('runFondPaidTick', () => {
       FOND_USERNAME,
       { usd: '1.00', chf: null, eur: null, php: null },
       'daily',
+      FOND_USERNAME,
     );
     expect(mockedSettle.mock.calls[0]?.[1]).not.toHaveProperty('groupMessageId');
     expect(await store.get('row-a')).toMatchObject({ status: 'paid', claimedAt: null });
@@ -222,6 +223,7 @@ describe('runFondPaidTick', () => {
     );
     expect(mockedSettle.mock.calls[0]?.[1]).not.toHaveProperty('messageId');
     expect(mockedSettle.mock.calls[0]?.[5]).toBe('moderator');
+    expect(mockedSettle.mock.calls[0]?.[6]).toBe(FOND_USERNAME);
     expect((await store.get('row-a'))?.status).toBe('paid');
   });
 

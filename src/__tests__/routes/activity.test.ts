@@ -539,33 +539,31 @@ describe('account activity routes', () => {
 });
 
 describe('GET /members/:accountId/activity with an operator token', () => {
-  it.each(['DEBUG_TOKEN', 'a read key token'])(
-    'reads a member activity with %s and no session',
-    async (kind) => {
-      const authStore = new InMemoryAuthStore();
-      await seedMember(authStore);
-      const keys = await seededOperatorLogin(now);
-      const app = createApp({
-        authStore,
-        now,
-        debugToken: 'op-write',
-        operatorSigners: keys.operatorSigners,
-        operatorLoginStore: keys.operatorLoginStore,
-      });
-      const token = kind === 'DEBUG_TOKEN' ? 'op-write' : keys.tokens.read;
-      const res = await app.request(`/members/${ACCOUNT_ID}/activity`, {
-        headers: { authorization: `Bearer ${token}` },
-      });
-      expect(res.status).toBe(200);
-    },
-  );
-
-  it('keeps 401 for a wrong bearer', async () => {
+  async function operatorApp(): Promise<{ app: ReturnType<typeof createApp>; read: string }> {
     const authStore = new InMemoryAuthStore();
     await seedMember(authStore);
-    const app = createApp({ authStore, now, debugToken: 'op-write' });
+    const keys = await seededOperatorLogin(now);
+    const app = createApp({
+      authStore,
+      now,
+      operatorSigners: keys.operatorSigners,
+      operatorLoginStore: keys.operatorLoginStore,
+    });
+    return { app, read: keys.tokens.read };
+  }
+
+  it('reads a member activity with a read key token and no session', async () => {
+    const { app, read } = await operatorApp();
     const res = await app.request(`/members/${ACCOUNT_ID}/activity`, {
-      headers: { authorization: 'Bearer op-other' },
+      headers: { authorization: `Bearer ${read}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it.each(['op-other', 'e2e-debug-token'])('keeps 401 for the bearer %s', async (bearer) => {
+    const { app } = await operatorApp();
+    const res = await app.request(`/members/${ACCOUNT_ID}/activity`, {
+      headers: { authorization: `Bearer ${bearer}` },
     });
     expect(res.status).toBe(401);
   });

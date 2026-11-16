@@ -1,6 +1,6 @@
 /**
  * Operator insert of a live shop note that has a till and no pin.
- * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  * `POST /messages` still refuses this shape. The pin is not accepted.
  */
 
@@ -25,8 +25,6 @@ export interface DebugShopNoteRouteDeps {
   identities: ShopIdentityStore;
   /** 32-byte shop KEK, or omitted when shop keys are off. */
   kek: Uint8Array | undefined;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
   /** Clock for the note's `createdAt`. */
@@ -38,7 +36,7 @@ export interface DebugShopNoteRouteDeps {
  *
  * Mounted at `/debug/shop-notes` so the public path is `POST /debug/shop-notes`.
  *
- * @param deps - Accounts, notes, identities, KEK, debug token, and clock.
+ * @param deps - Accounts, notes, identities, KEK, key login, and clock.
  * @returns A Hono app exposing `POST /`.
  */
 export function debugShopNoteRoutes(deps: DebugShopNoteRouteDeps): Hono {

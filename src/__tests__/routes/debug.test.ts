@@ -8,8 +8,15 @@ import { InMemoryPushStore } from '@/lib/push-store';
 import * as authService from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import type { MergeDb } from '@/lib/account-merge';
+import { OperatorLogin } from '@/lib/operator-login';
 import { debugRoutes } from '@/routes/debug';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
 import { LNURL_SERVER, createWalletAccount } from '@/__tests__/helpers/wallet-lnurl';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_READ = OP_KEYS.tokens.read;
+const OP_WRITE = OP_KEYS.tokens.write;
+const OP_ADMIN = OP_KEYS.tokens.admin;
 
 const MERGE_FROM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const MERGE_INTO = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -138,13 +145,13 @@ function mergeDbForStore(
 
 function mountDebug(
   store: InMemoryAuthStore,
-  options: { debugToken?: string; mergeDb?: MergeDb } = {},
+  options: { operatorLogin?: OperatorLogin; mergeDb?: MergeDb } = {},
 ): Hono {
   return new Hono().route(
     '/debug/accounts',
     debugRoutes({
       store,
-      debugToken: options.debugToken,
+      ...(options.operatorLogin === undefined ? {} : { operatorLogin: options.operatorLogin }),
       ...(options.mergeDb === undefined ? {} : { mergeDb: options.mergeDb }),
     }),
   );
@@ -153,7 +160,7 @@ function mountDebug(
 async function postMerge(
   app: Hono,
   body: unknown,
-  authorization = 'Bearer debug-token',
+  authorization = `Bearer ${OP_ADMIN}`,
 ): Promise<Response> {
   return app.request('/debug/accounts/merge', {
     method: 'POST',
@@ -185,7 +192,6 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: undefined,
       }),
     );
     const res = await app.request('/debug/accounts');
@@ -193,15 +199,21 @@ describe('debugRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it('returns 503 when the token is blank', async () => {
+  it('returns 503 when the key login has no allowed signers', async () => {
     const app = new Hono().route(
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: '  ',
+        operatorLogin: new OperatorLogin({
+          signers: null,
+          store: OP_KEYS.operatorLoginStore,
+          now: Date.now,
+        }),
       }),
     );
-    const res = await app.request('/debug/accounts', { headers: { authorization: 'Bearer   ' } });
+    const res = await app.request('/debug/accounts', {
+      headers: { authorization: `Bearer ${OP_READ}` },
+    });
     expect(res.status).toBe(503);
   });
 
@@ -210,11 +222,39 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
       }),
     );
     const res = await app.request('/debug/accounts');
     expect(res.status).toBe(401);
+    const unknown = await app.request('/debug/accounts', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(unknown.status).toBe(401);
+    expect(await unknown.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('answers 403 for a key token below the level of each route', async () => {
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store: new InMemoryAuthStore(), operatorLogin: OP_KEYS.operatorLogin }),
+    );
+    const json = { 'content-type': 'application/json' };
+    const cases: Array<{ path: string; method: string; token: string }> = [
+      { path: '/debug/accounts', method: 'POST', token: OP_READ },
+      { path: '/debug/accounts/acc', method: 'PATCH', token: OP_WRITE },
+      { path: '/debug/accounts/acc/session', method: 'POST', token: OP_WRITE },
+      { path: '/debug/accounts/merge', method: 'POST', token: OP_WRITE },
+    ];
+    for (const { path, method, token } of cases) {
+      const res = await app.request(path, {
+        method,
+        headers: { ...json, authorization: `Bearer ${token}` },
+        body: '{}',
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Forbidden' });
+    }
   });
 
   it('lists accounts for a valid bearer', async () => {
@@ -236,9 +276,12 @@ describe('debugRoutes', () => {
       kekId: 1,
       custody: 'custodial',
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -274,9 +317,12 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -312,9 +358,12 @@ describe('debugRoutes', () => {
       rulesAgreedAt: null,
     });
     Object.assign(store, { listNostrKeys: async () => [] });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -363,17 +412,20 @@ describe('debugRoutes', () => {
       kekId: 1,
       custody: 'custodial',
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const missing = await app.request('/debug/accounts/not-a-uuid', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(missing.status).toBe(404);
     const unknown = await app.request('/debug/accounts/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(unknown.status).toBe(404);
     const res = await app.request(`/debug/accounts/${id}`, {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_READ}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -399,7 +451,6 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: undefined,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
@@ -416,7 +467,7 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
@@ -432,12 +483,12 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
@@ -452,12 +503,12 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'admin' }),
     });
     expect(res.status).toBe(400);
@@ -472,12 +523,12 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: 'not-json',
     });
     expect(res.status).toBe(400);
@@ -488,12 +539,12 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
       }),
     );
     const res = await app.request('/debug/accounts/missing', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'verified' }),
     });
     expect(res.status).toBe(404);
@@ -507,11 +558,11 @@ describe('debugRoutes', () => {
     const updateAccount = vi.spyOn(store, 'updateAccount');
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', lnurlServer: LNURL_SERVER }),
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin, lnurlServer: LNURL_SERVER }),
     );
     const res = await app.request(`/debug/accounts/${id}`, {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ username: '  Grace ' }),
     });
     expect(res.status).toBe(200);
@@ -539,7 +590,10 @@ describe('debugRoutes', () => {
     const renameUsername = vi.spyOn(store, 'renameUsername');
     const updateAccount = vi.spyOn(store, 'updateAccount');
     const setSessionRefused = vi.spyOn(store, 'setSessionRefused');
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
 
     for (const body of [
       { username: 'grace', role: 'moderator' },
@@ -548,7 +602,7 @@ describe('debugRoutes', () => {
     ]) {
       const res = await app.request('/debug/accounts/acc', {
         method: 'PATCH',
-        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
       expect(res.status).toBe(400);
@@ -569,11 +623,14 @@ describe('debugRoutes', () => {
   it('PATCH returns 400 for an invalid username', async () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     for (const username of ['bad name', 'ada..', '_', 'a'.repeat(33)]) {
       const res = await app.request('/debug/accounts/acc', {
         method: 'PATCH',
-        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
         body: JSON.stringify({ username }),
       });
       expect(res.status).toBe(400);
@@ -588,10 +645,13 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
     await createMergeAccount(store, 'other', 'c'.repeat(64), { username: 'grace' });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ username: ' GRACE ' }),
     });
     expect(res.status).toBe(409);
@@ -602,10 +662,13 @@ describe('debugRoutes', () => {
   it("PATCH accepts the account's own username", async () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ username: ' ADA ' }),
     });
     expect(res.status).toBe(200);
@@ -617,10 +680,13 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
     vi.spyOn(store, 'renameUsername').mockResolvedValue({ ok: false, reason: 'taken' });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'grace' }),
     });
     expect(res.status).toBe(409);
@@ -631,10 +697,13 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, 'acc', 'b'.repeat(64), { username: 'ada' });
     vi.spyOn(store, 'renameUsername').mockResolvedValue({ ok: false, reason: 'missing' });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'grace' }),
     });
     expect(res.status).toBe(404);
@@ -644,11 +713,11 @@ describe('debugRoutes', () => {
   it('PATCH returns 404 for a missing account when renaming', async () => {
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store: new InMemoryAuthStore(), debugToken: 'secret' }),
+      debugRoutes({ store: new InMemoryAuthStore(), operatorLogin: OP_KEYS.operatorLogin }),
     );
     const res = await app.request('/debug/accounts/missing', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'grace' }),
     });
     expect(res.status).toBe(404);
@@ -661,10 +730,13 @@ describe('debugRoutes', () => {
       username: 'platform',
       isPlatform: true,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/plat', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'renamed' }),
     });
     expect(res.status).toBe(409);
@@ -685,10 +757,13 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'founder' }),
     });
     expect(res.status).toBe(200);
@@ -727,10 +802,13 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'initiator' }),
     });
     expect(res.status).toBe(200);
@@ -758,10 +836,13 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'software_developer' }),
     });
     expect(res.status).toBe(200);
@@ -789,10 +870,13 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'fond' }),
     });
     expect(res.status).toBe(200);
@@ -814,10 +898,13 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'fond', platform: true }),
     });
     expect(res.status).toBe(400);
@@ -839,10 +926,13 @@ describe('debugRoutes', () => {
       rulesAgreedAt: null,
       isPlatform: true,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'fond' }),
     });
     expect(res.status).toBe(409);
@@ -863,11 +953,14 @@ describe('debugRoutes', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const updateAccount = vi.spyOn(store, 'updateAccount');
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ sessionRefused: true }),
     });
     expect(res.status).toBe(200);
@@ -877,7 +970,7 @@ describe('debugRoutes', () => {
     expect((await store.getAccount('acc'))?.sessionRefused).toBe(true);
     const off = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ sessionRefused: false }),
     });
     expect(off.status).toBe(200);
@@ -903,10 +996,13 @@ describe('debugRoutes', () => {
       kekId: 1,
       custody: 'custodial',
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ role: 'verified' }),
     });
     expect(res.status).toBe(200);
@@ -946,10 +1042,13 @@ describe('debugRoutes', () => {
       rulesAgreedAt: null,
       isPlatform: true,
     });
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ platform: true }),
     });
     expect(res.status).toBe(200);
@@ -991,13 +1090,13 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store,
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
         conversationStore: conversations,
       }),
     );
     const res = await app.request('/debug/accounts/acc', {
       method: 'PATCH',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
       body: JSON.stringify({ platform: true }),
     });
     expect(res.status).toBe(200);
@@ -1021,18 +1120,18 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store,
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
         now: () => 1_700_000_000_000,
       }),
     );
     const missing = await app.request('/debug/accounts/missing/session', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_ADMIN}` },
     });
     expect(missing.status).toBe(404);
     const res = await app.request('/debug/accounts/acc/session', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_ADMIN}` },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { token: string };
@@ -1040,11 +1139,11 @@ describe('debugRoutes', () => {
     expect((await store.getSession(body.token))?.accountId).toBe('acc');
     const defaultClock = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret' }),
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
     );
     const again = await defaultClock.request('/debug/accounts/acc/session', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_ADMIN}` },
     });
     expect(again.status).toBe(200);
   });
@@ -1069,13 +1168,13 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store,
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
         now: () => 1_700_000_000_000,
       }),
     );
     const res = await app.request(`/debug/accounts/${id}/session`, {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_ADMIN}` },
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
@@ -1103,13 +1202,13 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store,
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
         now: () => 1_700_000_000_000,
       }),
     );
     const res = await app.request('/debug/accounts/acc/session', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_ADMIN}` },
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: WRONG_ACCOUNT_ERROR });
@@ -1136,13 +1235,13 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store,
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
         now: () => 1_700_000_000_000,
       }),
     );
     const res = await app.request('/debug/accounts/acc/session', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: `Bearer ${OP_ADMIN}` },
     });
     expect(res.status).toBe(500);
   });
@@ -1150,14 +1249,17 @@ describe('debugRoutes', () => {
   it('PATCH refuses the removed lightningAddress field', async () => {
     const store = new InMemoryAuthStore();
     await createWalletAccount(store, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'ada');
-    const app = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const app = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     for (const body of [
       { lightningAddress: null },
       { role: 'moderator', lightningAddress: null },
     ]) {
       const res = await app.request('/debug/accounts/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', {
         method: 'PATCH',
-        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${OP_ADMIN}`, 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
       expect(res.status).toBe(400);
@@ -1175,9 +1277,9 @@ describe('debugRoutes', () => {
     await createWalletAccount(store, id, 'ada');
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', lnurlServer: LNURL_SERVER }),
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin, lnurlServer: LNURL_SERVER }),
     );
-    const headers = { authorization: 'Bearer secret' };
+    const headers = { authorization: `Bearer ${OP_ADMIN}` };
     const list = (await (await app.request('/debug/accounts', { headers })).json()) as {
       accounts: Array<{ lightningAddress: string | null; lightningAddressVerified: boolean }>;
     };
@@ -1197,7 +1299,10 @@ describe('debugRoutes', () => {
       })
     ).json()) as { lightningAddress: string | null };
     expect(patched.lightningAddress).toBe('ada@example.test');
-    const off = new Hono().route('/debug/accounts', debugRoutes({ store, debugToken: 'secret' }));
+    const off = new Hono().route(
+      '/debug/accounts',
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin }),
+    );
     const plain = (await (await off.request(`/debug/accounts/${id}`, { headers })).json()) as {
       lightningAddress: string | null;
     };
@@ -1209,7 +1314,6 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: undefined,
       }),
     );
     const res = await app.request('/debug/accounts', {
@@ -1228,7 +1332,7 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store: new InMemoryAuthStore(),
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
       }),
     );
     const res = await app.request('/debug/accounts', {
@@ -1249,7 +1353,7 @@ describe('debugRoutes', () => {
       '/debug/accounts',
       debugRoutes({
         store,
-        debugToken: 'secret',
+        operatorLogin: OP_KEYS.operatorLogin,
         ...(messageStore === undefined ? {} : { messageStore }),
         pushStore: new InMemoryPushStore(),
         notificationStore: new InMemoryNotificationStore(),
@@ -1258,7 +1362,7 @@ describe('debugRoutes', () => {
     return async (accounts) =>
       app.request('/debug/accounts', {
         method: 'POST',
-        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${OP_WRITE}`, 'content-type': 'application/json' },
         body: typeof accounts === 'string' ? accounts : JSON.stringify({ accounts }),
       });
   }
@@ -1427,11 +1531,11 @@ describe('debugRoutes', () => {
     const messageStore = new InMemoryMessageStore();
     const app = new Hono().route(
       '/debug/accounts',
-      debugRoutes({ store, debugToken: 'secret', messageStore }),
+      debugRoutes({ store, operatorLogin: OP_KEYS.operatorLogin, messageStore }),
     );
     const res = await app.request('/debug/accounts', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${OP_WRITE}`, 'content-type': 'application/json' },
       body: JSON.stringify({ accounts: [{ name: 'Ada', username: 'ada' }] }),
     });
     expect(res.status).toBe(200);
@@ -1454,7 +1558,7 @@ describe('debugRoutes', () => {
   });
 
   it('POST /debug/accounts/merge returns 401 with a wrong bearer', async () => {
-    const app = mountDebug(new InMemoryAuthStore(), { debugToken: 'debug-token' });
+    const app = mountDebug(new InMemoryAuthStore(), { operatorLogin: OP_KEYS.operatorLogin });
     const res = await app.request('/debug/accounts/merge', {
       method: 'POST',
       headers: { authorization: 'Bearer wrong' },
@@ -1466,7 +1570,7 @@ describe('debugRoutes', () => {
   it('POST /debug/accounts/merge returns 400 for body {}', async () => {
     const store = new InMemoryAuthStore();
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store),
     });
     const res = await postMerge(app, {});
@@ -1478,7 +1582,7 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store),
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_FROM });
@@ -1490,7 +1594,7 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store),
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_MISSING });
@@ -1503,7 +1607,7 @@ describe('debugRoutes', () => {
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64), { isPlatform: true });
     await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store),
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
@@ -1515,7 +1619,7 @@ describe('debugRoutes', () => {
     const store = new InMemoryAuthStore();
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
     await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
-    const app = mountDebug(store, { debugToken: 'debug-token' });
+    const app = mountDebug(store, { operatorLogin: OP_KEYS.operatorLogin });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Merge is unavailable' });
@@ -1526,7 +1630,7 @@ describe('debugRoutes', () => {
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
     await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store, { bothGrants: true }),
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
@@ -1539,7 +1643,7 @@ describe('debugRoutes', () => {
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
     await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store, { shopPaymentOpen: true }),
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
@@ -1553,7 +1657,7 @@ describe('debugRoutes', () => {
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
     await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store, { welcomeInvoiceOpen: true }),
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
@@ -1567,7 +1671,7 @@ describe('debugRoutes', () => {
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
     await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store, { repaymentUnavailable: true }),
     });
 
@@ -1581,7 +1685,7 @@ describe('debugRoutes', () => {
     await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
     await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb: mergeDbForStore(store),
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
@@ -1599,7 +1703,7 @@ describe('debugRoutes', () => {
       },
     };
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb,
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
@@ -1626,7 +1730,7 @@ describe('debugRoutes', () => {
       },
     };
     const app = mountDebug(store, {
-      debugToken: 'debug-token',
+      operatorLogin: OP_KEYS.operatorLogin,
       mergeDb,
     });
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });

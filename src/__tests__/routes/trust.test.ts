@@ -69,7 +69,6 @@ function mount(
     spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> };
     /** `false` omits the LNURL server (no receiving address). Default on. */
     lnurlServer?: false;
-    debugToken?: string;
     operatorLogin?: OperatorLogin;
   } = {},
 ): Hono {
@@ -86,7 +85,6 @@ function mount(
       ...(extras.messages === undefined ? {} : { messages: extras.messages }),
       ...(extras.spendPing === undefined ? {} : { spendPing: extras.spendPing }),
       ...(extras.lnurlServer === false ? {} : { lnurlServer: LNURL_SERVER }),
-      ...(extras.debugToken === undefined ? {} : { debugToken: extras.debugToken }),
       ...(extras.operatorLogin === undefined ? {} : { operatorLogin: extras.operatorLogin }),
     }),
   );
@@ -3841,9 +3839,10 @@ describe('GET /trust/proposals', () => {
 });
 
 describe('GET /trust/proposals with an operator token', () => {
-  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
+  const TOKENS = { operatorLogin: OP_KEYS.operatorLogin };
 
-  it.each(['op-write', OP_READ])('lists proposals with %s and no session', async (token) => {
+  it('lists proposals with a read key token and no session', async () => {
+    const token = OP_READ;
     const { authStore, trustStore } = await staffed();
     const res = await get(mount(authStore, trustStore, TOKENS), '/trust/proposals', token);
     expect(res.status).toBe(200);
@@ -3854,6 +3853,7 @@ describe('GET /trust/proposals with an operator token', () => {
     const { authStore, trustStore } = await staffed();
     const app = mount(authStore, trustStore, TOKENS);
     expect((await get(app, '/trust/proposals', 'op-other')).status).toBe(401);
+    expect((await get(app, '/trust/proposals', 'e2e-debug-token')).status).toBe(401);
     expect((await get(app, '/trust/proposals', 'other')).status).toBe(403);
     expect((await get(app, '/trust/proposals', 'mod')).status).toBe(200);
   });

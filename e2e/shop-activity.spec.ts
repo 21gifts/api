@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
+import { operatorHeaders } from './helpers/operator-keys';
 
 test('Function: activeShopDays — GET /shops/activity without bearer is 200', async ({
   request,
@@ -17,8 +18,6 @@ test('Function: shopActivityRoutes — GET /shops/activity without bearer is 200
   const body = (await res.json()) as { days: unknown[] };
   expect(body.days).toHaveLength(30);
 });
-
-const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 
 type ListedShopRow = {
   noteId: string;
@@ -42,9 +41,16 @@ async function provision(
   rows: Array<{ name: string; username: string }>,
 ): Promise<Array<{ id: string; name: string; username: string | null }>> {
   expect(
-    (await request.post('/debug/accounts', { headers: DEBUG, data: { accounts: rows } })).status(),
+    (
+      await request.post('/debug/accounts', {
+        headers: await operatorHeaders(request, 'write'),
+        data: { accounts: rows },
+      })
+    ).status(),
   ).toBe(200);
-  const listed = (await (await request.get('/debug/accounts', { headers: DEBUG })).json()) as {
+  const listed = (await (
+    await request.get('/debug/accounts', { headers: await operatorHeaders(request, 'read') })
+  ).json()) as {
     accounts: Array<{ id: string; name: string; username: string | null }>;
   };
   return rows.map((row) => listed.accounts.find((account) => account.name === row.name)!);
@@ -61,7 +67,9 @@ async function sessionOf(
   request: APIRequestContext,
   accountId: string,
 ): Promise<{ authorization: string }> {
-  const minted = await request.post(`/debug/accounts/${accountId}/session`, { headers: DEBUG });
+  const minted = await request.post(`/debug/accounts/${accountId}/session`, {
+    headers: await operatorHeaders(request, 'admin'),
+  });
   expect(minted.status()).toBe(200);
   return { authorization: `Bearer ${((await minted.json()) as { token: string }).token}` };
 }
@@ -86,7 +94,7 @@ async function shopWithTill(
   expect(
     (
       await request.patch(`/debug/accounts/${author!.id}`, {
-        headers: DEBUG,
+        headers: await operatorHeaders(request, 'admin'),
         data: { role: 'moderator' },
       })
     ).status(),
@@ -96,7 +104,9 @@ async function shopWithTill(
     data: { text: `Coffee served at the bar every morning.\n\n#21GiftsShop` },
   });
   expect(saved.status()).toBe(200);
-  const accounts = (await (await request.get('/debug/accounts', { headers: DEBUG })).json()) as {
+  const accounts = (await (
+    await request.get('/debug/accounts', { headers: await operatorHeaders(request, 'read') })
+  ).json()) as {
     accounts: Array<{ id: string; profileMessageId: string | null }>;
   };
   const noteId = accounts.accounts.find((row) => row.id === author!.id)!.profileMessageId!;

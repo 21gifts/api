@@ -173,8 +173,6 @@ export interface DebugWalletRouteDeps {
   walletStore: WalletStore;
   /** Shared auth persistence port, used to 404 an unknown account id. */
   authStore: AuthStore;
-  /** `DEBUG_TOKEN`, or `undefined` when unset. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
@@ -184,11 +182,11 @@ export interface DebugWalletRouteDeps {
 /**
  * Build the `/debug/accounts/:id/wallet` route group.
  *
- * Read-only. `DEBUG_TOKEN` and every operator key token pass. One page has the
+ * Read-only. Every operator key token passes. One page has the
  * newest balance snapshot, at most `limit` payments newest first, and
  * `nextCursor` only when another row exists.
  *
- * @param deps - Wallet store, auth store, debug tokens, and optional clock.
+ * @param deps - Wallet store, auth store, key login, and optional clock.
  * @returns A Hono app exposing `GET /:id/wallet`.
  */
 export function debugWalletRoutes(deps: DebugWalletRouteDeps): Hono {

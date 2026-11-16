@@ -57,8 +57,6 @@ export interface MembersRouteDeps {
    * Missing fiat never 503s the page.
    */
   fiatRates?: FiatRateBook;
-  /** `DEBUG_TOKEN` (every operator level), or unset. */
-  debugToken?: string;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }

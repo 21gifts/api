@@ -19,6 +19,14 @@ import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
+import type { OperatorLogin } from '@/lib/operator-login';
+import { seededOperatorLogin } from '@/__tests__/helpers/operator-key-token';
+
+const OP_KEYS = await seededOperatorLogin();
+const OP_LOGIN = OP_KEYS.operatorLogin;
+const READ_AUTH = `Bearer ${OP_KEYS.tokens.read}`;
+const WRITE_AUTH = `Bearer ${OP_KEYS.tokens.write}`;
+const ADMIN_AUTH = `Bearer ${OP_KEYS.tokens.admin}`;
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -29,7 +37,7 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 
 function mount(
   store: InMemoryMessageStore,
-  debugToken: string | undefined,
+  operatorLogin: OperatorLogin | undefined,
   extra: {
     spendPing?: {
       ping: (
@@ -63,7 +71,7 @@ function mount(
       store,
       auth: extra.auth ?? new InMemoryAuthStore(),
       now: extra.now ?? (() => Date.parse('2026-09-18T12:00:00.000Z')),
-      debugToken,
+      operatorLogin,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
       ...(extra.recoveryShareRequiredFrom === undefined
@@ -110,8 +118,9 @@ const SPEND_JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 const SPEND_PHOTO = { contentType: 'image/jpeg' as const, bytes: SPEND_JPEG };
 const SPEND_NOW = (): number => Date.parse('2026-09-30T12:00:00.000Z');
 const SPEND_CREATED_AT = new Date('2026-09-30T08:00:00.000Z');
+const READ_HEADERS = { authorization: READ_AUTH };
 const SPEND_HEADERS = {
-  authorization: 'Bearer secret',
+  authorization: WRITE_AUTH,
   'content-type': 'application/json',
 };
 
@@ -186,25 +195,8 @@ describe('debugPaymentsRoutes', () => {
     expect(settle.status).toBe(503);
   });
 
-  it('returns 503 when the token is blank', async () => {
-    const app = mount(new InMemoryMessageStore(), '  ');
-    const invoices = await app.request('/debug/invoices', {
-      headers: { authorization: 'Bearer   ' },
-    });
-    expect(invoices.status).toBe(503);
-    const ingests = await app.request('/debug/zap-ingests', {
-      headers: { authorization: 'Bearer   ' },
-    });
-    expect(ingests.status).toBe(503);
-    const settle = await app.request('/debug/invoices/settle', {
-      method: 'POST',
-      headers: { authorization: 'Bearer   ' },
-    });
-    expect(settle.status).toBe(503);
-  });
-
   it('returns 401 without a matching bearer on both paths', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN);
     const invoices = await app.request('/debug/invoices');
     expect(invoices.status).toBe(401);
     expect(await invoices.json()).toEqual({ error: 'Unauthorized' });
@@ -213,6 +205,33 @@ describe('debugPaymentsRoutes', () => {
     expect(await ingests.json()).toEqual({ error: 'Unauthorized' });
     const settle = await app.request('/debug/invoices/settle', { method: 'POST' });
     expect(settle.status).toBe(401);
+    const unknown = await app.request('/debug/invoices', {
+      headers: { authorization: 'Bearer secret' },
+    });
+    expect(unknown.status).toBe(401);
+  });
+
+  it('returns 403 for a key token below the route level', async () => {
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN);
+    const settle = await app.request('/debug/invoices/settle', {
+      method: 'POST',
+      headers: { authorization: WRITE_AUTH, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(settle.status).toBe(403);
+    expect(await settle.json()).toEqual({ error: 'Forbidden' });
+    const spend = await app.request('/debug/spend-ping', {
+      method: 'POST',
+      headers: { authorization: READ_AUTH, 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(spend.status).toBe(403);
+    const sweep = await app.request('/debug/welcome-sweep', {
+      method: 'PUT',
+      headers: { authorization: READ_AUTH, 'content-type': 'application/json' },
+      body: '{"enabled":true}',
+    });
+    expect(sweep.status).toBe(403);
   });
 
   it('lists invoice attempts newest-first with ISO dates', async () => {
@@ -246,9 +265,9 @@ describe('debugPaymentsRoutes', () => {
     };
     await store.recordInvoiceAttempt(early);
     await store.recordInvoiceAttempt(late);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_LOGIN);
     const res = await app.request('/debug/invoices', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: READ_AUTH },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -291,9 +310,9 @@ describe('debugPaymentsRoutes', () => {
     };
     await store.recordZapIngest(early);
     await store.recordZapIngest(late);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_LOGIN);
     const res = await app.request('/debug/zap-ingests', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: READ_AUTH },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -310,8 +329,8 @@ describe('debugPaymentsRoutes', () => {
   });
 
   it('validates the manual-settle body and note', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
-    const headers = { authorization: 'Bearer secret', 'content-type': 'application/json' };
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN);
+    const headers = { authorization: ADMIN_AUTH, 'content-type': 'application/json' };
     for (const body of [
       '{',
       '[]',
@@ -334,8 +353,8 @@ describe('debugPaymentsRoutes', () => {
   });
 
   it('maps manual-settle validation and lookup failures', async () => {
-    const headers = { authorization: 'Bearer secret', 'content-type': 'application/json' };
-    const emptyApp = mount(new InMemoryMessageStore(), 'secret');
+    const headers = { authorization: ADMIN_AUTH, 'content-type': 'application/json' };
+    const emptyApp = mount(new InMemoryMessageStore(), OP_LOGIN);
     const shape = await emptyApp.request('/debug/invoices/settle', {
       method: 'POST',
       headers,
@@ -368,7 +387,7 @@ describe('debugPaymentsRoutes', () => {
     await seedSettleInvoice(conversationStore, 'cc'.repeat(32), {
       conversationId: 'conversation',
     });
-    const conversation = await mount(conversationStore, 'secret').request(
+    const conversation = await mount(conversationStore, OP_LOGIN).request(
       '/debug/invoices/settle',
       {
         method: 'POST',
@@ -383,7 +402,7 @@ describe('debugPaymentsRoutes', () => {
 
     const missingMessageStore = new InMemoryMessageStore();
     await seedSettleInvoice(missingMessageStore, 'dd'.repeat(32), { messageId: 'missing' });
-    const missingMessage = await mount(missingMessageStore, 'secret').request(
+    const missingMessage = await mount(missingMessageStore, OP_LOGIN).request(
       '/debug/invoices/settle',
       {
         method: 'POST',
@@ -400,10 +419,10 @@ describe('debugPaymentsRoutes', () => {
     const preimage = '00'.repeat(32);
     const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
     await seedSettleInvoice(store, paymentHash);
-    const app = mount(store, 'secret', { fundingStore: new InMemoryFundingStore() });
+    const app = mount(store, OP_LOGIN, { fundingStore: new InMemoryFundingStore() });
     const request = {
       method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: ADMIN_AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ paymentHash, note: ' Wallet evidence ', preimage }),
     };
     const settled = await app.request('/debug/invoices/settle', request);
@@ -426,10 +445,10 @@ describe('debugPaymentsRoutes', () => {
     const paymentHash = 'ab'.repeat(32);
     await seedSettleInvoice(store, paymentHash);
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const app = mount(store, 'secret', { spendPing });
+    const app = mount(store, OP_LOGIN, { spendPing });
     const settled = await app.request('/debug/invoices/settle', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: ADMIN_AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ paymentHash, note: 'Wallet evidence' }),
     });
     expect(settled.status).toBe(200);
@@ -451,10 +470,10 @@ describe('debugPaymentsRoutes', () => {
     const store = new FailingIngestStore();
     const paymentHash = 'ac'.repeat(32);
     await seedSettleInvoice(store, paymentHash);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_LOGIN);
     const request = {
       method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: ADMIN_AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ paymentHash, note: 'Wallet evidence' }),
     };
 
@@ -484,7 +503,7 @@ describe('debugPaymentsRoutes', () => {
         store,
         auth: new InMemoryAuthStore(),
         now: () => Date.parse('2026-09-18T12:00:00.000Z'),
-        debugToken: 'secret',
+        operatorLogin: OP_LOGIN,
         pushStore: new InMemoryPushStore(),
         notificationStore: new InMemoryNotificationStore(),
         conversationStore: new InMemoryConversationStore(),
@@ -495,7 +514,7 @@ describe('debugPaymentsRoutes', () => {
     );
     const settled = await app.request('/debug/invoices/settle', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: ADMIN_AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ paymentHash, note: 'Wallet evidence' }),
     });
     expect(settled.status).toBe(200);
@@ -508,10 +527,10 @@ describe('debugPaymentsRoutes', () => {
         return Promise.reject(new Error('settle boom'));
       }
     }
-    const app = mount(new ThrowingStore(), 'secret');
+    const app = mount(new ThrowingStore(), OP_LOGIN);
     const res = await app.request('/debug/invoices/settle', {
       method: 'POST',
-      headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+      headers: { authorization: ADMIN_AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ paymentHash: 'aa'.repeat(32), note: 'operator proof' }),
     });
     expect(res.status).toBe(503);
@@ -531,14 +550,14 @@ describe('debugPaymentsRoutes', () => {
       listDebug: boom,
       postCountsByUtcDay: boom,
     } as unknown as InMemoryMessageStore;
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_LOGIN);
     const invoices = await app.request('/debug/invoices', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: READ_AUTH },
     });
     expect(invoices.status).toBe(503);
     expect(await invoices.json()).toEqual({ error: 'Messages are unavailable' });
     const ingests = await app.request('/debug/zap-ingests', {
-      headers: { authorization: 'Bearer secret' },
+      headers: { authorization: READ_AUTH },
     });
     expect(ingests.status).toBe(503);
     expect(await ingests.json()).toEqual({ error: 'Messages are unavailable' });
@@ -571,7 +590,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -605,22 +624,9 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
-  it('returns 503 for spend-ping when the token is blank', async () => {
-    const spendPing = spendPingMock();
-    const app = mount(new InMemoryMessageStore(), '  ', { spendPing });
-    const res = await app.request('/debug/spend-ping', {
-      method: 'POST',
-      headers: { authorization: 'Bearer   ' },
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
-    expect(spendPing.ping).not.toHaveBeenCalled();
-    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
-  });
-
   it('returns 401 for spend-ping without a bearer', async () => {
     const spendPing = spendPingMock();
-    const app = mount(new InMemoryMessageStore(), 'secret', { spendPing });
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN, { spendPing });
     const res = await app.request('/debug/spend-ping', { method: 'POST' });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
@@ -629,7 +635,7 @@ describe('debugPaymentsRoutes', () => {
   });
 
   it('returns 503 when spend ping is not configured', async () => {
-    const app = mount(new InMemoryMessageStore(), 'secret');
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN);
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -641,7 +647,7 @@ describe('debugPaymentsRoutes', () => {
 
   it('rejects malformed spend-ping bodies', async () => {
     const spendPing = spendPingMock();
-    const app = mount(new InMemoryMessageStore(), 'secret', { spendPing });
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN, { spendPing });
     for (const body of ['{', '"x"', '[1]', '{"messageId":1}', '{"messageId":"not-a-uuid"}']) {
       const res = await app.request('/debug/spend-ping', {
         method: 'POST',
@@ -657,7 +663,7 @@ describe('debugPaymentsRoutes', () => {
 
   it('returns 404 when the spend-ping message is missing', async () => {
     const spendPing = spendPingMock();
-    const app = mount(new InMemoryMessageStore(), 'secret', { spendPing });
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN, { spendPing });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -686,7 +692,7 @@ describe('debugPaymentsRoutes', () => {
     );
     await store.markDeleted(messageId, new Date(), 'staff');
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -725,7 +731,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -759,7 +765,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -787,7 +793,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -807,7 +813,7 @@ describe('debugPaymentsRoutes', () => {
       }
     }
     const spendPing = spendPingMock();
-    const app = mount(new ThrowingGetByIdStore(), 'secret', { spendPing });
+    const app = mount(new ThrowingGetByIdStore(), OP_LOGIN, { spendPing });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -842,7 +848,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', {
+    const app = mount(store, OP_LOGIN, {
       spendPing,
       auth: new ThrowingAuthStore(),
       now: SPEND_NOW,
@@ -883,7 +889,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -918,7 +924,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -955,7 +961,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -990,7 +996,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1028,7 +1034,7 @@ describe('debugPaymentsRoutes', () => {
       ...unsignedNostrDefaults(),
     });
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1071,7 +1077,7 @@ describe('debugPaymentsRoutes', () => {
       ...unsignedNostrDefaults(),
     });
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1117,7 +1123,7 @@ describe('debugPaymentsRoutes', () => {
       ...unsignedNostrDefaults(),
     });
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1158,7 +1164,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', {
+    const app = mount(store, OP_LOGIN, {
       spendPing,
       auth,
       now: SPEND_NOW,
@@ -1209,7 +1215,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', {
+    const app = mount(store, OP_LOGIN, {
       spendPing,
       auth,
       now: SPEND_NOW,
@@ -1253,7 +1259,7 @@ describe('debugPaymentsRoutes', () => {
       ping: vi.fn(async () => undefined),
       pingOnDay: vi.fn(async () => Promise.reject(new Error('ping boom'))),
     };
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1293,7 +1299,7 @@ describe('debugPaymentsRoutes', () => {
       ping: vi.fn(async () => undefined),
       pingOnDay: vi.fn(async () => ({ status: 'skipped' as const, reason: 'paid' })),
     };
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1332,7 +1338,7 @@ describe('debugPaymentsRoutes', () => {
       ping: vi.fn(async () => undefined),
       pingOnDay: vi.fn(async () => ({ status: 'failed' as const })),
     };
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1368,7 +1374,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = { ping: vi.fn(async () => undefined) };
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1402,7 +1408,7 @@ describe('debugPaymentsRoutes', () => {
       SPEND_PHOTO,
     );
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const app = mount(store, OP_LOGIN, { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
       headers: SPEND_HEADERS,
@@ -1464,7 +1470,7 @@ describe('debugPaymentsRoutes', () => {
       spendPing: ReturnType<typeof spendPingMock>,
       requiredFrom: string | null = '2026-10-29',
     ): Promise<Response> {
-      const app = mount(deps.store, 'secret', {
+      const app = mount(deps.store, OP_LOGIN, {
         spendPing,
         auth: deps.auth,
         fundingStore: deps.fundingStore,
@@ -1568,7 +1574,7 @@ describe('debugPaymentsRoutes', () => {
         },
       ]);
       const spendPing = { ping: vi.fn(async () => undefined) };
-      const res = await mount(store, 'secret', {
+      const res = await mount(store, OP_LOGIN, {
         spendPing,
         auth,
         fundingStore,
@@ -1577,7 +1583,7 @@ describe('debugPaymentsRoutes', () => {
         walletTransfers: { hasShopPayment: async () => true },
       }).request('/debug/invoices/settle', {
         method: 'POST',
-        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        headers: { authorization: ADMIN_AUTH, 'content-type': 'application/json' },
         body: JSON.stringify({ paymentHash, note: 'evidence', preimage }),
       });
       expect(res.status).toBe(200);
@@ -1653,7 +1659,7 @@ describe('debugPaymentsRoutes', () => {
       const { store, auth, fundingStore } = await seeded();
       const spendPing = spendPingMock();
       const hasShopPayment = vi.fn(async () => true);
-      const app = mount(store, 'secret', {
+      const app = mount(store, OP_LOGIN, {
         spendPing,
         auth,
         fundingStore,
@@ -1688,7 +1694,7 @@ describe('debugPaymentsRoutes', () => {
           store: new InMemoryMessageStore(),
           auth: new InMemoryAuthStore(),
           now: WINDOW_NOW,
-          debugToken: 'secret',
+          operatorLogin: OP_LOGIN,
           spendPing: spendPingMock(),
           conversationStore: new InMemoryConversationStore(),
           trustStore: new InMemoryTrustStore(),
@@ -1704,7 +1710,7 @@ describe('debugPaymentsRoutes', () => {
     it('dry-run pings nothing', async () => {
       const { store, auth, fundingStore } = await seeded();
       const spendPing = spendPingMock();
-      const app = mount(store, 'secret', { spendPing, auth, fundingStore, now: WINDOW_NOW });
+      const app = mount(store, OP_LOGIN, { spendPing, auth, fundingStore, now: WINDOW_NOW });
       const res = await post(app, { ...WINDOW, dryRun: true });
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({
@@ -1726,7 +1732,7 @@ describe('debugPaymentsRoutes', () => {
           kind: 'daily',
         },
       ]);
-      const app = mount(store, 'secret', {
+      const app = mount(store, OP_LOGIN, {
         spendPing,
         auth,
         fundingStore,
@@ -1749,7 +1755,7 @@ describe('debugPaymentsRoutes', () => {
       [{ ...WINDOW, messageId: MESSAGE_ID }],
     ])('returns 400 for the window body %j', async (body) => {
       const spendPing = spendPingMock();
-      const app = mount(new InMemoryMessageStore(), 'secret', { spendPing, now: WINDOW_NOW });
+      const app = mount(new InMemoryMessageStore(), OP_LOGIN, { spendPing, now: WINDOW_NOW });
       const res = await post(app, body);
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: 'Invalid body' });
@@ -1757,7 +1763,7 @@ describe('debugPaymentsRoutes', () => {
     });
 
     it('returns 503 when pingOnDay is missing', async () => {
-      const app = mount(new InMemoryMessageStore(), 'secret', {
+      const app = mount(new InMemoryMessageStore(), OP_LOGIN, {
         spendPing: { ping: vi.fn(async () => undefined) },
         now: WINDOW_NOW,
       });
@@ -1770,7 +1776,7 @@ describe('debugPaymentsRoutes', () => {
       const { store, auth } = await seeded();
       const fundingStore = new InMemoryFundingStore();
       vi.spyOn(fundingStore, 'listGrants').mockRejectedValue(new Error('down'));
-      const app = mount(store, 'secret', {
+      const app = mount(store, OP_LOGIN, {
         spendPing: spendPingMock(),
         auth,
         fundingStore,
@@ -1809,10 +1815,10 @@ describe('/debug/welcome-sweep', () => {
     return { store, auth };
   }
 
-  it('answers 503 without a debug token and 401 without the bearer', async () => {
+  it('answers 503 without a key login and 401 without the bearer', async () => {
     const store = new InMemoryMessageStore();
     expect((await mount(store, undefined).request('/debug/welcome-sweep')).status).toBe(503);
-    const app = mount(store, 'secret');
+    const app = mount(store, OP_LOGIN);
     expect((await app.request('/debug/welcome-sweep')).status).toBe(401);
     expect((await app.request('/debug/welcome-sweep', { method: 'PUT' })).status).toBe(401);
   });
@@ -1820,8 +1826,8 @@ describe('/debug/welcome-sweep', () => {
   it('lists the accounts the sweep would ping without pinging', async () => {
     const { store, auth } = await seedOwed();
     const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth });
-    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    const app = mount(store, OP_LOGIN, { spendPing, auth });
+    const res = await app.request('/debug/welcome-sweep', { headers: READ_HEADERS });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       enabled: false,
@@ -1836,23 +1842,23 @@ describe('/debug/welcome-sweep', () => {
   it('leaves out an account welcomed at its legacy external address', async () => {
     const { store, auth } = await seedOwed();
     const gifts = new InMemoryGiftStore([], [accountId]);
-    const app = mount(store, 'secret', { auth, giftStore: gifts });
-    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    const app = mount(store, OP_LOGIN, { auth, giftStore: gifts });
+    const res = await app.request('/debug/welcome-sweep', { headers: READ_HEADERS });
     expect(await res.json()).toEqual({ enabled: false, spendPing: false, wouldPing: [] });
   });
 
   it('answers 503 when the accounts cannot be read', async () => {
     const auth = new InMemoryAuthStore();
     vi.spyOn(auth, 'listAccounts').mockRejectedValue(new Error('down'));
-    const app = mount(new InMemoryMessageStore(), 'secret', { auth });
-    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN, { auth });
+    const res = await app.request('/debug/welcome-sweep', { headers: READ_HEADERS });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
   });
 
   it('turns the switch on and off', async () => {
     const welcomeSweep = { enabled: false };
-    const app = mount(new InMemoryMessageStore(), 'secret', { welcomeSweep });
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN, { welcomeSweep });
     const on = await app.request('/debug/welcome-sweep', {
       method: 'PUT',
       headers: SPEND_HEADERS,
@@ -1861,7 +1867,7 @@ describe('/debug/welcome-sweep', () => {
     expect(on.status).toBe(200);
     expect(await on.json()).toEqual({ enabled: true });
     expect(welcomeSweep.enabled).toBe(true);
-    const listed = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    const listed = await app.request('/debug/welcome-sweep', { headers: READ_HEADERS });
     expect(((await listed.json()) as { enabled: boolean }).enabled).toBe(true);
     const off = await app.request('/debug/welcome-sweep', {
       method: 'PUT',
@@ -1874,7 +1880,7 @@ describe('/debug/welcome-sweep', () => {
 
   it('rejects a body without an enabled boolean', async () => {
     const welcomeSweep = { enabled: false };
-    const app = mount(new InMemoryMessageStore(), 'secret', { welcomeSweep });
+    const app = mount(new InMemoryMessageStore(), OP_LOGIN, { welcomeSweep });
     for (const body of ['{"enabled":"yes"}', '{"enabled":true,"x":1}', 'nope']) {
       const res = await app.request('/debug/welcome-sweep', {
         method: 'PUT',

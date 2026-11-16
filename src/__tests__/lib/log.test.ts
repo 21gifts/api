@@ -271,7 +271,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        debugToken: undefined,
         spendApiToken: undefined,
         awaitWrite: true,
       }),
@@ -411,7 +410,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        debugToken: undefined,
         spendApiToken: undefined,
         operatorLogin: keys.operatorLogin,
         now: () => clock,
@@ -431,6 +429,30 @@ describe('requestLog', () => {
     expect(rows[0]?.createdAt.getTime()).toBe(clock);
   });
 
+  it('stores spend for the spend token and none for any other non-key, non-session bearer', async () => {
+    const keys = await seededOperatorLogin();
+    const store = new InMemoryApiLogStore();
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        spendApiToken: 'spend-secret',
+        operatorLogin: keys.operatorLogin,
+        awaitWrite: true,
+      }),
+    );
+    app.get('/info', (c) => c.text('info'));
+    await app.request('/info', { headers: { authorization: 'Bearer spend-secret' } });
+    await app.request('/info', { headers: { authorization: 'Bearer e2e-debug-token' } });
+    const rows = await store.listLatest(10);
+    expect(rows.map((row) => [row.authKind, row.operator]).sort()).toEqual([
+      ['none', null],
+      ['spend', null],
+    ]);
+  });
+
   it('keeps the operator when the token row is deleted by a cleanup during the handler', async () => {
     let clock = 1_700_000_000_000;
     const keys = await seededOperatorLogin(() => clock);
@@ -441,7 +463,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        debugToken: undefined,
         spendApiToken: undefined,
         operatorLogin: keys.operatorLogin,
         now: () => clock,
@@ -478,7 +499,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        debugToken: undefined,
         spendApiToken: undefined,
         operatorLogin: failing,
         awaitWrite: true,
@@ -505,7 +525,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore,
-        debugToken: undefined,
         spendApiToken: undefined,
         awaitWrite: true,
       }),
@@ -542,7 +561,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        debugToken: undefined,
         spendApiToken: undefined,
       }),
     );
@@ -574,7 +592,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore: new InMemoryAuthStore(),
-        debugToken: undefined,
         spendApiToken: undefined,
         awaitWrite: true,
       }),
@@ -629,7 +646,6 @@ describe('requestLog', () => {
       requestLog({
         apiLogStore: store,
         authStore,
-        debugToken: undefined,
         spendApiToken: undefined,
         awaitWrite: true,
         now: () => 1,

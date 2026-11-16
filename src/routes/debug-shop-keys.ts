@@ -1,6 +1,6 @@
 /**
  * Operator import of a shop Nostr secret that already exists at OpenCryptoPay.
- * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  * The secret is never logged and never returned.
  */
 
@@ -19,8 +19,6 @@ export interface DebugShopKeyRouteDeps {
   messages: MessageStore;
   /** 32-byte shop KEK, or omitted when shop keys are off. */
   kek: Uint8Array | undefined;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -32,7 +30,7 @@ const HEX_SECRET = /^[0-9a-f]{64}$/;
  *
  * Mounted at `/debug/shop-keys` so the public path is `POST /debug/shop-keys`.
  *
- * @param deps - Identity store, notes, KEK and optional debug token.
+ * @param deps - Identity store, notes, KEK and optional key login.
  * @returns A Hono app exposing `POST /`.
  */
 export function debugShopKeyRoutes(deps: DebugShopKeyRouteDeps): Hono {

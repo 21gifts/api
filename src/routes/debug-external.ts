@@ -11,8 +11,6 @@ import type { MessageStore } from '@/lib/message-store';
 export interface DebugExternalRouteDeps {
   /** Message persistence containing zapper and block rows. */
   store: MessageStore;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
 }
@@ -20,7 +18,7 @@ export interface DebugExternalRouteDeps {
 /**
  * Build `GET /debug/external-pubkeys`.
  *
- * @param deps - Message store and optional operator token.
+ * @param deps - Message store and optional SSH key login.
  * @returns A Hono app with the bearer-gated external identity list.
  */
 export function debugExternalRoutes(deps: DebugExternalRouteDeps): Hono {

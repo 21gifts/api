@@ -291,7 +291,9 @@ is funding-eligible today and the new row has media (`hasPhoto` /
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 the welcome gift is once per account: an account that already has a
-platform `Welcome` reply under one of its notes, a recorded `welcome` gift paid to its legacy
+`Welcome` reply under one of its notes from the platform account or the
+configured Fond account that passes `canSignFondPayouts`, a recorded `welcome`
+gift paid to its legacy
 external address, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification, is not pinged again; becoming
 exactly `verified` while non-platform and saving About me while welcome-eligible also welcome-ping; while an operator has turned
@@ -303,7 +305,7 @@ not welcome-ping); replies and media replay do not ping; unset/blank env skips
 the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
 snapshotted at post, `sats`, `payable`, `authorCanReceive`, `hasPhoto`, and live author `role`
-— never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter **and** a best-effort NIP-09 (`kind: 5`, signed with the note author's custodial nsec) on the durability relay plus the public relay list, plus a best-effort Cloudflare purge of public photo/video URLs. Unsigned/public GET of a hidden row stays 404. A founder/moderator session may GET the hidden row (and photo/video) so the app can show who hid it and when. Hiding a note also retracts in-app notifications whose parent or reply is that note or a direct child. `GET /notifications` drops remaining rows whose parent or reply message is missing or hidden. Operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. Restore does not undelete Nostr. The shipped UI
+— never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter **and** a best-effort NIP-09 (`kind: 5`, signed with the note author's custodial nsec) on the durability relay plus the public relay list, plus a best-effort Cloudflare purge of public photo/video URLs. Unsigned/public GET of a hidden row stays 404. A founder/moderator session may GET the hidden row (and photo/video) so the app can show who hid it and when. Hiding a note also retracts in-app notifications whose parent or reply is that note or a direct child. `GET /notifications` drops remaining rows whose parent or reply message is missing or hidden. Operator `GET /debug/messages` (Bearer: an operator key token) still lists and fetches soft-hidden forum rows and their photo bytes. Restore does not undelete Nostr. The shipped UI
 is a messenger-group thread: oldest notes at the top, newest at the bottom,
 composer under the newest note. The welcome-forum living-room laws hint is
 dismissed via `POST /me/forum-laws-dismissed`. Posts are standalone kind:1
@@ -444,7 +446,7 @@ to the member→platform conversation thread (`GET /conversations`).
 Conversation append failure logs `conversations.contact_sync.failed` and
 still 200. No platform account → 503 `Platform account is not configured`
 (no writes). Operators still read
-the legacy mailbox via `GET /debug/contacts` (`DEBUG_TOKEN` must not read
+the legacy mailbox via `GET /debug/contacts` (an operator key token must not read
 member PNs). No public list, no email delivery. Do not invent `/events`.
 
 ---

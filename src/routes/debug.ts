@@ -29,7 +29,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Operator debug surface for registered accounts.
- * Authenticated by `DEBUG_TOKEN` or an operator key token (Bearer), not by an end-user session.
+ * Authenticated by an operator key token of the SSH key login (Bearer), not by an end-user session.
  * Exposes `GET /` (list), `GET /:id` (detail with nested auth rows),
  * `POST /` (provision), `PATCH /:id`
  * (set role, username alone, the official platform flag, or sessionRefused),
@@ -40,8 +40,6 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 export interface DebugRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
-  /** Configured operator token, or `undefined` when debug is disabled. */
-  debugToken: string | undefined;
   /** SSH key login whose short-lived tokens this route accepts. */
   operatorLogin?: OperatorLogin | undefined;
   /** LNURL server config for each account's receiving address; omitted → none. */
@@ -153,7 +151,7 @@ const mergeBody = z.object({
 /**
  * Build the `/debug/accounts` route group.
  *
- * @param deps - Store, optional debug token, optional `lnurlServer` for the receiving address, optional `conversationStore`, optional `now`.
+ * @param deps - Store, optional key login, optional `lnurlServer` for the receiving address, optional `conversationStore`, optional `now`.
  * @returns A Hono app exposing `GET /`, `GET /:id`, `POST /`, `PATCH /:id`, `POST /:id/session`, and `POST /merge`.
  */
 export function debugRoutes(deps: DebugRouteDeps): Hono {

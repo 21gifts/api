@@ -1703,12 +1703,12 @@ describe('grant round places', () => {
 });
 
 describe('operator tokens on the staff funding GETs', () => {
-  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
+  const TOKENS = { operatorLogin: OP_KEYS.operatorLogin };
 
   function operatorApp(
     authStore: InMemoryAuthStore,
     fundingStore: FundingStore,
-    tokens: { debugToken?: string; operatorLogin?: OperatorLogin } = TOKENS,
+    tokens: { operatorLogin?: OperatorLogin } = TOKENS,
   ): Hono {
     return new Hono().route(
       '/funding',
@@ -1723,30 +1723,25 @@ describe('operator tokens on the staff funding GETs', () => {
     );
   }
 
-  it.each([
-    ['write', 'op-write'],
-    ['read', OP_READ],
-  ] as const)(
-    'reads the queue, one application, and the payout matrix with the %s token',
-    async (_kind, token) => {
-      const { authStore, fundingStore } = await staffed();
-      await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-      const app = operatorApp(authStore, fundingStore);
+  it('reads the queue, one application, and the payout matrix with a read key token', async () => {
+    const token = OP_READ;
+    const { authStore, fundingStore } = await staffed();
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const app = operatorApp(authStore, fundingStore);
 
-      const list = await get(app, '/funding/applications', token);
-      expect(list.status).toBe(200);
-      const listed = (await list.json()) as { applications: Array<{ accountId: string }> };
-      expect(listed.applications.map((row) => row.accountId)).toEqual([VERIFIED]);
+    const list = await get(app, '/funding/applications', token);
+    expect(list.status).toBe(200);
+    const listed = (await list.json()) as { applications: Array<{ accountId: string }> };
+    expect(listed.applications.map((row) => row.accountId)).toEqual([VERIFIED]);
 
-      const one = await get(app, `/funding/applications/${VERIFIED}`, token);
-      expect(one.status).toBe(200);
-      expect(((await one.json()) as { grant: { status: string } }).grant.status).toBe('pending');
+    const one = await get(app, `/funding/applications/${VERIFIED}`, token);
+    expect(one.status).toBe(200);
+    expect(((await one.json()) as { grant: { status: string } }).grant.status).toBe('pending');
 
-      const payouts = await get(app, '/funding/payout-days', token);
-      expect(payouts.status).toBe(200);
-      expect(((await payouts.json()) as { days: unknown[] }).days).toHaveLength(7);
-    },
-  );
+    const payouts = await get(app, '/funding/payout-days', token);
+    expect(payouts.status).toBe(200);
+    expect(((await payouts.json()) as { days: unknown[] }).days).toHaveLength(7);
+  });
 
   it('keeps a staff session and refuses a wrong or unconfigured operator bearer', async () => {
     const { authStore, fundingStore } = await staffed();
@@ -1757,9 +1752,11 @@ describe('operator tokens on the staff funding GETs', () => {
       `/funding/applications/${VERIFIED}`,
       '/funding/payout-days',
     ]) {
-      const wrong = await get(operatorApp(authStore, fundingStore), path, 'op-other');
-      expect(wrong.status).toBe(401);
-      const unset = await get(operatorApp(authStore, fundingStore, {}), path, 'op-write');
+      for (const bearer of ['op-other', 'e2e-debug-token']) {
+        const wrong = await get(operatorApp(authStore, fundingStore), path, bearer);
+        expect(wrong.status).toBe(401);
+      }
+      const unset = await get(operatorApp(authStore, fundingStore, {}), path, OP_READ);
       expect(unset.status).toBe(401);
     }
   });
@@ -2120,7 +2117,7 @@ describe('POST /funding/withdraw', () => {
 });
 
 describe('GET /funding/withdrawals', () => {
-  const TOKENS = { debugToken: 'op-write', operatorLogin: OP_KEYS.operatorLogin };
+  const TOKENS = { operatorLogin: OP_KEYS.operatorLogin };
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -2135,7 +2132,7 @@ describe('GET /funding/withdrawals', () => {
     authStore: InMemoryAuthStore,
     fundingStore: FundingStore,
     clock: () => number = now,
-    tokens: { debugToken?: string; operatorLogin?: OperatorLogin } = TOKENS,
+    tokens: { operatorLogin?: OperatorLogin } = TOKENS,
   ): Hono {
     return new Hono().route(
       '/funding',
@@ -2150,7 +2147,7 @@ describe('GET /funding/withdrawals', () => {
     );
   }
 
-  it.each(['founder', 'mod', 'verified', 'other', 'nope', undefined])(
+  it.each(['founder', 'mod', 'verified', 'other', 'nope', 'e2e-debug-token', undefined])(
     'answers 401 for the bearer %s and lists nothing',
     async (token) => {
       const { authStore, fundingStore } = await staffed();
@@ -2163,88 +2160,80 @@ describe('GET /funding/withdrawals', () => {
     },
   );
 
-  it('answers 401 to a token when no operator token is configured', async () => {
+  it('answers 503 when no operator key login is configured', async () => {
     const { authStore, fundingStore } = await staffed();
     const res = await get(
       withdrawalsApp(authStore, fundingStore, now, {}),
       '/funding/withdrawals',
-      'op-write',
+      OP_READ,
     );
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
   });
 
-  it.each(['op-write', OP_READ])(
-    'lists every withdrawal newest first with the %s token, also after a new application',
-    async (token) => {
-      const { authStore, fundingStore } = await staffed([
-        account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
-      ]);
-      await authStore.createSession({ token: 'sub', accountId: SUBJECT, createdAt: now() });
-      const messageStore = new InMemoryMessageStore();
-      await seedApplyProfile(authStore, messageStore, SUBJECT);
-      const GONE = '99999999-9999-4999-8999-999999999999';
-      await fundingStore.upsert(
-        grant({ accountId: SUBJECT, status: 'admitted', appliedAt: 1, admittedAt: 50 }),
-      );
-      await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending', appliedAt: 2 }));
-      await fundingStore.upsert(grant({ accountId: GONE, status: 'trial', trialUtcDate: TODAY }));
-      let clock = now();
-      const member = mount(
-        authStore,
-        fundingStore,
-        messageStore,
-        undefined,
-        undefined,
-        () => clock,
-      );
-      expect((await post(member, '/funding/withdraw', 'sub')).status).toBe(200);
-      clock += 1_000;
-      expect((await post(member, '/funding/withdraw', 'verified')).status).toBe(200);
-      clock += 1_000;
-      expect((await post(member, '/funding/apply', 'sub')).status).toBe(200);
-      await fundingStore.transition(
-        grant({ accountId: GONE, status: 'withdrawn', decidedAt: now() + 5_000, decidedBy: GONE }),
-        ['trial'],
-      );
+  it('lists every withdrawal newest first with a read key token, also after a new application', async () => {
+    const token = OP_READ;
+    const { authStore, fundingStore } = await staffed([
+      account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+    ]);
+    await authStore.createSession({ token: 'sub', accountId: SUBJECT, createdAt: now() });
+    const messageStore = new InMemoryMessageStore();
+    await seedApplyProfile(authStore, messageStore, SUBJECT);
+    const GONE = '99999999-9999-4999-8999-999999999999';
+    await fundingStore.upsert(
+      grant({ accountId: SUBJECT, status: 'admitted', appliedAt: 1, admittedAt: 50 }),
+    );
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending', appliedAt: 2 }));
+    await fundingStore.upsert(grant({ accountId: GONE, status: 'trial', trialUtcDate: TODAY }));
+    let clock = now();
+    const member = mount(authStore, fundingStore, messageStore, undefined, undefined, () => clock);
+    expect((await post(member, '/funding/withdraw', 'sub')).status).toBe(200);
+    clock += 1_000;
+    expect((await post(member, '/funding/withdraw', 'verified')).status).toBe(200);
+    clock += 1_000;
+    expect((await post(member, '/funding/apply', 'sub')).status).toBe(200);
+    await fundingStore.transition(
+      grant({ accountId: GONE, status: 'withdrawn', decidedAt: now() + 5_000, decidedBy: GONE }),
+      ['trial'],
+    );
 
-      const res = await get(
-        withdrawalsApp(authStore, fundingStore, () => clock),
-        '/funding/withdrawals',
-        token,
-      );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({
-        withdrawals: [
-          {
-            accountId: GONE,
-            name: null,
-            withdrawnAt: now() + 5_000,
-            from: 'trial',
-            admittedAt: null,
-            reapplied: false,
-          },
-          {
-            accountId: VERIFIED,
-            name: 'Ada',
-            withdrawnAt: now() + 1_000,
-            from: 'pending',
-            admittedAt: null,
-            reapplied: false,
-          },
-          {
-            accountId: SUBJECT,
-            name: 'Sub',
-            withdrawnAt: now(),
-            from: 'admitted',
-            admittedAt: 50,
-            reapplied: true,
-          },
-        ],
-      });
-      const listed = parsedEvents(warn).filter((e) => e['event'] === 'funding.withdrawals.listed');
-      expect(listed).toEqual([expect.objectContaining({ count: 3 })]);
-    },
-  );
+    const res = await get(
+      withdrawalsApp(authStore, fundingStore, () => clock),
+      '/funding/withdrawals',
+      token,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      withdrawals: [
+        {
+          accountId: GONE,
+          name: null,
+          withdrawnAt: now() + 5_000,
+          from: 'trial',
+          admittedAt: null,
+          reapplied: false,
+        },
+        {
+          accountId: VERIFIED,
+          name: 'Ada',
+          withdrawnAt: now() + 1_000,
+          from: 'pending',
+          admittedAt: null,
+          reapplied: false,
+        },
+        {
+          accountId: SUBJECT,
+          name: 'Sub',
+          withdrawnAt: now(),
+          from: 'admitted',
+          admittedAt: 50,
+          reapplied: true,
+        },
+      ],
+    });
+    const listed = parsedEvents(warn).filter((e) => e['event'] === 'funding.withdrawals.listed');
+    expect(listed).toEqual([expect.objectContaining({ count: 3 })]);
+  });
 
   it('reads the name and current grant once per account with several withdrawals', async () => {
     const { authStore } = await staffed();
@@ -2279,7 +2268,7 @@ describe('GET /funding/withdrawals', () => {
 
   it('returns 503 when the store throws', async () => {
     const { authStore } = await staffed();
-    const res = await get(withdrawalsApp(authStore, boomStore), '/funding/withdrawals', 'op-write');
+    const res = await get(withdrawalsApp(authStore, boomStore), '/funding/withdrawals', OP_READ);
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Funding is unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'funding.list.failed')).toBe(true);
