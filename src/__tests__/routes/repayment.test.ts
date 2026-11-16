@@ -1747,7 +1747,7 @@ describe('repayment from the in-app wallet', () => {
     const rates = vi.fn<() => Promise<FxSpotQuote>>(() => Promise.reject(new Error('spot down')));
     const { app, messages, clock } = await loanSetup({
       goalCurrency: 'USD',
-      goalAmount: '0.61',
+      goalAmount: '1.00',
       termDays: REPAYMENT_BILLS_MAX + 1,
       fundedAt: new Date(Date.UTC(2026, 10, 2, 12)),
       rates,
@@ -3204,7 +3204,7 @@ describe('repayment from the in-app wallet', () => {
     const { app, messages } = await readyCredit({
       fundedAt: null,
       goalCurrency: 'USD',
-      goalAmount: '0.21',
+      goalAmount: '1.00',
       rate: true,
     });
     const availablePayers = await messages.listCreditPayers(CREDIT);
@@ -3384,7 +3384,7 @@ describe('repayment from the in-app wallet', () => {
 
     const fiat = await loanSetup({
       goalCurrency: 'USD',
-      goalAmount: '0.61',
+      goalAmount: '1.00',
       fundedAt: null,
       rates: async () => spot({ USD: '300000.00' }),
       termDays: REPAYMENT_BILLS_MAX + 1,
@@ -3418,7 +3418,7 @@ describe('repayment from the in-app wallet', () => {
   it('answers 503 when a capped fiat prepayment has no spot price', async () => {
     const { app, messages } = await loanSetup({
       goalCurrency: 'USD',
-      goalAmount: '0.61',
+      goalAmount: '1.00',
       fundedAt: null,
       termDays: REPAYMENT_BILLS_MAX + 1,
       givers: [
@@ -4359,7 +4359,12 @@ describe('repayment from the in-app wallet', () => {
       },
       next: null,
     });
-    const priced = await loanSetup({ goalCurrency: 'USD', rate: true, fundedAt: null });
+    const priced = await loanSetup({
+      goalCurrency: 'USD',
+      goalAmount: '9.00',
+      rate: true,
+      fundedAt: null,
+    });
     const open = ((await (await loans(priced.app)).json()) as { loans: Record<string, unknown>[] })
       .loans[0];
     expect(open).toMatchObject({

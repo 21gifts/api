@@ -287,19 +287,39 @@ $message_goal_currency$;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_repayable boolean;
 -- Optional agreed repayment term in whole days on a repayable ask; SQL NULL or 1..3650.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_term_days integer;
--- Set once, when collected sats first reach the ask. Null until then.
+-- Set once, when the ask is reached. Null until then. A fiat ask (USD, CHF,
+-- EUR, PHP) is reached when the collected fiat_* snapshot in that currency
+-- is at least goal_amount. A missing snapshot adds nothing and does not fall
+-- back to sats. BTC and a legacy null goal_currency are reached when sats
+-- reach goal_sats. An existing stamp is never cleared or moved.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_funded_at timestamptz;
 -- Set once when the author ends collecting. Null until then; a close is final.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_closed_at timestamptz;
 -- True only when an early fiat close froze per-giver debt cents.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_debt_frozen boolean NOT NULL DEFAULT false;
--- Asks already full before this column existed start their term now, before receipt times are filled.
+-- Asks already reached under that rule, with goal_funded_at still null, start their term now.
+-- An existing stamp is left as it is. Receipt times are filled after this stamp.
 UPDATE message
 SET goal_funded_at = now()
 WHERE goal_repayable IS TRUE
-  AND goal_sats IS NOT NULL
-  AND sats >= goal_sats
-  AND goal_funded_at IS NULL;
+  AND goal_funded_at IS NULL
+  AND (
+    (
+      goal_currency IN ('USD','CHF','EUR','PHP')
+      AND goal_amount IS NOT NULL
+      AND COALESCE(CASE goal_currency
+        WHEN 'USD' THEN fiat_usd
+        WHEN 'CHF' THEN fiat_chf
+        WHEN 'EUR' THEN fiat_eur
+        WHEN 'PHP' THEN fiat_php
+      END >= goal_amount, false)
+    )
+    OR (
+      (goal_currency IS NULL OR goal_currency = 'BTC')
+      AND goal_sats IS NOT NULL
+      AND sats >= goal_sats
+    )
+  );
 -- recorded_at is added above. This backfill runs only after goal_funded_at exists.
 UPDATE nostr_zap_receipt AS r
 SET recorded_at = COALESCE(m.goal_funded_at, now())

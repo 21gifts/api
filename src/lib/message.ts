@@ -191,8 +191,11 @@ export interface MessageRow {
    */
   goalTermDays?: number | null;
   /**
-   * When collected sats first reached the goal on a repayable ask.
-   * Null until then, including on donations.
+   * When a repayable ask was reached. A fiat ask (USD, CHF, EUR, PHP) is
+   * reached when collected payment snapshots in that currency reach
+   * `goalAmount`. A missing snapshot does not reach and does not fall back
+   * to sats. BTC and a legacy null currency are reached when collected sats
+   * reach `goalSats`. Null until then, including on donations.
    */
   goalFundedAt?: Date | null;
   /**

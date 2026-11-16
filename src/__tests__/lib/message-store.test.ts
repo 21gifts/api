@@ -3574,6 +3574,174 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('nogoal'))?.goalTermDays).toBeNull();
   });
 
+  it('funds a fiat ask from the collected ask currency and keeps bitcoin on sats', async () => {
+    const store = new InMemoryMessageStore();
+    await store.create({
+      ...EARLY,
+      id: 'php',
+      sats: 0,
+      goalSats: 97013,
+      goalCurrency: 'PHP',
+      goalAmount: '5000',
+      goalRepayable: true,
+      goalTermDays: 30,
+    });
+    await store.recordZapReceipt('php-1', 'php', 50_000, {
+      usd: null,
+      chf: null,
+      eur: null,
+      php: '4000.00',
+    });
+    expect((await store.getById('php'))?.goalFundedAt).toBeNull();
+    await store.recordZapReceipt('php-2', 'php', 46_940, {
+      usd: null,
+      chf: null,
+      eur: null,
+      php: '1000.85',
+    });
+    const funded = (await store.getById('php'))?.goalFundedAt;
+    expect((await store.getById('php'))?.sats).toBe(96_940);
+    expect((await store.getById('php'))?.amountPhp).toBe('5000.85');
+    expect(funded).toBeInstanceOf(Date);
+    await store.recordZapReceipt('php-3', 'php', 1, {
+      usd: null,
+      chf: null,
+      eur: null,
+      php: '0.01',
+    });
+    expect((await store.getById('php'))?.goalFundedAt?.getTime()).toBe(funded?.getTime());
+
+    await store.create({
+      ...LATE,
+      id: 'usd-short',
+      sats: 0,
+      goalSats: 100,
+      goalCurrency: 'USD',
+      goalAmount: '10.00',
+      goalRepayable: true,
+    });
+    await store.addSats('usd-short', 100, { usd: '9.99', chf: null, eur: null, php: null });
+    expect((await store.getById('usd-short'))?.sats).toBe(100);
+    expect((await store.getById('usd-short'))?.goalFundedAt).toBeNull();
+
+    await store.create({
+      ...LATE,
+      id: 'usd-cents',
+      sats: 0,
+      goalSats: 100,
+      goalCurrency: 'USD',
+      goalAmount: '10.001',
+      goalRepayable: true,
+    });
+    await store.addSats('usd-cents', 100, { usd: '10.00', chf: null, eur: null, php: null });
+    expect((await store.getById('usd-cents'))?.goalFundedAt).toBeNull();
+
+    await store.create({
+      ...LATE,
+      id: 'usd-missing',
+      sats: 0,
+      goalSats: 100,
+      goalCurrency: 'USD',
+      goalAmount: '10.00',
+      goalRepayable: true,
+    });
+    await store.addSats('usd-missing', 100, null);
+    expect((await store.getById('usd-missing'))?.amountUsd).toBeNull();
+    expect((await store.getById('usd-missing'))?.goalFundedAt).toBeNull();
+
+    await store.create({
+      ...LATE,
+      id: 'btc',
+      sats: 0,
+      goalSats: 100,
+      goalCurrency: 'BTC',
+      goalAmount: '0.00000100',
+      goalRepayable: true,
+    });
+    await store.addSats('btc', 50, { usd: '999.00', chf: null, eur: null, php: null });
+    expect((await store.getById('btc'))?.goalFundedAt).toBeNull();
+    await store.addSats('btc', 50, null);
+    expect((await store.getById('btc'))?.goalFundedAt).toBeInstanceOf(Date);
+
+    const stamped = new Date('2026-01-01T00:00:00.000Z');
+    await store.create({
+      ...LATE,
+      id: 'kept',
+      sats: 0,
+      goalSats: 97013,
+      goalCurrency: 'PHP',
+      goalAmount: '5000',
+      goalRepayable: true,
+      goalFundedAt: stamped,
+    });
+    await store.addSats('kept', 96_940, { usd: null, chf: null, eur: null, php: '5000.85' });
+    expect((await store.getById('kept'))?.goalFundedAt?.getTime()).toBe(stamped.getTime());
+  });
+
+  it('closes a reached fiat ask without freezing and freezes one that is still short', async () => {
+    const at = new Date('2026-11-16T00:00:00.000Z');
+    const reached = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'php-reached',
+        sats: 96_940,
+        amountPhp: '5000.85',
+        goalSats: 97013,
+        goalCurrency: 'PHP',
+        goalAmount: '5000',
+        goalRepayable: true,
+        goalTermDays: 30,
+        goalFundedAt: null,
+      },
+    ]);
+    await reached.closeCredit('php-reached', at);
+    expect((await reached.getById('php-reached'))?.goalDebtFrozen).toBe(false);
+    expect((await reached.getById('php-reached'))?.goalFundedAt?.toISOString()).toBe(
+      at.toISOString(),
+    );
+
+    const short = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'usd-short-close',
+        sats: 100,
+        amountUsd: '9.99',
+        goalSats: 100,
+        goalCurrency: 'USD',
+        goalAmount: '10.00',
+        goalRepayable: true,
+        goalTermDays: 30,
+        goalFundedAt: null,
+      },
+    ]);
+    await short.closeCredit('usd-short-close', at);
+    expect((await short.getById('usd-short-close'))?.goalDebtFrozen).toBe(true);
+    expect((await short.getById('usd-short-close'))?.goalFundedAt?.toISOString()).toBe(
+      at.toISOString(),
+    );
+
+    const kept = new Date('2026-01-01T00:00:00.000Z');
+    const existing = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'usd-kept-close',
+        sats: 100,
+        amountUsd: '9.99',
+        goalSats: 100,
+        goalCurrency: 'USD',
+        goalAmount: '10.00',
+        goalRepayable: true,
+        goalTermDays: 30,
+        goalFundedAt: kept,
+      },
+    ]);
+    await existing.closeCredit('usd-kept-close', at);
+    expect((await existing.getById('usd-kept-close'))?.goalFundedAt?.getTime()).toBe(
+      kept.getTime(),
+    );
+    expect((await existing.getById('usd-kept-close'))?.goalDebtFrozen).toBe(false);
+  });
+
   it('create stores null goalSats on a reply even when the row asked for one', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -13721,6 +13889,82 @@ describe('message fiat accumulator SQL', () => {
     expect(zap).toContain('WHEN message.fiat_usd IS NULL THEN $4::numeric');
     expect(zap).toContain('WHEN message.fiat_chf IS NULL THEN $5::numeric');
     expect(zap).not.toContain('THEN NULL');
+  });
+
+  it('decides goal_funded_at in the ask currency and never clears a stamp', async () => {
+    const stamps = MESSAGE_SCHEMA_SQL.filter((statement) =>
+      statement.includes('SET goal_funded_at = now()'),
+    );
+    expect(stamps).toHaveLength(1);
+    const backfill = stamps[0];
+    if (backfill === undefined) {
+      throw new Error('missing goal_funded_at backfill');
+    }
+    expect(backfill).toContain('goal_funded_at IS NULL');
+    expect(backfill).toContain("goal_currency IN ('USD','CHF','EUR','PHP')");
+    expect(backfill).toContain('fiat_usd');
+    expect(backfill).toContain('fiat_chf');
+    expect(backfill).toContain('fiat_eur');
+    expect(backfill).toContain('fiat_php');
+    expect(backfill).toContain('>= goal_amount');
+    expect(backfill).toContain('COALESCE(');
+    expect(backfill).toContain(', false)');
+    expect(backfill).toContain("(goal_currency IS NULL OR goal_currency = 'BTC')");
+    expect(backfill).toContain('goal_sats IS NOT NULL');
+    expect(backfill).toContain('sats >= goal_sats');
+    expect(backfill).not.toContain('SET goal_funded_at = NULL');
+    expect(
+      MESSAGE_SCHEMA_SQL.some((statement) => /goal_funded_at\s*=\s*NULL/i.test(statement)),
+    ).toBe(false);
+
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    await store.addSats('m1', 7, { usd: null, chf: null, eur: null, php: '5000.85' });
+    const addedQuery = sql.executes.at(-1);
+    if (addedQuery === undefined) {
+      throw new Error('missing addSats SQL');
+    }
+    const added = addedQuery.text;
+    expect(added).toContain("goal_currency IN ('USD','CHF','EUR','PHP')");
+    expect(added).toContain('>= goal_amount');
+    expect(added).toContain('COALESCE(');
+    expect(added).toContain("(goal_currency IS NULL OR goal_currency = 'BTC')");
+    expect(added).toContain('sats + $2::bigint >= goal_sats');
+    expect(added).toContain('ELSE goal_funded_at');
+    expect(added).toContain('WHEN $2::bigint = 0 THEN fiat_php');
+    expect(added).not.toContain('THEN NULL');
+
+    await store.recordZapReceipt('evt', 'm1', 96940, {
+      usd: null,
+      chf: null,
+      eur: null,
+      php: '5000.85',
+    });
+    const zapQuery = sql.queries.at(-1);
+    if (zapQuery === undefined) {
+      throw new Error('missing recordZapReceipt SQL');
+    }
+    const zap = zapQuery.text;
+    expect(zap).toContain("message.goal_currency IN ('USD','CHF','EUR','PHP')");
+    expect(zap).toContain('>= message.goal_amount');
+    expect(zap).toContain("(message.goal_currency IS NULL OR message.goal_currency = 'BTC')");
+    expect(zap).toContain('message.sats + inserted.sats >= message.goal_sats');
+    expect(zap).toContain('WHEN inserted.sats = 0 THEN message.fiat_php');
+    expect(zap).toContain('ELSE message.goal_funded_at');
+    expect(zap).not.toContain('THEN NULL');
+
+    await store.closeCredit('m1', new Date('2026-11-16T00:00:00.000Z'));
+    const update = sql.queries.find((query) => query.text.includes('goal_debt_frozen'))?.text;
+    if (update === undefined) {
+      throw new Error('missing closeCredit SQL');
+    }
+    expect(update).toMatch(
+      /goal_funded_at IS NULL\s+AND goal_currency IN \('USD','CHF','EUR','PHP'\)/,
+    );
+    expect(update).toContain('AND NOT');
+    expect(update).toContain('>= goal_amount');
+    expect(update).toContain('COALESCE(');
+    expect(update).toContain('COALESCE(target.goal_funded_at, boundary.close_at)');
   });
 
   it('stores a currency ask and nulls it on a reply', async () => {
