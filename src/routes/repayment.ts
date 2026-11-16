@@ -2208,7 +2208,8 @@ function openLoanSortKey(
  * @returns A Hono app with both routes.
  */
 export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
-  return new Hono().get('/me/loans', async (c) => {
+  const app = new Hono();
+  app.get('/me/loans', async (c) => {
     const token = bearerToken(c.req.header('authorization'));
     const account = token === null ? null : await resolveSession(deps.authStore, deps.now(), token);
     if (account === null) {
@@ -2252,8 +2253,8 @@ export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
       logEvent('me.loans.failed');
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
-  })
-  .get('/loans/open', async (c) => {
+  });
+  app.get('/loans/open', async (c) => {
     const nowMs = deps.now();
     const today = new Date(nowMs).toISOString().slice(0, 10);
     try {
@@ -2311,6 +2312,7 @@ export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   });
+  return app;
 }
 
 const FIAT_CURRENCIES = new Set(['USD', 'CHF', 'EUR', 'PHP']);
