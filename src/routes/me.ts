@@ -360,6 +360,8 @@ type MeOwnerResponse = Omit<OwnerAccountResponse, 'funding'> & {
   funding:
     | (NonNullable<OwnerAccountResponse['funding']> & {
         shopPaymentDue: boolean | null;
+        shopPaymentSats: number | null;
+        shopPaymentRequiredSats: number | null;
         payoutToday: FundingPayoutToday | null;
       })
     | null;
@@ -458,17 +460,33 @@ async function ownerJson(
     owner.funding?.status === 'admitted' ||
     (owner.funding?.status === 'trial' && owner.funding.trialUtcDate === utcDayKey(nowMs));
   let shopPaymentDue: boolean | null = ownerFundingReadFailed ? null : inProgram;
+  // The owner's own shop spending and the daily minimum, so the grant page can
+  // show what is still missing; both stay null outside the program.
+  let shopPaymentSats: number | null = null;
+  let shopPaymentRequiredSats: number | null = null;
   if (!ownerFundingReadFailed && inProgram) {
     try {
       const minimum = await readShopMinimum();
-      shopPaymentDue = minimum === null || (await readShopSats()) < minimum;
+      const sats = await readShopSats();
+      shopPaymentDue = minimum === null || sats < minimum;
+      shopPaymentSats = sats;
+      shopPaymentRequiredSats = minimum;
     } catch {
       shopPaymentDue = null;
     }
   }
   return {
     ...owner,
-    funding: owner.funding === null ? null : { ...owner.funding, shopPaymentDue, payoutToday },
+    funding:
+      owner.funding === null
+        ? null
+        : {
+            ...owner.funding,
+            shopPaymentDue,
+            shopPaymentSats,
+            shopPaymentRequiredSats,
+            payoutToday,
+          },
     grantPayoutToday: owner.funding === null ? payoutToday : null,
     walletViewerPublicKey: deps.walletViewerPublicKey ?? null,
   };

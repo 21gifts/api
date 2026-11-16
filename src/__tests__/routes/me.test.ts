@@ -300,6 +300,8 @@ describe('GET /me', () => {
       reviewedByName: null,
       dailyPayoutStoppedNotice: false,
       shopPaymentDue: false,
+      shopPaymentSats: null,
+      shopPaymentRequiredSats: null,
       payoutToday: { state: 'blocked', reason: 'admission' },
     });
     expect(funded.walletRequired).toBe(false);
@@ -335,11 +337,33 @@ describe('GET /me', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       walletViewerPublicKey: string | null;
-      funding: { shopPaymentDue: boolean };
+      funding: {
+        shopPaymentDue: boolean;
+        shopPaymentSats: number | null;
+        shopPaymentRequiredSats: number | null;
+      };
     };
     expect(body.walletViewerPublicKey).toBe(SPARK_PUBKEY);
     expect(body.funding.shopPaymentDue).toBe(true);
+    expect(body.funding.shopPaymentSats).toBe(0);
+    expect(body.funding.shopPaymentRequiredSats).toBe(500);
     expect(shopPaymentSats).toHaveBeenCalledOnce();
+  });
+
+  it('reports the shop spending without a required amount when no spot is stored', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, role: 'verified' });
+    const res = await mount(store, {
+      fundingStore: admitted(),
+      walletTransfers: transferFake(),
+      fxSpotStore: new InMemoryFxSpotStore(),
+    }).request('/me', { headers: AUTH });
+    expect(((await res.json()) as { funding: unknown }).funding).toMatchObject({
+      shopPaymentDue: true,
+      shopPaymentSats: 500,
+      shopPaymentRequiredSats: null,
+    });
   });
 
   it('clears shop-payment due after a verified payment and reports read failure as unknown', async () => {
@@ -362,9 +386,11 @@ describe('GET /me', () => {
       fundingStore,
       walletTransfers: transferFake(),
     }).request('/me', { headers: AUTH });
-    expect(
-      ((await paid.json()) as { funding: { shopPaymentDue: boolean } }).funding.shopPaymentDue,
-    ).toBe(false);
+    expect(((await paid.json()) as { funding: unknown }).funding).toMatchObject({
+      shopPaymentDue: false,
+      shopPaymentSats: 500,
+      shopPaymentRequiredSats: 500,
+    });
 
     const unavailable = await mount(store, {
       fundingStore,
@@ -378,9 +404,17 @@ describe('GET /me', () => {
       },
     }).request('/me', { headers: AUTH });
     const unavailableBody = (await unavailable.json()) as {
-      funding: { shopPaymentDue: boolean | null };
+      funding: {
+        shopPaymentDue: boolean | null;
+        shopPaymentSats: number | null;
+        shopPaymentRequiredSats: number | null;
+      };
     };
-    expect(unavailableBody.funding.shopPaymentDue).toBeNull();
+    expect(unavailableBody.funding).toMatchObject({
+      shopPaymentDue: null,
+      shopPaymentSats: null,
+      shopPaymentRequiredSats: null,
+    });
   });
 
   it('returns the due payout state after every current condition holds', async () => {
@@ -587,6 +621,8 @@ describe('GET /me', () => {
       reviewedByName: null,
       dailyPayoutStoppedNotice: false,
       shopPaymentDue: false,
+      shopPaymentSats: null,
+      shopPaymentRequiredSats: null,
       payoutToday: { state: 'blocked', reason: 'admission' },
     });
   });
