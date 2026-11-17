@@ -85,6 +85,14 @@ describe('sunday rest routes', () => {
     expect(((await res.json()) as { error?: string }).error).not.toBe('SUNDAY_REST');
   });
 
+  it('does not refuse GET /loans/open with Time-Zone Europe/Zurich on Sunday', async () => {
+    const res = await app().request('/loans/open', {
+      headers: { 'Time-Zone': 'Europe/Zurich' },
+    });
+    expect(res.status).not.toBe(403);
+    expect(await res.json()).toEqual([]);
+  });
+
   it('refuses PATCH /messages/:id/shop-account when the device zone is Sunday', async () => {
     const res = await app().request('/messages/note-1/shop-account', {
       method: 'PATCH',

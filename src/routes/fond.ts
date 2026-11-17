@@ -13,9 +13,9 @@
  * payment hashes, BOLT11, or Spark invoices.
  *
  * `GET /summary` also reads the Fond's on-chain deposit address and returns
- * it as `onchainAddress` (`null` when none is registered). `PUT
- * /deposit-address` is the session route that stores it for the gated Fond
- * account.
+ * it as `onchainAddress` (`null` when none is registered).
+ * `PUT /deposit-address` is the session route that stores it for the gated
+ * Fond account.
  */
 
 import { Hono } from 'hono';

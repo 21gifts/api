@@ -575,6 +575,13 @@ debug list.
 - **Auth:** `Authorization: Bearer` session. Read-only; not refused on Sunday.
 - **Used by:** The loans card, the menu row, and the repayment screen.
 
+## Endpoint: GET /loans/open
+
+- **Purpose:** Public overview of every open loan. No session. 200 is a JSON array, empty when nothing is open. A row is included when the credit note is repayable, not deleted, has a term, is fully funded (`goalFundedAt` set), has an account id, and its repayment plan is not fully paid. `listFundedCredits` applies that same account-id filter (`account_id` is not null). Notes still collecting, fully repaid loans, deleted notes, and notes with no account id are left out. Each row is `{ messageId, accountId, name, currency, outstanding, overdue }`. `name` is the borrower's current public display name. `currency` is the fiat goal currency, or `BTC` for a bitcoin loan. `outstanding` is the plan total minus what is paid, using the same lines as `GET /messages/:id/repayment`: fiat is a two-decimal string in the loan currency, and bitcoin is a number of sats. `overdue` is true when at least one share whose due day is before the current UTC day is not fully paid. The share due today does not make the loan overdue. Due days are `repaymentDueDate`, including the rule that a credit outside the operator-approved exception never starts before 2026-11-16. Rows are ordered with overdue loans first, then by currency code, then by outstanding amount descending, then by `messageId`. The array has no giver list, note text, username, or sat breakdown.
+- **Errors:** 503 `{ error: 'Ask amount is unavailable' }` when the debt of any listed loan cannot be computed. 503 `{ error: 'Messages are unavailable' }` when the store throws (`loans.open.failed`). An empty list is 200 `[]`.
+- **Auth:** none. A local Sunday does not refuse this read.
+- **Used by:** The app's public loans overview.
+
 ## Endpoint: GET /members/:accountId/activity
 
 - **Purpose:** Same activity JSON as `GET /me/activity` for the member `:accountId`. Loan series in that JSON sum each currency's stored grant amounts. A grant amount is the oldest indexed ingest line of that receipt on the same note, the amount fixed when it was paid; a later ingest does not replace it. A repayment stores none; a day with no stored amount for a currency is null and does not clear the cumulative, and no rate book is read. A session has the same auth as `GET /members/:accountId`; an operator token skips the session and `forum.read` gate.

@@ -134,6 +134,7 @@ Public base URLs used in examples:
 | POST   | `/me/fiat`                                           | Bearer                                                            | Set owner fiat (`CHF`, `EUR`, `USD`, or `PHP`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/me/activity`                                       | Bearer                                                            | Donation given + received series (non-loan forum zaps plus daily and welcome gifts; loans, repayments, and moderator stipends omitted) plus outstanding owedSats and creditSats                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/me/loans`                                          | Bearer                                                            | The member's own loans still collecting or being repaid, with what is due now                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| GET    | `/loans/open`                                        | none                                                              | Public list of open funded loans that have an account id: borrower, outstanding amount, and overdue                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | POST   | `/me/wallet-backup-seen`                             | Bearer                                                            | Records that this account can show a recovery phrase. Not a confirmation and not a setup step. Empty body. Does not change `walletRequired`.                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/me/passkey-renew/report`                           | Bearer                                                            | Client `failed` or `cancelled` renew attempt. Stores a row; does not change the account. `succeeded` is 400. Returns owner JSON including `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`. `passkeyRenewClosed` is true only while `walletRequired` is false.                                                                                                                                                                                                                                                                |
 | POST   | `/me/passkey-renew/ack`                              | Bearer                                                            | Acknowledges failed unacknowledged renew rows only. Empty body. Returns owner JSON including `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`. `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row is `prfUnsupported`. `passkeyRenewClosed` is true only while `walletRequired` is false.                                                                                                                                                                                                    |
@@ -3091,6 +3092,31 @@ Success → **Response** `200`:
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 A loan whose debt cannot be computed (one of the caller's, or one the caller gave to) → **503** `{ "error": "Ask amount is unavailable" }`. A missing or unreadable spot leaves only the affected sat fields null.
 Store failure → **503** `{ "error": "Messages are unavailable" }` (logs `me.loans.failed`).
+
+### `GET /loans/open`
+
+No session. Public JSON array of open loans. A loan is listed when its credit note is repayable, not deleted, has a term, is fully funded (`goalFundedAt` set), has an account id, and its repayment plan is not fully paid. The account-id filter matches `listFundedCredits` (`account_id` is not null). Notes still collecting, fully repaid loans, deleted notes, and notes with no account id are omitted.
+
+The app contract is `GET /loans/open` → a JSON array of `{ messageId, accountId, name, currency, outstanding, overdue }`.
+
+Success → **Response** `200`:
+
+```json
+[
+  {
+    "messageId": "<uuid>",
+    "accountId": "<account id>",
+    "name": "Ada",
+    "currency": "CHF",
+    "outstanding": "1.50",
+    "overdue": false
+  }
+]
+```
+
+`name` is the borrower's current public display name. `currency` is the fiat goal currency, or `BTC` for a bitcoin loan. `outstanding` is the plan total minus what is paid, in that currency: a two-decimal string for fiat and a number of sats for bitcoin, the same units as `GET /messages/:id/repayment`. `overdue` is true when an unpaid share is due before the current UTC day. A share due today is not overdue. Due days follow `repaymentDueDate`, including the 2026-11-16 floor. Rows are ordered with overdue loans first, then by currency code, then by outstanding amount descending, then by `messageId`. The array has no giver list, note text, or sat breakdown.
+
+An empty list is **200** `[]`. A loan whose debt cannot be computed is **503** `{ "error": "Ask amount is unavailable" }` for the whole list. Store failure is **503** `{ "error": "Messages are unavailable" }` (logs `loans.open.failed`). Sunday does not refuse this read.
 
 ### `POST /me/wallet-backup-seen`
 

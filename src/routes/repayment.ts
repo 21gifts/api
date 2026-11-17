@@ -17,6 +17,7 @@ import {
   repaymentDueDate,
   repaymentLedger,
   repaymentSchedule,
+  type RepaymentLedgerLine,
   repaymentStartMs,
   type RepaymentAllocationPart,
   type RepaymentSlice,
@@ -30,7 +31,7 @@ import { requestZapInvoice } from '@/lib/lnurl-pay';
 import type { MessageRow } from '@/lib/message';
 import type { MessageInvoiceAttempt, MessageStore } from '@/lib/message-store';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
-import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
+import { InvoiceRateLimiter, utcDayKey } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
@@ -431,6 +432,49 @@ async function sharePricer(
 }
 
 /**
+ * Plan lines for one credit, from the same paid rows the public ledger uses.
+ * A legacy full-share marker has no `paidUnits`. A part carries its units.
+ *
+ * @param row - Credit note.
+ * @param nowMs - Clock.
+ * @param owed - Units each payer owes.
+ * @param paid - Legacy full-share markers.
+ * @param parts - Settled partial payments.
+ * @returns One ledger line per non-zero share.
+ */
+function creditLedgerLines(
+  row: MessageRow,
+  nowMs: number,
+  owed: readonly { accountId: string; units: bigint }[],
+  paid: readonly { dayIndex: number; recipientAccountId: string }[],
+  parts: readonly { dayIndex: number; recipientAccountId: string; units: bigint }[],
+): RepaymentLedgerLine[] {
+  const fundedAt = row.goalFundedAt instanceof Date ? row.goalFundedAt : null;
+  const partKeys = new Set(parts.map((part) => `${part.dayIndex}:${part.recipientAccountId}`));
+  const ledgerPaid = [
+    ...paid
+      .filter((item) => !partKeys.has(`${item.dayIndex}:${item.recipientAccountId}`))
+      .map((item) => ({
+        dayIndex: item.dayIndex,
+        accountId: item.recipientAccountId,
+      })),
+    ...parts.map((part) => ({
+      dayIndex: part.dayIndex,
+      accountId: part.recipientAccountId,
+      paidUnits: part.units,
+    })),
+  ];
+  return repaymentLedger(
+    row.goalTermDays as number,
+    owed,
+    ledgerPaid,
+    fundedAt === null ? null : fundedAt.getTime(),
+    nowMs,
+    row.id,
+  );
+}
+
+/**
  * Public ledger of one credit: who gave what, and each Lightning repayment.
  *
  * @param routeDeps - Store, auth, clock, and spot store.
@@ -452,27 +496,7 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
   const parts = await deps.store.listRepaymentParts(row.id);
   const fundedAt = row.goalFundedAt instanceof Date ? row.goalFundedAt : null;
   const partKeys = new Set(parts.map((part) => `${part.dayIndex}:${part.recipientAccountId}`));
-  const ledgerPaid = [
-    ...paid
-      .filter((item) => !partKeys.has(`${item.dayIndex}:${item.recipientAccountId}`))
-      .map((item) => ({
-        dayIndex: item.dayIndex,
-        accountId: item.recipientAccountId,
-      })),
-    ...parts.map((part) => ({
-      dayIndex: part.dayIndex,
-      accountId: part.recipientAccountId,
-      paidUnits: part.units,
-    })),
-  ];
-  const lines = repaymentLedger(
-    row.goalTermDays as number,
-    owed,
-    ledgerPaid,
-    fundedAt === null ? null : fundedAt.getTime(),
-    nowMs,
-    row.id,
-  );
+  const lines = creditLedgerLines(row, nowMs, owed, paid, parts);
   const names = new Map<string, { name: string; username: string | null; canReceive: boolean }>();
   for (const payer of payers) {
     names.set(payer.accountId, await publicGiver(deps, payer.accountId));
@@ -2139,14 +2163,53 @@ async function lenderWaiting(
 }
 
 /**
- * `GET /me/loans`: the caller's live repayable asks that are still collecting
- * or not fully repaid, newest first, with what is due now.
+ * One public row of `GET /loans/open` before `sortKey` is dropped.
+ * `sortKey` orders the row and is not part of the response.
+ */
+interface OpenLoanRow {
+  messageId: string;
+  accountId: string;
+  name: string;
+  currency: string;
+  outstanding: string | number;
+  overdue: boolean;
+  sortKey: string;
+}
+
+/**
+ * Order key: overdue loans, then currency code, then the remainder descending,
+ * then the credit id. The remainder is fixed-width inverted hex so a larger
+ * amount sorts first. BTC and the fiat codes are three characters.
+ *
+ * @param overdue - Whether an earlier day is unpaid.
+ * @param currency - Loan currency code.
+ * @param remaining - Unpaid plan units.
+ * @param messageId - Credit note id.
+ * @returns The sort key.
+ */
+function openLoanSortKey(
+  overdue: boolean,
+  currency: string,
+  remaining: bigint,
+  messageId: string,
+): string {
+  const hex = remaining.toString(16).padStart(20, '0');
+  let inverted = '';
+  for (const digit of hex) {
+    inverted += (15 - Number.parseInt(digit, 16)).toString(16);
+  }
+  return `${overdue ? '0' : '1'}${currency}${inverted}${messageId}`;
+}
+
+/**
+ * `GET /me/loans` for the signed-in member, and public `GET /loans/open`.
  *
  * @param deps - Store, auth, clock, spot store, and the optional LNURL server.
- * @returns A Hono app with `GET /me/loans`.
+ * @returns A Hono app with both routes.
  */
 export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
-  return new Hono().get('/me/loans', async (c) => {
+  const app = new Hono();
+  app.get('/me/loans', async (c) => {
     const token = bearerToken(c.req.header('authorization'));
     const account = token === null ? null : await resolveSession(deps.authStore, deps.now(), token);
     if (account === null) {
@@ -2191,6 +2254,65 @@ export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   });
+  app.get('/loans/open', async (c) => {
+    const nowMs = deps.now();
+    const today = utcDayKey(nowMs);
+    try {
+      const credits = await deps.store.listFundedCredits();
+      const rows: OpenLoanRow[] = [];
+      for (const row of credits) {
+        const { owed } = await creditOwed(deps, row);
+        if (owed === 'unavailable') {
+          return c.json({ error: 'Ask amount is unavailable' }, 503);
+        }
+        const paid = await deps.store.listRepayments(row.id);
+        const parts = await deps.store.listRepaymentParts(row.id);
+        const lines = creditLedgerLines(row, nowMs, owed, paid, parts);
+        let remaining = 0n;
+        let overdue = false;
+        for (const line of lines) {
+          remaining += line.units - line.paidUnits;
+          if ((line.dueOn as string) < today && line.paidUnits < line.units) {
+            overdue = true;
+          }
+        }
+        if (remaining === 0n) {
+          continue;
+        }
+        const fiat = isFiatCredit(row);
+        let currency = 'BTC';
+        if (fiat) {
+          currency = row.goalCurrency as 'USD' | 'CHF' | 'EUR' | 'PHP';
+        }
+        const giver = await publicGiver(deps, row.accountId as string);
+        rows.push({
+          messageId: row.id,
+          accountId: row.accountId as string,
+          name: giver.name,
+          currency,
+          outstanding: fiat ? formatCents(remaining) : Number(remaining),
+          overdue,
+          sortKey: openLoanSortKey(overdue, currency, remaining, row.id),
+        });
+      }
+      rows.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+      return c.json(
+        rows.map((row) => ({
+          messageId: row.messageId,
+          accountId: row.accountId,
+          name: row.name,
+          currency: row.currency,
+          outstanding: row.outstanding,
+          overdue: row.overdue,
+        })),
+        200,
+      );
+    } catch {
+      logEvent('loans.open.failed');
+      return c.json({ error: 'Messages are unavailable' }, 503);
+    }
+  });
+  return app;
 }
 
 const FIAT_CURRENCIES = new Set(['USD', 'CHF', 'EUR', 'PHP']);
