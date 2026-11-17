@@ -31,7 +31,7 @@ import { requestZapInvoice } from '@/lib/lnurl-pay';
 import type { MessageRow } from '@/lib/message';
 import type { MessageInvoiceAttempt, MessageStore } from '@/lib/message-store';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
-import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
+import { InvoiceRateLimiter, utcDayKey } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
@@ -2256,7 +2256,7 @@ export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
   });
   app.get('/loans/open', async (c) => {
     const nowMs = deps.now();
-    const today = new Date(nowMs).toISOString().slice(0, 10);
+    const today = utcDayKey(nowMs);
     try {
       const credits = await deps.store.listFundedCredits();
       const rows: OpenLoanRow[] = [];
