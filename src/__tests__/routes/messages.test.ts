@@ -319,6 +319,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     listInvoiceAttemptsForPayer: boom,
     listIndexedZapIngests: boom,
     listAuthoredMessages: boom,
+    listFundedCredits: boom,
     listOpenConversationZapEventIds: boom,
     attributeZapReceipt: boom,
     recordZapper: boom,
@@ -3950,6 +3951,50 @@ describe('POST /messages', () => {
     );
   });
 
+  it.each([
+    [499, 0],
+    [500, 1],
+  ])(
+    'needs half the daily grant in shop payments before the spend ping (%i sats)',
+    async (sats, pings) => {
+      const spendPing = {
+        ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+      };
+      // On the grant gate day, so the funding and shop-payment gates apply.
+      const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
+      const auth = await namedStore('Ada');
+      await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+      const res = await mount(auth, new InMemoryMessageStore(), {
+        now: () => gateNow,
+        spendPing,
+        lnurlServer: LNURL_SERVER,
+        fundingStore: admittedFunding(),
+        recoveryShareRequiredFrom: null,
+        walletTransfers: {
+          hasShopPayment: async (_id, _from, _to, minSats = 1) => sats >= minSats,
+        },
+        rosterStore: { get: async () => ({ paymentsEnabled: true, recipients: [] }) as never },
+        fxSpot: {
+          latest: async () => ({
+            asOf: '2026-11-16T00:00:00.000Z',
+            source: 'test',
+            rates: { USD: '100000' },
+          }),
+        },
+      }).request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'hello',
+          photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+        }),
+      });
+      expect(res.status).toBe(200);
+      // The verified poster also gets the welcome ping; only the daily one counts.
+      expect(spendPing.ping.mock.calls.filter((call) => call[2] === 'daily')).toHaveLength(pings);
+    },
+  );
+
   it('does not ping spend when the poster has no receiving address', async () => {
     const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
     const res = await mount(await staffStore('Ada'), new InMemoryMessageStore(), {
@@ -4608,6 +4653,7 @@ describe('POST /messages', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listFundedCredits: () => base.listFundedCredits(),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
       replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>
@@ -4775,6 +4821,7 @@ describe('POST /messages', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listFundedCredits: () => base.listFundedCredits(),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
       replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>
@@ -7165,6 +7212,7 @@ describe('POST /messages/:id/invoice', () => {
         base.listInvoiceAttemptsForPayer(payerAccountId),
       listIndexedZapIngests: () => base.listIndexedZapIngests(),
       listAuthoredMessages: (accountId) => base.listAuthoredMessages(accountId),
+      listFundedCredits: () => base.listFundedCredits(),
       listOpenConversationZapEventIds: () => base.listOpenConversationZapEventIds(),
       replacePhotos: (id, photos) => base.replacePhotos(id, photos),
       attributeZapReceipt: (receiptEventId, attribution) =>

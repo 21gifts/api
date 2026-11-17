@@ -103,7 +103,7 @@ export interface MeRouteDeps {
    * recovery share (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
-  /** Daily payout switch used by the owner-facing payout explanation. */
+  /** Daily roster: the payout switch and the grant amount that prices the shop minimum. */
   rosterStore?: Pick<DailyRosterStore, 'get'>;
   /** Stored BTC-USD spot for the daily grant's 50 % shop-spend minimum. */
   fxSpotStore?: Pick<FxSpotStore, 'latest'>;
@@ -360,6 +360,8 @@ type MeOwnerResponse = Omit<OwnerAccountResponse, 'funding'> & {
   funding:
     | (NonNullable<OwnerAccountResponse['funding']> & {
         shopPaymentDue: boolean | null;
+        shopPaymentSats: number | null;
+        shopPaymentRequiredSats: number | null;
         payoutToday: FundingPayoutToday | null;
       })
     | null;
@@ -458,17 +460,48 @@ async function ownerJson(
     owner.funding?.status === 'admitted' ||
     (owner.funding?.status === 'trial' && owner.funding.trialUtcDate === utcDayKey(nowMs));
   let shopPaymentDue: boolean | null = ownerFundingReadFailed ? null : inProgram;
+  // The owner's own shop spending and the daily minimum, so the grant page can
+  // show what is still missing; both stay null outside the program.
+  let shopPaymentSats: number | null = null;
+  let shopPaymentRequiredSats: number | null = null;
   if (!ownerFundingReadFailed && inProgram) {
+    // Read separately, so a missing minimum still fails closed as due when
+    // the shop sum cannot be read.
+    let minimum: number | null | undefined;
+    let sats: number | undefined;
     try {
-      const minimum = await readShopMinimum();
-      shopPaymentDue = minimum === null || (await readShopSats()) < minimum;
+      minimum = await readShopMinimum();
     } catch {
-      shopPaymentDue = null;
+      minimum = undefined;
     }
+    try {
+      sats = await readShopSats();
+    } catch {
+      sats = undefined;
+    }
+    shopPaymentRequiredSats = minimum ?? null;
+    shopPaymentSats = sats ?? null;
+    shopPaymentDue =
+      minimum === undefined
+        ? null
+        : minimum === null
+          ? true
+          : sats === undefined
+            ? null
+            : sats < minimum;
   }
   return {
     ...owner,
-    funding: owner.funding === null ? null : { ...owner.funding, shopPaymentDue, payoutToday },
+    funding:
+      owner.funding === null
+        ? null
+        : {
+            ...owner.funding,
+            shopPaymentDue,
+            shopPaymentSats,
+            shopPaymentRequiredSats,
+            payoutToday,
+          },
     grantPayoutToday: owner.funding === null ? payoutToday : null,
     walletViewerPublicKey: deps.walletViewerPublicKey ?? null,
   };
@@ -571,8 +604,9 @@ async function storedDailyMinimum(
  * from the share's start day on, reads the grant and, when the account is
  * eligible today with that share, pings today's newest media post through
  * {@link pingTodayMedia} (no second share read). Before that day the share
- * made nobody payable, so nothing is read or pinged. No-op without a spend ping. A grant read failure logs
- * `funding.daily_ping.failed`; the route's answer never depends on this.
+ * made nobody payable, so nothing is read or pinged. No-op without a spend ping. A grant, roster,
+ * stored-spot, or shop-sum read failure logs `funding.daily_ping.failed`; the route's answer never
+ * depends on this.
  *
  * @param deps - `/me` collaborators.
  * @param lnurlServer - LNURL server config (the share routes exist only with it).

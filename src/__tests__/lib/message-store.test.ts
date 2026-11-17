@@ -5819,6 +5819,74 @@ describe('InMemoryMessageStore', () => {
     expect(listed.some((row) => row.accountId === 'other')).toBe(false);
   });
 
+  it('listFundedCredits keeps funded live credits and returns copies', async () => {
+    const fundedAt = new Date('2026-11-20T00:00:00.000Z');
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'external',
+        accountId: null,
+        goalSats: 21,
+        goalRepayable: true,
+        goalTermDays: 2,
+        goalFundedAt: fundedAt,
+      },
+    ]);
+    await store.create({ ...EARLY, id: 'plain' });
+    await store.create({ ...EARLY, id: 'parent' });
+    await store.create({
+      ...EARLY,
+      id: 'reply',
+      parentId: 'parent',
+      text: 'child',
+      goalRepayable: true,
+      goalTermDays: 2,
+      goalFundedAt: fundedAt,
+      goalSats: 21,
+    });
+    await store.create({
+      ...EARLY,
+      id: 'no-term',
+      goalRepayable: true,
+      goalSats: 21,
+      goalFundedAt: fundedAt,
+    });
+    await store.create({
+      ...EARLY,
+      id: 'unfunded',
+      goalRepayable: true,
+      goalTermDays: 2,
+      goalSats: 21,
+    });
+    await store.create({
+      ...EARLY,
+      id: 'open',
+      text: 'ask',
+      goalRepayable: true,
+      goalTermDays: 3,
+      goalFundedAt: fundedAt,
+      goalSats: 21,
+    });
+    await store.create({
+      ...EARLY,
+      id: 'hidden',
+      goalRepayable: true,
+      goalTermDays: 2,
+      goalFundedAt: fundedAt,
+      goalSats: 21,
+    });
+    expect(await store.markDeleted('hidden', new Date('2026-09-01T00:00:00.000Z'), 'staff')).toBe(
+      true,
+    );
+    const listed = await store.listFundedCredits();
+    expect(listed.map((row) => row.id)).toEqual(['open']);
+    expect(listed[0]?.goalTermDays).toBe(3);
+    expect(listed[0]?.goalFundedAt).toEqual(fundedAt);
+    const copy = listed[0] as MessageRow;
+    copy.text = 'changed';
+    expect((await store.getById('open'))?.text).toBe('ask');
+  });
+
   it('heartStats skips a claimed heart whose message id is not requested', async () => {
     const store = new InMemoryMessageStore();
     const paymentHash = '44'.repeat(32);
@@ -13168,6 +13236,41 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toContain('WHERE account_id = $1');
     expect(sql.queries[0]?.text).not.toContain('LIMIT');
     expect(sql.queries[0]?.params).toEqual(['acc']);
+  });
+
+  it('listFundedCredits filters funded live credits without LIMIT', async () => {
+    const sql = new MockSql();
+    const funded = new Date('2026-09-26T12:00:00.000Z');
+    sql.nextRows = [
+      {
+        id: 'm-funded',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        goal_sats: '21',
+        goal_repayable: true,
+        goal_term_days: '30',
+        goal_funded_at: funded,
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listFundedCredits();
+    const text = sql.queries[0]?.text;
+    expect(text).toContain('parent_id IS NULL');
+    expect(text).toContain('deleted_at IS NULL');
+    expect(text).toContain('goal_repayable IS TRUE');
+    expect(text).toContain('goal_term_days IS NOT NULL');
+    expect(text).toContain('goal_funded_at IS NOT NULL');
+    expect(text).toContain('account_id IS NOT NULL');
+    expect(text).not.toContain('LIMIT');
+    expect(sql.queries[0]?.params).toEqual([]);
+    expect(listed).toHaveLength(1);
+    expect(listed[0]?.accountId).toBe('acc');
+    expect(listed[0]?.goalRepayable).toBe(true);
+    expect(listed[0]?.goalTermDays).toBe(30);
+    expect(listed[0]?.goalFundedAt).toEqual(funded);
   });
 
   it('heartStats returns an empty map without querying for an empty id list', async () => {
