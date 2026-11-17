@@ -1082,6 +1082,32 @@ describe('repayment from the in-app wallet', () => {
     };
   }
 
+  // listCreditPayers reads the oldest indexed ingest, not the receipt delta.
+  async function indexGiftSnapshot(
+    messages: InMemoryMessageStore,
+    receiptId: string,
+    messageId: string,
+    sats: number,
+    fiat: { usd: string | null; chf: string | null; eur: string | null; php: string | null },
+  ): Promise<void> {
+    await messages.recordZapIngest({
+      id: crypto.randomUUID(),
+      createdAt: new Date(Date.UTC(2027, 1, 21)),
+      receiptId,
+      noteEventId: null,
+      messageId,
+      outcome: 'indexed',
+      reason: null,
+      amountSats: sats,
+      amountUsd: fiat.usd,
+      amountChf: fiat.chf,
+      amountEur: fiat.eur,
+      amountPhp: fiat.php,
+      receiptPubkey: null,
+      receipt: {},
+    });
+  }
+
   async function loanSetup(options?: {
     givers?: Giver[];
     /** Credit message id; defaults to `CREDIT`. */
@@ -1180,10 +1206,8 @@ describe('repayment from the in-app wallet', () => {
           }),
     });
     for (const giver of givers) {
-      await messages.recordZapReceipt(
-        `r-${giver.id}`,
-        creditId,
-        giver.sats,
+      const receiptId = `r-${giver.id}`;
+      const delta =
         options?.goalCurrency !== undefined && giver.fiatAmount !== null
           ? {
               usd:
@@ -1203,9 +1227,12 @@ describe('repayment from the in-app wallet', () => {
                   ? (giver.fiatAmount ?? formatCents(BigInt(giver.sats)))
                   : null,
             }
-          : null,
-      );
-      await messages.updateZapReceiptGift(`r-${giver.id}`, { payerAccountId: giver.id });
+          : null;
+      await messages.recordZapReceipt(receiptId, creditId, giver.sats, delta);
+      await messages.updateZapReceiptGift(receiptId, { payerAccountId: giver.id });
+      if (typeof giver.fiatAmount === 'string' && delta !== null) {
+        await indexGiftSnapshot(messages, receiptId, creditId, giver.sats, delta);
+      }
     }
     const latestSpot =
       options?.rates ??
@@ -1341,8 +1368,12 @@ describe('repayment from the in-app wallet', () => {
         php: currency === 'PHP' ? fiatAmount : null,
       };
     }
-    await messages.recordZapReceipt(`r-${options.id}`, options.id, options.sats, fiat);
-    await messages.updateZapReceiptGift(`r-${options.id}`, { payerAccountId: WALLET_GIVER });
+    const receiptId = `r-${options.id}`;
+    await messages.recordZapReceipt(receiptId, options.id, options.sats, fiat);
+    await messages.updateZapReceiptGift(receiptId, { payerAccountId: WALLET_GIVER });
+    if (fiat !== null) {
+      await indexGiftSnapshot(messages, receiptId, options.id, options.sats, fiat);
+    }
   }
 
   interface OpenLoan {
