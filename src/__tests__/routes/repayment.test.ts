@@ -4692,12 +4692,12 @@ describe('repayment from the in-app wallet', () => {
     await messages.create({
       id: 'reply-note',
       accountId: AUTHOR,
-      parentId: 'reply-parent',
       name: 'Ada',
       text: 'reply',
       createdAt: new Date(MONDAY),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
+      parentId: 'reply-parent',
       goalRepayable: true,
       goalTermDays: 1,
       goalFundedAt: fundedAt,
