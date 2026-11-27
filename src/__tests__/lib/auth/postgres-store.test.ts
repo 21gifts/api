@@ -2264,6 +2264,9 @@ describe('PostgresAuthStore spark pubkey', () => {
     expect(sql.queries[0]?.text).toMatch(
       /UPDATE account SET spark_pubkey_verified_at = to_timestamp\(\$4::double precision \/ 1000\.0\)/,
     );
+    expect(sql.queries[0]?.text).toMatch(
+      /spark_pubkey_current_since = to_timestamp\(\$4::double precision \/ 1000\.0\)/,
+    );
     expect(sql.queries[0]?.text).toMatch(/spark_pubkey = \$2/);
     expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/lower\(trim\(username\)\) = \$3/);
@@ -2960,8 +2963,8 @@ describe('PostgresAuthStore social recovery', () => {
         ['DELETE FROM auth_session WHERE account_id = $1', ['acc']],
         ['DELETE FROM push_subscription WHERE account_id = $1', ['acc']],
         [
-          'UPDATE account SET spark_pubkey = $2, spark_address = $3, wallet_required = TRUE WHERE id = $1',
-          ['acc', NEW, encodeSparkAddress(NEW)],
+          'UPDATE account SET spark_pubkey = $2, spark_address = $3, wallet_required = TRUE, spark_pubkey_current_since = to_timestamp($4::double precision / 1000.0) WHERE id = $1',
+          ['acc', NEW, encodeSparkAddress(NEW), NOW + 9],
         ],
         [
           "UPDATE passkey_challenge SET consumed = true WHERE account_id = $1 AND type = 'recovery' AND consumed = false",

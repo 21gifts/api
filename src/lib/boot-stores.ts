@@ -281,10 +281,11 @@ export interface BootStores {
   /** Read-only Spark viewer, ephemeral on memory boots. */
   sparkViewer: SparkViewer | undefined;
   /**
-   * Reader for previous wallets: chooses per wallet the retired viewer KEK
-   * rotation kept or the current viewer, whichever returns data
-   * (`previousWalletSparkViewer`). The same object as `sparkViewer` on memory
-   * boots and when no viewer was retired.
+   * Reader for previous wallets, and for current wallets while retired
+   * viewers exist: chooses per wallet the retired viewer KEK rotation kept or
+   * the current viewer, whichever returns data (`previousWalletSparkViewer`;
+   * current wallets try the current viewer first). The same object as
+   * `sparkViewer` on memory boots and when no viewer was retired.
    */
   previousWalletSparkViewer: SparkViewer | PreviousWalletReader | undefined;
   /**

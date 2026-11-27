@@ -371,7 +371,9 @@ When the LNURL server accepts the address claim, one transaction:
   **previous wallets**,
 - stores the new key as verified `spark_pubkey` with its `spark_address`,
   keeping the first verification time, so the welcome gift does not start
-  again,
+  again, and sets `spark_pubkey_current_since` to the commit time (the
+  wallet worker needs when the new wallet became current, and the member may
+  later drop the previous-wallet row),
 - deletes the pending recovery.
 
 The username stays. An old key never moves the account again.

@@ -27,10 +27,12 @@ KEK rotation); the per-table rules are in
   new key: old member and shop keys in `nostr_retired_key`, the old viewer in
   `spark_viewer_retired_key`. A retired Nostr key is used only to sign the
   NIP-09 deletion of a note it signed (relays honour a deletion only from the
-  note's own pubkey); a retired viewer is used only to read previous wallets,
-  which cannot grant the new viewer (see
-  [How previous wallets are read](#how-previous-wallets-are-read)). Retired keys from an earlier rotation are
-  sealed again under the new key and stay retired.
+  note's own pubkey); a retired viewer is used only to read wallets that have
+  not granted the new viewer: previous wallets, which cannot grant it, and
+  current wallets until the member's app grants it (see
+  [How wallets are read after a rotation](#how-wallets-are-read-after-a-rotation)).
+  Retired keys from an earlier rotation are sealed again under the new key and
+  stay retired.
 - Every recovery share under a `RECOVERY_SHARE_KEK_ID` other than the
   configured one is opened with `RECOVERY_SHARE_KEK_PREVIOUS` and sealed again
   under the new `RECOVERY_SHARE_KEK`. Its content cannot be renewed without the
@@ -42,9 +44,10 @@ KEK rotation); the per-table rules are in
   (after the Nostr and viewer keys are rotated), every share under another id
   is opened with the previous key. A failure stops the boot (see
   [Errors](#errors-that-stop-the-boot)).
-- Every write is a compare-and-set `UPDATE` in batches of at most 200 rows,
-  under an advisory lock, recorded by `db_change` (secret columns only as a
-  hash). A boot that stops halfway continues where it stopped at the next
+- Every update is a compare-and-set `UPDATE` in batches of at most 200 rows,
+  under an advisory lock; retired keys are inserted (`INSERT … ON CONFLICT DO
+NOTHING`) in the same transaction as the update that retires them. Every
+  write is recorded by `db_change` (secret columns only as a hash). A boot that stops halfway continues where it stopped at the next
   start; a boot with nothing left to rotate changes nothing.
 
 ## Before you start
@@ -65,15 +68,16 @@ KEK rotation); the per-table rules are in
     `RECOVERY_SHARE_KEK_PREVIOUS` the shares are not rotated and stay pending.
 - **Two new ids.** Pick an id for each key that has never been used for that
   key, for example the current id plus one. Without a configured id the
-  current one is `1`. An id is a decimal integer from 1 to 4294967295; any
-  other value stops the boot. The ids are not secret.
+  current one is `1`. An id is a decimal integer from 1 to 2147483647 (the
+  largest Postgres `integer`, the type of every `*_kek_id` column); any other
+  value stops the boot. The ids are not secret.
 - **Keep both old keys.** You need the current value of `RECOVERY_SHARE_KEK`
   once more, as `RECOVERY_SHARE_KEK_PREVIOUS`; without it the stored shares
   cannot be moved to the new key. You also need the current value of
   `NOSTR_NSEC_KEK` once more, as `NOSTR_NSEC_KEK_PREVIOUS`; without it the
   boot stops, because the old keys could not be retired and members could no
   longer delete notes signed before the rotation, nor could previous wallets
-  be read.
+  (and current wallets until the app grants the new viewer) be read.
 - Store the new values wherever the deployment keeps its secrets before you
   change anything.
 
@@ -150,7 +154,7 @@ changed.
   `<id>`.
 - **`NOSTR_NSEC_KEK_ID must be a positive integer`** or
   **`RECOVERY_SHARE_KEK_ID must be a positive integer`** — the id is not a
-  decimal integer from 1 to 4294967295. Fix the value.
+  decimal integer from 1 to 2147483647. Fix the value.
 - **`RECOVERY_SHARE_KEK_PREVIOUS must be 64 lowercase hex characters`**,
   **`RECOVERY_SHARE_KEK_PREVIOUS must differ from RECOVERY_SHARE_KEK`** or
   **`RECOVERY_SHARE_KEK_PREVIOUS must differ from NOSTR_NSEC_KEK`** — the
@@ -170,19 +174,24 @@ new Nostr keys of members and shops (kind 0 and kind 10002) as for a new key,
 and `GET /shops`, `GET /shops/:npub` and the NIP-05 directory answer the new
 shop npubs. Shop NIP-05 names stay: a shop keeps its `nostr_key_created_at`,
 the order in which shop names are allocated. `GET /me` returns the new Spark viewer public key, and the app
-grants it to the member's current wallet again. A previous wallet cannot grant
-the new viewer; the api reads it through the viewer it granted while it was
-current (see below). Deleting or hiding a note signed before the rotation still
+grants it to the member's current wallet the next time the member opens the
+app. Until then the api reads the current wallet through the retired viewer it
+granted before, so balances and history stay correct and no 0 balance is
+stored. A previous wallet cannot grant the new viewer; the api reads it
+through the viewer it granted while it was current (see below). Deleting or
+hiding a note signed before the rotation still
 removes it from public relays, because the deletion is signed by the retired
 key that signed the note.
 
-## How previous wallets are read
+## How wallets are read after a rotation
 
 Spark does not report an error for a viewer that a wallet never granted, or
 whose grant the wallet replaced: it returns a balance of 0 and no transfers.
 So the api counts a viewer as granted only when it returns data (a balance
-above 0, a transfer, or a token transaction). For each previous wallet the
-wallet worker tries, in this order:
+above 0, a transfer, or a token transaction). While retired viewers exist,
+the wallet worker reads every previous wallet and every current wallet through
+such a choice. For each
+previous wallet it tries, in this order:
 
 1. the viewer that was current when the wallet was replaced: the oldest
    retired viewer retired after `previous_wallet.replaced_at`, or the current
@@ -190,14 +199,36 @@ wallet worker tries, in this order:
 2. the other retired viewers, newest first;
 3. the current viewer.
 
+For each current wallet, it tries the current viewer first, then the retired
+viewers, newest first. When no viewer returns data for a current wallet that
+became current after the newest rotation, that is verified or recovered after
+it (`account.spark_pubkey_current_since`, set on verification and on a
+recovery commit, is later than the newest `retired_at`; the member can delete
+the `previous_wallet` row, so the recovery time is kept on the account), the
+worker reads it with the current viewer, as before any rotation, and stores its
+balance even though the wallet is empty (0, no history), so a new member's or a
+recovered member's empty wallet is counted. Such a wallet that a retired viewer
+returns data for is read through that viewer.
+
 It remembers the first viewer with data for that wallet until the process
-restarts. When no viewer returns data, it stores no balance and no full-sync
-mark for the wallet and logs `wallet_transfer.failed` with
-`reason: "PreviousWalletUnreadable"`; the wallet is retried with the usual
-backoff (at most once an hour). The same happens when the daily full scan
-returns nothing through the remembered viewer. This line is expected for a
-previous wallet that is empty or never granted any viewer; its stored history
-and last balance stay as they were.
+restarts. While a current wallet is read through a retired viewer, every read
+first checks the current viewer again and switches to it as soon as it returns
+data, that is once the member's app granted it. When no viewer returns data
+(other than for a current wallet that became current after the newest
+rotation), it stores no balance and no full-sync mark for the wallet and logs
+`wallet_transfer.failed` with `reason: "PreviousWalletUnreadable"` (previous
+wallet) or `reason: "CurrentWalletUnreadable"` (current wallet); the wallet is
+retried with the usual backoff, which grows from about 2 minutes up to one
+hour. The same happens when the daily full scan of a previous wallet, or of a
+current wallet read through a retired viewer, returns nothing through the
+remembered viewer; a pass between full scans that returns nothing only skips
+the balance. This line is expected for a previous wallet, or a current wallet
+that became current at or before the newest rotation, that is empty or has not
+granted any viewer; its stored history and last balance stay as they were. A
+current wallet the current viewer returned data for has granted that viewer,
+so every read of it stores its balance, also 0. A current wallet that became
+current after the newest rotation and that no viewer returns data for is read
+through the reader on every pass, and its 0 is stored.
 
 ## Accepted limits
 

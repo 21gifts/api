@@ -68,18 +68,37 @@ key signs only the NIP-09 kind 5 deletion of an event it signed: a delete or
 staff hide signs each deletion with the key whose pubkey is the stored event's,
 and when none matches it publishes nothing for that note and logs
 `messages.delete.nostr_key_missing` with the count only. A retired viewer only
-reads previous wallets, which cannot grant the new viewer. Spark returns a
-balance of 0 and empty pages, not an error, through a viewer a wallet never
-granted, so a viewer counts only when it returns data (a balance above 0, a
-transfer, or a token transaction). For each previous wallet the worker tries
+reads wallets that have not granted the new viewer: previous wallets, which
+cannot grant it, and current wallets until the member's app grants it. Spark
+returns a balance of 0 and empty pages, not an error, through a viewer a wallet
+never granted, so a viewer counts only when it returns data (a balance above 0,
+a transfer, or a token transaction). While retired viewers exist, the worker
+reads every previous wallet and every current wallet through this choice. When
+no viewer returns data for a current wallet that became current after the
+newest retired viewer's `retired_at` (verified or recovered after it:
+`account.spark_pubkey_current_since`, set on verification and on a recovery
+commit and kept when the member drops the previous wallet), the worker reads it through the current viewer
+and stores its balance snapshot, 0 for the empty wallet, as without retired
+viewers. Such a wallet that a retired viewer returns data for is read through
+that viewer. For each previous wallet it tries
 first the viewer that was current when the wallet was replaced (by
 `previous_wallet.replaced_at` and each retired viewer's `retired_at`), then the
-other retired viewers, newest first, then the current viewer, and remembers the
-first one with data. When retired viewers exist and none returns data, the
-worker stores no balance and no full-sync mark for that wallet and logs
-`wallet_transfer.failed` (reason `PreviousWalletUnreadable`); a full scan that
-returns nothing through the remembered viewer forgets it and fails the same way.
-Current wallets use the current viewer only. Retired
+other retired viewers, newest first, then the current viewer; for each current
+wallet it tries the current viewer first, then the retired viewers, newest
+first. It remembers the first one with data; a current wallet read through a
+retired viewer checks the current viewer first on every read and switches to it
+once it returns data. When retired viewers exist and none returns data (except
+for a current wallet that became current after the newest `retired_at`, above),
+the worker stores no balance and no full-sync mark for that wallet and logs
+`wallet_transfer.failed` (reason `PreviousWalletUnreadable` for a previous
+wallet, `CurrentWalletUnreadable` for a current one). A read through the
+chosen viewer that returns nothing (balance 0, no transfer, no token
+transaction) stores no balance for a previous wallet or for a current wallet
+read through a retired viewer: on a full scan it forgets the viewer and fails
+the same way, on an incremental pass it only skips the snapshot. A current
+wallet whose chosen viewer is the current one has granted it, so such a read
+stores its balance, also 0, and a full scan completes.
+Without retired viewers, current wallets use the current viewer only. Retired
 keys of an earlier rotation are sealed again under the current key. Retired
 pubkeys never attribute inbound events and are never returned or logged.
 Deleting an account or a shop identity, or merging an account away, deletes its
@@ -848,7 +867,13 @@ called.
 **Storage.** `previous_wallet` (`docs/schema/previous_wallet.sql`): primary
 key `(account_id, spark_pubkey)`, `spark_address`, `replaced_at`, written by
 the recovery commit. Migrated with the auth schema when `DATABASE_URL` is set
-and covered by `db_change`; in memory otherwise.
+and covered by `db_change`; in memory otherwise. The same commit sets
+`account.spark_pubkey_current_since` (`timestamptz`, NULL until a wallet is
+verified) to the commit time; verification sets it too. Dropping a previous
+wallet does not change it, so the wallet worker still knows when the current
+wallet became current. The auth migration backfills it once, idempotently,
+for verified rows where it is NULL with the later of `spark_pubkey_verified_at`
+and the account's newest `previous_wallet.replaced_at`.
 
 ### `DELETE /me/previous-wallets/:sparkPubkey`
 
@@ -1099,7 +1124,8 @@ key verified and the forwarded pending recovery: the old key and its
 credential, session, and push subscription of the account is deleted and the
 new passkey inserted; `spark_pubkey` becomes the new key with its
 `spark_address` and `wallet_required` true, keeping
-`spark_pubkey_verified_at`; open `recovery` challenges are consumed and the
+`spark_pubkey_verified_at` and setting `spark_pubkey_current_since` to the
+commit time; open `recovery` challenges are consumed and the
 pending row is deleted. Username, `session_refused`, the Nostr key, and
 recovery shares stay. Logs `account.recovery.committed`
 `{ accountId, via: "claim" }`. When the commit does not land, because the

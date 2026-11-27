@@ -572,6 +572,11 @@ describe('PostgresWalletTransferStore', () => {
     const query = vi.fn(async (text: string) => {
       if (text.includes('UNION ALL')) {
         expect(text).toContain('replaced_at AS "replacedAt"');
+        expect(text).toContain('COALESCE(spark_pubkey_current_since,');
+        expect(text).toContain('GREATEST(spark_pubkey_verified_at,');
+        expect(text).toContain(
+          '(SELECT max(p.replaced_at) FROM previous_wallet p WHERE p.account_id = account.id))) AS "verifiedAt"',
+        );
         return [
           {
             accountId: 'account',
@@ -579,6 +584,7 @@ describe('PostgresWalletTransferStore', () => {
             sparkAddress: 'spark1address',
             previous: false,
             replacedAt: null,
+            verifiedAt: '2026-11-21T09:00:00.000Z',
           },
           {
             accountId: 'account',
@@ -586,6 +592,7 @@ describe('PostgresWalletTransferStore', () => {
             sparkAddress: 'spark1previous',
             previous: true,
             replacedAt: '2026-11-10T08:00:00.000Z',
+            verifiedAt: null,
           },
         ];
       }
@@ -607,7 +614,13 @@ describe('PostgresWalletTransferStore', () => {
     const sql = { query, execute: vi.fn(async () => undefined) } as unknown as SqlClient;
     const store = new PostgresWalletTransferStore(sql);
     await expect(store.listWallets()).resolves.toEqual([
-      { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address', previous: false },
+      {
+        accountId: 'account',
+        sparkPubkey: OWNER,
+        sparkAddress: 'spark1address',
+        previous: false,
+        verifiedAt: new Date('2026-11-21T09:00:00.000Z'),
+      },
       {
         accountId: 'account',
         sparkPubkey: SHOP,

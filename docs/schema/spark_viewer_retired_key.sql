@@ -4,8 +4,10 @@
 -- it granted while it was current: first the one current at
 -- previous_wallet.replaced_at (by retired_at), then the other retired viewers
 -- newest first, then the current viewer; the first that returns data wins
--- (previousWalletSparkViewer). Read-only use only; current wallets use the
--- current viewer alone.
+-- (previousWalletSparkViewer). Current wallets grant the new viewer only when
+-- the member next opens the app, so while retired viewers exist the worker
+-- reads a current wallet through the same reader, current viewer first, then
+-- the retired viewers newest first. Read-only use only.
 --
 -- identity_public_key: 66 hex identity public key of the retired viewer.
 -- mnemonic_ciphertext: AES-GCM envelope (version 0x01 || kek_id u32 BE ||

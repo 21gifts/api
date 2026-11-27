@@ -149,7 +149,7 @@ describe('AUTH_SCHEMA_SQL', () => {
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true',
     );
     const tail = AUTH_SCHEMA_SQL.slice(notifyHeartsAt + 1);
-    expect(tail).toHaveLength(16);
+    expect(tail).toHaveLength(18);
     expect(tail.slice(0, 6)).toEqual([
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS heart_sats integer NOT NULL DEFAULT 1',
       'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_heart_sats_chk',
@@ -167,11 +167,23 @@ describe('AUTH_SCHEMA_SQL', () => {
       'CREATE UNIQUE INDEX IF NOT EXISTS pending_recovery_credential_id_uidx ON pending_recovery (credential_id)',
       'CREATE TABLE IF NOT EXISTS previous_wallet (',
       'CREATE INDEX IF NOT EXISTS previous_wallet_spark_pubkey_idx ON previous_wallet (spark_pubkey)',
+      'ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey_current_since timestamptz',
+      'UPDATE account',
       'CREATE TABLE IF NOT EXISTS held_share_box (',
       'CREATE INDEX IF NOT EXISTS held_share_box_account_idx ON held_share_box (account_id)',
       'CREATE INDEX IF NOT EXISTS passkey_challenge_open_account_type_idx',
       'CREATE TABLE IF NOT EXISTS welcome_invoice_reservation (',
     ]);
+    const currentSince = tail.find((statement) => statement.startsWith('UPDATE account'));
+    expect(currentSince).toContain(
+      'SET spark_pubkey_current_since = GREATEST(spark_pubkey_verified_at,',
+    );
+    expect(currentSince).toContain(
+      '(SELECT max(p.replaced_at) FROM previous_wallet p WHERE p.account_id = account.id))',
+    );
+    expect(currentSince).toContain(
+      'WHERE spark_pubkey_current_since IS NULL AND spark_pubkey_verified_at IS NOT NULL',
+    );
     const migrationAt = AUTH_SCHEMA_SQL.findIndex((statement) => statement.includes('DO $'));
     expect(migrationAt).toBeGreaterThan(
       AUTH_SCHEMA_SQL.indexOf(

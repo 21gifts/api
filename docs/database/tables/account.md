@@ -42,6 +42,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `notify_hearts`                | Boolean            | `boolean`                  | No       | `true`      | –                            |
 | `heart_sats`                   | Integer            | `integer`                  | No       | `1`         | –                            |
 | `spark_address`                | Free text          | `text`                     | Yes      | –           | –                            |
+| `spark_pubkey_current_since`   | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
 
 ## Indexes
 

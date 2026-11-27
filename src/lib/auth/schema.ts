@@ -8,6 +8,8 @@ import { WELCOME_INVOICE_RESERVATION_SCHEMA_SQL } from '@/lib/welcome-reservatio
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
  * `wallet_backup_seen_at`, `spark_pubkey`, `spark_pubkey_verified_at`,
+ * `spark_pubkey_current_since` (backfilled once from the later of
+ * `spark_pubkey_verified_at` and the newest `previous_wallet.replaced_at`),
  * `notify_hearts`, `heart_sats`, `wallet_intro_seen`, `spark_address`, and
  * `passkey_challenge.requested_name` on databases created before those
  * columns existed. `spark_address` values are filled by `backfillSparkAddresses`, not here.
@@ -271,6 +273,15 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
     CONSTRAINT previous_wallet_spark_address_chk CHECK (spark_address ~ '^spark1[02-9ac-hj-np-z]{62}$')
   )`,
   `CREATE INDEX IF NOT EXISTS previous_wallet_spark_pubkey_idx ON previous_wallet (spark_pubkey)`,
+  // When the current wallet became current: set on verification and on a recovery
+  // commit. A member can drop a previous_wallet row, so the recovery time is kept
+  // here. Rows from before the column existed are backfilled once (later boots
+  // find no NULL on a verified wallet and update nothing).
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_pubkey_current_since timestamptz`,
+  `UPDATE account
+     SET spark_pubkey_current_since = GREATEST(spark_pubkey_verified_at,
+       (SELECT max(p.replaced_at) FROM previous_wallet p WHERE p.account_id = account.id))
+   WHERE spark_pubkey_current_since IS NULL AND spark_pubkey_verified_at IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS held_share_box (
     id text PRIMARY KEY,
     account_id uuid NOT NULL REFERENCES account (id) ON DELETE CASCADE,

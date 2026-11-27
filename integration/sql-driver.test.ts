@@ -1487,6 +1487,13 @@ describe('PostgresAuthStore social recovery', () => {
       expect((await store.getAccount(id))?.sparkPubkeyVerifiedAt).toBe(
         before?.sparkPubkeyVerifiedAt,
       );
+      // The commit time is kept on the account, so dropping the previous
+      // wallet later does not lose when the new wallet became current.
+      const since = await client.query<{ since: Date | string }>(
+        'SELECT spark_pubkey_current_since AS since FROM account WHERE id = $1',
+        [id],
+      );
+      expect(new Date(since[0]?.since ?? 0).getTime()).toBe(now + 4);
       const previous = {
         accountId: id,
         sparkPubkey: oldKey,
@@ -3885,6 +3892,68 @@ describe('PostgresWalletTransferStore verified counterparty ownership', () => {
         previous: true,
         replacedAt: new Date('2026-11-11T00:00:00.000Z'),
       });
+      // A current wallet is listed with the time it became current. A row the
+      // boot backfill has not filled yet (spark_pubkey_current_since NULL)
+      // falls back to its verification time, or the newest replaced_at of the
+      // account's previous wallets when a recovery replaced it later (the worker stores the 0 of
+      // a wallet that became current after the newest viewer retirement when
+      // no viewer returns data).
+      await client.execute(
+        `UPDATE account SET spark_address = $2, spark_pubkey_verified_at = $3 WHERE id = $1`,
+        [buyerId, `spark1${'z'.repeat(62)}`, new Date('2026-11-21T09:00:00.000Z')],
+      );
+      expect(
+        (await store.listWallets()).find(
+          (wallet) => wallet.accountId === buyerId && wallet.sparkPubkey === buyerKey,
+        ),
+      ).toEqual({
+        accountId: buyerId,
+        sparkPubkey: buyerKey,
+        sparkAddress: `spark1${'z'.repeat(62)}`,
+        previous: false,
+        verifiedAt: new Date('2026-11-21T09:00:00.000Z'),
+      });
+      const recoveredFromKey = `03${'b'.repeat(64)}`;
+      for (const [replacedAt, verifiedAt] of [
+        // An older replacement keeps the verification time.
+        [new Date('2026-11-20T09:00:00.000Z'), new Date('2026-11-21T09:00:00.000Z')],
+        // A recovery after the verification wins.
+        [new Date('2026-11-22T09:00:00.000Z'), new Date('2026-11-22T09:00:00.000Z')],
+      ] as const) {
+        await client.execute(
+          `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+           VALUES ($1, $2, $3, $4)`,
+          [buyerId, recoveredFromKey, `spark1${'x'.repeat(62)}`, replacedAt],
+        );
+        expect(
+          (await store.listWallets()).find(
+            (wallet) =>
+              wallet.accountId === buyerId && wallet.sparkPubkey === buyerKey && !wallet.previous,
+          )?.verifiedAt,
+        ).toEqual(verifiedAt);
+        await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [buyerId]);
+      }
+      // The boot backfill stores the later of both times once in
+      // account.spark_pubkey_current_since; listWallets reads it from there, so
+      // the member dropping the previous wallet keeps the recovery time.
+      await client.execute(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          buyerId,
+          recoveredFromKey,
+          `spark1${'x'.repeat(62)}`,
+          new Date('2026-11-22T09:00:00.000Z'),
+        ],
+      );
+      await migrateAuthSchema(client);
+      expect(await auth.dropPreviousWallet(buyerId, recoveredFromKey)).toBe(true);
+      expect(
+        (await store.listWallets()).find(
+          (wallet) =>
+            wallet.accountId === buyerId && wallet.sparkPubkey === buyerKey && !wallet.previous,
+        )?.verifiedAt,
+      ).toEqual(new Date('2026-11-22T09:00:00.000Z'));
       const transfer = (transferId: string, counterpartyPubkey: string) => ({
         accountId: buyerId,
         walletPubkey: buyerKey,
@@ -3924,7 +3993,10 @@ describe('PostgresWalletTransferStore verified counterparty ownership', () => {
         unverifiedShopNoteId,
         previousShopNoteId,
       ]);
-      await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [previousShopId]);
+      await client.execute('DELETE FROM previous_wallet WHERE account_id IN ($1, $2)', [
+        previousShopId,
+        buyerId,
+      ]);
       await client.execute('DELETE FROM account WHERE id IN ($1, $2, $3, $4)', [
         buyerId,
         unverifiedShopId,

@@ -9,15 +9,19 @@
  *   of the events it signed.
  * - The Spark viewer key gets a fresh mnemonic under the current Nostr KEK;
  *   the old mnemonic is kept as a retired viewer (`spark_viewer_retired_key`),
- *   used only to read previous wallets, which cannot grant the new viewer.
+ *   used only to read wallets that have not granted the new viewer: previous
+ *   wallets, which cannot grant it, and current wallets until the member's
+ *   app grants it.
  * - Retired keys of an earlier rotation are sealed again under the current
  *   Nostr KEK; they stay retired.
  * - Recovery shares cannot be renewed without the member, so each one is
  *   opened with `RECOVERY_SHARE_KEK_PREVIOUS` and sealed again under the
  *   current recovery KEK with the same additional data (the account id).
  *
- * Every write is recorded by `trg_db_change`, conditional on the old value
- * (compare-and-set), in transactions of at most {@link KEK_ROTATION_BATCH}
+ * Every write is recorded by `trg_db_change`. Every update is conditional on
+ * the old value (compare-and-set); retired keys are inserted
+ * (`ON CONFLICT DO NOTHING`) in the same transaction as the update that
+ * retires them. Both run in transactions of at most {@link KEK_ROTATION_BATCH}
  * rows that each take {@link KEK_ROTATION_LOCK} first, so concurrent boots
  * never rotate at the same time and a rerun after a crash continues where it
  * stopped. A second run changes nothing.

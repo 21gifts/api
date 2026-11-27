@@ -317,7 +317,8 @@ export class PostgresAuthStore implements AuthStore {
   ): Promise<boolean> {
     try {
       const rows = await this.#sql.query<{ id: string }>(
-        `UPDATE account SET spark_pubkey_verified_at = to_timestamp($4::double precision / 1000.0)
+        `UPDATE account SET spark_pubkey_verified_at = to_timestamp($4::double precision / 1000.0),
+  spark_pubkey_current_since = to_timestamp($4::double precision / 1000.0)
   WHERE id = $1 AND spark_pubkey = $2 AND spark_pubkey_verified_at IS NULL AND lower(trim(username)) = $3 RETURNING id`,
         [accountId, sparkPubkey, username, now],
       );
@@ -1458,8 +1459,15 @@ LIMIT $2`,
       await tx.query('DELETE FROM auth_session WHERE account_id = $1', [input.accountId]);
       await tx.query('DELETE FROM push_subscription WHERE account_id = $1', [input.accountId]);
       await tx.query(
-        'UPDATE account SET spark_pubkey = $2, spark_address = $3, wallet_required = TRUE WHERE id = $1',
-        [input.accountId, pending.newSparkPubkey, encodeSparkAddress(pending.newSparkPubkey)],
+        `UPDATE account SET spark_pubkey = $2, spark_address = $3, wallet_required = TRUE,
+           spark_pubkey_current_since = to_timestamp($4::double precision / 1000.0)
+         WHERE id = $1`,
+        [
+          input.accountId,
+          pending.newSparkPubkey,
+          encodeSparkAddress(pending.newSparkPubkey),
+          input.now,
+        ],
       );
       await tx.query(
         `UPDATE passkey_challenge SET consumed = true

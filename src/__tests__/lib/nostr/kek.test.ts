@@ -115,17 +115,32 @@ describe('parseKekId', () => {
     expect(parseKekId('NOSTR_NSEC_KEK_ID', '  ')).toBe(1);
   });
 
-  it('parses a positive integer up to 4294967295 after trimming', () => {
+  it('parses a positive integer up to 2147483647 (Postgres integer) after trimming', () => {
     expect(parseKekId('NOSTR_NSEC_KEK_ID', ' 2\n')).toBe(2);
-    expect(parseKekId('RECOVERY_SHARE_KEK_ID', '4294967295')).toBe(4_294_967_295);
+    expect(parseKekId('NOSTR_NSEC_KEK_ID', '2147483647')).toBe(2_147_483_647);
+    expect(parseKekId('RECOVERY_SHARE_KEK_ID', '2147483647')).toBe(2_147_483_647);
   });
 
   it('names the variable when the value is not a positive integer', () => {
-    for (const raw of ['0', '-1', '1.5', 'two', '02', '4294967296', '99999999999', '1e3']) {
+    for (const raw of [
+      '0',
+      '-1',
+      '1.5',
+      'two',
+      '02',
+      '2147483648',
+      '4294967295',
+      '4294967296',
+      '99999999999',
+      '1e3',
+    ]) {
       expect(() => parseKekId('RECOVERY_SHARE_KEK_ID', raw)).toThrow(
         'RECOVERY_SHARE_KEK_ID must be a positive integer',
       );
     }
+    expect(() => parseKekId('NOSTR_NSEC_KEK_ID', '2147483648')).toThrow(
+      'NOSTR_NSEC_KEK_ID must be a positive integer',
+    );
   });
 });
 
@@ -139,9 +154,10 @@ describe('bindKekId / kekIdOf', () => {
     expect(kekIdOf(kek.slice())).toBe(1);
   });
 
-  it('refuses an id that is not a positive uint32', () => {
+  it('refuses an id that is not a positive Postgres integer', () => {
     const kek = new Uint8Array(32);
-    for (const id of [0, -1, 1.5, 4_294_967_296, Number.NaN]) {
+    expect(bindKekId(new Uint8Array(32), 2_147_483_647)).toBeInstanceOf(Uint8Array);
+    for (const id of [0, -1, 1.5, 2_147_483_648, 4_294_967_296, Number.NaN]) {
       expect(() => bindKekId(kek, id)).toThrow('KEK id must be a positive integer');
     }
     expect(kekIdOf(kek)).toBe(1);

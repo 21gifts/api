@@ -102,16 +102,22 @@ export interface RetiredSparkViewer {
   retiredAt: Date;
 }
 
-/** One previous wallet the previous-wallet reader chooses a viewer for. */
+/** One wallet (previous or current) the reader chooses a viewer for. */
 export interface PreviousWalletTarget {
   sparkAddress: string;
   walletPubkey: string;
   /** When the wallet was replaced (`previous_wallet.replaced_at`), if known. */
   replacedAt?: Date | undefined;
+  /**
+   * `true` for a current wallet: the current viewer is probed first, then the
+   * retired viewers newest first, and a remembered retired viewer is replaced
+   * by the current one as soon as the current one returns data.
+   */
+  current?: boolean | undefined;
 }
 
 /**
- * Chooses the viewer a previous wallet granted ({@link previousWalletSparkViewer}).
+ * Chooses the viewer a wallet granted ({@link previousWalletSparkViewer}).
  * The Spark SDK does not throw for a viewer a wallet never granted (or
  * replaced): it reads a balance of 0 and empty pages. So "no error" never
  * means "granted"; only a viewer that returns data is chosen.
@@ -120,8 +126,18 @@ export interface PreviousWalletReader {
   /** `true` when KEK rotation kept at least one retired viewer. */
   readonly hasRetiredViewers: boolean;
   /**
+   * `retired_at` of the newest retired viewer; `undefined` without retired
+   * viewers. A current wallet is still read through the reader; when no
+   * viewer returns data and the wallet became current (verified or
+   * recovered) after this time, the worker stores its 0 read through the
+   * current viewer.
+   */
+  readonly newestRetiredAt?: Date | undefined;
+  /**
    * The viewer to read `wallet` with: the remembered one, else the first in
-   * the chain that returns data. Without retired viewers, the current one.
+   * the chain that returns data. For a current wallet that remembered a
+   * retired viewer, the current viewer once it returns data. Without retired
+   * viewers, the current one.
    *
    * @returns The viewer, or `null` when retired viewers exist and no viewer
    *   in the chain returned data.
@@ -136,12 +152,16 @@ export interface PreviousWalletReader {
 /** Viewer material retained only in process memory. */
 export interface SparkViewerKey {
   publicKey: string;
-  /** The current viewer: the only one used for current wallets. */
+  /** The current viewer; without retired viewers the only one the worker uses. */
   viewer: SparkViewer;
   /**
-   * Reader for previous wallets: chooses, per wallet, the retired viewer it
-   * granted or the current viewer ({@link previousWalletSparkViewer}). The
-   * same object as `viewer` when no retired viewer exists.
+   * Reader for every wallet while retired viewers exist: chooses, per wallet,
+   * the retired viewer it granted or the current viewer
+   * ({@link previousWalletSparkViewer}); current wallets probe the current
+   * viewer first. When no viewer returns data for a current wallet that
+   * became current after `newestRetiredAt`, the worker stores its 0 read
+   * through `viewer`. The same object as `viewer` when no retired viewer
+   * exists.
    */
   previousWalletViewer: SparkViewer | PreviousWalletReader;
 }
@@ -992,8 +1012,9 @@ export function sparkViewerRetiredKeyAad(identityPublicKey: string): Uint8Array 
  * a retired viewer (`spark_viewer_retired_key`: the same identity public key,
  * the mnemonic sealed under `kek` with {@link sparkViewerRetiredKeyAad}), and
  * replace the row in place with a freshly generated mnemonic sealed under
- * `kek`. Previous wallets cannot grant a new viewer, so the retired viewer
- * keeps them readable ({@link previousWalletSparkViewer}). Runs in one
+ * `kek`. Previous wallets cannot grant a new viewer, and current wallets grant
+ * it only when the member next opens the app, so the retired viewer keeps
+ * them readable ({@link previousWalletSparkViewer}). Runs in one
  * transaction under the viewer-key advisory lock, the lock
  * {@link ensureSparkViewer} holds; the UPDATE is conditional on the old id
  * and the retired row is written only when it succeeded, so concurrent boots
@@ -1076,7 +1097,7 @@ export async function rotateSparkViewerKey(
  * one entry each, counted before normalization).
  *
  * @param viewer - Viewer to probe.
- * @param wallet - Previous wallet.
+ * @param wallet - Wallet to probe.
  * @returns `true` on the first read that returns data.
  * @throws SDK errors of the probe reads.
  */
@@ -1097,23 +1118,31 @@ async function viewerHasData(viewer: SparkViewer, wallet: PreviousWalletTarget):
 }
 
 /**
- * Reader for previous wallets. A previous wallet cannot grant a new viewer,
- * so after a KEK rotation only the viewer it granted while it was current
- * can read it; the Spark SDK reads 0 and empty pages (no error) through any
- * other viewer. Per wallet it probes, in this order:
+ * Reader for every wallet while retired viewers exist. A previous wallet
+ * cannot grant a new viewer, so after a KEK rotation only the viewer it
+ * granted while it was current can read it; a current wallet grants the new
+ * viewer only when the member next opens the app. The Spark SDK reads 0 and
+ * empty pages (no error) through any viewer the wallet did not grant. For a
+ * previous wallet it probes, in this order:
  * 1. when `replacedAt` is known, the viewer that was current when the wallet
  *    was replaced: the oldest retired viewer retired after `replacedAt`, or
  *    the current viewer when none was;
  * 2. the other retired viewers, newest first;
  * 3. the current viewer.
+ * For a current wallet (`current: true`) it probes the current viewer first,
+ * then the retired viewers, newest first.
  * The first viewer that returns data (a balance above 0, a transfer, or a
  * token transaction) is chosen and remembered per Spark address. A probe
- * error counts as no data for that viewer. The worker uses it only for
- * previous wallets; current wallets keep the current viewer alone.
+ * error counts as no data for that viewer. While a current wallet is read
+ * through a remembered retired viewer, each read probes the current viewer
+ * first and switches to it once it returns data (the app granted it); a
+ * failed probe keeps the retired viewer.
  *
  * @param current - The current deployment viewer.
  * @param retired - Retired viewers with their retirement time, newest first.
- * @returns The reader. Without retired viewers it always chooses `current`.
+ * @returns The reader, with `newestRetiredAt` set to the `retiredAt` of
+ *   `retired[0]`. Without retired viewers it always chooses `current` and
+ *   `newestRetiredAt` is `undefined`.
  */
 export function previousWalletSparkViewer(
   current: SparkViewer,
@@ -1121,7 +1150,9 @@ export function previousWalletSparkViewer(
 ): PreviousWalletReader {
   const chain = [...retired.map((item) => item.viewer), current];
   const chosen = new Map<string, SparkViewer>();
-  const order = (replacedAt: Date | undefined): SparkViewer[] => {
+  const order = (wallet: PreviousWalletTarget): SparkViewer[] => {
+    if (wallet.current === true) return [current, ...retired.map((item) => item.viewer)];
+    const replacedAt = wallet.replacedAt;
     if (replacedAt === undefined) return chain;
     const after = retired.filter((item) => item.retiredAt.getTime() > replacedAt.getTime());
     const granted = after[after.length - 1]?.viewer ?? current;
@@ -1129,12 +1160,19 @@ export function previousWalletSparkViewer(
   };
   return {
     hasRetiredViewers: retired.length > 0,
+    newestRetiredAt: retired[0]?.retiredAt,
     async viewerFor(wallet) {
       if (retired.length === 0) return current;
       const remembered = chosen.get(wallet.sparkAddress);
-      if (remembered !== undefined) return remembered;
+      if (remembered !== undefined) {
+        if (wallet.current !== true || remembered === current) return remembered;
+        const granted = await viewerHasData(current, wallet).catch(() => false);
+        if (!granted) return remembered;
+        chosen.set(wallet.sparkAddress, current);
+        return current;
+      }
       const failures: unknown[] = [];
-      for (const viewer of order(wallet.replacedAt)) {
+      for (const viewer of order(wallet)) {
         try {
           if (await viewerHasData(viewer, wallet)) {
             chosen.set(wallet.sparkAddress, viewer);
@@ -1208,15 +1246,15 @@ async function retiredSparkViewers(sql: SqlClient, kek: Uint8Array): Promise<Ret
  * After the transaction, every retired viewer under the id of `kek`
  * (`spark_viewer_retired_key`, newest first) is opened and checked against
  * its identity public key. With at least one, `previousWalletViewer` is the
- * reader that chooses per previous wallet the viewer it granted
+ * reader that chooses per wallet (previous and current) the viewer it granted
  * ({@link previousWalletSparkViewer}); without any, it is the current viewer.
  * An ephemeral key has no retired viewer.
  *
  * @param sql - SQL client for durable custody, or undefined for an ephemeral key.
  * @param kek - `NOSTR_NSEC_KEK` bytes for durable custody.
  * @returns `{ publicKey, viewer, previousWalletViewer }`: the public
- *   identity, the current read-only viewer, and the reader for previous
- *   wallets (the same object as `viewer` without retired viewers).
+ *   identity, the current read-only viewer, and the reader for every wallet
+ *   (the same object as `viewer` without retired viewers).
  * @throws When key generation, encryption, decryption, derivation, or SDK
  *   creation fails, also for a retired viewer.
  */

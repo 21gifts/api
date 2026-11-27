@@ -109,8 +109,13 @@ export function parsePreviousNostrKek(
 /** KEK id of a key that was never given another one (the first key generation). */
 export const DEFAULT_KEK_ID = 1;
 
-/** Largest KEK id: the envelope stores it as an unsigned 32-bit integer. */
-const MAX_KEK_ID = 0xffff_ffff;
+/**
+ * Largest KEK id: 2147483647. The envelope stores the id as an unsigned
+ * 32-bit integer, but every `*_kek_id` column is a Postgres `integer`, which
+ * stops at 2147483647; a larger id would fail the first boot query with a
+ * raw SQL range error.
+ */
+const MAX_KEK_ID = 0x7fff_ffff;
 
 /**
  * Parse the KEK id an environment variable assigns to its key
@@ -120,7 +125,8 @@ const MAX_KEK_ID = 0xffff_ffff;
  * @param raw - Env string, or `undefined` when unset.
  * @returns {@link DEFAULT_KEK_ID} when unset or blank, else the positive integer.
  * @throws `<name> must be a positive integer` for anything that is not a
- *   decimal integer from 1 to 4294967295 (surrounding whitespace is trimmed).
+ *   decimal integer from 1 to 2147483647 (the Postgres `integer` maximum of
+ *   the `*_kek_id` columns; surrounding whitespace is trimmed).
  */
 export function parseKekId(name: string, raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') {
@@ -145,7 +151,7 @@ const KEK_IDS = new WeakMap<Uint8Array, number>();
  * @param kekId - Positive KEK id ({@link parseKekId}).
  * @returns `kek`, now bound to `kekId`.
  * @throws `KEK id must be a positive integer` for an id below 1, above
- *   4294967295, or not an integer.
+ *   2147483647, or not an integer.
  */
 export function bindKekId(kek: Uint8Array, kekId: number): Uint8Array {
   if (!Number.isInteger(kekId) || kekId < 1 || kekId > MAX_KEK_ID) {

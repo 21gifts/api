@@ -322,6 +322,7 @@ describe('previousWalletSparkViewer', () => {
     const current = sdkLikeViewer('current', new Map(), calls);
     const reader = previousWalletSparkViewer(current, []);
     expect(reader.hasRetiredViewers).toBe(false);
+    expect(reader.newestRetiredAt).toBeUndefined();
     await expect(reader.viewerFor(wallet('spark1empty'))).resolves.toBe(current);
     // Nothing is probed: the current viewer is the only one there is.
     expect(calls).toEqual([]);
@@ -341,6 +342,8 @@ describe('previousWalletSparkViewer', () => {
       { viewer: older, retiredAt: new Date('2026-10-01T00:00:00.000Z') },
     ]);
     expect(reader.hasRetiredViewers).toBe(true);
+    // The retirement time of the newest retired viewer (the list is newest first).
+    expect(reader.newestRetiredAt).toEqual(new Date('2026-11-20T00:00:00.000Z'));
     // The newer viewer answers 0 and empty pages without an error: not chosen.
     await expect(reader.viewerFor(wallet('spark1old'))).resolves.toBe(older);
     expect(calls).toEqual([
@@ -518,6 +521,152 @@ describe('previousWalletSparkViewer', () => {
       expect(
         calls.filter((call) => call.startsWith('current.') && call.endsWith('spark1old')),
       ).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('probes the current viewer first for a current wallet and switches to it once the app granted it', async () => {
+    const calls: string[] = [];
+    const grants = new Map<string, { balance: number; transfers: number; tokens: number }>();
+    const current = sdkLikeViewer('current', grants, calls);
+    const retired = sdkLikeViewer(
+      'retired',
+      new Map([
+        ['spark1member', { balance: 42, transfers: 0, tokens: 0 }],
+        ['spark1granted', { balance: 5, transfers: 0, tokens: 0 }],
+      ]),
+      calls,
+    );
+    grants.set('spark1granted', { balance: 5, transfers: 0, tokens: 0 });
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+    ]);
+    const member = { ...wallet('spark1member'), current: true };
+    // Not granted yet: the current viewer reads 0 and empty pages, the retired one has data.
+    await expect(reader.viewerFor(member)).resolves.toBe(retired);
+    expect(calls).toEqual([
+      'current.balance:spark1member',
+      'current.transfers:spark1member',
+      'current.tokens:spark1member',
+      'retired.balance:spark1member',
+    ]);
+    calls.length = 0;
+    // Remembered retired viewer: the current viewer is probed again first.
+    await expect(reader.viewerFor(member)).resolves.toBe(retired);
+    expect(calls).toEqual([
+      'current.balance:spark1member',
+      'current.transfers:spark1member',
+      'current.tokens:spark1member',
+    ]);
+    calls.length = 0;
+    // The app granted the new viewer: the reader switches and stops probing.
+    grants.set('spark1member', { balance: 42, transfers: 0, tokens: 0 });
+    await expect(reader.viewerFor(member)).resolves.toBe(current);
+    expect(calls).toEqual(['current.balance:spark1member']);
+    calls.length = 0;
+    await expect(reader.viewerFor(member)).resolves.toBe(current);
+    expect(calls).toEqual([]);
+    // A current wallet that already granted the new viewer never probes a retired one.
+    await expect(reader.viewerFor({ ...wallet('spark1granted'), current: true })).resolves.toBe(
+      current,
+    );
+    expect(calls).toEqual(['current.balance:spark1granted']);
+  });
+
+  it('keeps the remembered retired viewer of a current wallet when the current probe fails', async () => {
+    const calls: string[] = [];
+    let failing = false;
+    const empty = sdkLikeViewer('current', new Map(), calls);
+    const current: SparkViewer = {
+      ...empty,
+      balance: async (address) => {
+        if (failing) throw new Error('Spark viewer unavailable');
+        return empty.balance(address);
+      },
+    };
+    const retired = sdkLikeViewer(
+      'retired',
+      new Map([['spark1member', { balance: 0, transfers: 1, tokens: 0 }]]),
+      calls,
+    );
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+    ]);
+    const member = { ...wallet('spark1member'), current: true };
+    await expect(reader.viewerFor(member)).resolves.toBe(retired);
+    failing = true;
+    await expect(reader.viewerFor(member)).resolves.toBe(retired);
+  });
+
+  it('after a rotation, the worker reads a current wallet through its retired viewer until the app grants the new one', async () => {
+    const calls: string[] = [];
+    const current = sdkLikeViewer('current', new Map(), calls);
+    const retired = sdkLikeViewer(
+      'retired',
+      new Map([['spark1member', { balance: 42, transfers: 1, tokens: 0 }]]),
+      calls,
+    );
+    const balances: Array<[string, number]> = [];
+    const fullSyncs: string[] = [];
+    const wallets = [
+      { accountId: 'account', sparkPubkey: PUBLIC_KEY, sparkAddress: 'spark1member' },
+      // A current wallet no viewer has data for: nothing is written.
+      { accountId: 'other', sparkPubkey: `03${'08'.repeat(32)}`, sparkAddress: 'spark1empty' },
+    ];
+    const transfers: WalletTransferStore = {
+      listWallets: async () => wallets,
+      syncState: async () => ({
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: null,
+      }),
+      upsertTransfer: async () => ({
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      }),
+      upsertTokenTransaction: async () => undefined,
+      markFullSync: async (accountId) => {
+        fullSyncs.push(accountId);
+      },
+      shopPaymentSats: async () => 0,
+      hasShopPayment: async () => false,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const failed = await runWalletTransferTick({
+        viewer: current,
+        previousWalletViewer: previousWalletSparkViewer(current, [
+          { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+        ]),
+        transfers,
+        balances: {
+          recordBalance: async (row) => {
+            balances.push([row.accountId, row.balanceSats]);
+          },
+        },
+        auth: {
+          getAccount: async () => undefined,
+          hasRecoveryShareForVerifiedWallet: async () => false,
+        },
+        funding: { getByAccountId: async () => undefined },
+        ping: {
+          messageStore: {
+            latestLiveTopLevelMediaId: async () => null,
+            getById: async () => undefined,
+          },
+          authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+        },
+        now: () => Date.parse('2026-11-27T12:00:00.000Z'),
+      });
+      expect(balances).toEqual([['account', 42]]);
+      expect(fullSyncs).toEqual(['account']);
+      expect([...failed.keys()]).toEqual([`other\u000003${'08'.repeat(32)}`]);
+      // The current viewer was probed first for both wallets.
+      expect(calls[0]).toBe('current.balance:spark1member');
+      expect(calls).toContain('current.balance:spark1empty');
     } finally {
       warn.mockRestore();
     }
