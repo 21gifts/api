@@ -4,7 +4,12 @@ import type { SqlClient } from '@/lib/auth/sql';
 import { parsePreviousRecoveryShareKek, parseRecoveryShareKek } from '@/lib/auth/recovery-share';
 import type { AuthStore } from '@/lib/auth/store';
 import { rotateKeks } from '@/lib/kek-rotation';
-import { bindKekId, parseKekId, parseNostrKek } from '@/lib/nostr/kek';
+import { bindKekId, parseKekId, parseNostrKek, parsePreviousNostrKek } from '@/lib/nostr/kek';
+import {
+  migrateNostrRetiredKeySchema,
+  PostgresNostrRetiredKeyStore,
+  type NostrRetiredKeyStore,
+} from '@/lib/nostr/retired-key';
 import { forgetNostrAnnouncements } from '@/lib/nostr/worker';
 import { WebsocketNostrQuerier, type NostrQuerier } from '@/lib/nostr/query';
 import { resolveZapRelays } from '@/lib/nostr/relays';
@@ -125,7 +130,12 @@ import {
   PostgresShopIdentityStore,
   type ShopIdentityStore,
 } from '@/lib/shop-identity';
-import { ensureSparkViewer, migrateSparkViewerSchema, type SparkViewer } from '@/lib/spark-viewer';
+import {
+  ensureSparkViewer,
+  migrateSparkViewerSchema,
+  type PreviousWalletReader,
+  type SparkViewer,
+} from '@/lib/spark-viewer';
 import {
   PostgresWalletTransferStore,
   type ObservedCounterpartyStore,
@@ -270,6 +280,18 @@ export interface BootStores {
   welcomeInvoiceReservationStore: WelcomeInvoiceReservationStore | undefined;
   /** Read-only Spark viewer, ephemeral on memory boots. */
   sparkViewer: SparkViewer | undefined;
+  /**
+   * Reader for previous wallets: chooses per wallet the retired viewer KEK
+   * rotation kept or the current viewer, whichever returns data
+   * (`previousWalletSparkViewer`). The same object as `sparkViewer` on memory
+   * boots and when no viewer was retired.
+   */
+  previousWalletSparkViewer: SparkViewer | PreviousWalletReader | undefined;
+  /**
+   * Retired Nostr keys (`nostr_retired_key`) for NIP-09 deletions of notes
+   * signed before a KEK rotation, or `undefined` on memory boots.
+   */
+  nostrRetiredKeyStore: NostrRetiredKeyStore | undefined;
   /** Public identity key wallets grant to the deployment viewer. */
   walletViewerPublicKey: string | null;
   /**
@@ -406,10 +428,20 @@ export interface BootFxOptions {
  * merge references.
  * The KEKs carry the ids `NOSTR_NSEC_KEK_ID` and `RECOVERY_SHARE_KEK_ID`
  * (default 1, {@link parseKekId}, bound with {@link bindKekId});
- * `RECOVERY_SHARE_KEK_PREVIOUS` is optional ({@link parsePreviousRecoveryShareKek}).
+ * `RECOVERY_SHARE_KEK_PREVIOUS` is optional ({@link parsePreviousRecoveryShareKek}),
+ * and so is `NOSTR_NSEC_KEK_PREVIOUS` ({@link parsePreviousNostrKek}) until
+ * a Nostr key is stored under another id, when rotation requires it.
+ * `migrateNostrRetiredKeySchema` runs right after `migrateShopIdentitySchema`
+ * (`nostr_retired_key` and its cleanup triggers on `account` and
+ * `shop_identity`), and `migrateSparkViewerSchema` also creates
+ * `spark_viewer_retired_key`, both before `migrateDbChangeSchema`.
  * Right after `migrateDbChangeSchema` and before `ensureSparkViewer`,
- * {@link rotateKeks} renews everything stored under another KEK id and the
- * boot logs `kek.rotation.done` with its counts only. The worker of the new
+ * {@link rotateKeks} renews everything stored under another KEK id (keeping
+ * the old Nostr keys and the old viewer as retired keys) and the boot logs
+ * `kek.rotation.done` with its counts only. SQL boots return
+ * {@link PostgresNostrRetiredKeyStore} as `nostrRetiredKeyStore` and the
+ * viewer's `previousWalletViewer` as `previousWalletSparkViewer`; memory
+ * boots return `undefined` and the ephemeral viewer. The worker of the new
  * process starts with empty publish caches and announces every key, the
  * rotated ones included; once the shop store exists,
  * {@link forgetNostrAnnouncements} still drops the rotated ids, which is a
@@ -456,8 +488,10 @@ export interface BootFxOptions {
  *   path has a missing or malformed `NOSTR_NSEC_KEK` or `RECOVERY_SHARE_KEK`, or
  *   a `RECOVERY_SHARE_KEK` equal to `NOSTR_NSEC_KEK`, a KEK id that is not a
  *   positive integer, a malformed `RECOVERY_SHARE_KEK_PREVIOUS` or one equal
- *   to a current key, if KEK rotation fails (for example a previous recovery
- *   key that does not open a share), or if a migration or
+ *   to a current key, a malformed `NOSTR_NSEC_KEK_PREVIOUS` or one equal to
+ *   another KEK, if KEK rotation fails (for example a previous recovery key
+ *   that does not open a share, or Nostr keys under another id without a
+ *   `NOSTR_NSEC_KEK_PREVIOUS` that opens them), or if a migration or
  *   zap-payment backfill store operation fails.
  */
 export async function openBootStores(
@@ -517,6 +551,8 @@ export async function openBootStores(
       walletTransferStore: undefined,
       welcomeInvoiceReservationStore: undefined,
       sparkViewer: memoryViewer?.viewer,
+      previousWalletSparkViewer: memoryViewer?.previousWalletViewer,
+      nostrRetiredKeyStore: undefined,
       walletViewerPublicKey: memoryViewer?.publicKey ?? null,
       usageStore: undefined,
       memberEventStore: undefined,
@@ -538,6 +574,11 @@ export async function openBootStores(
     process.env['RECOVERY_SHARE_KEK_PREVIOUS'],
     { recoveryShareKek, nostrKek },
   );
+  const previousNostrKek = parsePreviousNostrKek(process.env['NOSTR_NSEC_KEK_PREVIOUS'], {
+    nostrKek,
+    recoveryShareKek,
+    previousRecoveryShareKek,
+  });
 
   await migrateBtcUsdSchema(sqlClient);
   await migrateFiatSchema(sqlClient);
@@ -545,6 +586,7 @@ export async function openBootStores(
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateShopIdentitySchema(sqlClient);
+  await migrateNostrRetiredKeySchema(sqlClient);
   await migrateContactSchema(sqlClient);
   const habitSql = {
     query: async (text: string, params?: unknown[]) => ({
@@ -590,6 +632,7 @@ export async function openBootStores(
   await migrateDbChangeSchema(sqlClient);
   const rotation = await rotateKeks(sqlClient, {
     nostrKek,
+    previousNostrKek,
     recoveryShareKek,
     previousRecoveryShareKek,
   });
@@ -597,6 +640,7 @@ export async function openBootStores(
     accounts: rotation.accounts,
     shops: rotation.shops,
     sparkViewer: rotation.sparkViewer,
+    retiredKeys: rotation.retiredKeys,
     recoveryShares: rotation.recoveryShares,
     recoverySharesPending: rotation.recoverySharesPending,
   });
@@ -838,6 +882,8 @@ export async function openBootStores(
     walletTransferStore: new PostgresWalletTransferStore(sqlClient),
     welcomeInvoiceReservationStore: new PostgresWelcomeInvoiceReservationStore(sqlClient),
     sparkViewer: sparkViewerKey.viewer,
+    previousWalletSparkViewer: sparkViewerKey.previousWalletViewer,
+    nostrRetiredKeyStore: new PostgresNostrRetiredKeyStore(sqlClient),
     walletViewerPublicKey: sparkViewerKey.publicKey,
     usageStore: new PostgresWalletUsageStore(sqlClient),
     memberEventStore: new PostgresMemberEventStore(sqlClient),

@@ -1265,6 +1265,7 @@ describe('mergeAccounts', () => {
       'DELETE FROM pending_recovery WHERE account_id = $1',
       'DELETE FROM previous_wallet WHERE account_id = $1',
       "DELETE FROM passkey_challenge WHERE account_id = $1 AND type = 'recovery'",
+      "DELETE FROM nostr_retired_key WHERE owner_type = 'account' AND owner_id = $1::text",
     ].map((text) => queries.findIndex((query) => query.text === text));
     const challengeMove = queries.findIndex(
       (query) =>

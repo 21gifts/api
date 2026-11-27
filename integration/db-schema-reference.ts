@@ -1278,8 +1278,8 @@ export async function generate(adminUrl: string): Promise<Map<string, string>> {
     // Boot requires both KEKs (exactly 64 lowercase hex characters, parseKekHex)
     // whenever a database is set. The scratch database holds no secrets, so
     // fixed throwaway values are fine. The KEK ids are pinned to the default
-    // `1` and the previous recovery key is unset, so no host value (a rotation
-    // in progress, a malformed id) reaches the scratch boot.
+    // `1` and both previous keys are unset, so no host value (a rotation in
+    // progress, a malformed id) reaches the scratch boot.
     const previousKek = process.env['NOSTR_NSEC_KEK'];
     if (previousKek === undefined || previousKek.trim() === '') {
       process.env['NOSTR_NSEC_KEK'] = SCRATCH_NOSTR_KEK;
@@ -1288,10 +1288,16 @@ export async function generate(adminUrl: string): Promise<Map<string, string>> {
     if (previousRecoveryKek === undefined || previousRecoveryKek.trim() === '') {
       process.env['RECOVERY_SHARE_KEK'] = SCRATCH_RECOVERY_SHARE_KEK;
     }
-    const pinned = ['NOSTR_NSEC_KEK_ID', 'RECOVERY_SHARE_KEK_ID', 'RECOVERY_SHARE_KEK_PREVIOUS'];
+    const pinned = [
+      'NOSTR_NSEC_KEK_ID',
+      'NOSTR_NSEC_KEK_PREVIOUS',
+      'RECOVERY_SHARE_KEK_ID',
+      'RECOVERY_SHARE_KEK_PREVIOUS',
+    ];
     const previousPinned = new Map(pinned.map((name) => [name, process.env[name]] as const));
     process.env['NOSTR_NSEC_KEK_ID'] = '1';
     process.env['RECOVERY_SHARE_KEK_ID'] = '1';
+    delete process.env['NOSTR_NSEC_KEK_PREVIOUS'];
     delete process.env['RECOVERY_SHARE_KEK_PREVIOUS'];
     try {
       const sources = await sourceFiles(REPO_ROOT);

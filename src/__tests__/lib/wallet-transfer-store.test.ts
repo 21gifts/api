@@ -571,7 +571,23 @@ describe('PostgresWalletTransferStore', () => {
   it('lists wallets, maps sync state, and runs the one-statement shop query', async () => {
     const query = vi.fn(async (text: string) => {
       if (text.includes('UNION ALL')) {
-        return [{ accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address' }];
+        expect(text).toContain('replaced_at AS "replacedAt"');
+        return [
+          {
+            accountId: 'account',
+            sparkPubkey: OWNER,
+            sparkAddress: 'spark1address',
+            previous: false,
+            replacedAt: null,
+          },
+          {
+            accountId: 'account',
+            sparkPubkey: SHOP,
+            sparkAddress: 'spark1previous',
+            previous: true,
+            replacedAt: '2026-11-10T08:00:00.000Z',
+          },
+        ];
       }
       if (text.includes('max(transfer_created_at)')) {
         return [
@@ -590,7 +606,16 @@ describe('PostgresWalletTransferStore', () => {
     });
     const sql = { query, execute: vi.fn(async () => undefined) } as unknown as SqlClient;
     const store = new PostgresWalletTransferStore(sql);
-    await expect(store.listWallets()).resolves.toHaveLength(1);
+    await expect(store.listWallets()).resolves.toEqual([
+      { accountId: 'account', sparkPubkey: OWNER, sparkAddress: 'spark1address', previous: false },
+      {
+        accountId: 'account',
+        sparkPubkey: SHOP,
+        sparkAddress: 'spark1previous',
+        previous: true,
+        replacedAt: new Date('2026-11-10T08:00:00.000Z'),
+      },
+    ]);
     await expect(store.syncState('account', OWNER)).resolves.toEqual({
       newestCreatedAt: new Date('2026-11-12T08:00:00.000Z'),
       oldestPendingCreatedAt: new Date('2026-11-12T07:00:00.000Z'),

@@ -4,7 +4,8 @@ CREATE TABLE spark_viewer_key (
     CHECK (viewer_identity_public_key ~ '^0[23][0-9a-f]{64}$'),
   viewer_mnemonic_ciphertext bytea NOT NULL,
   -- NOSTR_NSEC_KEK_ID the mnemonic is sealed under; KEK rotation replaces a
-  -- row under another id with a fresh mnemonic (rotateSparkViewerKey).
+  -- row under another id with a fresh mnemonic and keeps the old one in
+  -- spark_viewer_retired_key (rotateSparkViewerKey).
   viewer_kek_id integer NOT NULL CHECK (viewer_kek_id >= 1),
   created_at timestamptz NOT NULL
 );

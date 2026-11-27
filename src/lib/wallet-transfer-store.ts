@@ -31,6 +31,19 @@ export interface WalletTransferWallet {
   accountId: string;
   sparkPubkey: string;
   sparkAddress: string;
+  /**
+   * `true` for a previous wallet (`previous_wallet`). The worker reads it
+   * with the viewer the previous-wallet reader chooses (the retired viewers
+   * KEK rotation kept, then the current one); a current wallet uses the
+   * current viewer only.
+   */
+  previous?: boolean;
+  /**
+   * When a previous wallet was replaced (`previous_wallet.replaced_at`). The
+   * previous-wallet reader tries the viewer that was current at that time
+   * first. Absent on current wallets.
+   */
+  replacedAt?: Date;
 }
 
 /** One normalized operator transfer observation. */
@@ -724,15 +737,23 @@ export class PostgresWalletTransferStore
   constructor(private readonly sql: SqlClient) {}
 
   async listWallets(): Promise<WalletTransferWallet[]> {
-    return this.sql.query<WalletTransferWallet>(
-      `SELECT id::text AS "accountId", spark_pubkey AS "sparkPubkey", spark_address AS "sparkAddress"
+    const rows = await this.sql.query<
+      Omit<WalletTransferWallet, 'replacedAt'> & { replacedAt: Date | string | null }
+    >(
+      `SELECT id::text AS "accountId", spark_pubkey AS "sparkPubkey", spark_address AS "sparkAddress",
+              false AS previous, NULL::timestamptz AS "replacedAt"
        FROM account
        WHERE spark_address IS NOT NULL AND spark_pubkey_verified_at IS NOT NULL
        UNION ALL
-       SELECT account_id::text AS "accountId", spark_pubkey AS "sparkPubkey", spark_address AS "sparkAddress"
+       SELECT account_id::text AS "accountId", spark_pubkey AS "sparkPubkey", spark_address AS "sparkAddress",
+              true AS previous, replaced_at AS "replacedAt"
        FROM previous_wallet
        ORDER BY "accountId", "sparkPubkey"`,
     );
+    return rows.map(({ replacedAt, ...wallet }) => {
+      const at = sqlDate(replacedAt);
+      return at === null ? wallet : { ...wallet, replacedAt: at };
+    });
   }
 
   async syncState(accountId: string, walletPubkey: string): Promise<WalletTransferSyncState> {

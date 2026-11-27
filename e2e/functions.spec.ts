@@ -2340,6 +2340,38 @@ test('Function: rotateShopIdentityKey — default boot has no DATABASE_URL', asy
 test('Function: rotateSparkViewerKey — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: parsePreviousNostrKek — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: migrateNostrRetiredKeySchema — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: nostrRetiredKeyAad — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: PostgresNostrRetiredKeyStore — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: signDeletionForAccount — a staff delete without a session is refused before any deletion is signed', async ({
+  request,
+}) => {
+  const response = await request.delete('/messages/00000000-0000-4000-8000-000000000001');
+  expect(response.status()).toBe(401);
+});
+test('Function: sparkViewerRetiredKeyAad — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: previousWalletSparkViewer — default boot has no retired viewer', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: forgetNostrAnnouncements — default boot has no DATABASE_URL', async ({
   request,
 }) => {

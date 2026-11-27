@@ -210,6 +210,8 @@ if (import.meta.main) {
     walletTransferStore,
     welcomeInvoiceReservationStore,
     sparkViewer,
+    previousWalletSparkViewer,
+    nostrRetiredKeyStore,
     walletViewerPublicKey,
     usageStore,
     memberEventStore,
@@ -293,6 +295,7 @@ if (import.meta.main) {
       ? undefined
       : startWalletTransferWorker({
           viewer: sparkViewer,
+          previousWalletViewer: previousWalletSparkViewer,
           transfers: walletTransferStore,
           balances: walletStore,
           auth: authStore,
@@ -339,6 +342,7 @@ if (import.meta.main) {
       : { nostrKek }),
     ...(recoveryShareKek === undefined ? {} : { recoveryShareKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
+    nostrRetiredKeys: nostrRetiredKeyStore,
     nostrQuerier: querier,
     nostrRelayUrls: resolveZapRelays(process.env),
     ...(contactStore === undefined ? {} : { contactStore }),

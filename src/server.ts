@@ -144,6 +144,7 @@ import { requestLog, setAddressRefKey, setDiagnosticSink } from '@/lib/log';
 import { sundayRest } from '@/lib/sunday-rest';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { NostrPublisher } from '@/lib/nostr/publish';
+import type { NostrRetiredKeyStore } from '@/lib/nostr/retired-key';
 import type { NostrQuerier } from '@/lib/nostr/query';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { InMemoryFondPayoutStore, type FondPayoutStore } from '@/lib/fond-payout-store';
@@ -385,6 +386,12 @@ export interface AppDeps {
    * publishes NIP-09 kind:5. Memory/unit boots may omit.
    */
   nostrPublisher?: NostrPublisher;
+  /**
+   * Retired Nostr keys KEK rotation kept (`nostr_retired_key`), used only to
+   * sign the NIP-09 deletion of a note signed before the rotation. SQL boots
+   * pass `PostgresNostrRetiredKeyStore`; omitted → current key only.
+   */
+  nostrRetiredKeys?: NostrRetiredKeyStore | undefined;
   /**
    * Kind:0 querier for `GET /messages/:id/external-profile`. Omitted →
    * that route returns the stored name and npub and does not open a relay.
@@ -1164,6 +1171,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
+      nostrRetiredKeys: deps.nostrRetiredKeys,
       ...(deps.nostrQuerier === undefined ? {} : { nostrQuerier: deps.nostrQuerier }),
       ...(deps.nostrRelayUrls === undefined ? {} : { nostrRelayUrls: deps.nostrRelayUrls }),
       ...(spendPing === undefined ? {} : { spendPing }),

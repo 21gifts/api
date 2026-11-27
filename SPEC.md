@@ -37,23 +37,53 @@ boot.
 **KEK ids and KEK rotation.** `NOSTR_NSEC_KEK_ID` and `RECOVERY_SHARE_KEK_ID`
 (optional positive integers, default `1`) are the KEK ids the two keys carry;
 every new envelope and `*_kek_id` column records the id of the key that sealed
-it, and a key only ever opens envelopes under its own id. The one exception is
-the previous recovery key: it carries no id and, only during KEK rotation,
-opens recovery shares under any id other than `RECOVERY_SHARE_KEK_ID`.
-`RECOVERY_SHARE_KEK_PREVIOUS` (optional, 64 lowercase hex) is that previous
-recovery key; it must differ from
-both current keys. A KEK id that is not a positive integer, or a malformed or
-equal previous key, throws at boot. There is no previous Nostr key. **A new key
+it, and a key only ever opens envelopes under its own id. The exceptions are
+the two previous keys: they carry no id and, only during KEK rotation, open
+envelopes under any id other than the current one.
+`RECOVERY_SHARE_KEK_PREVIOUS` (optional, 64 lowercase hex) is the previous
+recovery key; it must differ from both current keys.
+`NOSTR_NSEC_KEK_PREVIOUS` (optional, 64 lowercase hex, secret, never logged) is
+the previous Nostr key; it must differ from `NOSTR_NSEC_KEK`,
+`RECOVERY_SHARE_KEK` and `RECOVERY_SHARE_KEK_PREVIOUS`, and it is required as
+soon as a member key, shop key, the Spark viewer key or a retired key is stored
+under another `NOSTR_NSEC_KEK_ID`: without it the boot stops with the count. A
+KEK id that is not a positive integer, or a malformed or equal previous key,
+throws at boot. **A new key
 value always needs a new id:** before it changes anything, the SQL boot opens one
 envelope stored under the current `NOSTR_NSEC_KEK_ID` (a member key, else a shop
-key, else the Spark viewer key) with `NOSTR_NSEC_KEK`, and one recovery share
+key, else the Spark viewer key, else a retired key, else a retired viewer) with
+`NOSTR_NSEC_KEK`, and one recovery share
 under the current `RECOVERY_SHARE_KEK_ID` with `RECOVERY_SHARE_KEK`; when it does
 not open, the boot stops with an error that names the variable and the id (never
 a key). With no row under an id there is nothing to check. After every
 migration and before any worker, the SQL boot rotates everything stored under
-another id: each member and shop Nostr key and the Spark viewer key is replaced
-by a fresh one under the current Nostr key (the old secret is never decrypted),
-and each recovery share is opened with `RECOVERY_SHARE_KEK_PREVIOUS` and sealed
+another id: every such Nostr envelope is first opened with
+`NOSTR_NSEC_KEK_PREVIOUS` in a read-only pass (one that does not open stops the
+boot with the count, nothing written); then each member and shop Nostr key and
+the Spark viewer key is replaced by a fresh one under the current Nostr key, and
+the old one is kept as a retired key sealed under the current key
+(`nostr_retired_key`, additional data bound to owner type, owner id and pubkey;
+`spark_viewer_retired_key`, bound to the identity public key). A retired Nostr
+key signs only the NIP-09 kind 5 deletion of an event it signed: a delete or
+staff hide signs each deletion with the key whose pubkey is the stored event's,
+and when none matches it publishes nothing for that note and logs
+`messages.delete.nostr_key_missing` with the count only. A retired viewer only
+reads previous wallets, which cannot grant the new viewer. Spark returns a
+balance of 0 and empty pages, not an error, through a viewer a wallet never
+granted, so a viewer counts only when it returns data (a balance above 0, a
+transfer, or a token transaction). For each previous wallet the worker tries
+first the viewer that was current when the wallet was replaced (by
+`previous_wallet.replaced_at` and each retired viewer's `retired_at`), then the
+other retired viewers, newest first, then the current viewer, and remembers the
+first one with data. When retired viewers exist and none returns data, the
+worker stores no balance and no full-sync mark for that wallet and logs
+`wallet_transfer.failed` (reason `PreviousWalletUnreadable`); a full scan that
+returns nothing through the remembered viewer forgets it and fails the same way.
+Current wallets use the current viewer only. Retired
+keys of an earlier rotation are sealed again under the current key. Retired
+pubkeys never attribute inbound events and are never returned or logged.
+Deleting an account or a shop identity, or merging an account away, deletes its
+retired keys. Each recovery share is opened with `RECOVERY_SHARE_KEK_PREVIOUS` and sealed
 again under the current recovery key with the same account id as additional
 data. Without the previous key the shares stay as they are and
 `kek.rotation.recovery_share.pending` logs their count; every share under another

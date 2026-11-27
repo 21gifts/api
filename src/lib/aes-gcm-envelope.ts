@@ -4,10 +4,11 @@
  *
  * Layout: `version(1) || kek_id uint32 BE || nonce(12) || ciphertext+tag(16)`.
  * The key is imported non-extractable for `encrypt` only in
- * {@link sealAesGcmEnvelope}. {@link openAesGcmEnvelope} exists only for KEK
- * rotation (`rotateKeks`): it opens recovery shares with the previous key and
- * one sample envelope per current key at boot; the Nostr secret and the Spark
- * viewer mnemonic keep their own open paths for use.
+ * {@link sealAesGcmEnvelope}. {@link openAesGcmEnvelope} serves KEK rotation
+ * (`rotateKeks`: recovery shares, Nostr keys and viewer mnemonics under the
+ * previous key, and one sample envelope per current key at boot) and the
+ * load of retired Spark viewers; the current Nostr secret and the current
+ * Spark viewer mnemonic keep their own open paths for use.
  */
 
 /** Envelope version byte of the v1 layout. */

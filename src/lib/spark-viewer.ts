@@ -7,7 +7,7 @@ import {
 } from '@buildonspark/spark-sdk';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { sealAesGcmEnvelope } from '@/lib/aes-gcm-envelope';
+import { openAesGcmEnvelope, sealAesGcmEnvelope } from '@/lib/aes-gcm-envelope';
 import type { SqlClient } from '@/lib/auth/sql';
 import { NOSTR_ENVELOPE_VERSION, zeroizeSecret } from '@/lib/nostr/keys';
 import { bytesToHex, kekIdOf } from '@/lib/nostr/kek';
@@ -95,15 +95,62 @@ export interface SparkViewer {
   balance(sparkAddress: string): Promise<number>;
 }
 
-/** Viewer material retained only in process memory. */
-export interface SparkViewerKey {
-  publicKey: string;
+/** A retired viewer KEK rotation kept, and when it was retired. */
+export interface RetiredSparkViewer {
   viewer: SparkViewer;
+  /** `spark_viewer_retired_key.retired_at`. */
+  retiredAt: Date;
+}
+
+/** One previous wallet the previous-wallet reader chooses a viewer for. */
+export interface PreviousWalletTarget {
+  sparkAddress: string;
+  walletPubkey: string;
+  /** When the wallet was replaced (`previous_wallet.replaced_at`), if known. */
+  replacedAt?: Date | undefined;
 }
 
 /**
- * Idempotent DDL for the one encrypted deployment viewer key. The last step
- * replaces an older `viewer_kek_id` CHECK (`= 1`) with
+ * Chooses the viewer a previous wallet granted ({@link previousWalletSparkViewer}).
+ * The Spark SDK does not throw for a viewer a wallet never granted (or
+ * replaced): it reads a balance of 0 and empty pages. So "no error" never
+ * means "granted"; only a viewer that returns data is chosen.
+ */
+export interface PreviousWalletReader {
+  /** `true` when KEK rotation kept at least one retired viewer. */
+  readonly hasRetiredViewers: boolean;
+  /**
+   * The viewer to read `wallet` with: the remembered one, else the first in
+   * the chain that returns data. Without retired viewers, the current one.
+   *
+   * @returns The viewer, or `null` when retired viewers exist and no viewer
+   *   in the chain returned data.
+   * @throws The error of the first viewer that failed, when no viewer
+   *   returned data and at least one failed.
+   */
+  viewerFor(wallet: PreviousWalletTarget): Promise<SparkViewer | null>;
+  /** Drop the remembered viewer of `sparkAddress`; the next read probes the chain again. */
+  forget(sparkAddress: string): void;
+}
+
+/** Viewer material retained only in process memory. */
+export interface SparkViewerKey {
+  publicKey: string;
+  /** The current viewer: the only one used for current wallets. */
+  viewer: SparkViewer;
+  /**
+   * Reader for previous wallets: chooses, per wallet, the retired viewer it
+   * granted or the current viewer ({@link previousWalletSparkViewer}). The
+   * same object as `viewer` when no retired viewer exists.
+   */
+  previousWalletViewer: SparkViewer | PreviousWalletReader;
+}
+
+/**
+ * Idempotent DDL for the one encrypted deployment viewer key and the retired
+ * viewer keys KEK rotation keeps (`spark_viewer_retired_key`, matches
+ * `docs/schema/spark_viewer_retired_key.sql`). The third step replaces an
+ * older `viewer_kek_id` CHECK (`= 1`) with
  * `spark_viewer_key_viewer_kek_id_check` (`>= 1`) so KEK rotation can store
  * another id; it changes nothing on a database that already has it.
  */
@@ -166,6 +213,12 @@ BEGIN
   END IF;
 END;
 $spark_viewer_kek_id$`,
+  `CREATE TABLE IF NOT EXISTS spark_viewer_retired_key (
+  identity_public_key text PRIMARY KEY CHECK (identity_public_key ~ '^0[23][0-9a-f]{64}$'),
+  mnemonic_ciphertext bytea NOT NULL,
+  kek_id integer NOT NULL CHECK (kek_id >= 1),
+  retired_at timestamptz NOT NULL DEFAULT now()
+)`,
 ];
 
 /**
@@ -922,51 +975,226 @@ async function freshViewerRow(kek: Uint8Array): Promise<ViewerKeyRow> {
 }
 
 /**
+ * AES-GCM additional data of a retired viewer mnemonic: it binds the
+ * envelope to the viewer's identity public key, so it never opens as the
+ * current viewer (`spark_viewer_key`) nor as another retired viewer.
+ *
+ * @param identityPublicKey - 66 hex identity public key of the retired viewer.
+ * @returns `spark_viewer_retired_key:<identityPublicKey>` as UTF-8 bytes.
+ */
+export function sparkViewerRetiredKeyAad(identityPublicKey: string): Uint8Array {
+  return new TextEncoder().encode(`spark_viewer_retired_key:${identityPublicKey}`);
+}
+
+/**
  * KEK rotation of the deployment viewer key: when the stored row is under
- * another KEK id than `kek`, replace it in place with a freshly generated
- * mnemonic sealed under `kek` (the old mnemonic is never decrypted). Runs in
- * one transaction under the viewer-key advisory lock, the lock
- * {@link ensureSparkViewer} holds, and the UPDATE is conditional on the old
- * id, so concurrent boots replace it once. Wallets then see the new
+ * another KEK id than `kek`, open its mnemonic with `previousKek`, keep it as
+ * a retired viewer (`spark_viewer_retired_key`: the same identity public key,
+ * the mnemonic sealed under `kek` with {@link sparkViewerRetiredKeyAad}), and
+ * replace the row in place with a freshly generated mnemonic sealed under
+ * `kek`. Previous wallets cannot grant a new viewer, so the retired viewer
+ * keeps them readable ({@link previousWalletSparkViewer}). Runs in one
+ * transaction under the viewer-key advisory lock, the lock
+ * {@link ensureSparkViewer} holds; the UPDATE is conditional on the old id
+ * and the retired row is written only when it succeeded, so concurrent boots
+ * replace it once. The opened mnemonic is zeroed. Wallets then see the new
  * `walletViewerPublicKey` in `GET /me` and grant it.
  *
  * @param sql - SQL client with transactions.
  * @param kek - Current `NOSTR_NSEC_KEK` (bound to `NOSTR_NSEC_KEK_ID`).
- * @returns `true` when the row was replaced, `false` when there is no row or
- *   it is already under the id of `kek`.
+ * @param previousKek - `NOSTR_NSEC_KEK_PREVIOUS`, or `undefined` when unset.
+ * @returns `true` when the row was replaced, `false` when there is no row,
+ *   it is already under the id of `kek`, or another boot replaced it first.
  * @throws Error('Spark viewer key custody is unavailable') without
- *   transactions; key generation, sealing, or SQL errors.
+ *   transactions; Error('NOSTR_NSEC_KEK_PREVIOUS is required to retire the
+ *   Spark viewer key') when the row is under another id and `previousKek` is
+ *   unset; the Web Crypto error when `previousKek` does not open it (nothing
+ *   is written); key generation, sealing, or SQL errors.
  */
-export async function rotateSparkViewerKey(sql: SqlClient, kek: Uint8Array): Promise<boolean> {
+export async function rotateSparkViewerKey(
+  sql: SqlClient,
+  kek: Uint8Array,
+  previousKek: Uint8Array | undefined,
+): Promise<boolean> {
   if (sql.transaction === undefined) {
     throw new Error('Spark viewer key custody is unavailable');
   }
   return sql.transaction(async (tx) => {
     await tx.query('SELECT pg_advisory_xact_lock($1)', [SPARK_VIEWER_KEY_LOCK]);
     const stored = (
-      await tx.query<{ viewer_kek_id: number }>(
-        'SELECT viewer_kek_id FROM spark_viewer_key WHERE singleton = true',
+      await tx.query<ViewerKeyRow>(
+        `SELECT viewer_identity_public_key, viewer_mnemonic_ciphertext, viewer_kek_id
+         FROM spark_viewer_key WHERE singleton = true`,
       )
     )[0];
     if (stored === undefined || Number(stored.viewer_kek_id) === kekIdOf(kek)) {
       return false;
     }
-    const row = await freshViewerRow(kek);
-    const updated = await tx.query<{ singleton: boolean }>(
-      `UPDATE spark_viewer_key
-       SET viewer_identity_public_key = $1, viewer_mnemonic_ciphertext = $2,
-           viewer_kek_id = $3, created_at = now()
-       WHERE singleton = true AND viewer_kek_id = $4
-       RETURNING singleton`,
-      [
-        row.viewer_identity_public_key,
-        row.viewer_mnemonic_ciphertext,
-        row.viewer_kek_id,
-        Number(stored.viewer_kek_id),
-      ],
+    if (previousKek === undefined) {
+      throw new Error('NOSTR_NSEC_KEK_PREVIOUS is required to retire the Spark viewer key');
+    }
+    const old = await openAesGcmEnvelope(
+      new Uint8Array(stored.viewer_mnemonic_ciphertext),
+      previousKek,
+      VIEWER_AAD,
     );
-    return updated.length > 0;
+    try {
+      const row = await freshViewerRow(kek);
+      const updated = await tx.query<{ singleton: boolean }>(
+        `UPDATE spark_viewer_key
+         SET viewer_identity_public_key = $1, viewer_mnemonic_ciphertext = $2,
+             viewer_kek_id = $3, created_at = now()
+         WHERE singleton = true AND viewer_kek_id = $4
+         RETURNING singleton`,
+        [
+          row.viewer_identity_public_key,
+          row.viewer_mnemonic_ciphertext,
+          row.viewer_kek_id,
+          Number(stored.viewer_kek_id),
+        ],
+      );
+      if (updated.length === 0) return false;
+      const identity = stored.viewer_identity_public_key;
+      const kekId = kekIdOf(kek);
+      const retired = await sealAesGcmEnvelope(old, kek, sparkViewerRetiredKeyAad(identity), kekId);
+      await tx.execute(
+        `INSERT INTO spark_viewer_retired_key (identity_public_key, mnemonic_ciphertext, kek_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (identity_public_key) DO NOTHING`,
+        [identity, retired, kekId],
+      );
+      return true;
+    } finally {
+      zeroizeSecret(old);
+    }
   });
+}
+
+/**
+ * Whether `viewer` returns any data for `wallet`: a balance above 0, at least
+ * one transfer, or at least one token transaction (first unfiltered page of
+ * one entry each, counted before normalization).
+ *
+ * @param viewer - Viewer to probe.
+ * @param wallet - Previous wallet.
+ * @returns `true` on the first read that returns data.
+ * @throws SDK errors of the probe reads.
+ */
+async function viewerHasData(viewer: SparkViewer, wallet: PreviousWalletTarget): Promise<boolean> {
+  if ((await viewer.balance(wallet.sparkAddress)) > 0) return true;
+  const transfers = await viewer.transfers({
+    sparkAddress: wallet.sparkAddress,
+    limit: 1,
+    offset: 0,
+  });
+  if (transfers.rawCount > 0) return true;
+  const tokens = await viewer.tokenTransactions({
+    sparkAddress: wallet.sparkAddress,
+    walletPubkey: wallet.walletPubkey,
+    pageSize: 1,
+  });
+  return tokens.rawCount > 0;
+}
+
+/**
+ * Reader for previous wallets. A previous wallet cannot grant a new viewer,
+ * so after a KEK rotation only the viewer it granted while it was current
+ * can read it; the Spark SDK reads 0 and empty pages (no error) through any
+ * other viewer. Per wallet it probes, in this order:
+ * 1. when `replacedAt` is known, the viewer that was current when the wallet
+ *    was replaced: the oldest retired viewer retired after `replacedAt`, or
+ *    the current viewer when none was;
+ * 2. the other retired viewers, newest first;
+ * 3. the current viewer.
+ * The first viewer that returns data (a balance above 0, a transfer, or a
+ * token transaction) is chosen and remembered per Spark address. A probe
+ * error counts as no data for that viewer. The worker uses it only for
+ * previous wallets; current wallets keep the current viewer alone.
+ *
+ * @param current - The current deployment viewer.
+ * @param retired - Retired viewers with their retirement time, newest first.
+ * @returns The reader. Without retired viewers it always chooses `current`.
+ */
+export function previousWalletSparkViewer(
+  current: SparkViewer,
+  retired: readonly RetiredSparkViewer[],
+): PreviousWalletReader {
+  const chain = [...retired.map((item) => item.viewer), current];
+  const chosen = new Map<string, SparkViewer>();
+  const order = (replacedAt: Date | undefined): SparkViewer[] => {
+    if (replacedAt === undefined) return chain;
+    const after = retired.filter((item) => item.retiredAt.getTime() > replacedAt.getTime());
+    const granted = after[after.length - 1]?.viewer ?? current;
+    return [granted, ...chain.filter((viewer) => viewer !== granted)];
+  };
+  return {
+    hasRetiredViewers: retired.length > 0,
+    async viewerFor(wallet) {
+      if (retired.length === 0) return current;
+      const remembered = chosen.get(wallet.sparkAddress);
+      if (remembered !== undefined) return remembered;
+      const failures: unknown[] = [];
+      for (const viewer of order(wallet.replacedAt)) {
+        try {
+          if (await viewerHasData(viewer, wallet)) {
+            chosen.set(wallet.sparkAddress, viewer);
+            return viewer;
+          }
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length > 0) throw failures[0];
+      return null;
+    },
+    forget(sparkAddress) {
+      chosen.delete(sparkAddress);
+    },
+  };
+}
+
+/**
+ * Open every retired viewer under the KEK id of `kek`, newest first. Each
+ * mnemonic must derive the identity public key it is stored under; the
+ * plaintext bytes are zeroed.
+ *
+ * @param sql - SQL client.
+ * @param kek - Current `NOSTR_NSEC_KEK`.
+ * @returns Read-only viewers with their retirement time, newest retired first.
+ * @throws When an envelope does not open or a mnemonic derives another key.
+ */
+async function retiredSparkViewers(sql: SqlClient, kek: Uint8Array): Promise<RetiredSparkViewer[]> {
+  const rows = await sql.query<{
+    identity_public_key: string;
+    mnemonic_ciphertext: Uint8Array;
+    retired_at: Date | string;
+  }>(
+    `SELECT identity_public_key, mnemonic_ciphertext, retired_at FROM spark_viewer_retired_key
+     WHERE kek_id = $1
+     ORDER BY retired_at DESC, identity_public_key`,
+    [kekIdOf(kek)],
+  );
+  const viewers: RetiredSparkViewer[] = [];
+  for (const row of rows) {
+    const plain = await openAesGcmEnvelope(
+      new Uint8Array(row.mnemonic_ciphertext),
+      kek,
+      sparkViewerRetiredKeyAad(row.identity_public_key),
+    );
+    try {
+      const mnemonic = new TextDecoder().decode(plain);
+      if ((await publicKeyFromMnemonic(mnemonic)) !== row.identity_public_key) {
+        throw new Error('Retired Spark viewer key does not match its public key');
+      }
+      viewers.push({
+        viewer: await viewerFromMnemonic(mnemonic),
+        retiredAt: new Date(row.retired_at),
+      });
+    } finally {
+      zeroizeSecret(plain);
+    }
+  }
+  return viewers;
 }
 
 /**
@@ -977,11 +1205,20 @@ export async function rotateSparkViewerKey(sql: SqlClient, kek: Uint8Array): Pro
  * returned. The caller receives only its public key and a read-only adapter.
  * The row is created and opened under the KEK id of `kek`; a row under
  * another id is refused (the boot runs {@link rotateSparkViewerKey} first).
+ * After the transaction, every retired viewer under the id of `kek`
+ * (`spark_viewer_retired_key`, newest first) is opened and checked against
+ * its identity public key. With at least one, `previousWalletViewer` is the
+ * reader that chooses per previous wallet the viewer it granted
+ * ({@link previousWalletSparkViewer}); without any, it is the current viewer.
+ * An ephemeral key has no retired viewer.
  *
  * @param sql - SQL client for durable custody, or undefined for an ephemeral key.
  * @param kek - `NOSTR_NSEC_KEK` bytes for durable custody.
- * @returns The public identity and read-only viewer adapter.
- * @throws When key generation, encryption, decryption, derivation, or SDK creation fails.
+ * @returns `{ publicKey, viewer, previousWalletViewer }`: the public
+ *   identity, the current read-only viewer, and the reader for previous
+ *   wallets (the same object as `viewer` without retired viewers).
+ * @throws When key generation, encryption, decryption, derivation, or SDK
+ *   creation fails, also for a retired viewer.
  */
 export async function ensureSparkViewer(
   sql: SqlClient | undefined,
@@ -989,9 +1226,11 @@ export async function ensureSparkViewer(
 ): Promise<SparkViewerKey> {
   if (sql === undefined) {
     const mnemonic = generateMnemonic(wordlist, 128);
+    const viewer = await viewerFromMnemonic(mnemonic);
     return {
       publicKey: await publicKeyFromMnemonic(mnemonic),
-      viewer: await viewerFromMnemonic(mnemonic),
+      viewer,
+      previousWalletViewer: viewer,
     };
   }
   if (kek === undefined || sql.transaction === undefined) {
@@ -1017,6 +1256,7 @@ export async function ensureSparkViewer(
     return row;
   });
   const plain = await openEnvelope(new Uint8Array(material.viewer_mnemonic_ciphertext), kek);
+  let current: { publicKey: string; viewer: SparkViewer };
   try {
     const mnemonic = new TextDecoder().decode(plain);
     const publicKey = await publicKeyFromMnemonic(mnemonic);
@@ -1026,8 +1266,14 @@ export async function ensureSparkViewer(
     ) {
       throw new Error('Spark viewer key does not match its public key');
     }
-    return { publicKey, viewer: await viewerFromMnemonic(mnemonic) };
+    current = { publicKey, viewer: await viewerFromMnemonic(mnemonic) };
   } finally {
     zeroizeSecret(plain);
   }
+  const retired = await retiredSparkViewers(sql, kek);
+  return {
+    ...current,
+    previousWalletViewer:
+      retired.length === 0 ? current.viewer : previousWalletSparkViewer(current.viewer, retired),
+  };
 }

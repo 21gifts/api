@@ -8,7 +8,59 @@ import {
   parseKekHex,
   parseKekId,
   parseNostrKek,
+  parsePreviousNostrKek,
 } from '@/lib/nostr/kek';
+
+describe('parsePreviousNostrKek', () => {
+  const keys = {
+    nostrKek: new Uint8Array(32).fill(0x11),
+    recoveryShareKek: new Uint8Array(32).fill(0x22),
+    previousRecoveryShareKek: new Uint8Array(32).fill(0x33) as Uint8Array | undefined,
+  };
+
+  it('is undefined when unset or blank', () => {
+    expect(parsePreviousNostrKek(undefined, keys)).toBeUndefined();
+    expect(parsePreviousNostrKek('  ', keys)).toBeUndefined();
+  });
+
+  it('parses 64 lowercase hex after trimming, unbound to any KEK id', () => {
+    const kek = parsePreviousNostrKek(` ${'44'.repeat(32)}\n`, keys);
+    expect(kek).toEqual(new Uint8Array(32).fill(0x44));
+    expect(kekIdOf(kek!)).toBe(DEFAULT_KEK_ID);
+  });
+
+  it('refuses a malformed value', () => {
+    expect(() => parsePreviousNostrKek('AB'.repeat(32), keys)).toThrow(
+      'NOSTR_NSEC_KEK_PREVIOUS must be 64 lowercase hex characters',
+    );
+  });
+
+  it('refuses a value equal to another KEK, naming only the variable', () => {
+    expect(() => parsePreviousNostrKek('11'.repeat(32), keys)).toThrow(
+      'NOSTR_NSEC_KEK_PREVIOUS must differ from NOSTR_NSEC_KEK',
+    );
+    expect(() => parsePreviousNostrKek('22'.repeat(32), keys)).toThrow(
+      'NOSTR_NSEC_KEK_PREVIOUS must differ from RECOVERY_SHARE_KEK',
+    );
+    let message = '';
+    try {
+      parsePreviousNostrKek('33'.repeat(32), keys);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toBe('NOSTR_NSEC_KEK_PREVIOUS must differ from RECOVERY_SHARE_KEK_PREVIOUS');
+    expect(message).not.toContain('33'.repeat(32));
+  });
+
+  it('skips the previous recovery key when it is unset, and a key of another length', () => {
+    expect(
+      parsePreviousNostrKek('33'.repeat(32), { ...keys, previousRecoveryShareKek: undefined }),
+    ).toEqual(new Uint8Array(32).fill(0x33));
+    expect(
+      parsePreviousNostrKek('11'.repeat(32), { ...keys, nostrKek: new Uint8Array(31).fill(0x11) }),
+    ).toEqual(new Uint8Array(32).fill(0x11));
+  });
+});
 
 describe('parseNostrKek', () => {
   it('parses 64 lowercase hex chars', () => {

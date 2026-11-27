@@ -242,8 +242,11 @@ runs and checks that neither the note nor a `shop_identity` row is left.
 - When the boot runs with a new `NOSTR_NSEC_KEK` and `NOSTR_NSEC_KEK_ID`,
   `rotateKeks` (`src/lib/kek-rotation.ts`) gives every shop under another id a
   fresh key pair under the new key (`rotateShopIdentityKey`), in place and
-  conditional on the old id. The old secret is never decrypted; there is no
-  previous Nostr key. This includes the adopted keys of the notes in
+  conditional on the old id. The old secret is opened with
+  `NOSTR_NSEC_KEK_PREVIOUS` and kept in `nostr_retired_key` (owner type
+  `shop`, the note id, its pubkey), sealed under the new key, only for NIP-09
+  deletions of events it signed; deleting the shop identity deletes it. This
+  includes the adopted keys of the notes in
   `ADOPTED_SHOP_MESSAGE_IDS`: they also get a fresh key.
 - The rotation keeps `nostr_key_created_at`. Shop NIP-05 locals are allocated
   in `nostr_key_created_at`, then `message_id` order; one `now()` for a whole

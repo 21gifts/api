@@ -4,8 +4,8 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 73
-- Columns: 677
+- Tables: 75
+- Columns: 687
 - Foreign keys: 67
 
 | Table                                                                            | Source                                                                   | Columns | Foreign keys |
@@ -49,6 +49,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`message_repayment_part`](tables/message_repayment_part.md)                     | [src/lib/message-store.ts](../../src/lib/message-store.ts)               | 7       | 1            |
 | [`message_translation`](tables/message_translation.md)                           | [src/lib/translation-store.ts](../../src/lib/translation-store.ts)       | 5       | 1            |
 | [`nostr_blocked_pubkey`](tables/nostr_blocked_pubkey.md)                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)               | 4       | 0            |
+| [`nostr_retired_key`](tables/nostr_retired_key.md)                               | [src/lib/nostr/retired-key.ts](../../src/lib/nostr/retired-key.ts)       | 6       | 0            |
 | [`nostr_zap_ingest`](tables/nostr_zap_ingest.md)                                 | [src/lib/message-store.ts](../../src/lib/message-store.ts)               | 14      | 0            |
 | [`nostr_zap_payment`](tables/nostr_zap_payment.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)               | 3       | 0            |
 | [`nostr_zap_receipt`](tables/nostr_zap_receipt.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)               | 9       | 2            |
@@ -75,6 +76,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`shop_quote`](tables/shop_quote.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)     | 5       | 1            |
 | [`spark_invoice`](tables/spark_invoice.md)                                       | [src/lib/spark-invoice-store.ts](../../src/lib/spark-invoice-store.ts)   | 10      | 0            |
 | [`spark_viewer_key`](tables/spark_viewer_key.md)                                 | [src/lib/spark-viewer.ts](../../src/lib/spark-viewer.ts)                 | 5       | 0            |
+| [`spark_viewer_retired_key`](tables/spark_viewer_retired_key.md)                 | [src/lib/spark-viewer.ts](../../src/lib/spark-viewer.ts)                 | 4       | 0            |
 | [`trust_edge`](tables/trust_edge.md)                                             | [src/lib/trust-store.ts](../../src/lib/trust-store.ts)                   | 5       | 2            |
 | [`usd_fiat_daily`](tables/usd_fiat_daily.md)                                     | [src/lib/usd-fiat-store.ts](../../src/lib/usd-fiat-store.ts)             | 6       | 0            |
 | [`wallet_balance_snapshot`](tables/wallet_balance_snapshot.md)                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)                 | 6       | 1            |

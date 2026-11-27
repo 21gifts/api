@@ -629,8 +629,10 @@ export async function migrateShopIdentitySchema(sql: SqlClient): Promise<void> {
 
 /**
  * KEK rotation of one shop key: replace the shop's key pair in place with a
- * freshly generated one sealed under `kek` and its KEK id (the old secret is
- * never decrypted). The UPDATE is conditional on the old `nostr_kek_id`
+ * freshly generated one sealed under `kek` and its KEK id. This function does
+ * not decrypt the old secret; `rotateKeks` opens it with
+ * `NOSTR_NSEC_KEK_PREVIOUS` and keeps it in `nostr_retired_key` after this
+ * returns `true`. The UPDATE is conditional on the old `nostr_kek_id`
  * (compare-and-set), so a row another process already rotated is left alone.
  * The same write queues the OpenCryptoPay place push (its body carries the
  * new `nostrPubkey`) and, while the note is a public shop, the photo push, as

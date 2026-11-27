@@ -7,8 +7,11 @@
  *
  * Each parsed key carries a KEK id (`NOSTR_NSEC_KEK_ID`, `RECOVERY_SHARE_KEK_ID`,
  * default 1) through {@link bindKekId}; envelopes record it, and KEK rotation
- * (`rotateKeks`) renews everything stored under another id.
+ * (`rotateKeks`) renews everything stored under another id, opening the old
+ * Nostr envelopes with `NOSTR_NSEC_KEK_PREVIOUS` ({@link parsePreviousNostrKek}).
  */
+
+import { timingSafeEqual } from 'node:crypto';
 
 /** Expected length of a decoded KEK (AES-256). */
 export const NOSTR_KEK_BYTES = 32;
@@ -50,6 +53,57 @@ export function parseKekHex(name: string, raw: string | undefined): Uint8Array {
  */
 export function parseNostrKek(raw: string | undefined): Uint8Array {
   return parseKekHex('NOSTR_NSEC_KEK', raw);
+}
+
+/**
+ * Constant-time equality of two keys.
+ *
+ * @param a - A 32-byte key.
+ * @param b - Another key.
+ * @returns `true` when equal.
+ */
+function sameKey(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Parse the optional `NOSTR_NSEC_KEK_PREVIOUS`, the previous `NOSTR_NSEC_KEK`
+ * that KEK rotation opens the Nostr keys, the Spark viewer mnemonic and the
+ * retired keys under another `NOSTR_NSEC_KEK_ID` with. It is never bound to a
+ * KEK id: it opens an envelope under any id other than the current one.
+ *
+ * @param raw - Env string, or `undefined` when unset.
+ * @param keys - The parsed current `NOSTR_NSEC_KEK`, `RECOVERY_SHARE_KEK` and
+ *   (when set) `RECOVERY_SHARE_KEK_PREVIOUS`.
+ * @returns 32-byte key material, or `undefined` when unset or blank.
+ * @throws `NOSTR_NSEC_KEK_PREVIOUS must be 64 lowercase hex characters` for a
+ *   malformed value; `NOSTR_NSEC_KEK_PREVIOUS must differ from <name>` when it
+ *   equals `NOSTR_NSEC_KEK`, `RECOVERY_SHARE_KEK` or
+ *   `RECOVERY_SHARE_KEK_PREVIOUS`. No message contains a key.
+ */
+export function parsePreviousNostrKek(
+  raw: string | undefined,
+  keys: {
+    nostrKek: Uint8Array;
+    recoveryShareKek: Uint8Array;
+    previousRecoveryShareKek: Uint8Array | undefined;
+  },
+): Uint8Array | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined;
+  }
+  const kek = parseKekHex('NOSTR_NSEC_KEK_PREVIOUS', raw);
+  const others: Array<[string, Uint8Array | undefined]> = [
+    ['NOSTR_NSEC_KEK', keys.nostrKek],
+    ['RECOVERY_SHARE_KEK', keys.recoveryShareKek],
+    ['RECOVERY_SHARE_KEK_PREVIOUS', keys.previousRecoveryShareKek],
+  ];
+  for (const [name, other] of others) {
+    if (other !== undefined && sameKey(kek, other)) {
+      throw new Error(`NOSTR_NSEC_KEK_PREVIOUS must differ from ${name}`);
+    }
+  }
+  return kek;
 }
 
 /** KEK id of a key that was never given another one (the first key generation). */

@@ -41,6 +41,8 @@ import { PostgresWelcomeInvoiceReservationStore } from '@/lib/welcome-reservatio
 import { PostgresMemberEventStore } from '@/lib/member-event-store';
 import { PostgresShopIdentityStore } from '@/lib/shop-identity';
 import { kekIdOf } from '@/lib/nostr/kek';
+import { encryptNostrSecret, publicKeyHexFromSecret } from '@/lib/nostr/keys';
+import { PostgresNostrRetiredKeyStore } from '@/lib/nostr/retired-key';
 
 function unusedClient(): SqlClient {
   return {
@@ -60,10 +62,22 @@ const KEK_CHECK_SAMPLES = [
   'SELECT account_id::text AS account_id, recovery_share_ciphertext FROM recovery_share',
 ];
 
+/**
+ * Whether `text` is a rotation or viewer read that finds no row here: the
+ * viewer row, a shop key under another id, or a retired key or viewer.
+ */
+function emptyKeyRead(text: string): boolean {
+  return (
+    text.includes('FROM spark_viewer_key') ||
+    text.includes('retired_key') ||
+    (text.includes('FROM shop_identity') && text.includes('nostr_kek_id'))
+  );
+}
+
 function withSparkViewerTransaction(client: SqlClient): SqlClient {
   const transactional: SqlClient = {
     query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
-      if (text.includes('FROM spark_viewer_key WHERE singleton = true')) {
+      if (emptyKeyRead(text)) {
         return [] as T[];
       }
       if (KEK_CHECK_SAMPLES.some((sample) => text.startsWith(sample))) {
@@ -171,12 +185,16 @@ describe('openBootStores', () => {
       walletTransferStore,
       welcomeInvoiceReservationStore,
       sparkViewer,
+      previousWalletSparkViewer,
+      nostrRetiredKeyStore,
       walletViewerPublicKey,
       memberEventStore,
       nostrKek,
       recoveryShareKek,
     } = await openBootStores(undefined, factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
+    expect(previousWalletSparkViewer).toBe(sparkViewer);
+    expect(nostrRetiredKeyStore).toBeUndefined();
     expect(nostrKek).toBeUndefined();
     expect(recoveryShareKek).toBeUndefined();
     expect(giftStore).toBeUndefined();
@@ -348,6 +366,9 @@ describe('openBootStores', () => {
       welcomeInvoiceReservationStore,
       memberEventStore,
       recoveryShareKek,
+      sparkViewer,
+      previousWalletSparkViewer,
+      nostrRetiredKeyStore,
     } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -386,10 +407,34 @@ describe('openBootStores', () => {
     expect(walletTransferStore).toBeInstanceOf(PostgresWalletTransferStore);
     expect(welcomeInvoiceReservationStore).toBeInstanceOf(PostgresWelcomeInvoiceReservationStore);
     expect(memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
+    expect(nostrRetiredKeyStore).toBeInstanceOf(PostgresNostrRetiredKeyStore);
+    // No retired viewer: previous wallets read with the current viewer itself.
+    expect(previousWalletSparkViewer).toBe(sparkViewer);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(fxSpotStore).toBeInstanceOf(PostgresFxSpotStore);
     expect(executes.length).toBeGreaterThan(0);
+    // The retired-key table and its cleanup triggers come after shop_identity
+    // and before db_change; the retired viewer table with the viewer table.
+    const shopIdentityIdx = executes.findIndex((q) =>
+      q.includes('CREATE TABLE IF NOT EXISTS shop_identity'),
+    );
+    const retiredKeyIdx = executes.findIndex((q) =>
+      q.includes('CREATE TABLE IF NOT EXISTS nostr_retired_key'),
+    );
+    const retiredViewerIdx = executes.findIndex((q) =>
+      q.includes('CREATE TABLE IF NOT EXISTS spark_viewer_retired_key'),
+    );
+    const dbChangeTableIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS db_change/i.test(q),
+    );
+    expect(retiredKeyIdx).toBeGreaterThan(shopIdentityIdx);
+    expect(shopIdentityIdx).toBeGreaterThanOrEqual(0);
+    expect(dbChangeTableIdx).toBeGreaterThan(retiredKeyIdx);
+    expect(dbChangeTableIdx).toBeGreaterThan(retiredViewerIdx);
+    expect(retiredViewerIdx).toBeGreaterThanOrEqual(0);
+    expect(executes.some((q) => q.includes('trg_account_nostr_retired_key'))).toBe(true);
+    expect(executes.some((q) => q.includes('trg_shop_identity_nostr_retired_key'))).toBe(true);
     expect(executes.some((q) => q.includes('message'))).toBe(true);
     expect(executes.some((q) => q.includes('contact'))).toBe(true);
     expect(executes.some((q) => q.includes('pos_charge'))).toBe(true);
@@ -1018,8 +1063,29 @@ describe('openBootStores', () => {
 
     afterEach(() => {
       delete process.env['NOSTR_NSEC_KEK_ID'];
+      delete process.env['NOSTR_NSEC_KEK_PREVIOUS'];
       delete process.env['RECOVERY_SHARE_KEK_ID'];
       delete process.env['RECOVERY_SHARE_KEK_PREVIOUS'];
+    });
+
+    it('stops the boot for a malformed previous Nostr key or one equal to another key', async () => {
+      process.env['NOSTR_NSEC_KEK_PREVIOUS'] = 'AB'.repeat(32);
+      await expect(boot()).rejects.toThrow(
+        'NOSTR_NSEC_KEK_PREVIOUS must be 64 lowercase hex characters',
+      );
+      process.env['NOSTR_NSEC_KEK_PREVIOUS'] = 'ab'.repeat(32);
+      await expect(boot()).rejects.toThrow(
+        'NOSTR_NSEC_KEK_PREVIOUS must differ from NOSTR_NSEC_KEK',
+      );
+      process.env['NOSTR_NSEC_KEK_PREVIOUS'] = 'cd'.repeat(32);
+      await expect(boot()).rejects.toThrow(
+        'NOSTR_NSEC_KEK_PREVIOUS must differ from RECOVERY_SHARE_KEK',
+      );
+      process.env['RECOVERY_SHARE_KEK_PREVIOUS'] = 'ef'.repeat(32);
+      process.env['NOSTR_NSEC_KEK_PREVIOUS'] = 'ef'.repeat(32);
+      await expect(boot()).rejects.toThrow(
+        'NOSTR_NSEC_KEK_PREVIOUS must differ from RECOVERY_SHARE_KEK_PREVIOUS',
+      );
     });
 
     it('stops the boot for a KEK id that is not a positive integer', async () => {
@@ -1045,18 +1111,51 @@ describe('openBootStores', () => {
       );
     });
 
+    it('stops the boot when a Nostr key is under another id and NOSTR_NSEC_KEK_PREVIOUS is unset', async () => {
+      process.env['NOSTR_NSEC_KEK_ID'] = '2';
+      const stale = {
+        id: '00000000-0000-4000-8000-000000000001',
+        kek_id: 1,
+        envelope: new Uint8Array(65),
+      };
+      const client: SqlClient = {
+        query: async <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+          if (text.includes('min(paid_at)')) return [{ min: null, max: null }] as T[];
+          if (text.startsWith('SELECT id::text AS id, nostr_kek_id AS kek_id')) {
+            return (params[1] === null ? [stale] : []) as T[];
+          }
+          return [] as T[];
+        },
+        execute: async () => undefined,
+      };
+      await expect(boot(withSparkViewerTransaction(client))).rejects.toThrow(
+        'KEK rotation stopped: 1 Nostr key(s) are stored under another NOSTR_NSEC_KEK_ID; set NOSTR_NSEC_KEK_PREVIOUS to the previous NOSTR_NSEC_KEK',
+      );
+    });
+
     it('rotates after the db_change triggers and before the viewer key, logs counts only, and republishes', async () => {
       process.env['NOSTR_NSEC_KEK_ID'] = '2';
+      process.env['NOSTR_NSEC_KEK_PREVIOUS'] = '12'.repeat(32);
       process.env['RECOVERY_SHARE_KEK_ID'] = '3';
       process.env['RECOVERY_SHARE_KEK_PREVIOUS'] = 'ef'.repeat(32);
       const accountId = '00000000-0000-4000-8000-000000000001';
+      const oldSecret = new Uint8Array(32).fill(4);
+      const oldPubkey = publicKeyHexFromSecret(oldSecret);
+      const oldEnvelope = await encryptNostrSecret(
+        oldSecret,
+        new Uint8Array(32).fill(0x12),
+        accountId,
+        1,
+      );
       const operations: Array<{ text: string; params: readonly unknown[] }> = [];
       const client: SqlClient = {
         query: async <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
           operations.push({ text, params });
           if (text.includes('min(paid_at)')) return [{ min: null, max: null }] as T[];
-          if (text.startsWith('SELECT id::text AS id, nostr_kek_id FROM account')) {
-            return (params[1] === null ? [{ id: accountId, nostr_kek_id: 1 }] : []) as T[];
+          if (text.startsWith('SELECT id::text AS id, nostr_kek_id AS kek_id')) {
+            return (
+              params[1] === null ? [{ id: accountId, kek_id: 1, envelope: oldEnvelope }] : []
+            ) as T[];
           }
           if (text.startsWith('UPDATE account') && text.includes('nostr_kek_id = $5')) {
             return [{ id: accountId }] as T[];
@@ -1089,11 +1188,19 @@ describe('openBootStores', () => {
       );
       expect(lastTrigger).toBeGreaterThanOrEqual(0);
       const select = operations.findIndex((o) =>
-        o.text.startsWith('SELECT id::text AS id, nostr_kek_id FROM account'),
+        o.text.startsWith('SELECT id::text AS id, nostr_kek_id AS kek_id'),
       );
-      const update = operations.find(
+      const updateIdx = operations.findIndex(
         (o) => o.text.startsWith('UPDATE account') && o.text.includes('nostr_kek_id = $5'),
       );
+      const update = operations[updateIdx];
+      // The old key is kept as a retired key, sealed under the current id, after the update.
+      const retireIdx = operations.findIndex((o) =>
+        o.text.includes('INSERT INTO nostr_retired_key'),
+      );
+      expect(retireIdx).toBeGreaterThan(updateIdx);
+      expect(operations[retireIdx]?.params.slice(0, 3)).toEqual(['account', accountId, oldPubkey]);
+      expect(operations[retireIdx]?.params[4]).toBe(2);
       const shares = operations.find((o) =>
         o.text.includes('substring(recovery_share_ciphertext FROM 2 FOR 4)'),
       );
@@ -1110,6 +1217,7 @@ describe('openBootStores', () => {
           accounts: 1,
           shops: 0,
           sparkViewer: 0,
+          retiredKeys: 0,
           recoveryShares: 0,
           recoverySharesPending: 0,
         }),
@@ -1119,10 +1227,12 @@ describe('openBootStores', () => {
         'event',
         'recoveryShares',
         'recoverySharesPending',
+        'retiredKeys',
         'shops',
         'sparkViewer',
         'ts',
       ]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('12'.repeat(32));
       expect(forget).toHaveBeenCalledWith(
         opened.authStore,
         opened.shopIdentityStore,
