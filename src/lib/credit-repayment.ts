@@ -196,10 +196,21 @@ export const REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Restart day after the 21.gifts outage: 2026-11-28 00:00 UTC. The service was
+ * unreachable from 2026-11-18 through 2026-11-27, so borrowers could not
+ * repay. Every plan whose start falls before this instant starts on it
+ * instead (day 0 is 2026-11-28). A plan that starts on or after it is not
+ * affected. Day indexes stay the same; only their dates move.
+ */
+const REPAYMENT_OUTAGE_RESTART_MS = Date.UTC(2026, 10, 28);
+
+/**
  * UTC midnight of the first repayment day: the day after the credit became
  * fully paid. A credit outside {@link REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS}
  * never starts before 2026-11-16. A credit in that set starts the day after it
- * filled, with no minimum.
+ * filled, with no minimum. A start before the end of the 2026-11 outage then
+ * moves to {@link REPAYMENT_OUTAGE_RESTART_MS} (2026-11-28 UTC), so no plan of
+ * either kind starts before 2026-11-28.
  *
  * @param fundedAtMs - When collected sats first reached the goal.
  * @param messageId - Credit message id; matched case-insensitively against the
@@ -209,14 +220,15 @@ export const REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS: ReadonlySet<string> = new Set([
 export function repaymentStartMs(fundedAtMs: number, messageId: string): number {
   const funded = new Date(fundedAtMs);
   const nextDay = Date.UTC(funded.getUTCFullYear(), funded.getUTCMonth(), funded.getUTCDate() + 1);
-  if (REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS.has(messageId.toLowerCase())) {
-    return nextDay;
-  }
-  return Math.max(nextDay, REPAYMENT_EARLIEST_START_MS);
+  const start = REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS.has(messageId.toLowerCase())
+    ? nextDay
+    : Math.max(nextDay, REPAYMENT_EARLIEST_START_MS);
+  return Math.max(start, REPAYMENT_OUTAGE_RESTART_MS);
 }
 
 /**
  * How many term days are already due, including today once the start day has begun.
+ * Counting starts at {@link repaymentStartMs}, never before 2026-11-28.
  *
  * @param fundedAtMs - When the credit filled.
  * @param nowMs - Clock.
@@ -625,7 +637,8 @@ export interface RepaymentLedgerLine {
 /**
  * UTC date of one repayment day. Day 0 is `repaymentStartMs`: the UTC day after the
  * credit filled, never before 2026-11-16 unless the credit is an
- * operator-approved exception.
+ * operator-approved exception, and moved to 2026-11-28 UTC when that start
+ * falls before the end of the 2026-11 outage.
  *
  * @param fundedAtMs - When collected sats first reached the goal.
  * @param dayIndex - Zero-based day in the term.
