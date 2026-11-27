@@ -19,7 +19,7 @@ const SHARE =
   'duckling enlarge academic academic agency result length solution fridge kidney ' +
   'coal piece deal husband erode duke ajar critical decision keyboard';
 
-/** Open a share envelope in the test only; the api has no decrypt function. */
+/** Open a share envelope in the test only; no request path decrypts a share. */
 async function openShare(envelope: Uint8Array, accountId: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', KEK, { name: 'AES-GCM' }, false, ['decrypt']);
   const plain = await crypto.subtle.decrypt(

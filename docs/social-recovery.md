@@ -172,7 +172,8 @@ usable together with any other old share.
   changes anything. Until a share is rotated it still counts as stored, so no member
   loses the recovery-share state. After the boot log `kek.rotation.done`
   shows the shares as rotated, the operator removes
-  `RECOVERY_SHARE_KEK_PREVIOUS` and restarts.
+  `RECOVERY_SHARE_KEK_PREVIOUS` and restarts. The full operator procedure is
+  [docs/kek-rotation.md](kek-rotation.md).
 - **No planned release.** 21.gifts plans no release of its share and keeps it
   only as an option. Using it would be a manual process outside the api, with
   the key from the vault.

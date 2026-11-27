@@ -3,8 +3,9 @@
 -- RECOVERY_SHARE_KEK, with the account id as additional data. Written by
 -- PUT /me/recovery-share; deleted with its previous wallet
 -- (DELETE /me/previous-wallets/:sparkPubkey) and by an account merge. No route
--- returns it and nothing in the api decrypts it. recovery_share_ciphertext is a
--- secret column: db_change keeps only its SHA-256. Covered by db_change.
+-- returns it. No request path decrypts it; only the KEK rotation at boot opens
+-- it to check the key and seal it again. recovery_share_ciphertext is a secret
+-- column: db_change keeps only its SHA-256. Covered by db_change.
 
 CREATE TABLE IF NOT EXISTS recovery_share (
   account_id uuid NOT NULL REFERENCES account (id),

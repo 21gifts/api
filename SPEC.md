@@ -62,7 +62,9 @@ key that does not open one of them stops the boot and changes no share. The boot
 `kek.rotation.done` line with counts only, and the worker announces every new
 Nostr key (kind 0 and kind 10002) as for a new key. Until a key is rotated,
 signing treats it as missing and logs `nostr.key.kek_stale`. A second boot
-changes nothing. Lookups by Nostr pubkey accept only the current key.
+changes nothing. Lookups by Nostr pubkey accept only the current key. The
+operator procedure for a rotation, its log checks and its errors are in
+[docs/kek-rotation.md](docs/kek-rotation.md).
 
 `RECOVERY_SHARE_REQUIRED_FROM` (ISO date `YYYY-MM-DD`, UTC, read from the
 environment) is the first day a payout needs that share: unset or blank means
@@ -735,7 +737,8 @@ otherwise Hono's default 404. Body (strict):
 payload. The api encrypts it with `RECOVERY_SHARE_KEK` (AES-256-GCM, the
 account id as additional data) and stores the envelope for that wallet key in
 one locked step under the account row; a second PUT for the same wallet
-replaces it. No route returns it, and nothing in the api decrypts it.
+replaces it. No route returns it. No request path decrypts it; only the KEK
+rotation at boot opens it to check the key and seal it again.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 

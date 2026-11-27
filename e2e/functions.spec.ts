@@ -2262,8 +2262,57 @@ test('Function: parseKekId — default boot has no DATABASE_URL', async ({ reque
 test('Function: bindKekId — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: kekIdOf — default boot has no DATABASE_URL', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
+test('Function: kekIdOf — a new shop key on the default boot is listed with its npub', async ({
+  request,
+}) => {
+  // The default boot hands a process-ephemeral shop key to the memory store;
+  // the shop key it seals for a new shop records kekIdOf of that key.
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  const authorName = `E2eKekMod${stamp}`;
+  const tillName = `E2eKekTill${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: await operatorHeaders(request, 'write'),
+    data: {
+      accounts: [
+        { name: authorName, username: `e2e-kekmod-${stamp}`.slice(0, 32) },
+        { name: tillName, username: `e2e-kektill-${stamp}`.slice(0, 32) },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', {
+    headers: await operatorHeaders(request, 'read'),
+  });
+  expect(listed.status()).toBe(200);
+  const accounts = (
+    (await listed.json()) as {
+      accounts: Array<{ id: string; name: string; username: string | null }>;
+    }
+  ).accounts;
+  const author = accounts.find((row) => row.name === authorName);
+  const till = accounts.find((row) => row.name === tillName);
+  expect(author?.id).toBeTruthy();
+  expect(till?.username).toBeTruthy();
+  const line = `Key stall ${stamp}`;
+  const posted = await request.post('/debug/shop-notes', {
+    headers: { ...(await operatorHeaders(request, 'write')), 'content-type': 'application/json' },
+    data: { text: `${line}\n\n#21GiftsShop`, shopUsername: till?.username, authorId: author?.id },
+  });
+  expect(posted.status()).toBe(200);
+
+  const response = await request.get('/shops?limit=100');
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as {
+    shops: Array<{ npub: string; name: string; place: unknown }>;
+  };
+  const row = body.shops.find((item) => item.name === line);
+  expect(row?.npub).toMatch(/^npub1[02-9ac-hj-np-z]{58}$/);
+  const detail = await request.get(`/shops/${row?.npub}`);
+  expect(detail.status()).toBe(200);
+  expect(((await detail.json()) as { shop: { npub: string; name: string } }).shop).toMatchObject({
+    npub: row?.npub,
+    name: line,
+  });
 });
 test('Function: envelopeKekId — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);

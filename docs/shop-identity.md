@@ -164,7 +164,7 @@ New table `shop_identity`. The key columns have the same names as on
 | `message_id`               | `uuid PRIMARY KEY`     | `REFERENCES message (id)`                                                                                                      |
 | `nostr_pubkey`             | `text NOT NULL UNIQUE` | 64 lowercase hex                                                                                                               |
 | `nostr_nsec_ciphertext`    | `bytea NOT NULL`       | Envelope below                                                                                                                 |
-| `nostr_kek_id`             | `integer NOT NULL`     | Only `1`                                                                                                                       |
+| `nostr_kek_id`             | `integer NOT NULL`     | `>= 1`; the `NOSTR_NSEC_KEK_ID` the key was sealed under (default 1)                                                           |
 | `nostr_key_custody`        | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`                                                                                     |
 | `nostr_key_created_at`     | `timestamptz NOT NULL` | Set on insert                                                                                                                  |
 | `profile_name`             | `text NOT NULL`        | Shop name, rewritten whenever the shop is public (1)                                                                           |
@@ -254,6 +254,8 @@ runs and checks that neither the note nor a `shop_identity` row is left.
   answer the new npub. The old npub resolves to no shop any more.
 - Until a shop is rotated, `signEventForShop` treats its key as missing and
   logs `nostr.key.kek_stale` once (no key material).
+- The operator procedure for a rotation, its log checks and its errors are in
+  [docs/kek-rotation.md](kek-rotation.md).
 
 ### Custody
 
