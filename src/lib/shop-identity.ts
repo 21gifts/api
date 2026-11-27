@@ -657,7 +657,6 @@ export async function rotateShopIdentityKey(
   const rows = await sql.query<{ message_id: string }>(
     `UPDATE shop_identity
      SET nostr_pubkey = $2, nostr_nsec_ciphertext = $3, nostr_kek_id = $4,
-         nostr_key_created_at = now(),
          ocp_place_pending = true, ocp_place_generation = ocp_place_generation + 1,
          ocp_photos_pending = CASE WHEN ${listed} THEN true ELSE ocp_photos_pending END,
          ocp_photos_generation = CASE WHEN ${listed}

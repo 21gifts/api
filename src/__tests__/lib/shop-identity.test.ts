@@ -368,6 +368,23 @@ describe('rotateShopIdentityKey', () => {
     rows = [];
     expect(await rotateShopIdentityKey(sql, ID_A, 1, current, keygenFrom(6))).toBe(false);
   });
+
+  it('keeps nostr_key_created_at, the order of the shop NIP-05 locals', async () => {
+    const current = bindKekId(new Uint8Array(32).fill(8), 2);
+    const texts: string[] = [];
+    const sql: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        texts.push(text);
+        return [{ message_id: ID_A }] as T[];
+      },
+      execute: async () => undefined,
+    };
+    expect(await rotateShopIdentityKey(sql, ID_A, 1, current, keygenFrom(7))).toBe(true);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain('UPDATE shop_identity');
+    expect(texts[0]).not.toContain('nostr_key_created_at');
+    expect(texts[0]).not.toContain('now()');
+  });
 });
 
 describe('InMemoryShopIdentityStore key creation', () => {

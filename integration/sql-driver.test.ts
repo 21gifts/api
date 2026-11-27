@@ -101,6 +101,7 @@ import { manualReceiptIdForPaymentHash, settleInvoiceManually } from '@/lib/nost
 import { envelopeKekId, openAesGcmEnvelope } from '@/lib/aes-gcm-envelope';
 import { encryptRecoveryShare } from '@/lib/auth/recovery-share';
 import { rotateKeks } from '@/lib/kek-rotation';
+import { listShopNip05Entries, nip05Slug } from '@/lib/nip05';
 import { bindKekId } from '@/lib/nostr/kek';
 import {
   decryptNostrSecret,
@@ -12064,34 +12065,74 @@ describe('KEK rotation on Postgres', () => {
         expect(await auth.setNostrKeyIfAbsent(accountId, oldRecord)).toBe('inserted');
         const messages = new PostgresMessageStore(inTx);
         const shops = new PostgresShopIdentityStore(inTx, messages);
-        const noteId = crypto.randomUUID();
-        await messages.create({
-          id: noteId,
-          accountId,
-          name: 'Coffee',
-          text: 'Fresh coffee roasted here every morning. #21GiftsShop',
-          createdAt: new Date(),
-          hasPhoto: false,
-          ...unsignedNostrDefaults(),
-          place: {
-            lat: 47.3769,
-            lng: 8.5417,
-            label: 'Coffee Lab',
-            address: {
-              street: 'Main Street',
-              houseNumber: '1',
-              postalCode: '8001',
-              city: 'Zürich',
-              country: 'CH',
+        // Two public shops with the same name: the first by key creation keeps
+        // the bare NIP-05 local, the second gets the message id suffix.
+        const shopLabel = `Kek Lab ${accountId.slice(0, 8)}`;
+        const createShopNote = async (id: string): Promise<void> => {
+          await messages.create({
+            id,
+            accountId,
+            name: 'Coffee',
+            text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+            createdAt: new Date(),
+            hasPhoto: false,
+            ...unsignedNostrDefaults(),
+            place: {
+              lat: 47.3769,
+              lng: 8.5417,
+              label: shopLabel,
+              address: {
+                street: 'Main Street',
+                houseNumber: '1',
+                postalCode: '8001',
+                city: 'Zürich',
+                country: 'CH',
+              },
             },
-          },
-          shopAccount: { id: accountId, username: 'coffee', name: 'Coffee' },
-        });
+            shopAccount: { id: accountId, username: 'coffee', name: 'Coffee' },
+          });
+        };
+        const noteId = crypto.randomUUID();
+        const twinId = crypto.randomUUID();
+        await createShopNote(noteId);
+        await createShopNote(twinId);
         const oldShop = await shops.ensureListed(noteId, previousNostrKek);
         expect(oldShop?.nostrKekId).toBe(2);
+        expect((await shops.ensureListed(twinId, previousNostrKek))?.nostrKekId).toBe(2);
         await inTx.execute(
           'UPDATE shop_identity SET ocp_place_pending = false WHERE message_id = $1',
           [noteId],
+        );
+        // The shop with the higher message id was created first, so its key
+        // creation order differs from the `message_id` order.
+        const [lowId, highId] = [noteId, twinId].sort();
+        await inTx.execute(
+          'UPDATE shop_identity SET nostr_key_created_at = $2 WHERE message_id = $1',
+          [highId, new Date('2026-01-01T00:00:00.000Z')],
+        );
+        await inTx.execute(
+          'UPDATE shop_identity SET nostr_key_created_at = $2 WHERE message_id = $1',
+          [lowId, new Date('2026-01-02T00:00:00.000Z')],
+        );
+        const shopOrder = async (): Promise<{
+          created: Array<{ message_id: string; created: string }>;
+          locals: Record<string, string>;
+        }> => ({
+          created: await inTx.query<{ message_id: string; created: string }>(
+            `SELECT message_id::text AS message_id, nostr_key_created_at::text AS created
+             FROM shop_identity ORDER BY message_id`,
+          ),
+          locals: Object.fromEntries(
+            (await listShopNip05Entries(auth, shops, messages)).map(
+              (entry) => [entry.messageId, entry.local] as const,
+            ),
+          ),
+        });
+        const orderBefore = await shopOrder();
+        expect(orderBefore.created).toHaveLength(2);
+        expect(orderBefore.locals[highId!]).toBe(nip05Slug(shopLabel));
+        expect(orderBefore.locals[lowId!]).toBe(
+          `${nip05Slug(shopLabel)}-${lowId!.replaceAll('-', '').slice(0, 8)}`,
         );
         const sparkPubkey = `02${'cd'.repeat(32)}`;
         await inTx.execute(
@@ -12112,13 +12153,18 @@ describe('KEK rotation on Postgres', () => {
         });
         expect(first).toMatchObject({
           accounts: 1,
-          shops: 1,
+          shops: 2,
           sparkViewer: 1,
           recoveryShares: 1,
           recoverySharesPending: 0,
           rotatedAccountIds: [accountId],
-          rotatedShopMessageIds: [noteId],
+          rotatedShopMessageIds: [lowId, highId],
         });
+        // The rotation keeps the key creation time, so both shops keep their
+        // NIP-05 local.
+        const orderAfter = await shopOrder();
+        expect(orderAfter.created).toEqual(orderBefore.created);
+        expect(orderAfter.locals).toEqual(orderBefore.locals);
 
         const [account] = await inTx.query<{
           nostr_pubkey: string;

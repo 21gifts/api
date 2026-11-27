@@ -139,7 +139,8 @@ addresses and wallets are unchanged. The recovery shares keep their content,
 so the shares held by the two chosen people stay valid. The api announces the
 new Nostr keys of members and shops (kind 0 and kind 10002) as for a new key,
 and `GET /shops`, `GET /shops/:npub` and the NIP-05 directory answer the new
-shop npubs. `GET /me` returns the new Spark viewer public key, and the app
+shop npubs. Shop NIP-05 names stay: a shop keeps its `nostr_key_created_at`,
+the order in which shop names are allocated. `GET /me` returns the new Spark viewer public key, and the app
 grants it to the member's current wallet again.
 
 ## Accepted limits
