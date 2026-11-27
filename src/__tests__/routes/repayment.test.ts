@@ -33,7 +33,7 @@ import {
 
 /**
  * Day 1 of the default credit below: it fills 2026-11-17, so its plan would
- * start 2026-11-18; that is before the outage restart, so day 0 is 2026-11-28.
+ * start 2026-11-18; that is before the earliest start, so day 0 is 2026-11-28.
  */
 const now = (): number => Date.UTC(2026, 10, 29, 12);
 const CREDIT = '55555555-5555-4555-8555-555555555555';
@@ -242,7 +242,7 @@ describe('credit repayment', () => {
     expect(badId.status).toBe(404);
   });
 
-  it('starts a non-exempt credit filled before November 16, 2026 on the 2026-11-28 restart day', async () => {
+  it('starts a credit filled 2026-10-09 on 2026-11-28, the earliest start', async () => {
     const { app } = await readyCredit({ fundedAt: new Date(Date.UTC(2026, 9, 9, 6)) });
     const res = await app.request(`/messages/${CREDIT}/repayment`);
     expect(res.status).toBe(200);
@@ -254,13 +254,11 @@ describe('credit repayment', () => {
     expect(body.repayments[0]?.dueOn).toBe('2026-11-28');
   });
 
-  it('starts an operator-approved credit filled 2026-11-09 on the 2026-11-28 restart day', async () => {
-    const id = '399feee2-e84a-4f2f-94e2-21c04928298c';
+  it('starts a credit filled 2026-11-09 on 2026-11-28, the earliest start', async () => {
     const { app } = await readyCredit({
-      messageId: id,
       fundedAt: new Date(Date.UTC(2026, 10, 9, 14, 12, 13, 130)),
     });
-    const res = await app.request(`/messages/${id}/repayment`);
+    const res = await app.request(`/messages/${CREDIT}/repayment`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       startsOn: string | null;
@@ -1035,11 +1033,11 @@ describe('repayment from the in-app wallet', () => {
   const WALLET_GIVER = '22222222-2222-4222-8222-222222222222';
   const NO_WALLET = '33333333-3333-4333-8333-333333333333';
   const SECOND_CREDIT = '66666666-6666-4666-8666-666666666666';
-  const EXEMPT_CREDIT = 'bcc5b230-f446-4724-8e50-df0339657bf9';
+  const EARLY_CREDIT = '17171717-1717-4171-8171-171717171717';
   const FILLED_EARLY = new Date('2026-11-09T14:12:13.130Z');
   /**
-   * Day 0 of a credit filled `FILLED_EARLY`, exempt or not: its start (2026-11-10
-   * exempt, 2026-11-16 otherwise) is before the outage restart, so 2026-11-28.
+   * Day 0 of a credit filled `FILLED_EARLY`: the day after it filled,
+   * 2026-11-10, is before the earliest start, so 2026-11-28.
    */
   const DAY_ZERO = Date.UTC(2026, 10, 28, 12);
   /** The day before {@link DAY_ZERO}: 2026-11-27 12:00 UTC. */
@@ -1689,16 +1687,16 @@ describe('repayment from the in-app wallet', () => {
     expect(((await bills.json()) as { bills: unknown[] }).bills).toEqual([]);
   });
 
-  it('bills day 0 for an exempt credit on the 2026-11-28 restart day', async () => {
+  it('bills day 0 for an early credit on 2026-11-28, the earliest start', async () => {
     await withNip57(async () => {
       const { app } = await loanSetup({
-        messageId: EXEMPT_CREDIT,
+        messageId: EARLY_CREDIT,
         now: DAY_ZERO,
         fundedAt: FILLED_EARLY,
         termDays: 1,
         givers: [{ id: WALLET_GIVER, sats: 300, wallet: true }],
       });
-      const res = await post(app, `/messages/${EXEMPT_CREDIT}/repayment/due`);
+      const res = await post(app, `/messages/${EARLY_CREDIT}/repayment/due`);
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
         bills: { dayIndex: number; amountSats: number }[];
@@ -1710,16 +1708,16 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
-  it('returns day 0 as the next due share for an exempt credit on 2026-11-28', async () => {
+  it('returns day 0 as the next due share for an early credit on 2026-11-28', async () => {
     await withNip57(async () => {
       const { app, messages } = await loanSetup({
-        messageId: EXEMPT_CREDIT,
+        messageId: EARLY_CREDIT,
         now: DAY_ZERO,
         fundedAt: FILLED_EARLY,
         termDays: 1,
         givers: [{ id: WALLET_GIVER, sats: 300, wallet: true }],
       });
-      const res = await post(app, `/messages/${EXEMPT_CREDIT}/repayment`);
+      const res = await post(app, `/messages/${EARLY_CREDIT}/repayment`);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ pr: BOLT11, amountSats: 300, sparkInvoice: null });
       const [attempt] = await messages.listInvoiceAttempts(5);
@@ -1727,9 +1725,9 @@ describe('repayment from the in-app wallet', () => {
     });
   });
 
-  it('has nothing due for an exempt credit on 2026-11-27, then due and behind from 2026-11-28', async () => {
+  it('has nothing due for an early credit on 2026-11-27, then due and behind from 2026-11-28', async () => {
     const { app, clock } = await loanSetup({
-      messageId: EXEMPT_CREDIT,
+      messageId: EARLY_CREDIT,
       now: BEFORE_DAY_ZERO,
       fundedAt: FILLED_EARLY,
       termDays: 3,
@@ -1738,7 +1736,7 @@ describe('repayment from the in-app wallet', () => {
     const before = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
       .loans[0];
     expect(before).toMatchObject({
-      messageId: EXEMPT_CREDIT,
+      messageId: EARLY_CREDIT,
       daysDue: 0,
       due: { behindDays: 0 },
       next: { dueOn: '2026-11-28' },
@@ -1747,7 +1745,7 @@ describe('repayment from the in-app wallet', () => {
     const first = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
       .loans[0];
     expect(first).toMatchObject({
-      messageId: EXEMPT_CREDIT,
+      messageId: EARLY_CREDIT,
       daysDue: 1,
       due: { behindDays: 0 },
       next: { dueOn: '2026-11-29', sats: 100, amount: null },
@@ -1760,7 +1758,7 @@ describe('repayment from the in-app wallet', () => {
       due: { behindDays: 1 },
       next: { dueOn: '2026-11-30', sats: 100, amount: null },
     });
-    const ledger = (await (await app.request(`/messages/${EXEMPT_CREDIT}/repayment`)).json()) as {
+    const ledger = (await (await app.request(`/messages/${EARLY_CREDIT}/repayment`)).json()) as {
       startsOn: string | null;
       repayments: { dayIndex: number; dueOn: string | null }[];
       next: { dayIndex: number } | null;
@@ -1770,7 +1768,7 @@ describe('repayment from the in-app wallet', () => {
     expect(ledger.next?.dayIndex).toBe(0);
   });
 
-  it('has nothing due for a non-exempt credit before its start on 2026-11-28', async () => {
+  it('has nothing due for the default early credit before its start on 2026-11-28', async () => {
     const { app } = await loanSetup({
       now: BEFORE_DAY_ZERO,
       fundedAt: FILLED_EARLY,
@@ -4785,11 +4783,11 @@ describe('repayment from the in-app wallet', () => {
     ]);
   });
 
-  // Floor start 2026-11-16 is before the outage restart: day 0 is 2026-11-28.
-  it('keeps a loan funded before the repayment floor off the overdue list until 2026-11-29', async () => {
-    const floorId = '12121212-1212-4121-8121-121212121212';
+  // The day after the fill, 2026-11-10, is before the earliest start: day 0 is 2026-11-28.
+  it('keeps a loan funded 2026-11-09 off the overdue list until 2026-11-29', async () => {
+    const earlyId = '12121212-1212-4121-8121-121212121212';
     const { app, clock } = await loanSetup({
-      messageId: floorId,
+      messageId: earlyId,
       givers: [{ id: WALLET_GIVER, sats: 80, wallet: true }],
       termDays: 1,
       fundedAt: new Date('2026-11-09T14:12:13.130Z'),
@@ -4798,7 +4796,7 @@ describe('repayment from the in-app wallet', () => {
     const onStart = (await (await openLoans(app)).json()) as OpenLoan[];
     expect(onStart).toEqual([
       {
-        messageId: floorId,
+        messageId: earlyId,
         accountId: AUTHOR,
         name: 'Ada',
         currency: 'BTC',
@@ -4813,8 +4811,7 @@ describe('repayment from the in-app wallet', () => {
   });
 
   it('does not list a loan as overdue on 2026-11-27 or 2026-11-28 for days the outage blocked', async () => {
-    // Filled 2026-11-15: under the old rule day 0 was 2026-11-16 and this loan
-    // was overdue from 2026-11-17. Now day 0 is 2026-11-28 and day 1 is
+    // Filled 2026-11-15: day 0 is 2026-11-28, the earliest start, and day 1 is
     // 2026-11-29; it is overdue only from 2026-11-29.
     const restartId = '13131313-1313-4131-8131-131313131313';
     const { app, clock } = await loanSetup({
@@ -4853,11 +4850,10 @@ describe('repayment from the in-app wallet', () => {
   });
 
   it('keeps every start of the open loans on 2026-11-28 and none overdue on 2026-11-27', async () => {
-    // Fills whose plans started 2026-11-10 (exempt), 2026-11-16 (floor),
-    // 2026-11-17 and 2026-11-18 under the old rule.
+    // Fills on 2026-11-09, 2026-11-16 and 2026-11-17: every one starts on
+    // 2026-11-28, the earliest start.
     const cases = [
-      { id: EXEMPT_CREDIT, fundedAt: FILLED_EARLY },
-      { id: '14141414-1414-4141-8141-141414141414', fundedAt: FILLED_EARLY },
+      { id: EARLY_CREDIT, fundedAt: FILLED_EARLY },
       {
         id: '15151515-1515-4151-8151-151515151515',
         fundedAt: new Date(Date.UTC(2026, 10, 16, 12)),

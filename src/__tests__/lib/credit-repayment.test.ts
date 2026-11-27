@@ -19,92 +19,65 @@ import {
   shareSats,
 } from '@/lib/credit-repayment';
 
-const ORDINARY_CREDIT = '22222222-2222-4222-8222-222222222222';
-const EXEMPT_CREDIT = 'bcc5b230-f446-4724-8e50-df0339657bf9';
-
 describe('credit repayment', () => {
   it('starts at the next UTC midnight', () => {
     const funded = Date.UTC(2026, 11, 26, 15, 30);
-    expect(repaymentStartMs(funded, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 11, 27));
-    expect(repaymentDueDate(funded, 0, ORDINARY_CREDIT)).toBe('2026-12-27');
-    expect(dueDayCount(funded, funded + 1000, 30, ORDINARY_CREDIT)).toBe(0);
-    expect(dueDayCount(funded, Date.UTC(2026, 11, 27, 1), 30, ORDINARY_CREDIT)).toBe(1);
-    expect(dueDayCount(funded, Date.UTC(2026, 11, 28, 1), 2, ORDINARY_CREDIT)).toBe(2);
-    expect(dueDayCount(funded, Date.UTC(2026, 11, 27), 0, ORDINARY_CREDIT)).toBe(0);
-    expect(dueDayCount(funded, funded, 1.5, ORDINARY_CREDIT)).toBe(0);
+    expect(repaymentStartMs(funded)).toBe(Date.UTC(2026, 11, 27));
+    expect(repaymentDueDate(funded, 0)).toBe('2026-12-27');
+    expect(dueDayCount(funded, funded + 1000, 30)).toBe(0);
+    expect(dueDayCount(funded, Date.UTC(2026, 11, 27, 1), 30)).toBe(1);
+    expect(dueDayCount(funded, Date.UTC(2026, 11, 28, 1), 2)).toBe(2);
+    expect(dueDayCount(funded, Date.UTC(2026, 11, 27), 0)).toBe(0);
+    expect(dueDayCount(funded, funded, 1.5)).toBe(0);
   });
 
-  // The 2026-11-16 floor still applies; the outage restart then moves that
-  // start from 2026-11-16 to 2026-11-28.
-  it('never starts a non-exempt credit before 2026-11-16, then moves it to the restart day', () => {
-    const early = Date.UTC(2026, 9, 9, 6, 23);
-    expect(repaymentStartMs(early, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 28));
-    expect(repaymentDueDate(early, 0, ORDINARY_CREDIT)).toBe('2026-11-28');
-    expect(repaymentDueDate(early, 1, ORDINARY_CREDIT)).toBe('2026-11-29');
-    expect(dueDayCount(early, Date.UTC(2026, 10, 27, 23, 59), 90, ORDINARY_CREDIT)).toBe(0);
-    expect(dueDayCount(early, Date.UTC(2026, 10, 28), 90, ORDINARY_CREDIT)).toBe(1);
-    expect(repaymentStartMs(Date.UTC(2026, 10, 10, 12), ORDINARY_CREDIT)).toBe(
-      Date.UTC(2026, 10, 28),
-    );
-    const eve = Date.UTC(2026, 10, 15, 23, 59);
-    expect(repaymentStartMs(eve, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 28));
-    const first = Date.UTC(2026, 10, 16, 0, 1);
-    expect(repaymentStartMs(first, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 28));
-  });
+  describe('earliest start 2026-11-28 (service unreachable 2026-11-18 through 2026-11-27)', () => {
+    it('starts a credit filled long before 2026-11-28 on 2026-11-28', () => {
+      const early = Date.UTC(2026, 9, 9, 6, 23);
+      expect(repaymentStartMs(early)).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentDueDate(early, 0)).toBe('2026-11-28');
+      expect(repaymentDueDate(early, 1)).toBe('2026-11-29');
+      expect(dueDayCount(early, Date.UTC(2026, 10, 27, 23, 59), 90)).toBe(0);
+      expect(dueDayCount(early, Date.UTC(2026, 10, 28), 90)).toBe(1);
+      const filled9 = Date.UTC(2026, 10, 9, 14, 12, 13, 130);
+      expect(repaymentStartMs(filled9)).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentDueDate(filled9, 0)).toBe('2026-11-28');
+      expect(dueDayCount(filled9, Date.UTC(2026, 10, 27, 23, 59), 30)).toBe(0);
+      expect(dueDayCount(filled9, Date.UTC(2026, 10, 28), 30)).toBe(1);
+      expect(repaymentStartMs(Date.UTC(2026, 10, 10, 12))).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentStartMs(Date.UTC(2026, 10, 15, 23, 59))).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentStartMs(Date.UTC(2026, 10, 16, 0, 1))).toBe(Date.UTC(2026, 10, 28));
+    });
 
-  // Without the outage rule the three exceptions start on 2026-11-10; the rule
-  // moves that to 2026-11-28 like every other early start.
-  it('starts the three operator-approved credits on the restart day, not 2026-11-10', () => {
-    const funded = Date.UTC(2026, 10, 9, 14, 12, 13, 130);
-    for (const id of [
-      'bcc5b230-f446-4724-8e50-df0339657bf9',
-      '11e05676-aa85-4b27-8a0b-855239328c9b',
-      '399feee2-e84a-4f2f-94e2-21c04928298c',
-    ]) {
-      expect(repaymentStartMs(funded, id)).toBe(Date.UTC(2026, 10, 28));
-      expect(repaymentDueDate(funded, 0, id)).toBe('2026-11-28');
-    }
-    expect(repaymentStartMs(funded, EXEMPT_CREDIT.toUpperCase())).toBe(Date.UTC(2026, 10, 28));
-    expect(repaymentDueDate(funded, 0, EXEMPT_CREDIT.toUpperCase())).toBe('2026-11-28');
-    expect(dueDayCount(funded, Date.UTC(2026, 10, 27, 23, 59), 30, EXEMPT_CREDIT)).toBe(0);
-    expect(dueDayCount(funded, Date.UTC(2026, 10, 28), 30, EXEMPT_CREDIT)).toBe(1);
-    expect(repaymentStartMs(funded, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 28));
-    expect(repaymentDueDate(funded, 0, ORDINARY_CREDIT)).toBe('2026-11-28');
-  });
-
-  describe('outage restart (service unreachable 2026-11-18 through 2026-11-27)', () => {
-    it('moves a start on 2026-11-17 or 2026-11-18 to 2026-11-28', () => {
+    it('starts a credit filled on 2026-11-16 or 2026-11-17 on 2026-11-28', () => {
       const filled16 = Date.UTC(2026, 10, 16, 12);
-      expect(repaymentStartMs(filled16, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 28));
-      expect(repaymentDueDate(filled16, 0, ORDINARY_CREDIT)).toBe('2026-11-28');
-      expect(repaymentDueDate(filled16, 3, ORDINARY_CREDIT)).toBe('2026-12-01');
+      expect(repaymentStartMs(filled16)).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentDueDate(filled16, 0)).toBe('2026-11-28');
+      expect(repaymentDueDate(filled16, 3)).toBe('2026-12-01');
       const filled17 = Date.UTC(2026, 10, 17, 12);
-      expect(repaymentStartMs(filled17, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 28));
-      expect(repaymentDueDate(filled17, 0, ORDINARY_CREDIT)).toBe('2026-11-28');
-      expect(dueDayCount(filled17, Date.UTC(2026, 10, 27, 23, 59), 30, ORDINARY_CREDIT)).toBe(0);
-      expect(dueDayCount(filled17, Date.UTC(2026, 10, 28), 30, ORDINARY_CREDIT)).toBe(1);
-      expect(dueDayCount(filled17, Date.UTC(2026, 10, 29), 30, ORDINARY_CREDIT)).toBe(2);
+      expect(repaymentStartMs(filled17)).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentDueDate(filled17, 0)).toBe('2026-11-28');
+      expect(dueDayCount(filled17, Date.UTC(2026, 10, 27, 23, 59), 30)).toBe(0);
+      expect(dueDayCount(filled17, Date.UTC(2026, 10, 28), 30)).toBe(1);
+      expect(dueDayCount(filled17, Date.UTC(2026, 10, 29), 30)).toBe(2);
     });
 
-    it('moves a start on 2026-11-27, the last outage day, and keeps one on 2026-11-28', () => {
+    it('starts a credit filled on 2026-11-26 or 2026-11-27 on 2026-11-28', () => {
       const lastDay = Date.UTC(2026, 10, 26, 23, 59, 59, 999);
-      expect(repaymentStartMs(lastDay, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 28));
-      expect(repaymentDueDate(lastDay, 0, ORDINARY_CREDIT)).toBe('2026-11-28');
-      expect(repaymentStartMs(lastDay, EXEMPT_CREDIT)).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentStartMs(lastDay)).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentDueDate(lastDay, 0)).toBe('2026-11-28');
       const firstAfter = Date.UTC(2026, 10, 27);
-      expect(repaymentStartMs(firstAfter, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 28));
-      expect(repaymentDueDate(firstAfter, 0, ORDINARY_CREDIT)).toBe('2026-11-28');
-      expect(repaymentStartMs(firstAfter, EXEMPT_CREDIT)).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentStartMs(firstAfter)).toBe(Date.UTC(2026, 10, 28));
+      expect(repaymentDueDate(firstAfter, 0)).toBe('2026-11-28');
     });
 
-    it('leaves a start after the outage unchanged', () => {
+    it('starts a credit filled on 2026-11-28 the next day', () => {
       const later = Date.UTC(2026, 10, 28, 9);
-      expect(repaymentStartMs(later, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 29));
-      expect(repaymentStartMs(later, EXEMPT_CREDIT)).toBe(Date.UTC(2026, 10, 29));
-      expect(repaymentDueDate(later, 1, ORDINARY_CREDIT)).toBe('2026-11-30');
+      expect(repaymentStartMs(later)).toBe(Date.UTC(2026, 10, 29));
+      expect(repaymentDueDate(later, 1)).toBe('2026-11-30');
     });
 
-    it('keeps paid day indexes paid after the restart; only their dates move', () => {
+    it('keeps paid day indexes paid; only their dates move', () => {
       const lines = repaymentLedger(
         3,
         [{ accountId: 'a', units: 3n }],
@@ -114,7 +87,6 @@ describe('credit repayment', () => {
         ],
         Date.UTC(2026, 9, 9, 6),
         Date.UTC(2026, 10, 29, 12),
-        ORDINARY_CREDIT,
       );
       const rows = lines.map((line) => [line.dayIndex, line.dueOn, line.paidUnits, line.status]);
       expect(rows).toEqual([
@@ -318,14 +290,13 @@ describe('credit repayment', () => {
 
   it('counts a part only once and marks the share paid only when the remainder is zero', () => {
     const id = '11111111-1111-4111-8111-111111111111';
-    // Day 0 of a credit filled 2026-11-09 is 2026-11-28 after the outage restart.
+    // Day 0 of a credit filled 2026-11-09 is 2026-11-28, the earliest start.
     const lines = repaymentLedger(
       1,
       [{ accountId: id, units: 100n }],
       [{ dayIndex: 0, accountId: id, paidUnits: 40n }],
       Date.UTC(2026, 10, 9),
       Date.UTC(2026, 10, 30),
-      '22222222-2222-4222-8222-222222222222',
     );
     expect(lines[0]).toMatchObject({ units: 100n, paidUnits: 40n, status: 'due' });
     const paid = repaymentLedger(
@@ -334,7 +305,6 @@ describe('credit repayment', () => {
       [{ dayIndex: 0, accountId: id, paidUnits: 100n }],
       Date.UTC(2026, 10, 9),
       Date.UTC(2026, 10, 20),
-      '22222222-2222-4222-8222-222222222222',
     );
     expect(paid[0]).toMatchObject({ units: 100n, paidUnits: 100n, status: 'paid' });
   });
@@ -347,7 +317,6 @@ describe('credit repayment', () => {
       [{ dayIndex: 0, accountId: id }],
       Date.UTC(2026, 10, 9),
       Date.UTC(2026, 10, 20),
-      ORDINARY_CREDIT,
     );
     expect(line).toMatchObject({ units: 100n, paidUnits: 100n, status: 'paid' });
   });
@@ -419,7 +388,6 @@ describe('credit repayment', () => {
       [],
       null,
       Date.UTC(2026, 11, 28),
-      ORDINARY_CREDIT,
     );
     expect(open.every((line) => line.dueOn === null && line.status === 'scheduled')).toBe(true);
     const funded = Date.UTC(2026, 11, 26, 12);
@@ -430,7 +398,6 @@ describe('credit repayment', () => {
       [{ dayIndex: 0, accountId: 'a', paidUnits: 1n }],
       funded,
       now,
-      ORDINARY_CREDIT,
     );
     expect(plan).toEqual([
       {
@@ -449,7 +416,6 @@ describe('credit repayment', () => {
       [],
       funded,
       Date.UTC(2026, 11, 27, 1),
-      ORDINARY_CREDIT,
     );
     expect(later[1]?.status).toBe('scheduled');
   });
