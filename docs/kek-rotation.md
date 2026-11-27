@@ -75,9 +75,10 @@ NOTHING`) in the same transaction as the update that retires them. Every
   once more, as `RECOVERY_SHARE_KEK_PREVIOUS`; without it the stored shares
   cannot be moved to the new key. You also need the current value of
   `NOSTR_NSEC_KEK` once more, as `NOSTR_NSEC_KEK_PREVIOUS`; without it the
-  boot stops, because the old keys could not be retired and members could no
-  longer delete notes signed before the rotation, nor could previous wallets
-  (and current wallets until the app grants the new viewer) be read.
+  boot stops, because the old keys could not be retired and staff could no
+  longer delete notes signed before the rotation from public relays, nor could
+  previous wallets (and current wallets until the app grants the new viewer) be
+  read.
 - Store the new values wherever the deployment keeps its secrets before you
   change anything.
 
@@ -178,10 +179,10 @@ grants it to the member's current wallet the next time the member opens the
 app. Until then the api reads the current wallet through the retired viewer it
 granted before, so balances and history stay correct and no 0 balance is
 stored. A previous wallet cannot grant the new viewer; the api reads it
-through the viewer it granted while it was current (see below). Deleting or
-hiding a note signed before the rotation still
-removes it from public relays, because the deletion is signed by the retired
-key that signed the note.
+through the viewer it granted while it was current (see below). When staff
+delete a note signed before the rotation (`DELETE /messages/:id`), it is still
+removed from public relays, because the deletion is signed by the retired key
+that signed the note.
 
 ## How wallets are read after a rotation
 

@@ -64,8 +64,9 @@ the Spark viewer key is replaced by a fresh one under the current Nostr key, and
 the old one is kept as a retired key sealed under the current key
 (`nostr_retired_key`, additional data bound to owner type, owner id and pubkey;
 `spark_viewer_retired_key`, bound to the identity public key). A retired Nostr
-key signs only the NIP-09 kind 5 deletion of an event it signed: a delete or
-staff hide signs each deletion with the key whose pubkey is the stored event's,
+key signs only the NIP-09 kind 5 deletion of an event it signed: a staff delete
+(`DELETE /messages/:id`) signs each deletion with the key whose pubkey is the
+stored event's,
 and when none matches it publishes nothing for that note and logs
 `messages.delete.nostr_key_missing` with the count only. A retired viewer only
 reads wallets that have not granted the new viewer: previous wallets, which
@@ -6505,7 +6506,10 @@ and stores only an AES-GCM envelope in `viewer_mnemonic_ciphertext` under
 `NOSTR_NSEC_KEK`, with its KEK id (`NOSTR_NSEC_KEK_ID`, default 1) in
 `viewer_kek_id`. KEK rotation replaces a row under another id with a fresh
 mnemonic at boot, so `GET /me` then returns the new viewer identity and the
-app grants it; a wallet that is not granted again loses viewer reads. The
+app grants it. Until then the wallet worker reads that wallet through the
+retired viewer it granted (`spark_viewer_retired_key`), and previous wallets,
+which cannot grant the new viewer, through theirs; see KEK ids and KEK rotation
+above. The
 mnemonic is never stored in plaintext, logged, or returned; the public identity
 is returned by `GET /me`. `db_change` stores only the SHA-256 of
 `viewer_mnemonic_ciphertext`, and `GET /debug/db` exposes only its byte length.
