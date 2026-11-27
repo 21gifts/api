@@ -35,7 +35,8 @@ missing or malformed value, or one equal to `NOSTR_NSEC_KEK`, throws at
 boot.
 
 **KEK ids and KEK rotation.** `NOSTR_NSEC_KEK_ID` and `RECOVERY_SHARE_KEK_ID`
-(optional positive integers, default `1`) are the KEK ids the two keys carry;
+(optional, a decimal integer from 1 to 2147483647, the Postgres `integer` range
+of every `*_kek_id` column; default `1`) are the KEK ids the two keys carry;
 every new envelope and `*_kek_id` column records the id of the key that sealed
 it, and a key only ever opens envelopes under its own id. The exceptions are
 the two previous keys: they carry no id and, only during KEK rotation, open
@@ -47,8 +48,8 @@ the previous Nostr key; it must differ from `NOSTR_NSEC_KEK`,
 `RECOVERY_SHARE_KEK` and `RECOVERY_SHARE_KEK_PREVIOUS`, and it is required as
 soon as a member key, shop key, the Spark viewer key or a retired key is stored
 under another `NOSTR_NSEC_KEK_ID`: without it the boot stops with the count. A
-KEK id that is not a positive integer, or a malformed or equal previous key,
-throws at boot. **A new key
+KEK id outside 1 to 2147483647, or a malformed or equal previous key, throws at
+boot. **A new key
 value always needs a new id:** before it changes anything, the SQL boot opens one
 envelope stored under the current `NOSTR_NSEC_KEK_ID` (a member key, else a shop
 key, else the Spark viewer key, else a retired key, else a retired viewer) with
