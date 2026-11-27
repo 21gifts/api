@@ -98,6 +98,16 @@ import { isListedShop } from '@/lib/shop-place';
 import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
 import { signEventForShop } from '@/lib/nostr/sign';
 import { manualReceiptIdForPaymentHash, settleInvoiceManually } from '@/lib/nostr/zap-index';
+import { envelopeKekId, openAesGcmEnvelope } from '@/lib/aes-gcm-envelope';
+import { encryptRecoveryShare } from '@/lib/auth/recovery-share';
+import { rotateKeks } from '@/lib/kek-rotation';
+import { bindKekId } from '@/lib/nostr/kek';
+import {
+  decryptNostrSecret,
+  generateNostrKeyRecord,
+  publicKeyHexFromSecret,
+} from '@/lib/nostr/keys';
+import { ensureSparkViewer, migrateSparkViewerSchema } from '@/lib/spark-viewer';
 import type { ForumPhoto, MessageRow } from '@/lib/message';
 import { messagesRoutes } from '@/routes/messages';
 
@@ -11987,6 +11997,234 @@ describe('PostgresWalletUsageStore', () => {
           postgresTextArrayLiteral(ids),
         ]);
       }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('KEK rotation on Postgres', () => {
+  test('renews keys under another KEK id in place, re-seals shares, then changes nothing', async () => {
+    const { client, sql } = createBunSqlClient(String(databaseUrl));
+    await migrateAuthSchema(client);
+    await migrateBtcUsdSchema(client);
+    await migrateFiatSchema(client);
+    await migrateMessageSchema(client);
+    // Twice: the CHECK replacement is a no-op the second time.
+    await migrateShopIdentitySchema(client);
+    await migrateShopIdentitySchema(client);
+    await migrateSparkViewerSchema(client);
+    await migrateSparkViewerSchema(client);
+    const previousNostrKek = bindKekId(new Uint8Array(32).fill(8), 2);
+    const previousRecoveryKek = bindKekId(new Uint8Array(32).fill(10), 2);
+    const nostrKek = new Uint8Array(32).fill(7);
+    const recoveryKek = new Uint8Array(32).fill(9);
+    const share = Array.from({ length: 20 }, () => 'acid').join(' ');
+    const rollback = new Error('rollback');
+    try {
+      // Everything runs in one transaction that is rolled back, so other
+      // rows of the shared test database are neither read nor kept.
+      await sql.begin(async (tx) => {
+        const inTx: SqlClient = {
+          query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+            (await tx.unsafe(text, [...params])) as R[],
+          execute: async (text: string, params: readonly unknown[] = []): Promise<void> => {
+            await tx.unsafe(text, [...params]);
+          },
+          transaction: async (run) => run(inTx),
+        };
+        // Keys other tests stored are sealed with other keys: without them the
+        // boot check of the current keys samples only rows of this test.
+        await inTx.execute('DELETE FROM recovery_share');
+        await inTx.execute(
+          'UPDATE account SET nostr_nsec_ciphertext = NULL WHERE nostr_nsec_ciphertext IS NOT NULL',
+        );
+        await inTx.execute('DELETE FROM shop_identity');
+        await inTx.execute(
+          `INSERT INTO spark_viewer_key
+             (singleton, viewer_identity_public_key, viewer_mnemonic_ciphertext, viewer_kek_id, created_at)
+           VALUES (true, $1, $2, 2, now())
+           ON CONFLICT (singleton) DO UPDATE SET viewer_kek_id = 2`,
+          [`02${'ab'.repeat(32)}`, new Uint8Array(40)],
+        );
+        const accountId = crypto.randomUUID();
+        const auth = new PostgresAuthStore(inTx);
+        await auth.createAccount({
+          id: accountId,
+          linkingKey: null,
+          role: 'verified',
+          name: 'Coffee',
+          username: `k${accountId.replaceAll('-', '').slice(0, 12)}`,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: accountId.replaceAll('-', '').padEnd(64, 'e'),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        });
+        const oldRecord = await generateNostrKeyRecord(accountId, previousNostrKek);
+        expect(await auth.setNostrKeyIfAbsent(accountId, oldRecord)).toBe('inserted');
+        const messages = new PostgresMessageStore(inTx);
+        const shops = new PostgresShopIdentityStore(inTx, messages);
+        const noteId = crypto.randomUUID();
+        await messages.create({
+          id: noteId,
+          accountId,
+          name: 'Coffee',
+          text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+          createdAt: new Date(),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+          place: {
+            lat: 47.3769,
+            lng: 8.5417,
+            label: 'Coffee Lab',
+            address: {
+              street: 'Main Street',
+              houseNumber: '1',
+              postalCode: '8001',
+              city: 'Zürich',
+              country: 'CH',
+            },
+          },
+          shopAccount: { id: accountId, username: 'coffee', name: 'Coffee' },
+        });
+        const oldShop = await shops.ensureListed(noteId, previousNostrKek);
+        expect(oldShop?.nostrKekId).toBe(2);
+        await inTx.execute(
+          'UPDATE shop_identity SET ocp_place_pending = false WHERE message_id = $1',
+          [noteId],
+        );
+        const sparkPubkey = `02${'cd'.repeat(32)}`;
+        await inTx.execute(
+          `INSERT INTO recovery_share (account_id, spark_pubkey, recovery_share_ciphertext, stored_at)
+           VALUES ($1, $2, $3, now())`,
+          [
+            accountId,
+            sparkPubkey,
+            await encryptRecoveryShare(share, previousRecoveryKek, accountId),
+          ],
+        );
+
+        const first = await rotateKeks(inTx, {
+          nostrKek,
+          recoveryShareKek: recoveryKek,
+          previousRecoveryShareKek: previousRecoveryKek,
+          batchSize: 1,
+        });
+        expect(first).toMatchObject({
+          accounts: 1,
+          shops: 1,
+          sparkViewer: 1,
+          recoveryShares: 1,
+          recoverySharesPending: 0,
+          rotatedAccountIds: [accountId],
+          rotatedShopMessageIds: [noteId],
+        });
+
+        const [account] = await inTx.query<{
+          nostr_pubkey: string;
+          nostr_nsec_ciphertext: Uint8Array;
+          nostr_kek_id: number;
+          nostr_key_custody: string;
+        }>(
+          `SELECT nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id, nostr_key_custody
+           FROM account WHERE id = $1`,
+          [accountId],
+        );
+        if (account === undefined) {
+          throw new Error('account missing');
+        }
+        expect(account.nostr_kek_id).toBe(1);
+        expect(account.nostr_key_custody).toBe('custodial');
+        expect(account.nostr_pubkey).not.toBe(oldRecord.pubkey);
+        const secret = await decryptNostrSecret(
+          new Uint8Array(account.nostr_nsec_ciphertext),
+          nostrKek,
+          accountId,
+        );
+        expect(publicKeyHexFromSecret(secret)).toBe(account.nostr_pubkey);
+        expect((await auth.getAccountByPubkey(oldRecord.pubkey))?.id).toBeUndefined();
+        expect((await auth.getAccountByPubkey(account.nostr_pubkey))?.id).toBe(accountId);
+
+        const shop = await shops.getByMessageId(noteId);
+        if (shop === undefined || oldShop === undefined) {
+          throw new Error('shop missing');
+        }
+        expect(shop.nostrKekId).toBe(1);
+        expect(shop.nostrPubkey).not.toBe(oldShop.nostrPubkey);
+        expect(shop.ocpPlacePending).toBe(true);
+        expect(shop.ocpPhotosPending).toBe(true);
+        expect(await shops.getByPubkey(oldShop.nostrPubkey)).toBeUndefined();
+        const signed = await signEventForShop(shops, noteId, nostrKek, {
+          kind: 0,
+          content: '{}',
+          tags: [],
+          created_at: 1,
+        });
+        expect(signed.pubkey).toBe(shop.nostrPubkey);
+
+        const [stored] = await inTx.query<{ recovery_share_ciphertext: Uint8Array }>(
+          'SELECT recovery_share_ciphertext FROM recovery_share WHERE account_id = $1',
+          [accountId],
+        );
+        const envelope = new Uint8Array(stored!.recovery_share_ciphertext);
+        expect(envelopeKekId(envelope)).toBe(1);
+        const opened = await openAesGcmEnvelope(
+          envelope,
+          recoveryKek,
+          new TextEncoder().encode(accountId),
+        );
+        expect(new TextDecoder().decode(opened)).toBe(share);
+
+        const [viewer] = await inTx.query<{
+          viewer_identity_public_key: string;
+          viewer_kek_id: number;
+        }>('SELECT viewer_identity_public_key, viewer_kek_id FROM spark_viewer_key');
+        if (viewer === undefined) {
+          throw new Error('viewer missing');
+        }
+        expect(viewer.viewer_kek_id).toBe(1);
+        expect((await ensureSparkViewer(inTx, nostrKek)).publicKey).toBe(
+          viewer.viewer_identity_public_key,
+        );
+
+        expect(
+          await rotateKeks(inTx, {
+            nostrKek,
+            recoveryShareKek: recoveryKek,
+            previousRecoveryShareKek: previousRecoveryKek,
+          }),
+        ).toMatchObject({ accounts: 0, shops: 0, sparkViewer: 0, recoveryShares: 0 });
+
+        // Another key value under the id already in use stops the boot.
+        let reused: unknown;
+        try {
+          await rotateKeks(inTx, {
+            nostrKek: new Uint8Array(32).fill(6),
+            recoveryShareKek: recoveryKek,
+            previousRecoveryShareKek: undefined,
+          });
+        } catch (error) {
+          reused = error;
+        }
+        expect(reused).toBeInstanceOf(Error);
+        expect((reused as Error).message).toBe(
+          'NOSTR_NSEC_KEK does not open the keys stored under NOSTR_NSEC_KEK_ID 1; a new key value needs a new id',
+        );
+
+        let refused: unknown;
+        try {
+          await inTx.execute('UPDATE shop_identity SET nostr_kek_id = 0 WHERE message_id = $1', [
+            noteId,
+          ]);
+        } catch (error) {
+          refused = error;
+        }
+        expect(sqlState(refused)).toBe('23514');
+        throw rollback;
+      });
+    } catch (error) {
+      if (error !== rollback) throw error;
+    } finally {
       await closeIfPossible(sql);
     }
   });

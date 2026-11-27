@@ -48,7 +48,12 @@ import {
   resolveMediaDir,
   videoFilePath,
 } from '@/lib/video';
-import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
+import {
+  currentKekEnvelope,
+  decryptNostrSecret,
+  ensureAccountNostrKey,
+  zeroizeSecret,
+} from '@/lib/nostr/keys';
 import { publicAcked, spaceAcked, type NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame, NostrQuerier } from '@/lib/nostr/query';
 import {
@@ -1597,6 +1602,44 @@ function shopCache<T>(
   return created;
 }
 
+/**
+ * Make the worker announce rotated keys again: drop the reserved or acked
+ * kind 0 and kind 10002 content of every rotated account and shop, exactly as
+ * a relay nack does, so the next ticks sign both with the new key and publish
+ * them through the normal publishers. The watermarks stay, so every new event
+ * is newer than the last one. Accounts and shops that were not rotated keep
+ * their cache.
+ *
+ * At boot the caches of freshly built stores are still empty, so this call
+ * changes nothing there: the first ticks of a new process announce every
+ * account and shop, the rotated ones included, anyway. It guards a later
+ * call in the same process, where the caches would otherwise still hold the
+ * content acked for the old key.
+ *
+ * @param auth - Auth store the worker runs with.
+ * @param shops - Shop identity store the worker runs with, or `undefined`.
+ * @param rotated - Ids from `rotateKeks`.
+ */
+export function forgetNostrAnnouncements(
+  auth: AuthStore,
+  shops: ShopIdentityStore | undefined,
+  rotated: { rotatedAccountIds: readonly string[]; rotatedShopMessageIds: readonly string[] },
+): void {
+  const profiles = profileCacheFor(auth);
+  const relayLists = relayListCacheFor(auth);
+  for (const accountId of rotated.rotatedAccountIds) {
+    profiles.delete(accountId);
+    relayLists.delete(accountId);
+  }
+  if (shops === undefined) return;
+  const shopProfiles = shopCache(shopProfileCaches, shops);
+  const shopRelays = shopCache(shopRelayCaches, shops);
+  for (const messageId of rotated.rotatedShopMessageIds) {
+    shopProfiles.delete(messageId);
+    shopRelays.delete(messageId);
+  }
+}
+
 /** Kind 0 `about` of a shop that is no longer public. */
 const SHOP_UNLISTED_ABOUT = 'This shop is no longer listed on 21.gifts.';
 
@@ -2041,7 +2084,9 @@ async function withAccountSecret<T>(
   accountId: string,
   fn: (secret: Uint8Array) => Promise<T> | T,
 ): Promise<T | null> {
-  const ciphertext = await deps.auth.getNostrSecret(accountId);
+  const ciphertext = currentKekEnvelope(await deps.auth.getNostrSecret(accountId), deps.kek, {
+    accountId,
+  });
   if (ciphertext === undefined) {
     return null;
   }

@@ -709,6 +709,7 @@
 - **Payment and external-zapper backfills:** Only after `migrateDbChangeSchema` has attached `trg_db_change` to every public table (so the payment backfill's `nostr_zap_payment` inserts are logged), constructs `PostgresMessageStore`, runs `backfillZapPayments`, and immediately runs `backfillExternalZappers` before constructing the remaining Postgres stores and returning. The external-zapper backfill pages through unattributed receipts with a 10,000-row ceiling and logs `nostr.zapper.backfill.done` with its aggregate counts; a failure logs `nostr.zapper.backfill.failed` and boot continues. Payment-backfill failures still propagate. In-memory boots call neither backfill.
 - **Member data:** A SQL boot gets `welcome_invoice_reservation` from `migrateAuthSchema`, then runs `migrateWalletSchema` (which creates `wallet_balance_snapshot`, `wallet_payment`, `wallet_transfer`, `wallet_token_transaction`, and `wallet_transfer_sync` together), `migrateSparkViewerSchema`, and `migrateMemberEventSchema` after `migrateSparkInvoiceSchema` and before `migrateDbChangeSchema`, so `trg_db_change` attaches to every wallet table, `spark_viewer_key`, `welcome_invoice_reservation`, and `member_event`. It returns `walletStore: PostgresWalletStore`, `walletTransferStore: PostgresWalletTransferStore`, `welcomeInvoiceReservationStore: PostgresWelcomeInvoiceReservationStore`, `usageStore: PostgresWalletUsageStore`, the read-only `sparkViewer`, its `walletViewerPublicKey`, and `memberEventStore: PostgresMemberEventStore`. `PostgresWalletUsageStore` only reads `wallet_payment`, `account`, `spark_invoice`, `fond_payout`, `message_invoice`, `message`, `nostr_zap_payment`, `nostr_zap_receipt`, and `pos_charge`; it does not migrate. After `migrateDbChangeSchema`, viewer-key initialization, `repairGiftKind`, and `linkDailyRosterAccounts` it runs `repairWalletPaymentPairs` and logs `wallet_payment.pairs_repaired` with the changed-row count. Once the Postgres conversation, push, and notification stores exist, and only when `backfillExternalZappers` completed without throwing and below its 10,000-row ceiling (otherwise it logs `conversations.damus_cleanup.deferred`, writes no marker, and a later boot runs it), it runs `removeUnadmittedDamusThreads` with the message store as zapper source and `storesFor` building the Postgres conversation, push, and notification stores on the transaction client; it removes once per database the `member_damus` threads without a member message whose counterpart is not an entitled external zapper, writes the dismiss pushes in the same transaction, and logs `conversations.damus_cleanup`. A memory boot creates an ephemeral viewer and public key, returns `undefined` for the durable stores (`walletStore`, `walletTransferStore`, `welcomeInvoiceReservationStore`, `usageStore`, and `memberEventStore`), and `createApp` falls back to the in-memory stores.
 - **Used by:** `src/index.ts` boot.
+- **KEK ids and KEK rotation:** The SQL path binds `NOSTR_NSEC_KEK` to `NOSTR_NSEC_KEK_ID` and `RECOVERY_SHARE_KEK` to `RECOVERY_SHARE_KEK_ID` (`parseKekId`, default 1, `bindKekId`) and parses the optional `RECOVERY_SHARE_KEK_PREVIOUS` (`parsePreviousRecoveryShareKek`); an id that is not a positive integer, a malformed previous key, or one equal to a current key stops the boot. Right after `migrateDbChangeSchema` (so `trg_db_change` records every rotation `UPDATE`) and before `ensureSparkViewer`, `repairGiftKind`, and every store and worker, it runs `rotateKeks` and logs one `kek.rotation.done` line with only `accounts`, `shops`, `sparkViewer`, `recoveryShares`, and `recoverySharesPending`. A rotation error stops the boot, including the check that the current `NOSTR_NSEC_KEK` and `RECOVERY_SHARE_KEK` open what is already stored under their ids (a new key value always needs a new id). The Nostr worker started on these stores begins with empty publish caches and announces every key, the new ones included; once `PostgresShopIdentityStore` exists the boot still calls `forgetNostrAnnouncements` with the rotated ids, which changes nothing at boot and only guards a later call in the same process. Memory boots read none of these variables and rotate nothing.
 - **Shop identities:** Runs `migrateShopIdentitySchema` right after `migrateMessageSchema` (before `migrateDbChangeSchema` attaches `trg_db_change`) and returns `shopIdentityStore` (`PostgresShopIdentityStore` over the shared client and the Postgres message store); memory boots return `undefined`.
 - **Fond deposit address:** `migrateFondPayoutSchema` also creates `fond_deposit_address` after `fond_payout`, before `migrateDbChangeSchema`, so `trg_db_change` attaches to it as well. The same `fondPayoutStore` (Postgres or in-memory) serves the Fond's on-chain deposit address.
 
@@ -3207,7 +3208,28 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Parse a 32-byte AES key given as 64 lowercase hex characters (surrounding whitespace is trimmed). It is the shared body of the two boot keys, `NOSTR_NSEC_KEK` and `RECOVERY_SHARE_KEK`.
 - **Inputs:** `name`, the environment variable name used in the messages, and the env string or `undefined`.
 - **Returns / side effects:** 32-byte `Uint8Array`. Throws `<name> is required when DATABASE_URL is set` for a missing or blank value and `<name> must be 64 lowercase hex characters` for anything else that is not 64 lowercase hex. No I/O; never logs the value.
-- **Used by:** `parseNostrKek` and `parseRecoveryShareKek`, both on the SQL path of `openBootStores`.
+- **Used by:** `parseNostrKek`, `parseRecoveryShareKek`, and `parsePreviousRecoveryShareKek`, all on the SQL path of `openBootStores`.
+
+## Function: parseKekId
+
+- **Purpose:** Parse the KEK id an environment variable assigns to its key: `NOSTR_NSEC_KEK_ID` for `NOSTR_NSEC_KEK` and `RECOVERY_SHARE_KEK_ID` for `RECOVERY_SHARE_KEK`. Envelopes and `*_kek_id` columns record this id, and KEK rotation renews everything stored under another one.
+- **Inputs:** `name`, the variable name used in the message, and the env string or `undefined`.
+- **Returns / side effects:** `DEFAULT_KEK_ID` (1) when unset or blank; otherwise the decimal integer from 1 to 4294967295 (surrounding whitespace trimmed). Anything else (0, a sign, a fraction, a leading zero, a word, a larger number) throws `<name> must be a positive integer`, which stops the boot. No I/O.
+- **Used by:** `openBootStores` on the SQL path, right after the KEKs are parsed.
+
+## Function: bindKekId
+
+- **Purpose:** Bind a KEK id to one parsed key object, so every envelope sealed with that object carries the id and every open with it accepts only that id. The binding is by object identity (a `WeakMap`), not by the key bytes: a copy of the bytes is not bound.
+- **Inputs:** The parsed 32-byte key and its positive id (`parseKekId`).
+- **Returns / side effects:** The same key object. Throws `KEK id must be a positive integer` for an id below 1, above 4294967295, or not an integer. Never logs the key.
+- **Used by:** `openBootStores`, for `NOSTR_NSEC_KEK` and `RECOVERY_SHARE_KEK`; the bound objects are the ones handed to `createApp` and the workers.
+
+## Function: kekIdOf
+
+- **Purpose:** Read the KEK id of a key object: the id `bindKekId` bound to it, or `DEFAULT_KEK_ID` (1) for a key that was never bound (memory boots and tests).
+- **Inputs:** A key object.
+- **Returns / side effects:** The id. No I/O.
+- **Used by:** `encryptNostrSecret`, `decryptNostrSecret`, `ensureAccountNostrKey`, `generateNostrKeyRecord`, `currentKekEnvelope`, the shop key creation, `encryptRecoveryShare`, `reencryptRecoveryShare`, `ensureSparkViewer`, `rotateSparkViewerKey`, and `rotateKeks`.
 
 ## Function: hexToBytes
 
@@ -3233,30 +3255,51 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 ## Function: encryptNostrSecret
 
 - **Purpose:** AES-256-GCM envelope for a 32-byte nsec. Checks the 32-byte secret, then seals it with `sealAesGcmEnvelope` and the UTF-8 account id (or `shop:{messageId}` for a shop key) as additional data; `NOSTR_ENVELOPE_VERSION` is `AES_GCM_ENVELOPE_VERSION`.
-- **Inputs:** secret, kek, accountId (the AAD: an account id, or `shop:{messageId}` for a shop key), optional kekId.
-- **Returns / side effects:** Envelope bytes. Throws `Nostr secret must be 32 bytes` or `KEK must be 32 bytes`.
+- **Inputs:** secret, kek, accountId (the AAD: an account id, or `shop:{messageId}` for a shop key), optional kekId (default: the id of `kek`, `kekIdOf`).
+- **Returns / side effects:** Envelope bytes under the KEK id of `kek` (`NOSTR_NSEC_KEK_ID`, default 1). Throws `Nostr secret must be 32 bytes` or `KEK must be 32 bytes`.
 - **Used by:** `ensureAccountNostrKey` and the shop key creation of `InMemoryShopIdentityStore.ensureListed` / `PostgresShopIdentityStore.ensureListed` (AAD `shop:{messageId}`).
 
 ## Function: decryptNostrSecret
 
-- **Purpose:** Decrypt a v1 envelope (`kek_id=1` only).
+- **Purpose:** Decrypt a v1 envelope whose `kek_id` is the id of the key (`kekIdOf`); an envelope under another id is never decrypted with this key.
 - **Inputs:** envelope, kek, accountId (the AAD: an account id, or `shop:{messageId}` for a shop key).
-- **Returns / side effects:** 32-byte secret.
-- **Used by:** `signEventForAccount` and `signEventForShop` (AAD `shop:{messageId}`).
+- **Returns / side effects:** 32-byte secret. Throws `Nostr envelope too short`, `Unsupported Nostr envelope version`, `Unsupported Nostr kek_id`, `KEK must be 32 bytes`, or the Web Crypto error.
+- **Used by:** `signEventForAccount` and `signEventForShop` (AAD `shop:{messageId}`), and the worker's direct-message signing, each after `currentKekEnvelope`.
+
+## Function: currentKekEnvelope
+
+- **Purpose:** Hand on a stored Nostr envelope only when it is under the KEK id of the current key. A key that KEK rotation has not renewed yet then behaves exactly like a missing key, as the signing code already handles it, instead of failing in the decrypt.
+- **Inputs:** The stored envelope or `undefined`, the current key, and the non-secret owner (`{ accountId }` or `{ messageId }`).
+- **Returns / side effects:** The envelope when it is under the current id, `undefined` when there is none, the envelope unchanged when it is not a well-formed v1 envelope (`decryptNostrSecret` rejects it as before), and `undefined` for an envelope under another id. The last case logs `nostr.key.kek_stale` with only the owner field, once per owner and process; it never logs ciphertext or key material and never decrypts.
+- **Used by:** `signEventForAccount`, `signEventForShop`, and the worker's direct-message secret path.
 
 ## Function: zeroizeSecret
 
 - **Purpose:** Overwrite a secret buffer with zeros.
 - **Inputs:** `Uint8Array`.
 - **Returns / side effects:** In-place fill.
-- **Used by:** `ensureAccountNostrKey`, `signEventForAccount`, `signEventForShop`, the shop key creation of `InMemoryShopIdentityStore.ensureListed` / `PostgresShopIdentityStore.ensureListed`, and `encryptRecoveryShare`.
+- **Used by:** `ensureAccountNostrKey`, `generateNostrKeyRecord`, `signEventForAccount`, `signEventForShop`, the worker's direct-message signing, the shop key creation of `InMemoryShopIdentityStore.ensureListed` / `PostgresShopIdentityStore.ensureListed`, `encryptRecoveryShare`, `reencryptRecoveryShare`, `rotateKeks` (boot check and read-only share pass), and the Spark viewer key (`ensureSparkViewer` and the fresh mnemonic of `rotateSparkViewerKey`).
 
 ## Function: sealAesGcmEnvelope
 
 - **Purpose:** Encrypt bytes into the v1 AES-256-GCM envelope shared by the custodial Nostr secret and the 21.gifts recovery share: `version(1) = 0x01 || kek_id uint32 big-endian || nonce(12) || ciphertext + tag(16)`.
 - **Inputs:** `plaintext` (at least one byte), a 32-byte `kek`, the AES-GCM `additionalData` bound to the ciphertext, and the `kekId` written into the envelope.
-- **Returns / side effects:** Envelope bytes, `17 + plaintext.length + 16` long, with a fresh `crypto.getRandomValues` nonce; the key is imported non-extractable for `encrypt` only. Throws `KEK must be 32 bytes` for another key length and `Plaintext must not be empty` for empty plaintext. The module has no open function; `decryptNostrSecret` opens Nostr envelopes only, and nothing in the api opens a recovery share.
-- **Used by:** `encryptNostrSecret` and `encryptRecoveryShare`.
+- **Returns / side effects:** Envelope bytes, `17 + plaintext.length + 16` long, with a fresh `crypto.getRandomValues` nonce; the key is imported non-extractable for `encrypt` only. Throws `KEK must be 32 bytes` for another key length and `Plaintext must not be empty` for empty plaintext. `decryptNostrSecret` opens Nostr envelopes; recovery shares are opened only by KEK rotation (`rotateKeks`, through `openAesGcmEnvelope`): once in the boot check with the current key, then with the previous key in the read-only pass and in `reencryptRecoveryShare`; every plaintext is zeroed.
+- **Used by:** `encryptNostrSecret`, `encryptRecoveryShare`, `reencryptRecoveryShare`, and the Spark viewer key.
+
+## Function: envelopeKekId
+
+- **Purpose:** Read the KEK id of a v1 AES-GCM envelope (bytes 1–4, big-endian) without decrypting it.
+- **Inputs:** The stored envelope bytes (a subarray works).
+- **Returns / side effects:** The id, or `undefined` for an envelope shorter than a v1 envelope with one plaintext byte (34 bytes) or with another version byte. No I/O.
+- **Used by:** `currentKekEnvelope` and `openAesGcmEnvelope`; KEK rotation selects the recovery shares under another id with the same bytes in SQL.
+
+## Function: openAesGcmEnvelope
+
+- **Purpose:** Decrypt a v1 AES-GCM envelope with a given key and additional data, whatever KEK id it carries. It exists only for KEK rotation: the recovery share is opened with `RECOVERY_SHARE_KEK_PREVIOUS`, and the boot check of `rotateKeks` opens one stored envelope per current key to prove the key matches its id; the caller checks the id (with `envelopeKekId`, or by filtering on the id bytes in SQL during KEK rotation).
+- **Inputs:** The envelope, a 32-byte key, and the additional data it was sealed with.
+- **Returns / side effects:** The plaintext; the caller owns it and zeroes it after use. Throws `Envelope is invalid` for a short envelope or another version, `KEK must be 32 bytes` for another key length, and the Web Crypto error when the key or the additional data does not match. Never logs.
+- **Used by:** `reencryptRecoveryShare`, and `rotateKeks` (boot check of the current keys and the read-only pass over the recovery shares; each plaintext is zeroed at once).
 
 ## Function: parseRecoveryShareKek
 
@@ -3269,8 +3312,30 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 - **Purpose:** Encrypt one 21.gifts recovery share (the 20 SLIP-39 words of member index 2 of the owner's 2-of-3 set) for storage in `recovery_share.recovery_share_ciphertext`.
 - **Inputs:** The share text, which must match `RECOVERY_SHARE_TEXT` (20 lowercase words of 4 to 8 letters separated by single spaces), the 32-byte `RECOVERY_SHARE_KEK`, and the account id.
-- **Returns / side effects:** A `sealAesGcmEnvelope` envelope with the UTF-8 account id as additional data and kek id `RECOVERY_SHARE_KEK_ID_V1` (1). Throws `Invalid recovery share` for text that does not match and `KEK must be 32 bytes` for another key length. The UTF-8 plaintext buffer is zeroed after sealing; the share is never logged, returned, or stored outside the envelope, and the api has no function that decrypts it.
+- **Returns / side effects:** A `sealAesGcmEnvelope` envelope with the UTF-8 account id as additional data and the KEK id of the key (`kekIdOf`: `RECOVERY_SHARE_KEK_ID`, default `RECOVERY_SHARE_KEK_ID_V1` = 1). Throws `Invalid recovery share` for text that does not match and `KEK must be 32 bytes` for another key length. The UTF-8 plaintext buffer is zeroed after sealing; the share is never logged, returned, or stored outside the envelope, and no request path decrypts it.
 - **Used by:** The recovery share route (`PUT /me/recovery-share`).
+
+## Function: parsePreviousRecoveryShareKek
+
+- **Purpose:** Parse the optional `RECOVERY_SHARE_KEK_PREVIOUS`, the key KEK rotation opens not yet rotated recovery shares with. It carries no id: it opens a share under any id other than `RECOVERY_SHARE_KEK_ID`. There is intentionally no previous Nostr KEK.
+- **Inputs:** The env string or `undefined`, and the parsed current `RECOVERY_SHARE_KEK` and `NOSTR_NSEC_KEK`.
+- **Returns / side effects:** The 32-byte key, or `undefined` when unset or blank. Throws `RECOVERY_SHARE_KEK_PREVIOUS must be 64 lowercase hex characters`, `RECOVERY_SHARE_KEK_PREVIOUS must differ from RECOVERY_SHARE_KEK`, or `RECOVERY_SHARE_KEK_PREVIOUS must differ from NOSTR_NSEC_KEK` (both compared with `timingSafeEqual`), which stops the boot. Never logs the value.
+- **Used by:** `openBootStores` on the SQL path, after `parseRecoveryShareKek`.
+
+## Function: reencryptRecoveryShare
+
+- **Purpose:** Move one stored recovery share from the previous recovery KEK to the current one. The share itself cannot be renewed without the member, so its bytes are opened and sealed again. Shares are opened only by KEK rotation (`rotateKeks`): once in the boot check with the current key, then with the previous key in the read-only pass and here; every plaintext is zeroed.
+- **Inputs:** The stored `recovery_share_ciphertext`, `RECOVERY_SHARE_KEK_PREVIOUS`, the current `RECOVERY_SHARE_KEK` (bound to `RECOVERY_SHARE_KEK_ID`), and the account id it was sealed for.
+- **Returns / side effects:** A new envelope under the current key and id with the same additional data (the UTF-8 account id). The opened plaintext buffer is zeroed before it returns or throws and is never logged or returned. Throws when the envelope is malformed or does not open with the previous key and that account id.
+- **Used by:** `rotateKeks` for every recovery share under another KEK id.
+
+## Function: rotateKeks
+
+- **Purpose:** KEK rotation at boot. Everything stored under a KEK id other than the configured current one is renewed, without any member action and without a visible change in the app: (a) every `account` with a `nostr_nsec_ciphertext` under another `nostr_kek_id` gets a fresh key pair (`generateNostrKeyRecord`) under the current `NOSTR_NSEC_KEK`, written in place (`nostr_pubkey`, `nostr_nsec_ciphertext`, `nostr_kek_id`, `nostr_key_created_at`; custody stays `custodial`); (b) every `shop_identity` under another id the same (`rotateShopIdentityKey`); (c) the Spark viewer key gets a fresh mnemonic (`rotateSparkViewerKey`); (d) every `recovery_share` whose envelope id is not `RECOVERY_SHARE_KEK_ID` is opened with `RECOVERY_SHARE_KEK_PREVIOUS` and sealed again under the current recovery key with the same additional data (`reencryptRecoveryShare`). No old Nostr secret or mnemonic is ever decrypted.
+- **Inputs:** A `SqlClient` with transactions (after every schema migration) and `{ nostrKek, recoveryShareKek, previousRecoveryShareKek, keygen?, batchSize? }`; the current keys are bound to their ids with `bindKekId`, the previous recovery key may be `undefined`, and the batch size defaults to 200.
+- **Returns / side effects:** `{ accounts, shops, sparkViewer, recoveryShares, recoverySharesPending, rotatedAccountIds, rotatedShopMessageIds }`. Each batch of at most 200 rows is one transaction that first takes `pg_advisory_xact_lock(21499031)` (the viewer key uses its own lock `21499021`), reads its rows by keyset and rewrites each with a plain `UPDATE` that is compare-and-set on the old `nostr_kek_id` or the old share ciphertext, so concurrent boots never rotate at the same time, a row changed meanwhile is skipped, and a rerun after a crash continues where it stopped. `trg_db_change` records every `UPDATE` (secret columns hashed); triggers are never disabled. Without a previous recovery key the shares stay untouched and `kek.rotation.recovery_share.pending` logs their count only; until then the shares still count as stored (`hasRecoveryShareForVerifiedWallet` does not read the ciphertext). With a previous key, a read-only pass first opens EVERY share under another id with it (same keyset order and page size, plaintext zeroed) before the first share `UPDATE`; when any does not open, the run throws `KEK rotation stopped: <n> recovery share(s) did not open with RECOVERY_SHARE_KEK_PREVIOUS` with the total count and no share is changed, deleted, or overwritten. Each write batch opens its shares once more before its first write (a share changed since the pass stops the run before that batch writes). Every opened plaintext is zeroed. A second run changes nothing. Throws `KEK rotation needs SQL transactions` without a transaction port.
+- **Boot check of the current keys:** Before anything is read for rotation or written, `rotateKeks` opens exactly one envelope stored under the current `NOSTR_NSEC_KEK_ID` (an `account` key, else a `shop_identity` key, else the `spark_viewer_key` mnemonic) with `NOSTR_NSEC_KEK`, and one `recovery_share` under the current `RECOVERY_SHARE_KEK_ID` with `RECOVERY_SHARE_KEK`, and zeroes the plaintext. With no row under an id there is nothing to check. When the sample does not open, it throws `NOSTR_NSEC_KEK does not open the keys stored under NOSTR_NSEC_KEK_ID <id>; a new key value needs a new id` or `RECOVERY_SHARE_KEK does not open the recovery shares stored under RECOVERY_SHARE_KEK_ID <id>; a new key value needs a new id` and the boot stops with nothing changed; the message names the variable and the id, never a key. Rule: a new key value always needs a new id; otherwise the rows under the reused id could neither be decrypted nor rotated.
+- **Used by:** `openBootStores`, right after `migrateDbChangeSchema` and before `ensureSparkViewer` and every worker; it logs `kek.rotation.done` with the counts only and hands the ids to `forgetNostrAnnouncements` (a no-op at boot).
 
 ## Function: ensureAccountNostrKey
 
@@ -3650,6 +3715,13 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Inputs:** deps; optional `intervalMs` (fast lane); optional `ingestIntervalMs` (pause after an ingest pass settles).
 - **Returns / side effects:** `{ stop }`; schedules both lanes; may log `nostr.worker.tick.failed` / `nostr.worker.ingest.failed`.
 - **Used by:** Process entry `src/index.ts` when KEK + message store present (passes `WORKER_INTERVAL_MS` as `intervalMs`; ingest default applies).
+
+## Function: forgetNostrAnnouncements
+
+- **Purpose:** Make the Nostr worker announce rotated keys again. It drops the reserved or acked kind 0 and kind 10002 content of every rotated account and shop from the worker's process-local publish caches, exactly as a relay nack does. The next ticks then sign the profile and the relay list with the new key and publish them through the normal publishers (`publishProfiles`, `publishRelayLists`, and the shop passes), with `nostr.profile.ok` / `nostr.relays.ok` as usual. No new publishing path exists.
+- **Inputs:** The auth store and the shop identity store the worker runs with (`undefined` for no shops), and `{ rotatedAccountIds, rotatedShopMessageIds }` from `rotateKeks`.
+- **Returns / side effects:** Nothing. Accounts and shops that were not rotated keep their cache entries; the watermarks stay, so each new event is newer than the last one published. No I/O and no log. At boot the caches of the freshly built stores are still empty, so the call changes nothing there: the first ticks of a new process announce every account and shop, the rotated ones included, anyway. It guards a later call in the same process, where the caches would still hold the content acked for the old key.
+- **Used by:** `openBootStores` after `rotateKeks`, once `PostgresShopIdentityStore` exists (a no-op at boot, see above).
 
 ## Function: buildZapRequest
 
@@ -5555,8 +5627,15 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 
 - **Purpose:** Create `shop_identity` (one custodial key per shop note plus the place and photo outbox columns; see `docs/schema/shop_identity.sql`), its keyset index `shop_identity_key_order_idx` on (`nostr_key_created_at`, `message_id`), the order `listRound` pages in, the partial index `message_shop_candidate_idx` on `message` (`created_at`, `id`) `WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL AND place_lat IS NOT NULL` (pin-present notes; the directory query does not use it) and the partial index `message_shop_directory_idx` on `message` (`created_at`, `id`) `WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL AND text ~* '#21giftsshop([^a-z0-9_]|$)'` that `listCandidates` and `listDirectory` page on, and its queue triggers: `trg_shop_identity_place` (`AFTER UPDATE OF` text, pin, till account or `deleted_at` on `message`, only when a value changed) sets `ocp_place_pending` and raises `ocp_place_generation`, and when the updated note is a public shop also sets `ocp_photos_pending` and raises `ocp_photos_generation` once without raising `ocp_revision`; `trg_shop_identity_cover` (photo 0 on `message`) and `trg_shop_identity_extra_photo` (`message_extra_photo` insert, update, delete) set `ocp_photos_pending` and raise `ocp_photos_generation` while the note is a public shop (live, top-level, till account, shop tag; a pin is not required). The triggers run inside the writing transaction after its row lock, so every store write queues itself, including `blockPubkeyAndHideRows`, `replacePhotos` and `updatePhoto`.
 - **Inputs:** Shared `SqlClient`, after `migrateMessageSchema`.
-- **Returns / side effects:** Runs `SHOP_IDENTITY_SCHEMA_SQL` in order. Idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS shop_identity_key_order_idx`, `CREATE INDEX IF NOT EXISTS message_shop_candidate_idx`, `CREATE INDEX IF NOT EXISTS message_shop_directory_idx`, and one step per trigger that takes `ACCESS EXCLUSIVE` on its table and then runs `CREATE OR REPLACE FUNCTION`, `DROP TRIGGER IF EXISTS` and `CREATE TRIGGER`, so no writer sees the table without the trigger). Every statement is one `DO` block that first takes `pg_advisory_xact_lock(21499001)`, so concurrent boots run each statement one after the other instead of failing with `tuple concurrently updated` or a duplicate catalog key.
+- **Returns / side effects:** Runs `SHOP_IDENTITY_SCHEMA_SQL` in order. Idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS shop_identity_key_order_idx`, `CREATE INDEX IF NOT EXISTS message_shop_candidate_idx`, `CREATE INDEX IF NOT EXISTS message_shop_directory_idx`, and one step per trigger that takes `ACCESS EXCLUSIVE` on its table and then runs `CREATE OR REPLACE FUNCTION`, `DROP TRIGGER IF EXISTS` and `CREATE TRIGGER`, so no writer sees the table without the trigger). Every statement is one `DO` block that first takes `pg_advisory_xact_lock(21499001)`, so concurrent boots run each statement one after the other instead of failing with `tuple concurrently updated` or a duplicate catalog key. The last step lets `nostr_kek_id` hold every positive KEK id: it drops every older CHECK on `nostr_kek_id` (the earlier `nostr_kek_id = 1`) and adds `shop_identity_nostr_kek_id_check` (`nostr_kek_id >= 1`) when missing; once that constraint exists it changes nothing.
 - **Used by:** `openBootStores`.
+
+## Function: rotateShopIdentityKey
+
+- **Purpose:** KEK rotation of one shop key: replace the key pair of a `shop_identity` row in place with a freshly generated one sealed under the current `NOSTR_NSEC_KEK` and its id (AAD `shop:{messageId}`). The old secret is never decrypted.
+- **Inputs:** The caller's `SqlClient` (a rotation transaction), the shop note id, the `nostr_kek_id` the caller read, the current key, and an optional keygen.
+- **Returns / side effects:** `true` when the row was rotated, `false` when its `nostr_kek_id` changed meanwhile (the `UPDATE` is compare-and-set on it). The same `UPDATE` writes `nostr_pubkey`, `nostr_nsec_ciphertext`, `nostr_kek_id`, and `nostr_key_created_at = now()`, queues the OpenCryptoPay place push (`ocp_place_pending`, `ocp_place_generation + 1`; the place body carries `nostrPubkey`) and, while the note is a public shop, the photo push. Custody, profile name, and revision stay. `trg_db_change` records it with the ciphertext hashed.
+- **Used by:** `rotateKeks` for every shop under another KEK id.
 
 ## Function: shopNpub
 
@@ -5768,16 +5847,23 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 ## Function: migrateSparkViewerSchema
 
 - **Purpose:** Creates the single-row `spark_viewer_key` table before database-change triggers are attached.
-- **Inputs:** A parameter-bound `SqlClient`; the DDL permits one boolean primary-key row, a 66-hex public identity, `viewer_mnemonic_ciphertext`, `viewer_kek_id` fixed to 1, and creation time. It idempotently renames the two legacy Nostr-named columns on an existing table.
-- **Returns / side effects:** Resolves after the idempotent DDL succeeds. No mnemonic is generated or read by this migration.
+- **Inputs:** A parameter-bound `SqlClient`; the DDL permits one boolean primary-key row, a 66-hex public identity, `viewer_mnemonic_ciphertext`, a positive `viewer_kek_id` (`CHECK (viewer_kek_id >= 1)`, the `NOSTR_NSEC_KEK_ID` the mnemonic is sealed under), and creation time. It idempotently renames the two legacy Nostr-named columns on an existing table.
+- **Returns / side effects:** Resolves after the idempotent DDL succeeds. No mnemonic is generated or read by this migration. Its last step takes the viewer-key advisory lock (`21499021`) and replaces every older `viewer_kek_id` CHECK (the earlier `viewer_kek_id = 1`, also one still named after the legacy column) with `spark_viewer_key_viewer_kek_id_check` (`viewer_kek_id >= 1`); on a database that already has that constraint it changes nothing, so it is safe on every boot.
 - **Used by:** `openBootStores` on database boots.
+
+## Function: rotateSparkViewerKey
+
+- **Purpose:** KEK rotation of the deployment Spark viewer key. When the stored `spark_viewer_key` row is under another KEK id than the current `NOSTR_NSEC_KEK`, it is replaced in place with a freshly generated 12-word mnemonic sealed under the current key and id. The old mnemonic is never decrypted.
+- **Inputs:** A `SqlClient` with transactions and the current `NOSTR_NSEC_KEK` (bound to `NOSTR_NSEC_KEK_ID` with `bindKekId`).
+- **Returns / side effects:** `true` when the row was replaced, `false` when there is no row or it is already under the current id. Runs in one transaction under the same advisory lock as `ensureSparkViewer` (`21499021`); the `UPDATE` is conditional on the old `viewer_kek_id`, so two boots replace it once, and `trg_db_change` records it (the mnemonic column is hashed). The new public key reaches `GET /me` as `walletViewerPublicKey`, and the app grants it to the wallet silently. Wallets that cannot be granted again lose viewer reads. Throws `Spark viewer key custody is unavailable` without transactions.
+- **Used by:** `rotateKeks`, before `ensureSparkViewer` in `openBootStores`.
 
 ## Function: ensureSparkViewer
 
 - **Purpose:** Opens the deployment read-only Spark viewer. A database-free call creates an ephemeral 12-word viewer; a database call loads or creates the one encrypted deployment key.
-- **Inputs:** Optional SQL client and `NOSTR_NSEC_KEK`. Durable creation holds a fixed transaction advisory lock, derives the public key, seals the mnemonic with `sealAesGcmEnvelope`, and inserts only `viewer_mnemonic_ciphertext` plus `viewer_kek_id`.
+- **Inputs:** Optional SQL client and `NOSTR_NSEC_KEK`. Durable creation holds a fixed transaction advisory lock, derives the public key, seals the mnemonic with `sealAesGcmEnvelope` under the KEK id of the key (`kekIdOf`), and inserts only `viewer_mnemonic_ciphertext` plus `viewer_kek_id`. A stored row whose column or envelope id is not the id of the key is refused (`rotateSparkViewerKey` runs first at boot).
 - **Returns / side effects:** `{ publicKey, viewer }`; never returns the mnemonic. The adapter exposes every explicit Spark transfer type, complete cursor-paged token transactions, resolved/total input counts, and owned balance, and cannot move funds. Token-owner progress is process-local and bounded: cached pages contain only allow-listed transaction facts plus lookup outpoints/output ids, never SDK rows or revocation/withdrawal secrets. At most 128 unfinished lookups run; additional pages stay in `waitingOwnerResolutions` until admission rather than being discarded. When a refreshed page's unresolved set changes, its existing lookup restarts in place for that set. A lookup failure removes its entry. A caller timeout does not evict an in-flight lookup, so a late result remains reusable; a finished result is removed only after a later `page.transactions` response has returned it. A cursor is marked seen only after a successful response returns a new non-empty cursor. Throws for unavailable custody, invalid envelopes, key mismatch, or primary SDK failure.
-- **Used by:** `openBootStores` after `migrateDbChangeSchema`, and for the ephemeral memory boot.
+- **Used by:** `openBootStores` after `migrateDbChangeSchema` and `rotateKeks`, and for the ephemeral memory boot.
 
 ## Function: migrateWelcomeInvoiceReservationSchema
 

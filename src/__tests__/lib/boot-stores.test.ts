@@ -40,6 +40,7 @@ import { PostgresWalletTransferStore } from '@/lib/wallet-transfer-store';
 import { PostgresWelcomeInvoiceReservationStore } from '@/lib/welcome-reservation';
 import { PostgresMemberEventStore } from '@/lib/member-event-store';
 import { PostgresShopIdentityStore } from '@/lib/shop-identity';
+import { kekIdOf } from '@/lib/nostr/kek';
 
 function unusedClient(): SqlClient {
   return {
@@ -52,10 +53,20 @@ function unusedClient(): SqlClient {
   };
 }
 
+/** Boot check of the current KEKs (`rotateKeks`): one sample row per key, none here. */
+const KEK_CHECK_SAMPLES = [
+  'SELECT id::text AS account_id, nostr_nsec_ciphertext FROM account',
+  'SELECT message_id::text AS message_id, nostr_nsec_ciphertext FROM shop_identity',
+  'SELECT account_id::text AS account_id, recovery_share_ciphertext FROM recovery_share',
+];
+
 function withSparkViewerTransaction(client: SqlClient): SqlClient {
   const transactional: SqlClient = {
     query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
       if (text.includes('FROM spark_viewer_key WHERE singleton = true')) {
+        return [] as T[];
+      }
+      if (KEK_CHECK_SAMPLES.some((sample) => text.startsWith(sample))) {
         return [] as T[];
       }
       return client.query<T>(text, params);
@@ -993,6 +1004,133 @@ describe('openBootStores', () => {
       await expect(
         openBootStores('postgres://gifts21@localhost/gifts21', () => quietClient([])),
       ).rejects.toThrow(/RECOVERY_SHARE_KEK must differ from NOSTR_NSEC_KEK/);
+    });
+  });
+
+  describe('KEK ids and KEK rotation on the SQL path', () => {
+    const quietClient = (): SqlClient => ({
+      query: async <T>(text: string): Promise<T[]> =>
+        (text.includes('min(paid_at)') ? [{ min: null, max: null }] : []) as T[],
+      execute: async () => undefined,
+    });
+    const boot = (client: SqlClient = quietClient()): Promise<unknown> =>
+      openBootStores('postgres://gifts21@localhost/gifts21', () => client);
+
+    afterEach(() => {
+      delete process.env['NOSTR_NSEC_KEK_ID'];
+      delete process.env['RECOVERY_SHARE_KEK_ID'];
+      delete process.env['RECOVERY_SHARE_KEK_PREVIOUS'];
+    });
+
+    it('stops the boot for a KEK id that is not a positive integer', async () => {
+      process.env['NOSTR_NSEC_KEK_ID'] = '0';
+      await expect(boot()).rejects.toThrow('NOSTR_NSEC_KEK_ID must be a positive integer');
+      process.env['NOSTR_NSEC_KEK_ID'] = '2';
+      process.env['RECOVERY_SHARE_KEK_ID'] = 'two';
+      await expect(boot()).rejects.toThrow('RECOVERY_SHARE_KEK_ID must be a positive integer');
+    });
+
+    it('stops the boot for a malformed previous recovery key or one equal to a current key', async () => {
+      process.env['RECOVERY_SHARE_KEK_PREVIOUS'] = 'EF'.repeat(32);
+      await expect(boot()).rejects.toThrow(
+        'RECOVERY_SHARE_KEK_PREVIOUS must be 64 lowercase hex characters',
+      );
+      process.env['RECOVERY_SHARE_KEK_PREVIOUS'] = 'cd'.repeat(32);
+      await expect(boot()).rejects.toThrow(
+        'RECOVERY_SHARE_KEK_PREVIOUS must differ from RECOVERY_SHARE_KEK',
+      );
+      process.env['RECOVERY_SHARE_KEK_PREVIOUS'] = 'ab'.repeat(32);
+      await expect(boot()).rejects.toThrow(
+        'RECOVERY_SHARE_KEK_PREVIOUS must differ from NOSTR_NSEC_KEK',
+      );
+    });
+
+    it('rotates after the db_change triggers and before the viewer key, logs counts only, and republishes', async () => {
+      process.env['NOSTR_NSEC_KEK_ID'] = '2';
+      process.env['RECOVERY_SHARE_KEK_ID'] = '3';
+      process.env['RECOVERY_SHARE_KEK_PREVIOUS'] = 'ef'.repeat(32);
+      const accountId = '00000000-0000-4000-8000-000000000001';
+      const operations: Array<{ text: string; params: readonly unknown[] }> = [];
+      const client: SqlClient = {
+        query: async <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+          operations.push({ text, params });
+          if (text.includes('min(paid_at)')) return [{ min: null, max: null }] as T[];
+          if (text.startsWith('SELECT id::text AS id, nostr_kek_id FROM account')) {
+            return (params[1] === null ? [{ id: accountId, nostr_kek_id: 1 }] : []) as T[];
+          }
+          if (text.startsWith('UPDATE account') && text.includes('nostr_kek_id = $5')) {
+            return [{ id: accountId }] as T[];
+          }
+          return [] as T[];
+        },
+        execute: async (text: string, params: readonly unknown[] = []) => {
+          operations.push({ text, params });
+        },
+      };
+      const worker = await import('@/lib/nostr/worker');
+      const forget = vi.spyOn(worker, 'forgetNostrAnnouncements');
+      const opened = await openBootStores(
+        'postgres://gifts21@localhost/gifts21',
+        () => withSparkViewerTransaction(client),
+        {
+          fetchImpl: async () => new Response('[]', { status: 200 }),
+          candlesUrl: 'https://example.test/candles',
+          frankfurterUrl: 'https://example.test/frankfurter',
+          nostrQuerier: new RecordingQuerier(),
+          zapRelayUrls: ['wss://relay.example'],
+        },
+      );
+      const lastTrigger = operations.reduce(
+        (last, o, i) =>
+          o.text.includes('CREATE TRIGGER trg_db_change AFTER INSERT OR UPDATE OR DELETE')
+            ? i
+            : last,
+        -1,
+      );
+      expect(lastTrigger).toBeGreaterThanOrEqual(0);
+      const select = operations.findIndex((o) =>
+        o.text.startsWith('SELECT id::text AS id, nostr_kek_id FROM account'),
+      );
+      const update = operations.find(
+        (o) => o.text.startsWith('UPDATE account') && o.text.includes('nostr_kek_id = $5'),
+      );
+      const shares = operations.find((o) =>
+        o.text.includes('substring(recovery_share_ciphertext FROM 2 FOR 4)'),
+      );
+      const roster = operations.findIndex((o) => o.text === DAILY_ROSTER_ACCOUNT_LINK_SQL);
+      expect(select).toBeGreaterThan(lastTrigger);
+      expect(roster).toBeGreaterThan(select);
+      expect(operations[select]?.params[0]).toBe(2);
+      expect(update?.params[3]).toBe(2);
+      expect(update?.params[4]).toBe(1);
+      expect([...((shares?.params[0] as Uint8Array) ?? [])]).toEqual([0, 0, 0, 3]);
+      const done = parsedEvents(warn).filter((event) => event['event'] === 'kek.rotation.done');
+      expect(done).toEqual([
+        expect.objectContaining({
+          accounts: 1,
+          shops: 0,
+          sparkViewer: 0,
+          recoveryShares: 0,
+          recoverySharesPending: 0,
+        }),
+      ]);
+      expect(Object.keys(done[0] ?? {}).sort()).toEqual([
+        'accounts',
+        'event',
+        'recoveryShares',
+        'recoverySharesPending',
+        'shops',
+        'sparkViewer',
+        'ts',
+      ]);
+      expect(forget).toHaveBeenCalledWith(
+        opened.authStore,
+        opened.shopIdentityStore,
+        expect.objectContaining({ rotatedAccountIds: [accountId], rotatedShopMessageIds: [] }),
+      );
+      expect(kekIdOf(opened.nostrKek!)).toBe(2);
+      expect(kekIdOf(opened.recoveryShareKek!)).toBe(3);
+      forget.mockRestore();
     });
   });
 

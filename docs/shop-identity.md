@@ -233,6 +233,28 @@ runs and checks that neither the note nor a `shop_identity` row is left.
   Those keys live in `InMemoryShopIdentityStore` and vanish with the process,
   like every other memory row; no shop kind 0 is published without Postgres.
 
+### KEK rotation
+
+- `shop_identity.nostr_kek_id` is the `NOSTR_NSEC_KEK_ID` the key was sealed
+  under (`CHECK (nostr_kek_id >= 1)`; `migrateShopIdentitySchema` replaces the
+  earlier `= 1` CHECK once, idempotently). New shop keys, adopted ones too,
+  carry the id of the current key.
+- When the boot runs with a new `NOSTR_NSEC_KEK` and `NOSTR_NSEC_KEK_ID`,
+  `rotateKeks` (`src/lib/kek-rotation.ts`) gives every shop under another id a
+  fresh key pair under the new key (`rotateShopIdentityKey`), in place and
+  conditional on the old id. The old secret is never decrypted; there is no
+  previous Nostr key. This includes the adopted keys of the notes in
+  `ADOPTED_SHOP_MESSAGE_IDS`: they also get a fresh key.
+- The same `UPDATE` queues the OpenCryptoPay place push, whose body carries
+  the new `nostrPubkey`, and, for a public shop, the photo push. The worker
+  then publishes the shop's kind 0 and kind 10002 again under the new key: a
+  freshly booted worker has empty publish caches and announces every shop
+  anyway; `forgetNostrAnnouncements` only matters for a rotation later in the
+  same process. `GET /shops`, `GET /shops/:npub` and the NIP-05 directory
+  answer the new npub. The old npub resolves to no shop any more.
+- Until a shop is rotated, `signEventForShop` treats its key as missing and
+  logs `nostr.key.kek_stale` once (no key material).
+
 ### Custody
 
 Custodial, like every account key in v1. The shop key only signs the shop's

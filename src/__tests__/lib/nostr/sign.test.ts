@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { buildKind0Event, buildKind1Event } from '@/lib/nostr/event';
-import { parseNostrKek } from '@/lib/nostr/kek';
+import { bindKekId, parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { signEventForAccount, signEventForShop } from '@/lib/nostr/sign';
 import { InMemoryMessageStore } from '@/lib/message-store';
@@ -42,6 +42,31 @@ describe('signEventForAccount', () => {
       signEventForAccount(store, 'missing', KEK, buildKind1Event('hi', 1)),
     ).rejects.toThrow(/missing/);
   });
+
+  it('treats a secret under another KEK id as missing, without decrypting it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc-old',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(store, 'acc-old', KEK);
+    const current = bindKekId(parseNostrKek('12'.repeat(32)), 2);
+    await expect(
+      signEventForAccount(store, 'acc-old', current, buildKind1Event('hi', 1)),
+    ).rejects.toThrow('Nostr secret missing');
+    expect(
+      warn.mock.calls.some((call) => String(call[0]).includes('"event":"nostr.key.kek_stale"')),
+    ).toBe(true);
+    warn.mockRestore();
+  });
 });
 
 describe('signEventForShop', () => {
@@ -76,5 +101,11 @@ describe('signEventForShop', () => {
     const signed = await signEventForShop(shops, id, KEK, buildKind0Event('Coffee', null, 1));
     expect(signed.kind).toBe(0);
     expect(signed.id).toMatch(/^[0-9a-f]{64}$/);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const current = bindKekId(parseNostrKek('34'.repeat(32)), 2);
+    await expect(
+      signEventForShop(shops, id, current, buildKind0Event('Coffee', null, 1)),
+    ).rejects.toThrow('Shop Nostr secret missing');
+    warn.mockRestore();
   });
 });

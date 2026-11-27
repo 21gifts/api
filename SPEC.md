@@ -32,7 +32,39 @@ database URL that is set is fail-loud at boot. On the SQL path,
 KEK throws at boot. So is `RECOVERY_SHARE_KEK` (64 lowercase hex), the key
 of the 21.gifts recovery share, which must differ from `NOSTR_NSEC_KEK`; a
 missing or malformed value, or one equal to `NOSTR_NSEC_KEK`, throws at
-boot. `RECOVERY_SHARE_REQUIRED_FROM` (ISO date `YYYY-MM-DD`, UTC, read from the
+boot.
+
+**KEK ids and KEK rotation.** `NOSTR_NSEC_KEK_ID` and `RECOVERY_SHARE_KEK_ID`
+(optional positive integers, default `1`) are the KEK ids the two keys carry;
+every new envelope and `*_kek_id` column records the id of the key that sealed
+it, and a key only ever opens envelopes under its own id. The one exception is
+the previous recovery key: it carries no id and, only during KEK rotation,
+opens recovery shares under any id other than `RECOVERY_SHARE_KEK_ID`.
+`RECOVERY_SHARE_KEK_PREVIOUS` (optional, 64 lowercase hex) is that previous
+recovery key; it must differ from
+both current keys. A KEK id that is not a positive integer, or a malformed or
+equal previous key, throws at boot. There is no previous Nostr key. **A new key
+value always needs a new id:** before it changes anything, the SQL boot opens one
+envelope stored under the current `NOSTR_NSEC_KEK_ID` (a member key, else a shop
+key, else the Spark viewer key) with `NOSTR_NSEC_KEK`, and one recovery share
+under the current `RECOVERY_SHARE_KEK_ID` with `RECOVERY_SHARE_KEK`; when it does
+not open, the boot stops with an error that names the variable and the id (never
+a key). With no row under an id there is nothing to check. After every
+migration and before any worker, the SQL boot rotates everything stored under
+another id: each member and shop Nostr key and the Spark viewer key is replaced
+by a fresh one under the current Nostr key (the old secret is never decrypted),
+and each recovery share is opened with `RECOVERY_SHARE_KEK_PREVIOUS` and sealed
+again under the current recovery key with the same account id as additional
+data. Without the previous key the shares stay as they are and
+`kek.rotation.recovery_share.pending` logs their count; every share under another
+id is opened with the previous key before the first one is written, and a previous
+key that does not open one of them stops the boot and changes no share. The boot logs one
+`kek.rotation.done` line with counts only, and the worker announces every new
+Nostr key (kind 0 and kind 10002) as for a new key. Until a key is rotated,
+signing treats it as missing and logs `nostr.key.kek_stale`. A second boot
+changes nothing. Lookups by Nostr pubkey accept only the current key.
+
+`RECOVERY_SHARE_REQUIRED_FROM` (ISO date `YYYY-MM-DD`, UTC, read from the
 environment) is the first day a payout needs that share: unset or blank means
 not required yet, and a value that is not a calendar day throws at boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
@@ -6409,7 +6441,10 @@ wallet history. At boot the api loads one deployment viewer from
 `spark_viewer_key`. If absent, it generates a BIP-39 12-word mnemonic while a
 fixed Postgres advisory lock is held, derives the 66-hex viewer identity key,
 and stores only an AES-GCM envelope in `viewer_mnemonic_ciphertext` under
-`NOSTR_NSEC_KEK`, with KEK id 1 in `viewer_kek_id`. The
+`NOSTR_NSEC_KEK`, with its KEK id (`NOSTR_NSEC_KEK_ID`, default 1) in
+`viewer_kek_id`. KEK rotation replaces a row under another id with a fresh
+mnemonic at boot, so `GET /me` then returns the new viewer identity and the
+app grants it; a wallet that is not granted again loses viewer reads. The
 mnemonic is never stored in plaintext, logged, or returned; the public identity
 is returned by `GET /me`. `db_change` stores only the SHA-256 of
 `viewer_mnemonic_ciphertext`, and `GET /debug/db` exposes only its byte length.

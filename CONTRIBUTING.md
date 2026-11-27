@@ -143,6 +143,9 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `migrateApiLogSchema`, `migrateDbChangeSchema`,
 `listDbChanges`, `DB_CHANGE_SCHEMA_SQL`,
 `parseKekHex`, `sealAesGcmEnvelope`, `parseRecoveryShareKek`, `encryptRecoveryShare`,
+`parseKekId`, `bindKekId`, `kekIdOf`, `envelopeKekId`, `openAesGcmEnvelope`, `currentKekEnvelope`,
+`parsePreviousRecoveryShareKek`, `reencryptRecoveryShare`, `rotateKeks`, `rotateShopIdentityKey`,
+`rotateSparkViewerKey`, `forgetNostrAnnouncements` (KEK ids and KEK rotation run only on the SQL boot),
 `fillRatesForGiftRange`, `fillFiatRatesForGiftRange`, `fetchDailyCloses`, `parseCoinbaseCandles`,
 `resolveCandlesUrl`, `fetchFiatRates`, `parseFrankfurterRates`,
 `resolveFrankfurterUrl`, and `SqlGiftRecorder`, which need `DATABASE_URL`;
@@ -238,7 +241,7 @@ that test still exists and asserts the default-boot outcome (posting `409`, an u
 with `LNURL_SERVER_URL` blank, relay `502` for a target host that does not
 resolve, or a healthy process with `DATABASE_URL` blank
 or for a resolver that runs only at boot, or a listed shop served while its outbox stays unsent). Playwright `webServer.env` pins
-`DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `RECOVERY_SHARE_KEK`, `NOSTR_PUBLISH`,`NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`,
+`DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `NOSTR_NSEC_KEK_ID`, `RECOVERY_SHARE_KEK`, `RECOVERY_SHARE_KEK_ID`, `RECOVERY_SHARE_KEK_PREVIOUS`, `NOSTR_PUBLISH`,`NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`,
 `NOSTR_RELAY_PUBLIC`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`,
 `VAPID_SUBJECT`, `TRANSLATE_URL`, `TRANSLATE_API_KEY`, `OCP_MAP_BASE_URL`,
 `OCP_PLACE_INGEST_TOKEN`, `LNURL_SERVER_URL`, `LNURL_ZAP_NSEC_HEX`, `SPARK_OPERATOR_URL`, `TEST_INVOICE_BURST_CAP`, `TEST_INVOICE_HOUR_CAP`, `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, `SHOP_REFUND_ADDRESS`, `LOGINS_OPEN_DEFAULT`, `APP_BUILD_REQUIRED`, `RECOVERY_SHARE_REQUIRED_FROM`, and `LNURL_WEBHOOK_SECRET` to blank,

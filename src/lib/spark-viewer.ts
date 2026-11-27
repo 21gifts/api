@@ -9,8 +9,8 @@ import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { sealAesGcmEnvelope } from '@/lib/aes-gcm-envelope';
 import type { SqlClient } from '@/lib/auth/sql';
-import { NOSTR_ENVELOPE_VERSION, NOSTR_KEK_ID_V1, zeroizeSecret } from '@/lib/nostr/keys';
-import { bytesToHex } from '@/lib/nostr/kek';
+import { NOSTR_ENVELOPE_VERSION, zeroizeSecret } from '@/lib/nostr/keys';
+import { bytesToHex, kekIdOf } from '@/lib/nostr/kek';
 
 /** Spark mainnet configuration shared by derivation and read-only clients. */
 const SPARK_MAINNET = { network: 'MAINNET' } as const;
@@ -101,14 +101,19 @@ export interface SparkViewerKey {
   viewer: SparkViewer;
 }
 
-/** Idempotent DDL for the one encrypted deployment viewer key. */
+/**
+ * Idempotent DDL for the one encrypted deployment viewer key. The last step
+ * replaces an older `viewer_kek_id` CHECK (`= 1`) with
+ * `spark_viewer_key_viewer_kek_id_check` (`>= 1`) so KEK rotation can store
+ * another id; it changes nothing on a database that already has it.
+ */
 export const SPARK_VIEWER_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS spark_viewer_key (
   singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
   viewer_identity_public_key text NOT NULL UNIQUE
     CHECK (viewer_identity_public_key ~ '^0[23][0-9a-f]{64}$'),
   viewer_mnemonic_ciphertext bytea NOT NULL,
-  viewer_kek_id integer NOT NULL CHECK (viewer_kek_id = 1),
+  viewer_kek_id integer NOT NULL CHECK (viewer_kek_id >= 1),
   created_at timestamptz NOT NULL
 )`,
   `DO $spark_viewer_columns$
@@ -137,6 +142,30 @@ BEGIN
   END IF;
 END;
 $spark_viewer_columns$`,
+  `DO $spark_viewer_kek_id$
+DECLARE
+  c record;
+BEGIN
+  PERFORM pg_advisory_xact_lock(${String(SPARK_VIEWER_KEY_LOCK)});
+  FOR c IN
+    SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint
+    WHERE conrelid = 'public.spark_viewer_key'::regclass AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%viewer_kek_id%'
+  LOOP
+    IF c.conname <> 'spark_viewer_key_viewer_kek_id_check' OR c.def NOT LIKE '%viewer_kek_id >= 1%' THEN
+      EXECUTE format('ALTER TABLE spark_viewer_key DROP CONSTRAINT %I', c.conname);
+    END IF;
+  END LOOP;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.spark_viewer_key'::regclass
+      AND conname = 'spark_viewer_key_viewer_kek_id_check'
+  ) THEN
+    ALTER TABLE spark_viewer_key
+      ADD CONSTRAINT spark_viewer_key_viewer_kek_id_check CHECK (viewer_kek_id >= 1);
+  END IF;
+END;
+$spark_viewer_kek_id$`,
 ];
 
 /**
@@ -853,7 +882,7 @@ async function openEnvelope(envelope: Uint8Array, kek: Uint8Array): Promise<Uint
     throw new Error('Spark viewer envelope is invalid');
   }
   const view = new DataView(envelope.buffer, envelope.byteOffset, envelope.byteLength);
-  if (view.getUint32(1, false) !== NOSTR_KEK_ID_V1 || kek.length !== 32) {
+  if (view.getUint32(1, false) !== kekIdOf(kek) || kek.length !== 32) {
     throw new Error('Spark viewer envelope key is invalid');
   }
   const nonce = envelope.subarray(5, 17);
@@ -869,11 +898,85 @@ async function openEnvelope(envelope: Uint8Array, kek: Uint8Array): Promise<Uint
 }
 
 /**
+ * Generate a fresh viewer mnemonic and seal it under `kek` and its KEK id.
+ * The mnemonic bytes are zeroed before this returns; only the envelope and
+ * the derived public key leave it.
+ *
+ * @param kek - Current `NOSTR_NSEC_KEK`.
+ * @returns The row to store.
+ */
+async function freshViewerRow(kek: Uint8Array): Promise<ViewerKeyRow> {
+  const mnemonic = generateMnemonic(wordlist, 128);
+  const plain = new TextEncoder().encode(mnemonic);
+  try {
+    const publicKey = await publicKeyFromMnemonic(mnemonic);
+    const kekId = kekIdOf(kek);
+    return {
+      viewer_identity_public_key: publicKey,
+      viewer_mnemonic_ciphertext: await sealAesGcmEnvelope(plain, kek, VIEWER_AAD, kekId),
+      viewer_kek_id: kekId,
+    };
+  } finally {
+    zeroizeSecret(plain);
+  }
+}
+
+/**
+ * KEK rotation of the deployment viewer key: when the stored row is under
+ * another KEK id than `kek`, replace it in place with a freshly generated
+ * mnemonic sealed under `kek` (the old mnemonic is never decrypted). Runs in
+ * one transaction under the viewer-key advisory lock, the lock
+ * {@link ensureSparkViewer} holds, and the UPDATE is conditional on the old
+ * id, so concurrent boots replace it once. Wallets then see the new
+ * `walletViewerPublicKey` in `GET /me` and grant it.
+ *
+ * @param sql - SQL client with transactions.
+ * @param kek - Current `NOSTR_NSEC_KEK` (bound to `NOSTR_NSEC_KEK_ID`).
+ * @returns `true` when the row was replaced, `false` when there is no row or
+ *   it is already under the id of `kek`.
+ * @throws Error('Spark viewer key custody is unavailable') without
+ *   transactions; key generation, sealing, or SQL errors.
+ */
+export async function rotateSparkViewerKey(sql: SqlClient, kek: Uint8Array): Promise<boolean> {
+  if (sql.transaction === undefined) {
+    throw new Error('Spark viewer key custody is unavailable');
+  }
+  return sql.transaction(async (tx) => {
+    await tx.query('SELECT pg_advisory_xact_lock($1)', [SPARK_VIEWER_KEY_LOCK]);
+    const stored = (
+      await tx.query<{ viewer_kek_id: number }>(
+        'SELECT viewer_kek_id FROM spark_viewer_key WHERE singleton = true',
+      )
+    )[0];
+    if (stored === undefined || Number(stored.viewer_kek_id) === kekIdOf(kek)) {
+      return false;
+    }
+    const row = await freshViewerRow(kek);
+    const updated = await tx.query<{ singleton: boolean }>(
+      `UPDATE spark_viewer_key
+       SET viewer_identity_public_key = $1, viewer_mnemonic_ciphertext = $2,
+           viewer_kek_id = $3, created_at = now()
+       WHERE singleton = true AND viewer_kek_id = $4
+       RETURNING singleton`,
+      [
+        row.viewer_identity_public_key,
+        row.viewer_mnemonic_ciphertext,
+        row.viewer_kek_id,
+        Number(stored.viewer_kek_id),
+      ],
+    );
+    return updated.length > 0;
+  });
+}
+
+/**
  * Load or create the deployment viewer key, or create an ephemeral memory key.
  *
  * The durable path holds a transaction advisory lock across the absent-row
  * check and insert. The mnemonic is encrypted before insertion and is never
  * returned. The caller receives only its public key and a read-only adapter.
+ * The row is created and opened under the KEK id of `kek`; a row under
+ * another id is refused (the boot runs {@link rotateSparkViewerKey} first).
  *
  * @param sql - SQL client for durable custody, or undefined for an ephemeral key.
  * @param kek - `NOSTR_NSEC_KEK` bytes for durable custody.
@@ -903,25 +1006,13 @@ export async function ensureSparkViewer(
       )
     )[0];
     if (row === undefined) {
-      const mnemonic = generateMnemonic(wordlist, 128);
-      const plain = new TextEncoder().encode(mnemonic);
-      try {
-        const publicKey = await publicKeyFromMnemonic(mnemonic);
-        const ciphertext = await sealAesGcmEnvelope(plain, kek, VIEWER_AAD, NOSTR_KEK_ID_V1);
-        await tx.execute(
-          `INSERT INTO spark_viewer_key
-             (singleton, viewer_identity_public_key, viewer_mnemonic_ciphertext, viewer_kek_id, created_at)
-           VALUES (true, $1, $2, $3, now())`,
-          [publicKey, ciphertext, NOSTR_KEK_ID_V1],
-        );
-        row = {
-          viewer_identity_public_key: publicKey,
-          viewer_mnemonic_ciphertext: ciphertext,
-          viewer_kek_id: NOSTR_KEK_ID_V1,
-        };
-      } finally {
-        zeroizeSecret(plain);
-      }
+      row = await freshViewerRow(kek);
+      await tx.execute(
+        `INSERT INTO spark_viewer_key
+           (singleton, viewer_identity_public_key, viewer_mnemonic_ciphertext, viewer_kek_id, created_at)
+         VALUES (true, $1, $2, $3, now())`,
+        [row.viewer_identity_public_key, row.viewer_mnemonic_ciphertext, row.viewer_kek_id],
+      );
     }
     return row;
   });
@@ -931,7 +1022,7 @@ export async function ensureSparkViewer(
     const publicKey = await publicKeyFromMnemonic(mnemonic);
     if (
       publicKey !== material.viewer_identity_public_key ||
-      material.viewer_kek_id !== NOSTR_KEK_ID_V1
+      material.viewer_kek_id !== kekIdOf(kek)
     ) {
       throw new Error('Spark viewer key does not match its public key');
     }

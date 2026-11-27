@@ -147,10 +147,32 @@ usable together with any other old share.
 - **A leak.** The database alone gives no share. The database together with
   the environment gives every stored 21.gifts share. This is accepted: one
   share alone rebuilds nothing.
-- **No use of its content.** No route returns the share, nothing in the api
-  decrypts it (there is no decrypt function), and no log contains it. The api
-  only checks whether one is stored for the current wallet, see
-  [Grant payouts](#grant-payouts).
+- **No use of its content.** No route returns the share, no request path
+  decrypts it, and no log contains it. The api only checks whether one is
+  stored for the current wallet, see [Grant payouts](#grant-payouts). The only
+  open is the key rotation below.
+- **Key rotation.** The envelope records the KEK id of the key that sealed
+  it (`RECOVERY_SHARE_KEK_ID`, default 1). To rotate the key, the operator sets
+  a new `RECOVERY_SHARE_KEK` with a new `RECOVERY_SHARE_KEK_ID` and puts the
+  old key into `RECOVERY_SHARE_KEK_PREVIOUS` (which must differ from both
+  current keys), then restarts. The share content cannot be renewed without
+  the member, so at boot, before any worker, `rotateKeks`
+  (`src/lib/kek-rotation.ts`) opens every share under another id with the
+  previous key and seals the same bytes again under the new key and id, with
+  the same additional data (the account id); the plaintext is zeroed and never
+  logged. Each batch is one transaction under an advisory lock, every write is
+  a plain compare-and-set `UPDATE` that `db_change` records (hash only), and a
+  second boot changes nothing. When the previous key is not set, the shares
+  stay as they are and `kek.rotation.recovery_share.pending` logs their count.
+  Before the first share is written, a read-only pass opens every share under
+  another id with the previous key; when it does not open one of them, the
+  boot stops with the count only and no share is changed or deleted. A new key
+  value always needs a new id: when `RECOVERY_SHARE_KEK` does not open a share
+  already stored under `RECOVERY_SHARE_KEK_ID`, the boot stops before it
+  changes anything. Until a share is rotated it still counts as stored, so no member
+  loses the recovery-share state. After the boot log `kek.rotation.done`
+  shows the shares as rotated, the operator removes
+  `RECOVERY_SHARE_KEK_PREVIOUS` and restarts.
 - **No planned release.** 21.gifts plans no release of its share and keeps it
   only as an option. Using it would be a manual process outside the api, with
   the key from the vault.

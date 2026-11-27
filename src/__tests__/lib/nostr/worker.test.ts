@@ -6,7 +6,12 @@ import {
   verifyEvent,
   type NostrEvent,
 } from 'nostr-tools/pure';
-import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
+import {
+  InMemoryAuthStore,
+  type Account,
+  type AuthStore,
+  type NostrKeyRecord,
+} from '@/lib/auth/store';
 import { InMemoryBannerStore } from '@/lib/banner-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
@@ -30,13 +35,19 @@ import { buildNostrJson, NIP05_DIRECTORY_TTL_MS, nip05Directory } from '@/lib/ni
 import { KIND0_BANNER_URL, KIND0_PICTURE_URL } from '@/lib/nostr/event';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
-import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
+import {
+  decryptNostrSecret,
+  ensureAccountNostrKey,
+  generateNostrKeyRecord,
+  zeroizeSecret,
+} from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { createWalletAccount, LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 import { PostRateLimiter, REPLY_POST_CAPS } from '@/lib/nostr/rate-limit';
 import {
+  forgetNostrAnnouncements,
   HOT_ZAP_SINCE_SLACK_S,
   HOT_ZAP_WINDOW_MS,
   INBOUND_DM_SINCE_S,
@@ -1139,6 +1150,125 @@ describe('runNostrWorkerTick', () => {
     expect(Number(lists[1]?.event['created_at'])).toBeGreaterThan(
       Number(lists[0]?.event['created_at']),
     );
+  });
+
+  /**
+   * The in-memory store keeps one key per account; KEK rotation replaces it
+   * in place on Postgres. This view of `auth` answers a replaced key instead.
+   */
+  function rotatable(auth: InMemoryAuthStore): {
+    store: AuthStore;
+    rotate: (accountId: string, kek: Uint8Array) => Promise<string>;
+  } {
+    const replaced = new Map<string, NostrKeyRecord>();
+    const store = new Proxy(auth, {
+      get(target, prop) {
+        if (prop === 'getNostrPublicKey') {
+          return async (id: string) => replaced.get(id)?.pubkey ?? target.getNostrPublicKey(id);
+        }
+        if (prop === 'getNostrSecret') {
+          return async (id: string) => replaced.get(id)?.ciphertext ?? target.getNostrSecret(id);
+        }
+        const value: unknown = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? (value as () => unknown).bind(target) : value;
+      },
+    }) as AuthStore;
+    return {
+      store,
+      rotate: async (accountId, kek) => {
+        const record = await generateNostrKeyRecord(accountId, kek);
+        replaced.set(accountId, record);
+        return String(record.pubkey);
+      },
+    };
+  }
+
+  it('announces a rotated key again (kind:0 and kind:10002), only for rotated accounts', async () => {
+    const { auth, messages } = await seed();
+    await auth.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Bea',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+    });
+    await ensureAccountNostrKey(auth, 'other', KEK);
+    const { store, rotate } = rotatable(auth);
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    let clock = 1_700_000_000_000;
+    const run = async (): Promise<void> => {
+      clock += 60_000;
+      const nowMs = clock;
+      await runNostrWorkerTick(
+        deps({ messages, auth: store, kek: KEK, publisher, now: () => nowMs, env }),
+      );
+    };
+    const announced = (pubkey: string | undefined): number[] =>
+      publisher.calls
+        .filter((call) => call.event['pubkey'] === pubkey)
+        .map((call) => Number(call.event['kind']))
+        .filter((kind) => kind === 0 || kind === 10002)
+        .sort((a, b) => a - b);
+    await run();
+    await run();
+    const oldPubkey = await store.getNostrPublicKey('acc');
+    const otherPubkey = await store.getNostrPublicKey('other');
+    expect(announced(oldPubkey)).toEqual([0, 10002]);
+    expect(announced(otherPubkey)).toEqual([0, 10002]);
+    const rotated = await rotate('acc', KEK);
+    // Unchanged content stays cached: without the trigger nothing is announced.
+    await run();
+    expect(announced(rotated)).toEqual([]);
+    forgetNostrAnnouncements(store, undefined, {
+      rotatedAccountIds: ['acc'],
+      rotatedShopMessageIds: [],
+    });
+    await run();
+    expect(announced(rotated)).toEqual([0, 10002]);
+    expect(announced(oldPubkey)).toEqual([0, 10002]);
+    expect(announced(otherPubkey)).toEqual([0, 10002]);
+    const profile = publisher.calls.find(
+      (call) => call.event['pubkey'] === rotated && call.event['kind'] === 0,
+    );
+    expect(verifyEvent(profile?.event as unknown as NostrEvent)).toBe(true);
+    expect(JSON.parse(String(profile?.event['content'])).name).toBe('Ada');
+  });
+
+  it('subscribes inbound direct messages for the current key only after a rotation', async () => {
+    const { auth, messages } = await seed();
+    const { store, rotate } = rotatable(auth);
+    const oldPubkey = await store.getNostrPublicKey('acc');
+    const rotated = await rotate('acc', KEK);
+    const querier = new RecordingQuerier();
+    await runNostrWorkerTick(
+      deps({
+        messages,
+        auth: store,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        querier,
+        now: () => 1_700_000_000_000,
+        env: { NOSTR_RELAY_SPACE: 'wss://space' },
+        conversations: new InMemoryConversationStore(),
+        verifyKind1: () => true,
+      }),
+      'ingest',
+    );
+    const dmFilters = querier.calls
+      .map((call) => call.filter)
+      .filter((filter) => {
+        const kinds = filter['kinds'];
+        return Array.isArray(kinds) && kinds.includes(1059);
+      });
+    expect(dmFilters.length).toBeGreaterThan(0);
+    const subscribed = dmFilters.flatMap((filter) => filter['#p'] as string[]);
+    expect(subscribed).toContain(rotated);
+    expect(subscribed).not.toContain(oldPubkey);
   });
 
   it('puts the public note link on a new kind:1 and a poster blurhash on video', async () => {
@@ -8355,6 +8485,24 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       );
       await tick(ctx);
       expect(shopEvents(ctx, identity, 0)).toHaveLength(1);
+    });
+
+    it('publishes kind 0 and kind 10002 again for a shop whose key was rotated', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await tick(ctx);
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 0)).toHaveLength(1);
+      expect(shopEvents(ctx, identity, 10002)).toHaveLength(1);
+      forgetNostrAnnouncements(ctx.auth, ctx.shops, {
+        rotatedAccountIds: [],
+        rotatedShopMessageIds: [uuid(1)],
+      });
+      await tick(ctx);
+      expect(shopEvents(ctx, identity, 0)).toHaveLength(2);
+      expect(shopEvents(ctx, identity, 10002)).toHaveLength(2);
+      const [first, second] = shopEvents(ctx, identity, 0);
+      expect(second!.created_at).toBeGreaterThan(first!.created_at);
     });
 
     it('reads only the photo content types, also for an unchanged shop', async () => {

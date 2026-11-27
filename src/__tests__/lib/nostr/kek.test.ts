@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { bytesToHex, hexToBytes, parseKekHex, parseNostrKek } from '@/lib/nostr/kek';
+import {
+  bindKekId,
+  bytesToHex,
+  DEFAULT_KEK_ID,
+  hexToBytes,
+  kekIdOf,
+  parseKekHex,
+  parseKekId,
+  parseNostrKek,
+} from '@/lib/nostr/kek';
 
 describe('parseNostrKek', () => {
   it('parses 64 lowercase hex chars', () => {
@@ -44,6 +53,46 @@ describe('parseKekHex', () => {
     expect(() => parseNostrKek('zz'.repeat(32))).toThrow(
       'NOSTR_NSEC_KEK must be 64 lowercase hex characters',
     );
+  });
+});
+
+describe('parseKekId', () => {
+  it('defaults to 1 when unset or blank', () => {
+    expect(DEFAULT_KEK_ID).toBe(1);
+    expect(parseKekId('NOSTR_NSEC_KEK_ID', undefined)).toBe(1);
+    expect(parseKekId('NOSTR_NSEC_KEK_ID', '  ')).toBe(1);
+  });
+
+  it('parses a positive integer up to 4294967295 after trimming', () => {
+    expect(parseKekId('NOSTR_NSEC_KEK_ID', ' 2\n')).toBe(2);
+    expect(parseKekId('RECOVERY_SHARE_KEK_ID', '4294967295')).toBe(4_294_967_295);
+  });
+
+  it('names the variable when the value is not a positive integer', () => {
+    for (const raw of ['0', '-1', '1.5', 'two', '02', '4294967296', '99999999999', '1e3']) {
+      expect(() => parseKekId('RECOVERY_SHARE_KEK_ID', raw)).toThrow(
+        'RECOVERY_SHARE_KEK_ID must be a positive integer',
+      );
+    }
+  });
+});
+
+describe('bindKekId / kekIdOf', () => {
+  it('binds an id to the key object, not to its bytes', () => {
+    const kek = new Uint8Array(32).fill(1);
+    expect(kekIdOf(kek)).toBe(1);
+    expect(bindKekId(kek, 2)).toBe(kek);
+    expect(kekIdOf(kek)).toBe(2);
+    expect(kekIdOf(new Uint8Array(32).fill(1))).toBe(1);
+    expect(kekIdOf(kek.slice())).toBe(1);
+  });
+
+  it('refuses an id that is not a positive uint32', () => {
+    const kek = new Uint8Array(32);
+    for (const id of [0, -1, 1.5, 4_294_967_296, Number.NaN]) {
+      expect(() => bindKekId(kek, id)).toThrow('KEK id must be a positive integer');
+    }
+    expect(kekIdOf(kek)).toBe(1);
   });
 });
 

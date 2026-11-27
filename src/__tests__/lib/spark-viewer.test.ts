@@ -35,10 +35,12 @@ vi.mock('@buildonspark/spark-sdk', () => ({
   deriveViewerIdentityPublicKey: sdk.deriveViewerIdentityPublicKey,
 }));
 
+import { bindKekId } from '@/lib/nostr/kek';
 import {
   SPARK_VIEWER_SCHEMA_SQL,
   ensureSparkViewer,
   migrateSparkViewerSchema,
+  rotateSparkViewerKey,
 } from '@/lib/spark-viewer';
 
 const KEK = new Uint8Array(32).fill(9);
@@ -59,8 +61,102 @@ describe('migrateSparkViewerSchema', () => {
     expect(execute.mock.calls.map((call) => call[0])).toEqual(SPARK_VIEWER_SCHEMA_SQL);
     expect(SPARK_VIEWER_SCHEMA_SQL[0]).toContain('viewer_mnemonic_ciphertext bytea NOT NULL');
     expect(SPARK_VIEWER_SCHEMA_SQL[0]).toContain(
-      'viewer_kek_id integer NOT NULL CHECK (viewer_kek_id = 1)',
+      'viewer_kek_id integer NOT NULL CHECK (viewer_kek_id >= 1)',
     );
+    const check = SPARK_VIEWER_SCHEMA_SQL[2] ?? '';
+    expect(check).toContain('PERFORM pg_advisory_xact_lock(21499021)');
+    expect(check).toContain("c.def NOT LIKE '%viewer_kek_id >= 1%'");
+    expect(check).toContain(
+      'ADD CONSTRAINT spark_viewer_key_viewer_kek_id_check CHECK (viewer_kek_id >= 1)',
+    );
+  });
+});
+
+describe('rotateSparkViewerKey', () => {
+  type Row = {
+    viewer_identity_public_key: string;
+    viewer_mnemonic_ciphertext: Uint8Array;
+    viewer_kek_id: number;
+  };
+
+  function sqlWith(
+    row: Row | undefined,
+    updates: unknown[][],
+    beforeUpdate: () => void = () => undefined,
+  ): SqlClient {
+    const tx: SqlClient = {
+      query: async <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+        if (text.includes('pg_advisory_xact_lock')) {
+          expect(params).toEqual([21_499_021]);
+          return [];
+        }
+        if (text.startsWith('SELECT viewer_kek_id FROM spark_viewer_key')) {
+          return (row === undefined ? [] : [{ viewer_kek_id: row.viewer_kek_id }]) as T[];
+        }
+        if (text.includes('SELECT viewer_identity_public_key')) {
+          return (row === undefined ? [] : [{ ...row }]) as T[];
+        }
+        expect(text).toContain('WHERE singleton = true AND viewer_kek_id = $4');
+        beforeUpdate();
+        updates.push([...params]);
+        if (row === undefined || row.viewer_kek_id !== params[3]) return [];
+        row.viewer_identity_public_key = String(params[0]);
+        row.viewer_mnemonic_ciphertext = params[1] as Uint8Array;
+        row.viewer_kek_id = Number(params[2]);
+        return [{ singleton: true }] as T[];
+      },
+      execute: async () => undefined,
+    };
+    return { query: async () => [], execute: async () => {}, transaction: async (run) => run(tx) };
+  }
+
+  it('replaces a row under another id with a fresh mnemonic under the current id', async () => {
+    const current = bindKekId(new Uint8Array(32).fill(9), 2);
+    const row: Row = {
+      viewer_identity_public_key: `03${'08'.repeat(32)}`,
+      viewer_mnemonic_ciphertext: new Uint8Array(40),
+      viewer_kek_id: 1,
+    };
+    const updates: unknown[][] = [];
+    expect(await rotateSparkViewerKey(sqlWith(row, updates), current)).toBe(true);
+    expect(updates).toHaveLength(1);
+    expect(row.viewer_kek_id).toBe(2);
+    expect(row.viewer_identity_public_key).toBe(PUBLIC_KEY);
+    expect(new DataView(row.viewer_mnemonic_ciphertext.buffer).getUint32(1, false)).toBe(2);
+    // The rotated row loads with the current key, and only with it.
+    const loaded = await ensureSparkViewer(sqlWith(row, []), current);
+    expect(loaded.publicKey).toBe(PUBLIC_KEY);
+    await expect(ensureSparkViewer(sqlWith(row, []), KEK)).rejects.toThrow(
+      'envelope key is invalid',
+    );
+    // A second run changes nothing.
+    expect(await rotateSparkViewerKey(sqlWith(row, updates), current)).toBe(false);
+    expect(updates).toHaveLength(1);
+  });
+
+  it('changes nothing without a row, and reports a row another boot replaced first', async () => {
+    const updates: unknown[][] = [];
+    expect(await rotateSparkViewerKey(sqlWith(undefined, updates), KEK)).toBe(false);
+    expect(updates).toEqual([]);
+    const raced: Row = {
+      viewer_identity_public_key: PUBLIC_KEY,
+      viewer_mnemonic_ciphertext: new Uint8Array(40),
+      viewer_kek_id: 1,
+    };
+    const racing = sqlWith(raced, updates, () => {
+      raced.viewer_kek_id = 3;
+    });
+    expect(await rotateSparkViewerKey(racing, bindKekId(new Uint8Array(32).fill(9), 2))).toBe(
+      false,
+    );
+    expect(updates).toHaveLength(1);
+    expect(raced.viewer_kek_id).toBe(3);
+  });
+
+  it('needs a transaction', async () => {
+    await expect(
+      rotateSparkViewerKey({ query: async () => [], execute: async () => {} }, KEK),
+    ).rejects.toThrow('custody');
   });
 });
 

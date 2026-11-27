@@ -1,12 +1,14 @@
 import { finalizeEvent, type EventTemplate, type VerifiedEvent } from 'nostr-tools/pure';
 import type { AuthStore } from '@/lib/auth/store';
-import { decryptNostrSecret, zeroizeSecret } from '@/lib/nostr/keys';
+import { currentKekEnvelope, decryptNostrSecret, zeroizeSecret } from '@/lib/nostr/keys';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
 
 /**
  * Decrypt the account secret, finalize a Nostr event, then zeroize the secret.
  *
- * Does not read `process.env`. Callers inject the KEK.
+ * Does not read `process.env`. Callers inject the KEK. A secret stored under
+ * another KEK id (not renewed by KEK rotation yet) counts as missing
+ * ({@link currentKekEnvelope}).
  */
 
 /**
@@ -25,7 +27,9 @@ export async function signEventForAccount(
   kek: Uint8Array,
   template: EventTemplate,
 ): Promise<VerifiedEvent> {
-  const ciphertext = await store.getNostrSecret(accountId);
+  const ciphertext = currentKekEnvelope(await store.getNostrSecret(accountId), kek, {
+    accountId,
+  });
   if (ciphertext === undefined) {
     throw new Error('Nostr secret missing');
   }
@@ -55,7 +59,9 @@ export async function signEventForShop(
   kek: Uint8Array,
   template: EventTemplate,
 ): Promise<VerifiedEvent> {
-  const ciphertext = await store.getNostrCiphertext(messageId);
+  const ciphertext = currentKekEnvelope(await store.getNostrCiphertext(messageId), kek, {
+    messageId,
+  });
   if (ciphertext === undefined) throw new Error('Shop Nostr secret missing');
   const secret = await decryptNostrSecret(ciphertext, kek, `shop:${messageId}`);
   try {
