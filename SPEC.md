@@ -100,7 +100,9 @@ wallet whose chosen viewer is the current one has granted it, so such a read
 stores its balance, also 0, and a full scan completes.
 Without retired viewers, current wallets use the current viewer only. Retired
 keys of an earlier rotation are sealed again under the current key. Retired
-pubkeys never attribute inbound events and are never returned or logged.
+pubkeys never attribute inbound events and are returned by no member or public
+route; like other non-secret columns they appear in `db_change` and in the
+operator read `GET /debug/db`.
 Deleting an account or a shop identity, or merging an account away, deletes its
 retired keys. Each recovery share is opened with `RECOVERY_SHARE_KEK_PREVIOUS` and sealed
 again under the current recovery key with the same account id as additional
