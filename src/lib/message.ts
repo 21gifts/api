@@ -191,8 +191,10 @@ export interface MessageRow {
    */
   goalTermDays?: number | null;
   /**
-   * When collected sats first reached the goal on a repayable ask.
-   * Null until then, including on donations.
+   * When a repayable ask first reached its goal: on a fiat ask when the
+   * collected amount in the ask currency reached the typed amount (rounded to
+   * cents; sats do not count), otherwise when collected sats reached
+   * `goalSats`. Null until then, including on donations. Set once, never moved.
    */
   goalFundedAt?: Date | null;
   /**

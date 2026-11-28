@@ -11298,7 +11298,8 @@ describe('DELETE /messages/:id', () => {
       ...unsignedNostrDefaults(),
       goalSats: 100,
       goalCurrency: 'USD',
-      goalAmount: '1.00',
+      // Above the 1.00 collected, so the credit is still collecting when it closes.
+      goalAmount: '2.00',
       goalRepayable: true,
       goalTermDays: 1,
       goalFundedAt: null,

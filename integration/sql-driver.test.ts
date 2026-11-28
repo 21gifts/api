@@ -5993,6 +5993,110 @@ describe('PostgresMessageStore loan ledger fiat', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('funds a fiat loan from its collected ask currency and backfills only null goal_funded_at', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const byFiat = crypto.randomUUID();
+    const bySatsOnly = crypto.randomUUID();
+    const byAddSats = crypto.randomUUID();
+    const unstamped = crypto.randomUUID();
+    const stamped = crypto.randomUUID();
+    const ids = [byFiat, bySatsOnly, byAddSats, unstamped, stamped];
+    let ready = false;
+    const fundedAt = async (id: string): Promise<string | null> => {
+      const rows = await client.query<{ funded_at: string | null }>(
+        `SELECT goal_funded_at::text AS funded_at FROM message WHERE id = $1::uuid`,
+        [id],
+      );
+      return rows[0]?.funded_at ?? null;
+    };
+    const loan = (
+      id: string,
+      currency: 'USD' | 'CHF' | 'EUR',
+      amount: string,
+      goalSats: number,
+    ): Parameters<MessageStore['create']>[0] => ({
+      id,
+      accountId: null,
+      name: 'Ada',
+      text: 'fiat funding',
+      createdAt: new Date(),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats,
+      goalCurrency: currency,
+      goalAmount: amount,
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    try {
+      await migrateAuthSchema(client);
+      await migrateBtcUsdSchema(client);
+      await migrateFiatSchema(client);
+      await migrateMessageSchema(client);
+      await migrateShopIdentitySchema(client);
+      ready = true;
+      const store = new PostgresMessageStore(client);
+
+      // recordZapReceipt: the USD total decides, not the far larger goalSats.
+      await store.create(loan(byFiat, 'USD', '1.00', 1_000_000));
+      await store.recordZapReceipt(`${byFiat}-1`, byFiat, 100, {
+        usd: '0.60',
+        chf: null,
+        eur: null,
+        php: null,
+      });
+      expect(await fundedAt(byFiat)).toBeNull();
+      await store.recordZapReceipt(`${byFiat}-2`, byFiat, 100, {
+        usd: '0.40',
+        chf: null,
+        eur: null,
+        php: null,
+      });
+      const fiatFunded = await fundedAt(byFiat);
+      expect(fiatFunded).not.toBeNull();
+
+      // Sats past goalSats without a USD snapshot do not fund a USD ask.
+      await store.create(loan(bySatsOnly, 'USD', '1.00', 100));
+      await store.recordZapReceipt(`${bySatsOnly}-1`, bySatsOnly, 200, null);
+      expect(await fundedAt(bySatsOnly)).toBeNull();
+
+      // addSats uses the same rule.
+      await store.create(loan(byAddSats, 'CHF', '2.00', 1_000_000));
+      await store.addSats(byAddSats, 50, { usd: null, chf: '2.00', eur: null, php: null });
+      expect(await fundedAt(byAddSats)).not.toBeNull();
+
+      // Boot backfill: stamps a reached ask with a null goal_funded_at and
+      // leaves a stored goal_funded_at unchanged.
+      await store.create(loan(unstamped, 'EUR', '5.00', 1_000_000));
+      await client.execute(`UPDATE message SET sats = 10, fiat_eur = 5.00 WHERE id = $1::uuid`, [
+        unstamped,
+      ]);
+      await store.create(loan(stamped, 'USD', '1.00', 1_000_000));
+      await client.execute(
+        `UPDATE message
+         SET sats = 10, fiat_usd = 1.00,
+             goal_funded_at = '2026-11-10T12:00:00Z'::timestamptz
+         WHERE id = $1::uuid`,
+        [stamped],
+      );
+      const stampedBefore = await fundedAt(stamped);
+      expect(await fundedAt(unstamped)).toBeNull();
+      await migrateMessageSchema(client);
+      expect(await fundedAt(unstamped)).not.toBeNull();
+      expect(await fundedAt(stamped)).toBe(stampedBefore);
+      expect(await fundedAt(byFiat)).toBe(fiatFunded);
+      expect(await fundedAt(bySatsOnly)).toBeNull();
+    } finally {
+      if (ready) {
+        for (const id of ids) {
+          await client.execute('DELETE FROM nostr_zap_receipt WHERE message_id = $1', [id]);
+          await client.execute('DELETE FROM message WHERE id = $1', [id]);
+        }
+      }
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 /** Every table `mergeAccounts` names, so the merge runs end to end. */

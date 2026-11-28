@@ -194,7 +194,7 @@ const REPAYMENT_EARLIEST_START_MS = Date.UTC(2026, 10, 28);
  * UTC). A credit that filled on or before 2026-11-27 starts on 2026-11-28; one
  * that filled on 2026-11-28 starts on 2026-11-29.
  *
- * @param fundedAtMs - When collected sats first reached the goal.
+ * @param fundedAtMs - When the credit first reached its goal (`goal_funded_at`).
  * @returns Epoch milliseconds of that UTC midnight.
  */
 export function repaymentStartMs(fundedAtMs: number): number {
@@ -608,7 +608,7 @@ export interface RepaymentLedgerLine {
  * UTC date of one repayment day. Day 0 is `repaymentStartMs`: the UTC day after the
  * credit filled, never before 2026-11-28.
  *
- * @param fundedAtMs - When collected sats first reached the goal.
+ * @param fundedAtMs - When the credit first reached its goal (`goal_funded_at`).
  * @param dayIndex - Zero-based day in the term.
  * @returns `YYYY-MM-DD` in UTC.
  */

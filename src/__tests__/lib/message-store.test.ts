@@ -17,6 +17,7 @@ import {
   type MessageInvoiceAttempt,
   type ZapIngestRow,
 } from '@/lib/message-store';
+import type { FiatAmounts } from '@/lib/money';
 import { shopTextProblem } from '@/lib/shop-place';
 import { resolveMediaDir, videoFilePath } from '@/lib/video';
 
@@ -333,6 +334,16 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(frozenColumn).toBeGreaterThan(closedColumn);
     expect(fundedBackfill).toBeGreaterThan(frozenColumn);
     expect(recordedBackfill).toBeGreaterThan(fundedBackfill);
+    // The boot backfill only stamps a null goal_funded_at, with the shared
+    // funded rule on stored totals, so a running plan never moves.
+    const fundedBackfillSql = MESSAGE_SCHEMA_SQL[fundedBackfill] ?? '';
+    expect(fundedBackfillSql).toMatch(/WHERE goal_repayable IS TRUE\s+AND goal_funded_at IS NULL/);
+    expect(fundedBackfillSql).toContain("WHEN 'EUR' THEN COALESCE(message.fiat_eur, 0)\n");
+    expect(fundedBackfillSql).toMatch(/>= ROUND\(message\.goal_amount, 2\)/);
+    expect(fundedBackfillSql).toContain(
+      'ELSE message.goal_sats IS NOT NULL AND message.goal_sats > 0 AND message.sats >= message.goal_sats',
+    );
+    expect(fundedBackfillSql).not.toMatch(/\$\d/);
     const repairSql = MESSAGE_SCHEMA_SQL.find((statement) => statement.includes('FROM pg_trigger'));
     expect(repairSql).toContain("tgname = 'trg_db_change'");
     expect(repairSql).toContain("jsonb_typeof(nostr_event) = 'string'");
@@ -3572,6 +3583,91 @@ describe('InMemoryMessageStore', () => {
     const without = await store.create({ ...LATE, id: 'nogoal', goalSats: 21000 });
     expect(without.goalTermDays).toBeNull();
     expect((await store.getById('nogoal'))?.goalTermDays).toBeNull();
+  });
+
+  it('funds a fiat ask when its collected ask currency reaches the typed amount', async () => {
+    const store = new InMemoryMessageStore();
+    const usd = (amount: string | null): FiatAmounts => ({
+      usd: amount,
+      chf: null,
+      eur: null,
+      php: null,
+    });
+    // Far below goalSats, but the USD total reaches the typed 1.005 (1.01 in cents).
+    await store.create({
+      ...EARLY,
+      id: 'fiat-funded',
+      goalSats: 1_000_000,
+      goalCurrency: 'USD',
+      goalAmount: '1.005',
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    await store.addSats('fiat-funded', 10, usd('1.00'));
+    expect((await store.getById('fiat-funded'))?.goalFundedAt).toBeNull();
+    await store.recordZapReceipt('fiat-funded-gift', 'fiat-funded', 1, usd('0.01'));
+    const fundedAt = (await store.getById('fiat-funded'))?.goalFundedAt;
+    expect(fundedAt).toBeInstanceOf(Date);
+    await store.addSats('fiat-funded', 5, usd('9.00'));
+    expect((await store.getById('fiat-funded'))?.goalFundedAt?.getTime()).toBe(fundedAt?.getTime());
+
+    // Past goalSats, but no USD snapshot and only 0.50 USD: still collecting.
+    await store.create({
+      ...LATE,
+      id: 'fiat-sats-only',
+      goalSats: 100,
+      goalCurrency: 'USD',
+      goalAmount: '1.00',
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    await store.addSats('fiat-sats-only', 500, null);
+    await store.addSats('fiat-sats-only', 500, usd('0.50'));
+    expect((await store.getById('fiat-sats-only'))?.goalFundedAt).toBeNull();
+    // A delta on a zero-sat credit adds nothing.
+    await store.addSats('fiat-sats-only', 0, usd('0.50'));
+    expect((await store.getById('fiat-sats-only'))?.goalFundedAt).toBeNull();
+
+    // A typed amount that rounds to 0 cents is never reached.
+    await store.create({
+      ...LATE,
+      id: 'fiat-dust',
+      goalSats: 1,
+      goalCurrency: 'USD',
+      goalAmount: '0.001',
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    await store.addSats('fiat-dust', 5, usd('0.01'));
+    expect((await store.getById('fiat-dust'))?.goalFundedAt).toBeNull();
+
+    // A fiat ask without a typed amount keeps the sat rule.
+    await store.create({
+      ...LATE,
+      id: 'fiat-untyped',
+      goalSats: 100,
+      goalCurrency: 'CHF',
+      goalAmount: null,
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    await store.addSats('fiat-untyped', 100, null);
+    expect((await store.getById('fiat-untyped'))?.goalFundedAt).toBeInstanceOf(Date);
+
+    // A BTC ask keeps the sat rule.
+    await store.create({
+      ...LATE,
+      id: 'btc-ask',
+      goalSats: 100,
+      goalCurrency: 'BTC',
+      goalAmount: '100',
+      goalRepayable: true,
+      goalTermDays: 1,
+    });
+    await store.addSats('btc-ask', 99, null);
+    expect((await store.getById('btc-ask'))?.goalFundedAt).toBeNull();
+    await store.addSats('btc-ask', 1, null);
+    expect((await store.getById('btc-ask'))?.goalFundedAt).toBeInstanceOf(Date);
   });
 
   it('create stores null goalSats on a reply even when the row asked for one', async () => {
@@ -9715,6 +9811,41 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes).toEqual([]);
   });
 
+  it('funds a fiat ask in SQL from its collected currency, not from sats', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    await store.addSats('m1', 7, { usd: '1.00', chf: null, eur: null, php: null });
+    const added = sql.executes[0]?.text ?? '';
+    expect(added).toMatch(
+      /WHEN message\.goal_currency IN \('USD','CHF','EUR','PHP'\) AND message\.goal_amount IS NOT NULL/,
+    );
+    expect(added).toContain(
+      "WHEN 'USD' THEN COALESCE(message.fiat_usd, 0) + CASE WHEN $2::bigint = 0 THEN 0 ELSE COALESCE($3::numeric, 0) END",
+    );
+    expect(added).toContain(
+      'ELSE COALESCE(message.fiat_php, 0) + CASE WHEN $2::bigint = 0 THEN 0 ELSE COALESCE($6::numeric, 0) END',
+    );
+    expect(added).toMatch(/>= ROUND\(message\.goal_amount, 2\)/);
+    expect(added).toMatch(/ROUND\(message\.goal_amount, 2\) > 0/);
+    expect(added).toContain(
+      'ELSE message.goal_sats IS NOT NULL AND message.goal_sats > 0 AND message.sats + $2::bigint >= message.goal_sats',
+    );
+    expect(added).toMatch(/goal_funded_at IS NULL/);
+
+    sql.nextRows = [{ event_id: 'r1' }];
+    await store.recordZapReceipt('r1', 'm1', 7, {
+      usd: null,
+      chf: '0.90',
+      eur: null,
+      php: null,
+    });
+    const zap = sql.queries[0]?.text ?? '';
+    expect(zap).toContain(
+      "WHEN 'CHF' THEN COALESCE(message.fiat_chf, 0) + CASE WHEN inserted.sats = 0 THEN 0 ELSE COALESCE($5::numeric, 0) END",
+    );
+    expect(zap).toContain('AND message.sats + inserted.sats >= message.goal_sats');
+  });
+
   it('addReceivedSats updates received columns and leaves sats', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
@@ -14095,7 +14226,9 @@ describe('shop identity on message rows', () => {
         id,
         goalSats: 100,
         goalCurrency: currency,
-        goalAmount: '1.00',
+        // Above every gift-time amount below (at most 4.00), so the fiat credit is
+        // still collecting when it closes and the close freezes the payer cents.
+        goalAmount: '5.00',
         goalRepayable: true,
         goalTermDays: 1,
       });
