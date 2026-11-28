@@ -1,8 +1,11 @@
 -- Retired custodial Nostr keys kept by KEK rotation (rotateKeks): the key a
--- member account or a shop identity had before the rotation. Used only to
--- sign the NIP-09 kind 5 deletion of an event that key signed
--- (signDeletionForAccount); never to sign anything else and never to
--- attribute an inbound event.
+-- member account or a shop identity had before the rotation. A retired
+-- 'account' key is used only to sign the NIP-09 kind 5 deletion of a note
+-- that key signed, when staff delete it (signDeletionForAccount). A retired
+-- 'shop' key is kept only so the shop's old key stays available should a
+-- deletion path for shop events be added; today nothing signs with it. A
+-- retired key never signs anything else and never attributes an inbound
+-- event.
 --
 -- owner_type / owner_id: 'account' and the account id, or 'shop' and the shop
 -- note id (shop_identity.message_id), as text.

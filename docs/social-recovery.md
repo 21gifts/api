@@ -54,9 +54,12 @@ shares give back the same 16 bytes, and BIP-39 of those bytes is the original
   and stores nothing about who protects whom: the owner's id and name exist
   only inside the ciphertext, and nothing on the owner's account refers to a
   box.
-- The 21.gifts share is a backup only. The api stores it encrypted and never
-  decrypts or returns it; it reads only whether one is stored, see
-  [Grant payouts](#grant-payouts). No release is planned; 21.gifts keeps it
+- The 21.gifts share is a backup only. The api stores it encrypted; no route
+  returns it and no request path decrypts it, and requests read only whether
+  one is stored, see [Grant payouts](#grant-payouts). Only the KEK rotation at
+  boot opens it: with the current key to check that key, and with the previous
+  key to seal it again under the current one, see
+  [The 21.gifts share](#the-21gifts-share). No release is planned; 21.gifts keeps it
   only as an option, see [The 21.gifts share](#the-21gifts-share).
 - Any two holders act at once. There is no waiting period and no cancel
   window. Person 1 and person 2 together can recover the account and move the
@@ -149,8 +152,9 @@ usable together with any other old share.
   share alone rebuilds nothing.
 - **No use of its content.** No route returns the share, no request path
   decrypts it, and no log contains it. The api only checks whether one is
-  stored for the current wallet, see [Grant payouts](#grant-payouts). The only
-  open is the key rotation below.
+  stored for the current wallet, see [Grant payouts](#grant-payouts). Only the
+  key rotation below opens it: with the current key to check that key, and
+  with the previous key to seal it again under the current one.
 - **Key rotation.** The envelope records the KEK id of the key that sealed
   it (`RECOVERY_SHARE_KEK_ID`, default 1). To rotate the key, the operator sets
   a new `RECOVERY_SHARE_KEK` with a new `RECOVERY_SHARE_KEK_ID` and puts the
@@ -637,9 +641,11 @@ Later, not needed for a first version:
 - A person's share reaches the api only as a held-share box encrypted in the
   holder's browser; the api cannot open it, and nothing on the owner's
   account refers to it. The api stores the 21.gifts share only
-  encrypted under its own key, with the account id as additional data, and
-  has no path that decrypts or returns it or uses its content; it only checks
-  whether one is stored. `db_change` holds only its
+  encrypted under its own key, with the account id as additional data; no
+  route returns it, no request path decrypts it or uses its content, and
+  requests only check whether one is stored. Only the KEK rotation at boot
+  opens it: with the current key to check that key, and with the previous key
+  to seal it again under the current one. `db_change` holds only its
   SHA-256, and a previous wallet's share stays until the owner drops that
   wallet.
 - Recovery without a valid signature by the verified `spark_pubkey`, with a

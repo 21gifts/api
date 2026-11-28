@@ -4,11 +4,13 @@
  * KEK rotation (`rotateKeks`) gives every member and shop a fresh key pair.
  * The old key is kept here, sealed under the current `NOSTR_NSEC_KEK` with
  * additional data bound to its owner and public key
- * ({@link nostrRetiredKeyAad}), for exactly one job: signing the NIP-09
- * kind 5 deletion of an event that this key signed (relays honour a deletion
- * only from the pubkey of the deleted event). A retired key never signs
- * anything else, is never used to attribute an inbound event, and is never
- * returned or logged.
+ * ({@link nostrRetiredKeyAad}). A retired ACCOUNT key has exactly one job:
+ * signing the NIP-09 kind 5 deletion of a note that this key signed, when
+ * staff delete it (relays honour a deletion only from the pubkey of the
+ * deleted event). A retired SHOP key is kept only so the shop's old key stays
+ * available should a deletion path for shop events be added; today nothing
+ * signs with a retired shop key. A retired key never signs anything else, is
+ * never used to attribute an inbound event, and is never returned or logged.
  *
  * Deleting an account or a shop identity deletes its retired keys in the
  * same statement (row triggers `trg_account_nostr_retired_key` and

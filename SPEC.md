@@ -64,12 +64,14 @@ boot with the count, nothing written); then each member and shop Nostr key and
 the Spark viewer key is replaced by a fresh one under the current Nostr key, and
 the old one is kept as a retired key sealed under the current key
 (`nostr_retired_key`, additional data bound to owner type, owner id and pubkey;
-`spark_viewer_retired_key`, bound to the identity public key). A retired Nostr
-key signs only the NIP-09 kind 5 deletion of an event it signed: a staff delete
+`spark_viewer_retired_key`, bound to the identity public key). A retired account
+key signs only the NIP-09 kind 5 deletion of a note it signed: a staff delete
 (`DELETE /messages/:id`) signs each deletion with the key whose pubkey is the
 stored event's,
 and when none matches it publishes nothing for that note and logs
-`messages.delete.nostr_key_missing` with the count only. A retired viewer only
+`messages.delete.nostr_key_missing` with the count only. A retired shop key is
+kept only so the shop's old key stays available should a deletion path for shop
+events be added; today nothing signs with it. A retired viewer only
 reads wallets that have not granted the new viewer: previous wallets, which
 cannot grant it, and current wallets until the member's app grants it. Spark
 returns a balance of 0 and empty pages, not an error, through a viewer a wallet

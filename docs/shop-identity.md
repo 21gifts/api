@@ -244,8 +244,12 @@ runs and checks that neither the note nor a `shop_identity` row is left.
   fresh key pair under the new key (`rotateShopIdentityKey`), in place and
   conditional on the old id. The old secret is opened with
   `NOSTR_NSEC_KEK_PREVIOUS` and kept in `nostr_retired_key` (owner type
-  `shop`, the note id, its pubkey), sealed under the new key, only for NIP-09
-  deletions of events it signed; deleting the shop identity deletes it. This
+  `shop`, the note id, its pubkey), sealed under the new key, only so the
+  shop's old key stays available should a deletion path for shop events be
+  added; today nothing signs with a retired shop key (there is no kind 5
+  deletion of shop events, see below). Retired account keys, by contrast, sign
+  NIP-09 deletions of notes they signed (staff delete). Deleting the shop
+  identity deletes its retired keys. This
   includes the adopted keys of the notes in
   `ADOPTED_SHOP_MESSAGE_IDS`: they also get a fresh key.
 - The rotation keeps `nostr_key_created_at`. Shop NIP-05 locals are allocated

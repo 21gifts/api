@@ -5,8 +5,10 @@
  * - Member Nostr keys (`account`) and shop Nostr keys (`shop_identity`) get a
  *   fresh key pair under the current Nostr KEK. The old secret is opened with
  *   `NOSTR_NSEC_KEK_PREVIOUS` and kept as a retired key (`nostr_retired_key`,
- *   sealed under the current Nostr KEK), used only to sign NIP-09 deletions
- *   of the events it signed.
+ *   sealed under the current Nostr KEK). A retired member key is used only
+ *   to sign NIP-09 deletions of the notes it signed (staff delete); a retired
+ *   shop key is kept only so it stays available should a deletion path for
+ *   shop events be added, and today nothing signs with it.
  * - The Spark viewer key gets a fresh mnemonic under the current Nostr KEK;
  *   the old mnemonic is kept as a retired viewer (`spark_viewer_retired_key`),
  *   used only to read wallets that have not granted the new viewer: previous

@@ -25,9 +25,11 @@ KEK rotation); the per-table rules are in
   the new `NOSTR_NSEC_KEK`. The old secret is opened with
   `NOSTR_NSEC_KEK_PREVIOUS` and kept as a **retired key**, sealed under the
   new key: old member and shop keys in `nostr_retired_key`, the old viewer in
-  `spark_viewer_retired_key`. A retired Nostr key is used only to sign the
-  NIP-09 deletion of a note it signed (relays honour a deletion only from the
-  note's own pubkey); a retired viewer is used only to read wallets that have
+  `spark_viewer_retired_key`. A retired account key is used only to sign the
+  NIP-09 deletion of a note it signed, when staff delete that note (relays
+  honour a deletion only from the note's own pubkey). A retired shop key is
+  kept only so the shop's old key stays available should a deletion path for
+  shop events be added; today nothing signs with a retired shop key. A retired viewer is used only to read wallets that have
   not granted the new viewer: previous wallets, which cannot grant it, and
   current wallets until the member's app grants it (see
   [How wallets are read after a rotation](#how-wallets-are-read-after-a-rotation)).
