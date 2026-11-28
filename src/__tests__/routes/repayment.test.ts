@@ -1210,7 +1210,13 @@ describe('repayment from the in-app wallet', () => {
         ? {}
         : {
             goalCurrency: options.goalCurrency,
-            goalAmount: options.goalAmount === undefined ? '8.00' : options.goalAmount,
+            // A collecting fiat loan asks twice the collected cents, like goalSats above.
+            goalAmount:
+              options.goalAmount === undefined
+                ? options.fundedAt === null
+                  ? '16.00'
+                  : '8.00'
+                : options.goalAmount,
           }),
     });
     for (const giver of givers) {
@@ -3341,7 +3347,7 @@ describe('repayment from the in-app wallet', () => {
     const { app, messages } = await readyCredit({
       fundedAt: null,
       goalCurrency: 'USD',
-      goalAmount: '0.21',
+      goalAmount: '0.42',
       rate: true,
     });
     const availablePayers = await messages.listCreditPayers(CREDIT);
@@ -3521,7 +3527,7 @@ describe('repayment from the in-app wallet', () => {
 
     const fiat = await loanSetup({
       goalCurrency: 'USD',
-      goalAmount: '0.61',
+      goalAmount: '1.22',
       fundedAt: null,
       rates: async () => spot({ USD: '300000.00' }),
       termDays: REPAYMENT_BILLS_MAX + 1,
@@ -3555,7 +3561,7 @@ describe('repayment from the in-app wallet', () => {
   it('answers 503 when a capped fiat prepayment has no spot price', async () => {
     const { app, messages } = await loanSetup({
       goalCurrency: 'USD',
-      goalAmount: '0.61',
+      goalAmount: '1.22',
       fundedAt: null,
       termDays: REPAYMENT_BILLS_MAX + 1,
       givers: [

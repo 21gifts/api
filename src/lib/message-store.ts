@@ -19,7 +19,7 @@ import type { FetchFn } from '@/lib/btc-usd-candles';
 import type { FiatAmounts } from '@/lib/money';
 import type { PostDayCount } from '@/lib/post-stats';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
-import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
+import { canonicalGoalAmount, type GoalCurrency, type GoalFiatCode } from '@/lib/goal-rate';
 import { logEvent } from '@/lib/log';
 import {
   forumContentFingerprint,
@@ -176,6 +176,86 @@ function foldFiatColumn(
     return delta;
   }
   return addStoredAmount(stored, delta);
+}
+
+/** Collected-total column of a top-level note per fiat ask currency. */
+const GOAL_FIAT_COLLECTED = {
+  USD: 'amountUsd',
+  CHF: 'amountChf',
+  EUR: 'amountEur',
+  PHP: 'amountPhp',
+} as const satisfies Record<GoalFiatCode, keyof MessageRow>;
+
+/**
+ * Whether a top-level ask has collected its goal. This rule exists twice: here
+ * for the in-memory store and in {@link goalReachedSql} for Postgres. Change both.
+ *
+ * A fiat ask (`goalCurrency` USD, CHF, EUR, or PHP with a typed `goalAmount`)
+ * is reached when the total collected in that currency (the gift-time
+ * snapshots on the note) reaches the typed amount rounded to cents. Sats do
+ * not count for it, and a gift without a snapshot adds nothing (no fiat figure
+ * is derived from sats). A typed amount that rounds to 0 cents is never reached.
+ * Any other ask (BTC or legacy, or a fiat ask with no typed amount) is reached
+ * when collected sats reach a positive `goalSats`.
+ *
+ * @param row - Note after the latest gift was added.
+ * @returns True when the goal is reached.
+ */
+function goalReached(row: MessageRow): boolean {
+  const currency = row.goalCurrency;
+  const typed = row.goalAmount;
+  if (
+    currency !== null &&
+    currency !== undefined &&
+    currency !== 'BTC' &&
+    typed !== null &&
+    typed !== undefined
+  ) {
+    const goal = fiatAmountToCents(typed);
+    if (goal !== null) {
+      const collected = row[GOAL_FIAT_COLLECTED[currency]];
+      const cents =
+        collected === null || collected === undefined ? 0n : (fiatAmountToCents(collected) ?? 0n);
+      return goal > 0n && cents >= goal;
+    }
+  }
+  const goalSats = row.goalSats;
+  return typeof goalSats === 'number' && goalSats > 0 && row.sats >= goalSats;
+}
+
+/**
+ * SQL form of {@link goalReached} for one `message` row. Change both together.
+ *
+ * Without `added`, it reads the stored totals. With `added`, it reads the
+ * totals after one gift: that gift's sats, and its fiat delta only when the
+ * gift has sats (the same fold as `foldFiatColumn` and the `fiat_*` updates).
+ * A null fiat column or delta adds 0. The fiat goal is `ROUND(goal_amount, 2)`,
+ * which rounds half up like `fiatAmountToCents`.
+ *
+ * @param m - Qualifier of the `message` row (`message` or an alias).
+ * @param added - SQL expressions of the gift being added, or null.
+ * @returns A boolean SQL expression.
+ */
+function goalReachedSql(
+  m: string,
+  added: { sats: string; usd: string; chf: string; eur: string; php: string } | null,
+): string {
+  const total = (column: string, delta: string): string =>
+    added === null
+      ? `COALESCE(${m}.${column}, 0)`
+      : `COALESCE(${m}.${column}, 0) + CASE WHEN ${added.sats} = 0 THEN 0 ELSE COALESCE(${delta}, 0) END`;
+  const sats = added === null ? `${m}.sats` : `${m}.sats + ${added.sats}`;
+  return `(CASE
+             WHEN ${m}.goal_currency IN ('USD','CHF','EUR','PHP') AND ${m}.goal_amount IS NOT NULL
+             THEN ROUND(${m}.goal_amount, 2) > 0
+              AND (CASE ${m}.goal_currency
+                     WHEN 'USD' THEN ${total('fiat_usd', added?.usd ?? 'NULL')}
+                     WHEN 'CHF' THEN ${total('fiat_chf', added?.chf ?? 'NULL')}
+                     WHEN 'EUR' THEN ${total('fiat_eur', added?.eur ?? 'NULL')}
+                     ELSE ${total('fiat_php', added?.php ?? 'NULL')}
+                   END) >= ROUND(${m}.goal_amount, 2)
+             ELSE ${m}.goal_sats IS NOT NULL AND ${m}.goal_sats > 0 AND ${sats} >= ${m}.goal_sats
+           END)`;
 }
 
 /** Replies persist no ask. Top-level rows keep a legacy goalSats with null currency columns. */
@@ -2458,12 +2538,13 @@ $message_goal_currency$`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_funded_at timestamptz`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_closed_at timestamptz`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_debt_frozen boolean NOT NULL DEFAULT false`,
+  // Only stamps an ask that is still collecting (goal_funded_at IS NULL). A
+  // stored goal_funded_at is never rewritten, so no running plan moves.
   `UPDATE message
    SET goal_funded_at = now()
    WHERE goal_repayable IS TRUE
-     AND goal_sats IS NOT NULL
-     AND sats >= goal_sats
-     AND goal_funded_at IS NULL`,
+     AND goal_funded_at IS NULL
+     AND ${goalReachedSql('message', null)}`,
   `UPDATE nostr_zap_receipt AS r
    SET recorded_at = COALESCE(m.goal_funded_at, now())
    FROM message AS m
@@ -4521,14 +4602,7 @@ export class InMemoryMessageStore implements MessageStore {
       row.amountEur = foldFiatColumn(row.amountEur, delta?.eur ?? null, extraSats);
       row.amountPhp = foldFiatColumn(row.amountPhp, delta?.php ?? null, extraSats);
       row.sats += extraSats;
-      const goalSats = row.goalSats;
-      if (
-        row.goalRepayable === true &&
-        row.goalFundedAt === null &&
-        typeof goalSats === 'number' &&
-        goalSats > 0 &&
-        row.sats >= goalSats
-      ) {
+      if (row.goalRepayable === true && row.goalFundedAt === null && goalReached(row)) {
         row.goalFundedAt = new Date();
       }
     }
@@ -8602,8 +8676,13 @@ export class PostgresMessageStore implements MessageStore {
            goal_funded_at = CASE
              WHEN goal_repayable IS TRUE
               AND goal_funded_at IS NULL
-              AND goal_sats IS NOT NULL
-              AND sats + $2::bigint >= goal_sats
+              AND ${goalReachedSql('message', {
+                sats: '$2::bigint',
+                usd: '$3::numeric',
+                chf: '$4::numeric',
+                eur: '$5::numeric',
+                php: '$6::numeric',
+              })}
              THEN now()
              ELSE goal_funded_at
            END
@@ -9581,8 +9660,13 @@ export class PostgresMessageStore implements MessageStore {
              WHEN message.parent_id IS NOT NULL THEN message.goal_funded_at
              WHEN message.goal_repayable IS TRUE
               AND message.goal_funded_at IS NULL
-              AND message.goal_sats IS NOT NULL
-              AND message.sats + inserted.sats >= message.goal_sats
+              AND ${goalReachedSql('message', {
+                sats: 'inserted.sats',
+                usd: '$4::numeric',
+                chf: '$5::numeric',
+                eur: '$6::numeric',
+                php: '$7::numeric',
+              })}
              THEN (SELECT at FROM settled_at)
              ELSE message.goal_funded_at
            END
