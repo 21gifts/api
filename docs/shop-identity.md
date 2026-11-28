@@ -164,7 +164,7 @@ New table `shop_identity`. The key columns have the same names as on
 | `message_id`               | `uuid PRIMARY KEY`     | `REFERENCES message (id)`                                                                                                      |
 | `nostr_pubkey`             | `text NOT NULL UNIQUE` | 64 lowercase hex                                                                                                               |
 | `nostr_nsec_ciphertext`    | `bytea NOT NULL`       | Envelope below                                                                                                                 |
-| `nostr_kek_id`             | `integer NOT NULL`     | Only `1`                                                                                                                       |
+| `nostr_kek_id`             | `integer NOT NULL`     | `>= 1`; the `NOSTR_NSEC_KEK_ID` the key was sealed under (default 1)                                                           |
 | `nostr_key_custody`        | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`                                                                                     |
 | `nostr_key_created_at`     | `timestamptz NOT NULL` | Set on insert                                                                                                                  |
 | `profile_name`             | `text NOT NULL`        | Shop name, rewritten whenever the shop is public (1)                                                                           |
@@ -232,6 +232,40 @@ runs and checks that neither the note nor a `shop_identity` row is left.
   still get a key and `GET /shops/:npub` works (Playwright e2e uses this).
   Those keys live in `InMemoryShopIdentityStore` and vanish with the process,
   like every other memory row; no shop kind 0 is published without Postgres.
+
+### KEK rotation
+
+- `shop_identity.nostr_kek_id` is the `NOSTR_NSEC_KEK_ID` the key was sealed
+  under (`CHECK (nostr_kek_id >= 1)`; `migrateShopIdentitySchema` replaces the
+  earlier `= 1` CHECK once, idempotently). New shop keys, adopted ones too,
+  carry the id of the current key.
+- When the boot runs with a new `NOSTR_NSEC_KEK` and `NOSTR_NSEC_KEK_ID`,
+  `rotateKeks` (`src/lib/kek-rotation.ts`) gives every shop under another id a
+  fresh key pair under the new key (`rotateShopIdentityKey`), in place and
+  conditional on the old id. The old secret is opened with
+  `NOSTR_NSEC_KEK_PREVIOUS` and kept in `nostr_retired_key` (owner type
+  `shop`, the note id, its pubkey), sealed under the new key, only so the
+  shop's old key stays available should a deletion path for shop events be
+  added; today nothing signs with a retired shop key (there is no kind 5
+  deletion of shop events, see below). Retired account keys, by contrast, sign
+  NIP-09 deletions of notes they signed (staff delete). Deleting the shop
+  identity deletes its retired keys. This
+  includes the adopted keys of the notes in
+  `ADOPTED_SHOP_MESSAGE_IDS`: they also get a fresh key.
+- The rotation keeps `nostr_key_created_at`. Shop NIP-05 locals are allocated
+  in `nostr_key_created_at`, then `message_id` order; one `now()` for a whole
+  batch could swap the `name@host` of two public shops with the same name.
+- The same `UPDATE` queues the OpenCryptoPay place push, whose body carries
+  the new `nostrPubkey`, and, for a public shop, the photo push. The worker
+  then publishes the shop's kind 0 and kind 10002 again under the new key: a
+  freshly booted worker has empty publish caches and announces every shop
+  anyway; `forgetNostrAnnouncements` only matters for a rotation later in the
+  same process. `GET /shops`, `GET /shops/:npub` and the NIP-05 directory
+  answer the new npub. The old npub resolves to no shop any more.
+- Until a shop is rotated, `signEventForShop` treats its key as missing and
+  logs `nostr.key.kek_stale` once (no key material).
+- The operator procedure for a rotation, its log checks and its errors are in
+  [docs/kek-rotation.md](kek-rotation.md).
 
 ### Custody
 

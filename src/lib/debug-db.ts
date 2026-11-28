@@ -20,6 +20,8 @@ export const DEBUG_DB_SECRET_COLUMNS: readonly string[] = [
   'challenge',
   'nostr_nsec_ciphertext',
   'viewer_mnemonic_ciphertext',
+  'nsec_ciphertext',
+  'mnemonic_ciphertext',
   'nonce',
   'view_key',
   'endpoint',

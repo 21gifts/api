@@ -218,7 +218,9 @@ function quoteIdentifier(identifier: string): string {
  * `previous_wallet` rows and its `recovery` passkey challenges: they belong
  * to the merged account's wallets, which go with its row. It also deletes the
  * merged account's `held_share_box` rows: each box is sealed to the merged
- * account's id and words, so the surviving account could never open it.
+ * account's id and words, so the surviving account could never open it. It
+ * deletes the merged account's `nostr_retired_key` rows (sealed to its id) in
+ * the same step.
  * Frozen credit snapshots are combined by message. Before either identity is
  * moved, the merge refuses without writes when both identities gave to one
  * credit with a settled repayment, when either identity has any successfully
@@ -905,13 +907,16 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     // with the source row, and a share's additional data is the source id:
     // delete them before the moves below would hand them to the survivor. A
     // held-share box is sealed to the source id and the source's words, so
-    // the survivor could never open it either.
+    // the survivor could never open it either. The source's retired Nostr
+    // keys are sealed to the source id too (and the account delete below would
+    // drop them through trg_account_nostr_retired_key anyway).
     for (const statement of [
       'DELETE FROM recovery_share WHERE account_id = $1',
       'DELETE FROM held_share_box WHERE account_id = $1',
       'DELETE FROM pending_recovery WHERE account_id = $1',
       'DELETE FROM previous_wallet WHERE account_id = $1',
       "DELETE FROM passkey_challenge WHERE account_id = $1 AND type = 'recovery'",
+      "DELETE FROM nostr_retired_key WHERE owner_type = 'account' AND owner_id = $1::text",
     ]) {
       await tx.query(statement, [input.from]);
     }

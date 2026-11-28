@@ -20,10 +20,11 @@ import { nip19 } from 'nostr-tools';
 import type { SqlClient } from '@/lib/auth/sql';
 import { InMemoryMessageStore, textHasHashtagToken, type MessageStore } from '@/lib/message-store';
 import type { MessageRow } from '@/lib/message';
+import { kekIdOf } from '@/lib/nostr/kek';
 import {
-  NOSTR_KEK_ID_V1,
   defaultNostrKeygen,
   encryptNostrSecret,
+  generateNostrKeyRecord,
   publicKeyHexFromSecret,
   zeroizeSecret,
   type NostrKeygen,
@@ -43,7 +44,7 @@ export interface ShopIdentityRow {
   nostrPubkey: string;
   /** AES-256-GCM envelope of the secret key. */
   nostrNsecCiphertext: Uint8Array;
-  /** Key-encryption key id (only `1`). */
+  /** Key-encryption key id: the `NOSTR_NSEC_KEK_ID` the key was sealed under (default `1`). */
   nostrKekId: number;
   /** Custody of the key (`custodial` in v1). */
   nostrKeyCustody: 'custodial' | 'user';
@@ -486,7 +487,7 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      message_id uuid PRIMARY KEY REFERENCES message (id),
      nostr_pubkey text NOT NULL UNIQUE CHECK (nostr_pubkey ~ '^[0-9a-f]{64}$'),
      nostr_nsec_ciphertext bytea NOT NULL,
-     nostr_kek_id integer NOT NULL CHECK (nostr_kek_id = 1),
+     nostr_kek_id integer NOT NULL CHECK (nostr_kek_id >= 1),
      nostr_key_custody text NOT NULL CHECK (nostr_key_custody IN ('custodial', 'user')),
      nostr_key_created_at timestamptz NOT NULL,
      profile_name text NOT NULL,
@@ -589,6 +590,29 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
     `CREATE TRIGGER trg_shop_identity_extra_photo AFTER INSERT OR UPDATE OR DELETE ON message_extra_photo
    FOR EACH ROW EXECUTE FUNCTION queue_shop_identity_photo()`,
   ),
+  // KEK rotation stores other KEK ids: replace an older `nostr_kek_id = 1`
+  // CHECK with `shop_identity_nostr_kek_id_check` (`>= 1`); a no-op once done.
+  `DECLARE
+    c record;
+  BEGIN
+    FOR c IN
+      SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conrelid = 'public.shop_identity'::regclass AND contype = 'c'
+        AND pg_get_constraintdef(oid) LIKE '%nostr_kek_id%'
+    LOOP
+      IF c.conname <> 'shop_identity_nostr_kek_id_check' OR c.def NOT LIKE '%nostr_kek_id >= 1%' THEN
+        EXECUTE format('ALTER TABLE shop_identity DROP CONSTRAINT %I', c.conname);
+      END IF;
+    END LOOP;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conrelid = 'public.shop_identity'::regclass
+        AND conname = 'shop_identity_nostr_kek_id_check'
+    ) THEN
+      ALTER TABLE shop_identity
+        ADD CONSTRAINT shop_identity_nostr_kek_id_check CHECK (nostr_kek_id >= 1);
+    END IF;
+  END`,
 ].map(serializedStep);
 
 /**
@@ -601,6 +625,49 @@ export async function migrateShopIdentitySchema(sql: SqlClient): Promise<void> {
   for (const statement of SHOP_IDENTITY_SCHEMA_SQL) {
     await sql.execute(statement);
   }
+}
+
+/**
+ * KEK rotation of one shop key: replace the shop's key pair in place with a
+ * freshly generated one sealed under `kek` and its KEK id. This function does
+ * not decrypt the old secret; `rotateKeks` opens it with
+ * `NOSTR_NSEC_KEK_PREVIOUS` and keeps it in `nostr_retired_key` after this
+ * returns `true`. The UPDATE is conditional on the old `nostr_kek_id`
+ * (compare-and-set), so a row another process already rotated is left alone.
+ * The same write queues the OpenCryptoPay place push (its body carries the
+ * new `nostrPubkey`) and, while the note is a public shop, the photo push, as
+ * a new key does. Custody, profile name and revision stay. `trg_db_change`
+ * records the UPDATE.
+ *
+ * @param sql - SQL client (the caller's transaction).
+ * @param messageId - Shop note id (AAD `shop:{messageId}`).
+ * @param previousKekId - `nostr_kek_id` the caller read.
+ * @param kek - Current `NOSTR_NSEC_KEK` (bound to `NOSTR_NSEC_KEK_ID`).
+ * @param keygen - Secret source (default {@link defaultNostrKeygen}).
+ * @returns `true` when the row was rotated, `false` when its id changed meanwhile.
+ * @throws Key generation, sealing, or SQL errors.
+ */
+export async function rotateShopIdentityKey(
+  sql: SqlClient,
+  messageId: string,
+  previousKekId: number,
+  kek: Uint8Array,
+  keygen: NostrKeygen = defaultNostrKeygen,
+): Promise<boolean> {
+  const record = await generateNostrKeyRecord(`shop:${messageId}`, kek, keygen);
+  const listed = `EXISTS (SELECT 1 FROM message m WHERE m.id = shop_identity.message_id AND ${DIRECTORY_SQL('m')})`;
+  const rows = await sql.query<{ message_id: string }>(
+    `UPDATE shop_identity
+     SET nostr_pubkey = $2, nostr_nsec_ciphertext = $3, nostr_kek_id = $4,
+         ocp_place_pending = true, ocp_place_generation = ocp_place_generation + 1,
+         ocp_photos_pending = CASE WHEN ${listed} THEN true ELSE ocp_photos_pending END,
+         ocp_photos_generation = CASE WHEN ${listed}
+           THEN ocp_photos_generation + 1 ELSE ocp_photos_generation END
+     WHERE message_id = $1 AND nostr_kek_id = $5
+     RETURNING message_id`,
+    [messageId, record.pubkey, record.ciphertext, record.kekId, previousKekId],
+  );
+  return rows.length > 0;
 }
 
 /**
@@ -837,7 +904,7 @@ async function knownShopIdentity(
       messageId,
       nostrPubkey,
       nostrNsecCiphertext: await encryptNostrSecret(owned, kek, `shop:${messageId}`),
-      nostrKekId: NOSTR_KEK_ID_V1,
+      nostrKekId: kekIdOf(kek),
       nostrKeyCustody: 'custodial',
       nostrKeyCreatedAt: createdAt,
       profileName,
@@ -870,7 +937,7 @@ async function freshIdentity(
       messageId,
       nostrPubkey: publicKeyHexFromSecret(secret),
       nostrNsecCiphertext: await encryptNostrSecret(secret, kek, `shop:${messageId}`),
-      nostrKekId: NOSTR_KEK_ID_V1,
+      nostrKekId: kekIdOf(kek),
       nostrKeyCustody: 'custodial',
       nostrKeyCreatedAt: createdAt,
       profileName,

@@ -54,9 +54,12 @@ shares give back the same 16 bytes, and BIP-39 of those bytes is the original
   and stores nothing about who protects whom: the owner's id and name exist
   only inside the ciphertext, and nothing on the owner's account refers to a
   box.
-- The 21.gifts share is a backup only. The api stores it encrypted and never
-  decrypts or returns it; it reads only whether one is stored, see
-  [Grant payouts](#grant-payouts). No release is planned; 21.gifts keeps it
+- The 21.gifts share is a backup only. The api stores it encrypted; no route
+  returns it and no request path decrypts it, and requests read only whether
+  one is stored, see [Grant payouts](#grant-payouts). Only the KEK rotation at
+  boot opens it: with the current key to check that key, and with the previous
+  key to seal it again under the current one, see
+  [The 21.gifts share](#the-21gifts-share). No release is planned; 21.gifts keeps it
   only as an option, see [The 21.gifts share](#the-21gifts-share).
 - Any two holders act at once. There is no waiting period and no cancel
   window. Person 1 and person 2 together can recover the account and move the
@@ -147,10 +150,34 @@ usable together with any other old share.
 - **A leak.** The database alone gives no share. The database together with
   the environment gives every stored 21.gifts share. This is accepted: one
   share alone rebuilds nothing.
-- **No use of its content.** No route returns the share, nothing in the api
-  decrypts it (there is no decrypt function), and no log contains it. The api
-  only checks whether one is stored for the current wallet, see
-  [Grant payouts](#grant-payouts).
+- **No use of its content.** No route returns the share, no request path
+  decrypts it, and no log contains it. The api only checks whether one is
+  stored for the current wallet, see [Grant payouts](#grant-payouts). Only the
+  key rotation below opens it: with the current key to check that key, and
+  with the previous key to seal it again under the current one.
+- **Key rotation.** The envelope records the KEK id of the key that sealed
+  it (`RECOVERY_SHARE_KEK_ID`, default 1). To rotate the key, the operator sets
+  a new `RECOVERY_SHARE_KEK` with a new `RECOVERY_SHARE_KEK_ID` and puts the
+  old key into `RECOVERY_SHARE_KEK_PREVIOUS` (which must differ from both
+  current keys), then restarts. The share content cannot be renewed without
+  the member, so at boot, before any worker, `rotateKeks`
+  (`src/lib/kek-rotation.ts`) opens every share under another id with the
+  previous key and seals the same bytes again under the new key and id, with
+  the same additional data (the account id); the plaintext is zeroed and never
+  logged. Each batch is one transaction under an advisory lock, every write is
+  a plain compare-and-set `UPDATE` that `db_change` records (hash only), and a
+  second boot changes nothing. When the previous key is not set, the shares
+  stay as they are and `kek.rotation.recovery_share.pending` logs their count.
+  Before the first share is written, a read-only pass opens every share under
+  another id with the previous key; when it does not open one of them, the
+  boot stops with the count only and no share is changed or deleted. A new key
+  value always needs a new id: when `RECOVERY_SHARE_KEK` does not open a share
+  already stored under `RECOVERY_SHARE_KEK_ID`, the boot stops before it
+  changes anything. Until a share is rotated it still counts as stored, so no member
+  loses the recovery-share state. After the boot log `kek.rotation.done`
+  shows the shares as rotated, the operator removes
+  `RECOVERY_SHARE_KEK_PREVIOUS` and restarts. The full operator procedure is
+  [docs/kek-rotation.md](kek-rotation.md).
 - **No planned release.** 21.gifts plans no release of its share and keeps it
   only as an option. Using it would be a manual process outside the api, with
   the key from the vault.
@@ -348,7 +375,9 @@ When the LNURL server accepts the address claim, one transaction:
   **previous wallets**,
 - stores the new key as verified `spark_pubkey` with its `spark_address`,
   keeping the first verification time, so the welcome gift does not start
-  again,
+  again, and sets `spark_pubkey_current_since` to the commit time (the
+  wallet worker needs when the new wallet became current, and the member may
+  later drop the previous-wallet row),
 - deletes the pending recovery.
 
 The username stays. An old key never moves the account again.
@@ -612,9 +641,11 @@ Later, not needed for a first version:
 - A person's share reaches the api only as a held-share box encrypted in the
   holder's browser; the api cannot open it, and nothing on the owner's
   account refers to it. The api stores the 21.gifts share only
-  encrypted under its own key, with the account id as additional data, and
-  has no path that decrypts or returns it or uses its content; it only checks
-  whether one is stored. `db_change` holds only its
+  encrypted under its own key, with the account id as additional data; no
+  route returns it, no request path decrypts it or uses its content, and
+  requests only check whether one is stored. Only the KEK rotation at boot
+  opens it: with the current key to check that key, and with the previous key
+  to seal it again under the current one. `db_change` holds only its
   SHA-256, and a previous wallet's share stays until the owner drops that
   wallet.
 - Recovery without a valid signature by the verified `spark_pubkey`, with a

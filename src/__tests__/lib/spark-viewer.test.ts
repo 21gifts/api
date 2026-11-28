@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { WalletTransferStore } from '@/lib/wallet-transfer-store';
@@ -35,10 +37,16 @@ vi.mock('@buildonspark/spark-sdk', () => ({
   deriveViewerIdentityPublicKey: sdk.deriveViewerIdentityPublicKey,
 }));
 
+import { openAesGcmEnvelope, sealAesGcmEnvelope } from '@/lib/aes-gcm-envelope';
+import { bindKekId } from '@/lib/nostr/kek';
 import {
   SPARK_VIEWER_SCHEMA_SQL,
   ensureSparkViewer,
   migrateSparkViewerSchema,
+  previousWalletSparkViewer,
+  rotateSparkViewerKey,
+  sparkViewerRetiredKeyAad,
+  type SparkViewer,
 } from '@/lib/spark-viewer';
 
 const KEK = new Uint8Array(32).fill(9);
@@ -59,7 +67,633 @@ describe('migrateSparkViewerSchema', () => {
     expect(execute.mock.calls.map((call) => call[0])).toEqual(SPARK_VIEWER_SCHEMA_SQL);
     expect(SPARK_VIEWER_SCHEMA_SQL[0]).toContain('viewer_mnemonic_ciphertext bytea NOT NULL');
     expect(SPARK_VIEWER_SCHEMA_SQL[0]).toContain(
-      'viewer_kek_id integer NOT NULL CHECK (viewer_kek_id = 1)',
+      'viewer_kek_id integer NOT NULL CHECK (viewer_kek_id >= 1)',
+    );
+    const check = SPARK_VIEWER_SCHEMA_SQL[2] ?? '';
+    expect(check).toContain('PERFORM pg_advisory_xact_lock(21499021)');
+    expect(check).toContain("c.def NOT LIKE '%viewer_kek_id >= 1%'");
+    expect(check).toContain(
+      'ADD CONSTRAINT spark_viewer_key_viewer_kek_id_check CHECK (viewer_kek_id >= 1)',
+    );
+    const retired = SPARK_VIEWER_SCHEMA_SQL[3] ?? '';
+    expect(retired).toContain('CREATE TABLE IF NOT EXISTS spark_viewer_retired_key');
+    expect(retired).toContain(
+      "identity_public_key text PRIMARY KEY CHECK (identity_public_key ~ '^0[23][0-9a-f]{64}$')",
+    );
+    expect(retired).toContain('mnemonic_ciphertext bytea NOT NULL');
+    expect(retired).toContain('kek_id integer NOT NULL CHECK (kek_id >= 1)');
+    expect(retired).toContain('retired_at timestamptz NOT NULL DEFAULT now()');
+    const flat = (text: string): string => text.replace(/\s+/g, ' ').trim();
+    expect(
+      flat(readFileSync(join(process.cwd(), 'docs/schema/spark_viewer_retired_key.sql'), 'utf8')),
+    ).toContain(flat(retired));
+  });
+});
+
+describe('rotateSparkViewerKey', () => {
+  type Row = {
+    viewer_identity_public_key: string;
+    viewer_mnemonic_ciphertext: Uint8Array;
+    viewer_kek_id: number;
+  };
+  type Retired = {
+    identity_public_key: string;
+    mnemonic_ciphertext: Uint8Array;
+    kek_id: number;
+  };
+
+  const OLD_MNEMONIC =
+    'abandon ability able about above absent absorb abstract absurd abuse access accident';
+  const OLD_KEY = `03${'08'.repeat(32)}`;
+  const PREVIOUS = new Uint8Array(32).fill(5);
+  const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+
+  async function oldEnvelope(): Promise<Uint8Array> {
+    return sealAesGcmEnvelope(utf8(OLD_MNEMONIC), PREVIOUS, utf8('spark_viewer_key'), 1);
+  }
+
+  function sqlWith(
+    row: Row | undefined,
+    updates: unknown[][],
+    retired: Retired[] = [],
+    beforeUpdate: () => void = () => undefined,
+  ): SqlClient {
+    const tx: SqlClient = {
+      query: async <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+        if (text.includes('pg_advisory_xact_lock')) {
+          expect(params).toEqual([21_499_021]);
+          return [];
+        }
+        if (text.includes('SELECT viewer_identity_public_key')) {
+          return (row === undefined ? [] : [{ ...row }]) as T[];
+        }
+        expect(text).toContain('WHERE singleton = true AND viewer_kek_id = $4');
+        beforeUpdate();
+        updates.push([...params]);
+        if (row === undefined || row.viewer_kek_id !== params[3]) return [];
+        row.viewer_identity_public_key = String(params[0]);
+        row.viewer_mnemonic_ciphertext = params[1] as Uint8Array;
+        row.viewer_kek_id = Number(params[2]);
+        return [{ singleton: true }] as T[];
+      },
+      execute: async (text: string, params: readonly unknown[] = []) => {
+        expect(text).toContain('INSERT INTO spark_viewer_retired_key');
+        expect(text).toContain('ON CONFLICT (identity_public_key) DO NOTHING');
+        retired.push({
+          identity_public_key: String(params[0]),
+          mnemonic_ciphertext: params[1] as Uint8Array,
+          kek_id: Number(params[2]),
+        });
+      },
+    };
+    return {
+      // ensureSparkViewer reads the retired viewers outside its transaction.
+      query: async <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+        expect(text).toContain('FROM spark_viewer_retired_key');
+        expect(text).toContain('ORDER BY retired_at DESC');
+        expect(text).toContain('retired_at FROM spark_viewer_retired_key');
+        return retired
+          .filter((item) => item.kek_id === params[0])
+          .map((item) => ({ ...item, retired_at: '2026-11-20T00:00:00.000Z' })) as T[];
+      },
+      execute: async () => {},
+      transaction: async (run) => run(tx),
+    };
+  }
+
+  it('retires the old mnemonic and replaces the row with a fresh one under the current id', async () => {
+    const current = bindKekId(new Uint8Array(32).fill(9), 2);
+    const row: Row = {
+      viewer_identity_public_key: OLD_KEY,
+      viewer_mnemonic_ciphertext: await oldEnvelope(),
+      viewer_kek_id: 1,
+    };
+    const updates: unknown[][] = [];
+    const retired: Retired[] = [];
+    expect(await rotateSparkViewerKey(sqlWith(row, updates, retired), current, PREVIOUS)).toBe(
+      true,
+    );
+    expect(updates).toHaveLength(1);
+    expect(row.viewer_kek_id).toBe(2);
+    expect(row.viewer_identity_public_key).toBe(PUBLIC_KEY);
+    expect(new DataView(row.viewer_mnemonic_ciphertext.buffer).getUint32(1, false)).toBe(2);
+    // The old mnemonic is kept under the current key, bound to its identity key.
+    expect(retired).toHaveLength(1);
+    expect(retired[0]?.identity_public_key).toBe(OLD_KEY);
+    expect(retired[0]?.kek_id).toBe(2);
+    const opened = await openAesGcmEnvelope(
+      retired[0]!.mnemonic_ciphertext,
+      current,
+      sparkViewerRetiredKeyAad(OLD_KEY),
+    );
+    expect(new TextDecoder().decode(opened)).toBe(OLD_MNEMONIC);
+    // The rotated row loads with the current key, with the retired viewer behind it.
+    deriveViewerIdentityPublicKey
+      .mockResolvedValueOnce(PUBLIC_BYTES)
+      .mockResolvedValueOnce(OLD_KEY);
+    createWithViewerKey.mockClear();
+    const loaded = await ensureSparkViewer(sqlWith(row, [], retired), current);
+    expect(loaded.publicKey).toBe(PUBLIC_KEY);
+    expect(loaded.previousWalletViewer).not.toBe(loaded.viewer);
+    expect(loaded.previousWalletViewer).toHaveProperty('hasRetiredViewers', true);
+    expect(createWithViewerKey).toHaveBeenCalledTimes(2);
+    expect((createWithViewerKey.mock.calls as unknown as Array<[unknown, string]>)[1]?.[1]).toBe(
+      OLD_MNEMONIC,
+    );
+    // A retired mnemonic that derives another key stops the load.
+    deriveViewerIdentityPublicKey
+      .mockResolvedValueOnce(PUBLIC_BYTES)
+      .mockResolvedValueOnce(PUBLIC_BYTES);
+    await expect(ensureSparkViewer(sqlWith(row, [], retired), current)).rejects.toThrow(
+      'Retired Spark viewer key does not match its public key',
+    );
+    await expect(ensureSparkViewer(sqlWith(row, []), KEK)).rejects.toThrow(
+      'envelope key is invalid',
+    );
+    // A second run changes nothing.
+    expect(await rotateSparkViewerKey(sqlWith(row, updates, retired), current, PREVIOUS)).toBe(
+      false,
+    );
+    expect(updates).toHaveLength(1);
+    expect(retired).toHaveLength(1);
+  });
+
+  it('changes nothing without a row, and retires nothing for a row another boot replaced first', async () => {
+    const updates: unknown[][] = [];
+    expect(await rotateSparkViewerKey(sqlWith(undefined, updates), KEK, undefined)).toBe(false);
+    expect(updates).toEqual([]);
+    const raced: Row = {
+      viewer_identity_public_key: OLD_KEY,
+      viewer_mnemonic_ciphertext: await oldEnvelope(),
+      viewer_kek_id: 1,
+    };
+    const retired: Retired[] = [];
+    const racing = sqlWith(raced, updates, retired, () => {
+      raced.viewer_kek_id = 3;
+    });
+    expect(
+      await rotateSparkViewerKey(racing, bindKekId(new Uint8Array(32).fill(9), 2), PREVIOUS),
+    ).toBe(false);
+    expect(updates).toHaveLength(1);
+    expect(raced.viewer_kek_id).toBe(3);
+    expect(retired).toEqual([]);
+  });
+
+  it('needs NOSTR_NSEC_KEK_PREVIOUS that opens the old mnemonic, and writes nothing otherwise', async () => {
+    const current = bindKekId(new Uint8Array(32).fill(9), 2);
+    const row: Row = {
+      viewer_identity_public_key: OLD_KEY,
+      viewer_mnemonic_ciphertext: await oldEnvelope(),
+      viewer_kek_id: 1,
+    };
+    const updates: unknown[][] = [];
+    const retired: Retired[] = [];
+    await expect(
+      rotateSparkViewerKey(sqlWith(row, updates, retired), current, undefined),
+    ).rejects.toThrow('NOSTR_NSEC_KEK_PREVIOUS is required to retire the Spark viewer key');
+    await expect(
+      rotateSparkViewerKey(sqlWith(row, updates, retired), current, new Uint8Array(32).fill(6)),
+    ).rejects.toThrow();
+    expect(updates).toEqual([]);
+    expect(retired).toEqual([]);
+    expect(row.viewer_kek_id).toBe(1);
+  });
+
+  it('needs a transaction', async () => {
+    await expect(
+      rotateSparkViewerKey({ query: async () => [], execute: async () => {} }, KEK, undefined),
+    ).rejects.toThrow('custody');
+  });
+});
+
+describe('sparkViewerRetiredKeyAad', () => {
+  it('binds the retired mnemonic to its identity public key', () => {
+    expect(new TextDecoder().decode(sparkViewerRetiredKeyAad(PUBLIC_KEY))).toBe(
+      `spark_viewer_retired_key:${PUBLIC_KEY}`,
+    );
+  });
+});
+
+describe('previousWalletSparkViewer', () => {
+  /** What one viewer holds for a wallet it was granted. */
+  type Granted = { balance: number; transfers: number; tokens: number };
+
+  /**
+   * A viewer that behaves like the Spark SDK: a wallet that never granted it
+   * (or replaced it) reads a balance of 0 and empty pages; it does not throw.
+   */
+  function sdkLikeViewer(
+    name: string,
+    granted: ReadonlyMap<string, Granted>,
+    calls: string[],
+  ): SparkViewer {
+    const held = (address: string): Granted =>
+      granted.get(address) ?? { balance: 0, transfers: 0, tokens: 0 };
+    return {
+      transfers: async (input) => {
+        calls.push(`${name}.transfers:${input.sparkAddress}`);
+        const count = Math.min(held(input.sparkAddress).transfers, input.limit);
+        return { transfers: [], offset: -1, rawCount: count };
+      },
+      tokenTransactions: async (input) => {
+        calls.push(`${name}.tokens:${input.sparkAddress}`);
+        return {
+          transactions: [],
+          hasNextPage: false,
+          nextCursor: null,
+          rawCount: Math.min(held(input.sparkAddress).tokens, input.pageSize),
+        };
+      },
+      balance: async (address) => {
+        calls.push(`${name}.balance:${address}`);
+        return held(address).balance;
+      },
+    };
+  }
+
+  const wallet = (sparkAddress: string, replacedAt?: Date) => ({
+    sparkAddress,
+    walletPubkey: PUBLIC_KEY,
+    replacedAt,
+  });
+
+  it('always chooses the current viewer without a retired viewer', async () => {
+    const calls: string[] = [];
+    const current = sdkLikeViewer('current', new Map(), calls);
+    const reader = previousWalletSparkViewer(current, []);
+    expect(reader.hasRetiredViewers).toBe(false);
+    expect(reader.newestRetiredAt).toBeUndefined();
+    await expect(reader.viewerFor(wallet('spark1empty'))).resolves.toBe(current);
+    // Nothing is probed: the current viewer is the only one there is.
+    expect(calls).toEqual([]);
+  });
+
+  it('probes the retired viewers newest first before the current one and remembers the one with data', async () => {
+    const calls: string[] = [];
+    const current = sdkLikeViewer('current', new Map(), calls);
+    const newer = sdkLikeViewer('newer', new Map(), calls);
+    const older = sdkLikeViewer(
+      'older',
+      new Map([['spark1old', { balance: 0, transfers: 0, tokens: 2 }]]),
+      calls,
+    );
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: newer, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+      { viewer: older, retiredAt: new Date('2026-10-01T00:00:00.000Z') },
+    ]);
+    expect(reader.hasRetiredViewers).toBe(true);
+    // The retirement time of the newest retired viewer (the list is newest first).
+    expect(reader.newestRetiredAt).toEqual(new Date('2026-11-20T00:00:00.000Z'));
+    // The newer viewer answers 0 and empty pages without an error: not chosen.
+    await expect(reader.viewerFor(wallet('spark1old'))).resolves.toBe(older);
+    expect(calls).toEqual([
+      'newer.balance:spark1old',
+      'newer.transfers:spark1old',
+      'newer.tokens:spark1old',
+      'older.balance:spark1old',
+      'older.transfers:spark1old',
+      'older.tokens:spark1old',
+    ]);
+    calls.length = 0;
+    // The chosen viewer is remembered: no probe on the next read.
+    await expect(reader.viewerFor(wallet('spark1old'))).resolves.toBe(older);
+    expect(calls).toEqual([]);
+    // After forget, the chain is probed again.
+    reader.forget('spark1old');
+    await expect(reader.viewerFor(wallet('spark1old'))).resolves.toBe(older);
+    expect(calls[0]).toBe('newer.balance:spark1old');
+  });
+
+  it('tries first the viewer that was current when the wallet was replaced', async () => {
+    const calls: string[] = [];
+    const data = (address: string) => new Map([[address, { balance: 0, transfers: 1, tokens: 0 }]]);
+    const current = sdkLikeViewer('current', data('spark1late'), calls);
+    const newer = sdkLikeViewer('newer', data('spark1middle'), calls);
+    const older = sdkLikeViewer('older', data('spark1early'), calls);
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: newer, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+      { viewer: older, retiredAt: new Date('2026-10-01T00:00:00.000Z') },
+    ]);
+    // Replaced before both retirements: the older viewer was current then.
+    await expect(
+      reader.viewerFor(wallet('spark1early', new Date('2026-09-01T00:00:00.000Z'))),
+    ).resolves.toBe(older);
+    expect(calls).toEqual(['older.balance:spark1early', 'older.transfers:spark1early']);
+    calls.length = 0;
+    // Replaced between the retirements: the newer viewer was current then.
+    await expect(
+      reader.viewerFor(wallet('spark1middle', new Date('2026-10-15T00:00:00.000Z'))),
+    ).resolves.toBe(newer);
+    expect(calls).toEqual(['newer.balance:spark1middle', 'newer.transfers:spark1middle']);
+    calls.length = 0;
+    // Replaced after the last retirement: the current viewer was current then.
+    await expect(
+      reader.viewerFor(wallet('spark1late', new Date('2026-11-25T00:00:00.000Z'))),
+    ).resolves.toBe(current);
+    expect(calls).toEqual(['current.balance:spark1late', 'current.transfers:spark1late']);
+    calls.length = 0;
+    // A wrong hint (here: the older viewer) falls back to the rest of the
+    // chain in order: the newer retired viewer, then the current one.
+    reader.forget('spark1late');
+    await expect(
+      reader.viewerFor(wallet('spark1late', new Date('2026-09-02T00:00:00.000Z'))),
+    ).resolves.toBe(current);
+    expect(calls.map((call) => call.split('.')[0])).toEqual([
+      'older',
+      'older',
+      'older',
+      'newer',
+      'newer',
+      'newer',
+      'current',
+      'current',
+    ]);
+  });
+
+  it('chooses a viewer by balance alone', async () => {
+    const calls: string[] = [];
+    const current = sdkLikeViewer('current', new Map(), calls);
+    const retired = sdkLikeViewer(
+      'retired',
+      new Map([['spark1rich', { balance: 21, transfers: 0, tokens: 0 }]]),
+      calls,
+    );
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+    ]);
+    await expect(reader.viewerFor(wallet('spark1rich'))).resolves.toBe(retired);
+    expect(calls).toEqual(['retired.balance:spark1rich']);
+  });
+
+  it('chooses no viewer when every viewer in the chain reads 0 and empty pages', async () => {
+    const calls: string[] = [];
+    const current = sdkLikeViewer('current', new Map(), calls);
+    const retired = sdkLikeViewer('retired', new Map(), calls);
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+    ]);
+    await expect(reader.viewerFor(wallet('spark1empty'))).resolves.toBeNull();
+    expect(calls).toHaveLength(6);
+    calls.length = 0;
+    // Nothing is remembered: the next read probes again.
+    await expect(reader.viewerFor(wallet('spark1empty'))).resolves.toBeNull();
+    expect(calls).toHaveLength(6);
+  });
+
+  it('after a rotation, the worker reads a previous wallet through its retired viewer and never stores a 0 from the current one', async () => {
+    const calls: string[] = [];
+    // The current viewer was never granted by the previous wallet: 0, empty.
+    const current = sdkLikeViewer('current', new Map(), calls);
+    const retired = sdkLikeViewer(
+      'retired',
+      new Map([['spark1old', { balance: 42, transfers: 1, tokens: 0 }]]),
+      calls,
+    );
+    const balances: Array<[string, number]> = [];
+    const fullSyncs: string[] = [];
+    const wallets = [
+      {
+        accountId: 'account',
+        sparkPubkey: PUBLIC_KEY,
+        sparkAddress: 'spark1old',
+        previous: true,
+        replacedAt: new Date('2026-09-01T00:00:00.000Z'),
+      },
+      // A previous wallet no viewer has data for.
+      {
+        accountId: 'other',
+        sparkPubkey: `03${'08'.repeat(32)}`,
+        sparkAddress: 'spark1lost',
+        previous: true,
+      },
+    ];
+    const transfers: WalletTransferStore = {
+      listWallets: async () => wallets,
+      syncState: async () => ({
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: null,
+      }),
+      upsertTransfer: async () => ({
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      }),
+      upsertTokenTransaction: async () => undefined,
+      markFullSync: async (accountId) => {
+        fullSyncs.push(accountId);
+      },
+      shopPaymentSats: async () => 0,
+      hasShopPayment: async () => false,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const failed = await runWalletTransferTick({
+        viewer: current,
+        previousWalletViewer: previousWalletSparkViewer(current, [
+          { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+        ]),
+        transfers,
+        balances: {
+          recordBalance: async (row) => {
+            balances.push([row.accountId, row.balanceSats]);
+          },
+        },
+        auth: {
+          getAccount: async () => undefined,
+          hasRecoveryShareForVerifiedWallet: async () => false,
+        },
+        funding: { getByAccountId: async () => undefined },
+        ping: {
+          messageStore: {
+            latestLiveTopLevelMediaId: async () => null,
+            getById: async () => undefined,
+          },
+          authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+        },
+        now: () => Date.parse('2026-11-27T12:00:00.000Z'),
+      });
+      expect(balances).toEqual([['account', 42]]);
+      expect(fullSyncs).toEqual(['account']);
+      expect([...failed.keys()]).toEqual([`other\u000003${'08'.repeat(32)}`]);
+      // The previous wallet's history and balance were read by the retired viewer only.
+      expect(
+        calls.filter((call) => call.startsWith('current.') && call.endsWith('spark1old')),
+      ).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('probes the current viewer first for a current wallet and switches to it once the app granted it', async () => {
+    const calls: string[] = [];
+    const grants = new Map<string, { balance: number; transfers: number; tokens: number }>();
+    const current = sdkLikeViewer('current', grants, calls);
+    const retired = sdkLikeViewer(
+      'retired',
+      new Map([
+        ['spark1member', { balance: 42, transfers: 0, tokens: 0 }],
+        ['spark1granted', { balance: 5, transfers: 0, tokens: 0 }],
+      ]),
+      calls,
+    );
+    grants.set('spark1granted', { balance: 5, transfers: 0, tokens: 0 });
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+    ]);
+    const member = { ...wallet('spark1member'), current: true };
+    // Not granted yet: the current viewer reads 0 and empty pages, the retired one has data.
+    await expect(reader.viewerFor(member)).resolves.toBe(retired);
+    expect(calls).toEqual([
+      'current.balance:spark1member',
+      'current.transfers:spark1member',
+      'current.tokens:spark1member',
+      'retired.balance:spark1member',
+    ]);
+    calls.length = 0;
+    // Remembered retired viewer: the current viewer is probed again first.
+    await expect(reader.viewerFor(member)).resolves.toBe(retired);
+    expect(calls).toEqual([
+      'current.balance:spark1member',
+      'current.transfers:spark1member',
+      'current.tokens:spark1member',
+    ]);
+    calls.length = 0;
+    // The app granted the new viewer: the reader switches and stops probing.
+    grants.set('spark1member', { balance: 42, transfers: 0, tokens: 0 });
+    await expect(reader.viewerFor(member)).resolves.toBe(current);
+    expect(calls).toEqual(['current.balance:spark1member']);
+    calls.length = 0;
+    await expect(reader.viewerFor(member)).resolves.toBe(current);
+    expect(calls).toEqual([]);
+    // A current wallet that already granted the new viewer never probes a retired one.
+    await expect(reader.viewerFor({ ...wallet('spark1granted'), current: true })).resolves.toBe(
+      current,
+    );
+    expect(calls).toEqual(['current.balance:spark1granted']);
+  });
+
+  it('keeps the remembered retired viewer of a current wallet when the current probe fails', async () => {
+    const calls: string[] = [];
+    let failing = false;
+    const empty = sdkLikeViewer('current', new Map(), calls);
+    const current: SparkViewer = {
+      ...empty,
+      balance: async (address) => {
+        if (failing) throw new Error('Spark viewer unavailable');
+        return empty.balance(address);
+      },
+    };
+    const retired = sdkLikeViewer(
+      'retired',
+      new Map([['spark1member', { balance: 0, transfers: 1, tokens: 0 }]]),
+      calls,
+    );
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+    ]);
+    const member = { ...wallet('spark1member'), current: true };
+    await expect(reader.viewerFor(member)).resolves.toBe(retired);
+    failing = true;
+    await expect(reader.viewerFor(member)).resolves.toBe(retired);
+  });
+
+  it('after a rotation, the worker reads a current wallet through its retired viewer until the app grants the new one', async () => {
+    const calls: string[] = [];
+    const current = sdkLikeViewer('current', new Map(), calls);
+    const retired = sdkLikeViewer(
+      'retired',
+      new Map([['spark1member', { balance: 42, transfers: 1, tokens: 0 }]]),
+      calls,
+    );
+    const balances: Array<[string, number]> = [];
+    const fullSyncs: string[] = [];
+    const wallets = [
+      { accountId: 'account', sparkPubkey: PUBLIC_KEY, sparkAddress: 'spark1member' },
+      // A current wallet no viewer has data for: nothing is written.
+      { accountId: 'other', sparkPubkey: `03${'08'.repeat(32)}`, sparkAddress: 'spark1empty' },
+    ];
+    const transfers: WalletTransferStore = {
+      listWallets: async () => wallets,
+      syncState: async () => ({
+        newestCreatedAt: null,
+        oldestPendingCreatedAt: null,
+        pendingWithoutCreatedAt: false,
+        lastFullSyncAt: null,
+      }),
+      upsertTransfer: async () => ({
+        inserted: false,
+        updated: false,
+        shopPaymentBecameCompleted: false,
+      }),
+      upsertTokenTransaction: async () => undefined,
+      markFullSync: async (accountId) => {
+        fullSyncs.push(accountId);
+      },
+      shopPaymentSats: async () => 0,
+      hasShopPayment: async () => false,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const failed = await runWalletTransferTick({
+        viewer: current,
+        previousWalletViewer: previousWalletSparkViewer(current, [
+          { viewer: retired, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+        ]),
+        transfers,
+        balances: {
+          recordBalance: async (row) => {
+            balances.push([row.accountId, row.balanceSats]);
+          },
+        },
+        auth: {
+          getAccount: async () => undefined,
+          hasRecoveryShareForVerifiedWallet: async () => false,
+        },
+        funding: { getByAccountId: async () => undefined },
+        ping: {
+          messageStore: {
+            latestLiveTopLevelMediaId: async () => null,
+            getById: async () => undefined,
+          },
+          authStore: { hasRecoveryShareForVerifiedWallet: async () => false },
+        },
+        now: () => Date.parse('2026-11-27T12:00:00.000Z'),
+      });
+      expect(balances).toEqual([['account', 42]]);
+      expect(fullSyncs).toEqual(['account']);
+      expect([...failed.keys()]).toEqual([`other\u000003${'08'.repeat(32)}`]);
+      // The current viewer was probed first for both wallets.
+      expect(calls[0]).toBe('current.balance:spark1member');
+      expect(calls).toContain('current.balance:spark1empty');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('skips a viewer whose SDK call throws, and rethrows the first error when none had data', async () => {
+    const calls: string[] = [];
+    const failing: SparkViewer = {
+      ...sdkLikeViewer('failing', new Map(), calls),
+      balance: async () => {
+        throw new Error('Spark viewer unavailable');
+      },
+    };
+    const current = sdkLikeViewer('current', new Map(), calls);
+    const granted = sdkLikeViewer(
+      'granted',
+      new Map([['spark1old', { balance: 0, transfers: 1, tokens: 0 }]]),
+      calls,
+    );
+    const reader = previousWalletSparkViewer(current, [
+      { viewer: failing, retiredAt: new Date('2026-11-20T00:00:00.000Z') },
+      { viewer: granted, retiredAt: new Date('2026-10-01T00:00:00.000Z') },
+    ]);
+    await expect(reader.viewerFor(wallet('spark1old'))).resolves.toBe(granted);
+    // No viewer has data for this wallet: the failure is reported, not hidden as "empty".
+    await expect(reader.viewerFor(wallet('spark1other'))).rejects.toThrow(
+      'Spark viewer unavailable',
     );
   });
 });
@@ -324,6 +958,8 @@ describe('ensureSparkViewer', () => {
     expect(envelope).not.toEqual(new TextEncoder().encode(generatedMnemonic));
     const loaded = await ensureSparkViewer(sql, KEK);
     expect(loaded.publicKey).toBe(PUBLIC_KEY);
+    // Without a retired viewer, previous wallets read through the current viewer.
+    expect(loaded.previousWalletViewer).toBe(loaded.viewer);
 
     stored.viewer_identity_public_key = `03${'08'.repeat(32)}`;
     await expect(ensureSparkViewer(sql, KEK)).rejects.toThrow('does not match its public key');

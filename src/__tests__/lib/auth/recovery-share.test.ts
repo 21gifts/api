@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as aesGcm from '@/lib/aes-gcm-envelope';
+import { envelopeKekId } from '@/lib/aes-gcm-envelope';
 import {
   encryptRecoveryShare,
+  parsePreviousRecoveryShareKek,
   parseRecoveryShareKek,
+  reencryptRecoveryShare,
   RECOVERY_SHARE_KEK_ID_V1,
   RECOVERY_SHARE_TEXT,
 } from '@/lib/auth/recovery-share';
+import { bindKekId } from '@/lib/nostr/kek';
 
 const NOSTR_KEK = new Uint8Array(32).fill(0xab);
 const KEK = new Uint8Array(32).fill(0xcd);
@@ -14,7 +19,7 @@ const SHARE =
   'duckling enlarge academic academic agency result length solution fridge kidney ' +
   'coal piece deal husband erode duke ajar critical decision keyboard';
 
-/** Open a share envelope in the test only; the api has no decrypt function. */
+/** Open a share envelope in the test only; no request path decrypts a share. */
 async function openShare(envelope: Uint8Array, accountId: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', KEK, { name: 'AES-GCM' }, false, ['decrypt']);
   const plain = await crypto.subtle.decrypt(
@@ -88,5 +93,70 @@ describe('encryptRecoveryShare', () => {
     await expect(encryptRecoveryShare(SHARE, new Uint8Array(16), ACCOUNT_ID)).rejects.toThrow(
       'KEK must be 32 bytes',
     );
+  });
+
+  it('seals under the KEK id bound to the key', async () => {
+    const current = bindKekId(new Uint8Array(32).fill(0xcd), 2);
+    const envelope = await encryptRecoveryShare(SHARE, current, ACCOUNT_ID);
+    expect(envelopeKekId(envelope)).toBe(2);
+    expect(await openShare(envelope, ACCOUNT_ID)).toBe(SHARE);
+  });
+});
+
+describe('parsePreviousRecoveryShareKek', () => {
+  const keys = { recoveryShareKek: KEK, nostrKek: NOSTR_KEK };
+
+  it('is undefined when unset or blank', () => {
+    expect(parsePreviousRecoveryShareKek(undefined, keys)).toBeUndefined();
+    expect(parsePreviousRecoveryShareKek(' \n', keys)).toBeUndefined();
+  });
+
+  it('parses a key that differs from both current keys', () => {
+    expect(parsePreviousRecoveryShareKek('ef'.repeat(32), keys)).toEqual(
+      new Uint8Array(32).fill(0xef),
+    );
+  });
+
+  it('refuses a malformed value or one equal to a current key', () => {
+    expect(() => parsePreviousRecoveryShareKek('EF'.repeat(32), keys)).toThrow(
+      'RECOVERY_SHARE_KEK_PREVIOUS must be 64 lowercase hex characters',
+    );
+    expect(() => parsePreviousRecoveryShareKek('cd'.repeat(32), keys)).toThrow(
+      'RECOVERY_SHARE_KEK_PREVIOUS must differ from RECOVERY_SHARE_KEK',
+    );
+    expect(() => parsePreviousRecoveryShareKek('ab'.repeat(32), keys)).toThrow(
+      'RECOVERY_SHARE_KEK_PREVIOUS must differ from NOSTR_NSEC_KEK',
+    );
+  });
+});
+
+describe('reencryptRecoveryShare', () => {
+  const previous = new Uint8Array(32).fill(0xef);
+
+  it('moves a share to the current key and id with the same additional data', async () => {
+    const current = bindKekId(new Uint8Array(32).fill(0xcd), 2);
+    const stored = await encryptRecoveryShare(SHARE, previous, ACCOUNT_ID);
+    expect(envelopeKekId(stored)).toBe(1);
+    const open = vi.spyOn(aesGcm, 'openAesGcmEnvelope');
+    const moved = await reencryptRecoveryShare(stored, previous, current, ACCOUNT_ID);
+    expect(envelopeKekId(moved)).toBe(2);
+    expect(await openShare(moved, ACCOUNT_ID)).toBe(SHARE);
+    await expect(openShare(moved, 'another-account')).rejects.toThrow();
+    // The opened plaintext buffer is zeroed once the share is sealed again.
+    const plaintext = (await open.mock.results[0]?.value) as Uint8Array;
+    expect(plaintext.length).toBe(SHARE.length);
+    expect(plaintext.every((byte) => byte === 0)).toBe(true);
+    open.mockRestore();
+  });
+
+  it('fails for a wrong previous key, another account id, or a malformed envelope', async () => {
+    const stored = await encryptRecoveryShare(SHARE, previous, ACCOUNT_ID);
+    await expect(
+      reencryptRecoveryShare(stored, new Uint8Array(32).fill(1), KEK, ACCOUNT_ID),
+    ).rejects.toThrow();
+    await expect(reencryptRecoveryShare(stored, previous, KEK, 'another')).rejects.toThrow();
+    await expect(
+      reencryptRecoveryShare(new Uint8Array(10), previous, KEK, ACCOUNT_ID),
+    ).rejects.toThrow('Envelope is invalid');
   });
 });

@@ -96,8 +96,31 @@ import {
 } from '@/lib/shop-identity';
 import { isListedShop } from '@/lib/shop-place';
 import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
-import { signEventForShop } from '@/lib/nostr/sign';
+import { signDeletionForAccount, signEventForShop } from '@/lib/nostr/sign';
 import { manualReceiptIdForPaymentHash, settleInvoiceManually } from '@/lib/nostr/zap-index';
+import { envelopeKekId, openAesGcmEnvelope, sealAesGcmEnvelope } from '@/lib/aes-gcm-envelope';
+import { encryptRecoveryShare } from '@/lib/auth/recovery-share';
+import { rotateKeks } from '@/lib/kek-rotation';
+import { listShopNip05Entries, nip05Slug } from '@/lib/nip05';
+import { bindKekId, bytesToHex } from '@/lib/nostr/kek';
+import {
+  decryptNostrSecret,
+  generateNostrKeyRecord,
+  publicKeyHexFromSecret,
+} from '@/lib/nostr/keys';
+import {
+  migrateNostrRetiredKeySchema,
+  nostrRetiredKeyAad,
+  PostgresNostrRetiredKeyStore,
+} from '@/lib/nostr/retired-key';
+import {
+  ensureSparkViewer,
+  migrateSparkViewerSchema,
+  sparkViewerRetiredKeyAad,
+} from '@/lib/spark-viewer';
+import { deriveViewerIdentityPublicKey } from '@buildonspark/spark-sdk';
+import { generateMnemonic } from '@scure/bip39';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
 import type { ForumPhoto, MessageRow } from '@/lib/message';
 import { messagesRoutes } from '@/routes/messages';
 
@@ -1464,6 +1487,13 @@ describe('PostgresAuthStore social recovery', () => {
       expect((await store.getAccount(id))?.sparkPubkeyVerifiedAt).toBe(
         before?.sparkPubkeyVerifiedAt,
       );
+      // The commit time is kept on the account, so dropping the previous
+      // wallet later does not lose when the new wallet became current.
+      const since = await client.query<{ since: Date | string }>(
+        'SELECT spark_pubkey_current_since AS since FROM account WHERE id = $1',
+        [id],
+      );
+      expect(new Date(since[0]?.since ?? 0).getTime()).toBe(now + 4);
       const previous = {
         accountId: id,
         sparkPubkey: oldKey,
@@ -3849,6 +3879,81 @@ describe('PostgresWalletTransferStore verified counterparty ownership', () => {
         });
       }
       const store = new PostgresWalletTransferStore(client);
+      // A previous wallet is listed with the time it was replaced (the
+      // previous-wallet viewer routes it to the viewer current at that time).
+      expect(
+        (await store.listWallets()).find(
+          (wallet) => wallet.accountId === previousShopId && wallet.sparkPubkey === previousShopKey,
+        ),
+      ).toEqual({
+        accountId: previousShopId,
+        sparkPubkey: previousShopKey,
+        sparkAddress: `spark1${'q'.repeat(62)}`,
+        previous: true,
+        replacedAt: new Date('2026-11-11T00:00:00.000Z'),
+      });
+      // A current wallet is listed with the time it became current. A row the
+      // boot backfill has not filled yet (spark_pubkey_current_since NULL)
+      // falls back to its verification time, or the newest replaced_at of the
+      // account's previous wallets when a recovery replaced it later (the worker stores the 0 of
+      // a wallet that became current after the newest viewer retirement when
+      // no viewer returns data).
+      await client.execute(
+        `UPDATE account SET spark_address = $2, spark_pubkey_verified_at = $3 WHERE id = $1`,
+        [buyerId, `spark1${'z'.repeat(62)}`, new Date('2026-11-21T09:00:00.000Z')],
+      );
+      expect(
+        (await store.listWallets()).find(
+          (wallet) => wallet.accountId === buyerId && wallet.sparkPubkey === buyerKey,
+        ),
+      ).toEqual({
+        accountId: buyerId,
+        sparkPubkey: buyerKey,
+        sparkAddress: `spark1${'z'.repeat(62)}`,
+        previous: false,
+        verifiedAt: new Date('2026-11-21T09:00:00.000Z'),
+      });
+      const recoveredFromKey = `03${'b'.repeat(64)}`;
+      for (const [replacedAt, verifiedAt] of [
+        // An older replacement keeps the verification time.
+        [new Date('2026-11-20T09:00:00.000Z'), new Date('2026-11-21T09:00:00.000Z')],
+        // A recovery after the verification wins.
+        [new Date('2026-11-22T09:00:00.000Z'), new Date('2026-11-22T09:00:00.000Z')],
+      ] as const) {
+        await client.execute(
+          `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+           VALUES ($1, $2, $3, $4)`,
+          [buyerId, recoveredFromKey, `spark1${'x'.repeat(62)}`, replacedAt],
+        );
+        expect(
+          (await store.listWallets()).find(
+            (wallet) =>
+              wallet.accountId === buyerId && wallet.sparkPubkey === buyerKey && !wallet.previous,
+          )?.verifiedAt,
+        ).toEqual(verifiedAt);
+        await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [buyerId]);
+      }
+      // The boot backfill stores the later of both times once in
+      // account.spark_pubkey_current_since; listWallets reads it from there, so
+      // the member dropping the previous wallet keeps the recovery time.
+      await client.execute(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          buyerId,
+          recoveredFromKey,
+          `spark1${'x'.repeat(62)}`,
+          new Date('2026-11-22T09:00:00.000Z'),
+        ],
+      );
+      await migrateAuthSchema(client);
+      expect(await auth.dropPreviousWallet(buyerId, recoveredFromKey)).toBe(true);
+      expect(
+        (await store.listWallets()).find(
+          (wallet) =>
+            wallet.accountId === buyerId && wallet.sparkPubkey === buyerKey && !wallet.previous,
+        )?.verifiedAt,
+      ).toEqual(new Date('2026-11-22T09:00:00.000Z'));
       const transfer = (transferId: string, counterpartyPubkey: string) => ({
         accountId: buyerId,
         walletPubkey: buyerKey,
@@ -3888,7 +3993,10 @@ describe('PostgresWalletTransferStore verified counterparty ownership', () => {
         unverifiedShopNoteId,
         previousShopNoteId,
       ]);
-      await client.execute('DELETE FROM previous_wallet WHERE account_id = $1', [previousShopId]);
+      await client.execute('DELETE FROM previous_wallet WHERE account_id IN ($1, $2)', [
+        previousShopId,
+        buyerId,
+      ]);
       await client.execute('DELETE FROM account WHERE id IN ($1, $2, $3, $4)', [
         buyerId,
         unverifiedShopId,
@@ -6001,6 +6109,9 @@ async function migrateMergeTables(client: SqlClient): Promise<void> {
   await migrateBtcUsdSchema(client);
   await migrateFiatSchema(client);
   await migrateMessageSchema(client);
+  // The merge deletes the source's retired Nostr keys.
+  await migrateShopIdentitySchema(client);
+  await migrateNostrRetiredKeySchema(client);
   await migratePosSchema(client);
   await migrateShopPaymentSchema(client);
   await migrateConversationSchema(client);
@@ -11987,6 +12098,463 @@ describe('PostgresWalletUsageStore', () => {
           postgresTextArrayLiteral(ids),
         ]);
       }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('KEK rotation on Postgres', () => {
+  test('renews keys under another KEK id in place, keeps the old ones retired, re-seals shares, then changes nothing', async () => {
+    const { client, sql } = createBunSqlClient(String(databaseUrl));
+    await migrateAuthSchema(client);
+    await migrateBtcUsdSchema(client);
+    await migrateFiatSchema(client);
+    await migrateMessageSchema(client);
+    // Twice: the CHECK replacement and the cleanup triggers are no-ops the second time.
+    await migrateShopIdentitySchema(client);
+    await migrateShopIdentitySchema(client);
+    await migrateNostrRetiredKeySchema(client);
+    await migrateNostrRetiredKeySchema(client);
+    await migrateSparkViewerSchema(client);
+    await migrateSparkViewerSchema(client);
+    // Attaches trg_db_change to both retired-key tables.
+    await migrateDbChangeSchema(client);
+    const oldMnemonic = generateMnemonic(wordlist, 128);
+    const derived = (await deriveViewerIdentityPublicKey(
+      { network: 'MAINNET' },
+      oldMnemonic,
+    )) as unknown;
+    const oldViewerKey =
+      typeof derived === 'string' ? derived.toLowerCase() : bytesToHex(derived as Uint8Array);
+    const previousNostrKek = bindKekId(new Uint8Array(32).fill(8), 2);
+    const previousRecoveryKek = bindKekId(new Uint8Array(32).fill(10), 2);
+    const nostrKek = new Uint8Array(32).fill(7);
+    const recoveryKek = new Uint8Array(32).fill(9);
+    const share = Array.from({ length: 20 }, () => 'acid').join(' ');
+    const rollback = new Error('rollback');
+    try {
+      // Everything runs in one transaction that is rolled back, so other
+      // rows of the shared test database are neither read nor kept.
+      await sql.begin(async (tx) => {
+        const inTx: SqlClient = {
+          query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+            (await tx.unsafe(text, [...params])) as R[],
+          execute: async (text: string, params: readonly unknown[] = []): Promise<void> => {
+            await tx.unsafe(text, [...params]);
+          },
+          transaction: async (run) => run(inTx),
+        };
+        // Keys other tests stored are sealed with other keys: without them the
+        // boot check of the current keys samples only rows of this test.
+        await inTx.execute('DELETE FROM recovery_share');
+        await inTx.execute(
+          'UPDATE account SET nostr_nsec_ciphertext = NULL WHERE nostr_nsec_ciphertext IS NOT NULL',
+        );
+        await inTx.execute('DELETE FROM shop_identity');
+        await inTx.execute('DELETE FROM nostr_retired_key');
+        await inTx.execute('DELETE FROM spark_viewer_retired_key');
+        // The viewer before the rotation: a real mnemonic under the previous key.
+        const oldViewerEnvelope = await sealAesGcmEnvelope(
+          new TextEncoder().encode(oldMnemonic),
+          previousNostrKek,
+          new TextEncoder().encode('spark_viewer_key'),
+          2,
+        );
+        await inTx.execute(
+          `INSERT INTO spark_viewer_key
+             (singleton, viewer_identity_public_key, viewer_mnemonic_ciphertext, viewer_kek_id, created_at)
+           VALUES (true, $1, $2, 2, now())
+           ON CONFLICT (singleton) DO UPDATE
+           SET viewer_identity_public_key = EXCLUDED.viewer_identity_public_key,
+               viewer_mnemonic_ciphertext = EXCLUDED.viewer_mnemonic_ciphertext, viewer_kek_id = 2`,
+          [oldViewerKey, oldViewerEnvelope],
+        );
+        const accountId = crypto.randomUUID();
+        const auth = new PostgresAuthStore(inTx);
+        await auth.createAccount({
+          id: accountId,
+          linkingKey: null,
+          role: 'verified',
+          name: 'Coffee',
+          username: `k${accountId.replaceAll('-', '').slice(0, 12)}`,
+          forumLawsDismissed: false,
+          location: null,
+          viewKey: accountId.replaceAll('-', '').padEnd(64, 'e'),
+          createdAt: 1,
+          rulesAgreedAt: null,
+        });
+        const oldRecord = await generateNostrKeyRecord(accountId, previousNostrKek);
+        expect(await auth.setNostrKeyIfAbsent(accountId, oldRecord)).toBe('inserted');
+        const messages = new PostgresMessageStore(inTx);
+        const shops = new PostgresShopIdentityStore(inTx, messages);
+        // Two public shops with the same name: the first by key creation keeps
+        // the bare NIP-05 local, the second gets the message id suffix.
+        const shopLabel = `Kek Lab ${accountId.slice(0, 8)}`;
+        const createShopNote = async (id: string): Promise<void> => {
+          await messages.create({
+            id,
+            accountId,
+            name: 'Coffee',
+            text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+            createdAt: new Date(),
+            hasPhoto: false,
+            ...unsignedNostrDefaults(),
+            place: {
+              lat: 47.3769,
+              lng: 8.5417,
+              label: shopLabel,
+              address: {
+                street: 'Main Street',
+                houseNumber: '1',
+                postalCode: '8001',
+                city: 'Zürich',
+                country: 'CH',
+              },
+            },
+            shopAccount: { id: accountId, username: 'coffee', name: 'Coffee' },
+          });
+        };
+        const noteId = crypto.randomUUID();
+        const twinId = crypto.randomUUID();
+        await createShopNote(noteId);
+        await createShopNote(twinId);
+        const oldShop = await shops.ensureListed(noteId, previousNostrKek);
+        expect(oldShop?.nostrKekId).toBe(2);
+        expect((await shops.ensureListed(twinId, previousNostrKek))?.nostrKekId).toBe(2);
+        await inTx.execute(
+          'UPDATE shop_identity SET ocp_place_pending = false WHERE message_id = $1',
+          [noteId],
+        );
+        // The shop with the higher message id was created first, so its key
+        // creation order differs from the `message_id` order.
+        const [lowId, highId] = [noteId, twinId].sort();
+        await inTx.execute(
+          'UPDATE shop_identity SET nostr_key_created_at = $2 WHERE message_id = $1',
+          [highId, new Date('2026-01-01T00:00:00.000Z')],
+        );
+        await inTx.execute(
+          'UPDATE shop_identity SET nostr_key_created_at = $2 WHERE message_id = $1',
+          [lowId, new Date('2026-01-02T00:00:00.000Z')],
+        );
+        const shopOrder = async (): Promise<{
+          created: Array<{ message_id: string; created: string }>;
+          locals: Record<string, string>;
+        }> => ({
+          created: await inTx.query<{ message_id: string; created: string }>(
+            `SELECT message_id::text AS message_id, nostr_key_created_at::text AS created
+             FROM shop_identity ORDER BY message_id`,
+          ),
+          locals: Object.fromEntries(
+            (await listShopNip05Entries(auth, shops, messages)).map(
+              (entry) => [entry.messageId, entry.local] as const,
+            ),
+          ),
+        });
+        const orderBefore = await shopOrder();
+        expect(orderBefore.created).toHaveLength(2);
+        expect(orderBefore.locals[highId!]).toBe(nip05Slug(shopLabel));
+        expect(orderBefore.locals[lowId!]).toBe(
+          `${nip05Slug(shopLabel)}-${lowId!.replaceAll('-', '').slice(0, 8)}`,
+        );
+        const sparkPubkey = `02${'cd'.repeat(32)}`;
+        await inTx.execute(
+          `INSERT INTO recovery_share (account_id, spark_pubkey, recovery_share_ciphertext, stored_at)
+           VALUES ($1, $2, $3, now())`,
+          [
+            accountId,
+            sparkPubkey,
+            await encryptRecoveryShare(share, previousRecoveryKek, accountId),
+          ],
+        );
+
+        // Without the previous Nostr key the boot stops before any write.
+        let unset: unknown;
+        try {
+          await rotateKeks(inTx, {
+            nostrKek,
+            previousNostrKek: undefined,
+            recoveryShareKek: recoveryKek,
+            previousRecoveryShareKek: previousRecoveryKek,
+          });
+        } catch (error) {
+          unset = error;
+        }
+        expect((unset as Error).message).toBe(
+          'KEK rotation stopped: 4 Nostr key(s) are stored under another NOSTR_NSEC_KEK_ID; set NOSTR_NSEC_KEK_PREVIOUS to the previous NOSTR_NSEC_KEK',
+        );
+        expect(
+          await inTx.query('SELECT 1 FROM account WHERE id = $1 AND nostr_kek_id = 2', [accountId]),
+        ).toHaveLength(1);
+
+        const first = await rotateKeks(inTx, {
+          nostrKek,
+          previousNostrKek,
+          recoveryShareKek: recoveryKek,
+          previousRecoveryShareKek: previousRecoveryKek,
+          batchSize: 1,
+        });
+        expect(first).toMatchObject({
+          accounts: 1,
+          shops: 2,
+          sparkViewer: 1,
+          retiredKeys: 0,
+          recoveryShares: 1,
+          recoverySharesPending: 0,
+          rotatedAccountIds: [accountId],
+          rotatedShopMessageIds: [lowId, highId],
+        });
+        // The rotation keeps the key creation time, so both shops keep their
+        // NIP-05 local.
+        const orderAfter = await shopOrder();
+        expect(orderAfter.created).toEqual(orderBefore.created);
+        expect(orderAfter.locals).toEqual(orderBefore.locals);
+
+        const [account] = await inTx.query<{
+          nostr_pubkey: string;
+          nostr_nsec_ciphertext: Uint8Array;
+          nostr_kek_id: number;
+          nostr_key_custody: string;
+        }>(
+          `SELECT nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id, nostr_key_custody
+           FROM account WHERE id = $1`,
+          [accountId],
+        );
+        if (account === undefined) {
+          throw new Error('account missing');
+        }
+        expect(account.nostr_kek_id).toBe(1);
+        expect(account.nostr_key_custody).toBe('custodial');
+        expect(account.nostr_pubkey).not.toBe(oldRecord.pubkey);
+        const secret = await decryptNostrSecret(
+          new Uint8Array(account.nostr_nsec_ciphertext),
+          nostrKek,
+          accountId,
+        );
+        expect(publicKeyHexFromSecret(secret)).toBe(account.nostr_pubkey);
+        expect((await auth.getAccountByPubkey(oldRecord.pubkey))?.id).toBeUndefined();
+        expect((await auth.getAccountByPubkey(account.nostr_pubkey))?.id).toBe(accountId);
+
+        const shop = await shops.getByMessageId(noteId);
+        if (shop === undefined || oldShop === undefined) {
+          throw new Error('shop missing');
+        }
+        expect(shop.nostrKekId).toBe(1);
+        expect(shop.nostrPubkey).not.toBe(oldShop.nostrPubkey);
+        expect(shop.ocpPlacePending).toBe(true);
+        expect(shop.ocpPhotosPending).toBe(true);
+        expect(await shops.getByPubkey(oldShop.nostrPubkey)).toBeUndefined();
+        const signed = await signEventForShop(shops, noteId, nostrKek, {
+          kind: 0,
+          content: '{}',
+          tags: [],
+          created_at: 1,
+        });
+        expect(signed.pubkey).toBe(shop.nostrPubkey);
+
+        // The old account and shop keys are retired under the current key.
+        const retired = await inTx.query<{
+          owner_type: 'account' | 'shop';
+          owner_id: string;
+          pubkey: string;
+          nsec_ciphertext: Uint8Array;
+          kek_id: number;
+        }>(
+          `SELECT owner_type, owner_id, pubkey, nsec_ciphertext, kek_id FROM nostr_retired_key
+           ORDER BY owner_type, owner_id`,
+        );
+        expect(retired.map((row) => [row.owner_type, row.owner_id, row.kek_id])).toEqual([
+          ['account', accountId, 1],
+          ['shop', lowId!, 1],
+          ['shop', highId!, 1],
+        ]);
+        expect(retired[0]!.pubkey).toBe(oldRecord.pubkey);
+        expect(retired.find((row) => row.owner_id === noteId)?.pubkey).toBe(oldShop.nostrPubkey);
+        for (const row of retired) {
+          const opened = await decryptNostrSecret(
+            new Uint8Array(row.nsec_ciphertext),
+            nostrKek,
+            nostrRetiredKeyAad(row.owner_type, row.owner_id, row.pubkey),
+          );
+          expect(publicKeyHexFromSecret(opened)).toBe(row.pubkey);
+        }
+        // A deletion of a note signed before the rotation is signed by the
+        // retired key; one signed after it by the current key; another pubkey: none.
+        const retiredKeys = new PostgresNostrRetiredKeyStore(inTx);
+        const noteEventId = 'ef'.repeat(32);
+        const oldDeletion = await signDeletionForAccount(
+          auth,
+          retiredKeys,
+          accountId,
+          nostrKek,
+          { eventId: noteEventId, pubkey: oldRecord.pubkey },
+          2,
+        );
+        expect(oldDeletion?.pubkey).toBe(oldRecord.pubkey);
+        expect(oldDeletion?.kind).toBe(5);
+        expect(oldDeletion?.tags).toEqual([
+          ['e', noteEventId],
+          ['k', '1'],
+        ]);
+        expect(
+          (
+            await signDeletionForAccount(
+              auth,
+              retiredKeys,
+              accountId,
+              nostrKek,
+              { eventId: noteEventId, pubkey: account.nostr_pubkey },
+              2,
+            )
+          )?.pubkey,
+        ).toBe(account.nostr_pubkey);
+        expect(
+          await signDeletionForAccount(
+            auth,
+            retiredKeys,
+            accountId,
+            nostrKek,
+            { eventId: noteEventId, pubkey: '12'.repeat(32) },
+            2,
+          ),
+        ).toBeUndefined();
+        // The db_change trail keeps only the hash of the retired secret.
+        const [retiredChange] = await inTx.query<{ after: Record<string, unknown> }>(
+          `SELECT after FROM db_change WHERE table_name = 'nostr_retired_key' AND op = 'INSERT'
+             AND after ->> 'owner_id' = $1
+           ORDER BY id DESC LIMIT 1`,
+          [accountId],
+        );
+        expect(String(retiredChange?.after['nsec_ciphertext'])).toMatch(/^[0-9a-f]{64}$/);
+
+        const [stored] = await inTx.query<{ recovery_share_ciphertext: Uint8Array }>(
+          'SELECT recovery_share_ciphertext FROM recovery_share WHERE account_id = $1',
+          [accountId],
+        );
+        const envelope = new Uint8Array(stored!.recovery_share_ciphertext);
+        expect(envelopeKekId(envelope)).toBe(1);
+        const opened = await openAesGcmEnvelope(
+          envelope,
+          recoveryKek,
+          new TextEncoder().encode(accountId),
+        );
+        expect(new TextDecoder().decode(opened)).toBe(share);
+
+        const [viewer] = await inTx.query<{
+          viewer_identity_public_key: string;
+          viewer_kek_id: number;
+        }>('SELECT viewer_identity_public_key, viewer_kek_id FROM spark_viewer_key');
+        if (viewer === undefined) {
+          throw new Error('viewer missing');
+        }
+        expect(viewer.viewer_kek_id).toBe(1);
+        expect(viewer.viewer_identity_public_key).not.toBe(oldViewerKey);
+        // The old viewer is retired under the current key; previous wallets read through it.
+        const [retiredViewer] = await inTx.query<{
+          identity_public_key: string;
+          mnemonic_ciphertext: Uint8Array;
+          kek_id: number;
+        }>('SELECT identity_public_key, mnemonic_ciphertext, kek_id FROM spark_viewer_retired_key');
+        expect(retiredViewer?.identity_public_key).toBe(oldViewerKey);
+        expect(retiredViewer?.kek_id).toBe(1);
+        const retiredMnemonic = await openAesGcmEnvelope(
+          new Uint8Array(retiredViewer!.mnemonic_ciphertext),
+          nostrKek,
+          sparkViewerRetiredKeyAad(oldViewerKey),
+        );
+        expect(new TextDecoder().decode(retiredMnemonic)).toBe(oldMnemonic);
+        const loadedViewer = await ensureSparkViewer(inTx, nostrKek);
+        expect(loadedViewer.publicKey).toBe(viewer.viewer_identity_public_key);
+        expect(loadedViewer.previousWalletViewer).not.toBe(loadedViewer.viewer);
+
+        expect(
+          await rotateKeks(inTx, {
+            nostrKek,
+            previousNostrKek,
+            recoveryShareKek: recoveryKek,
+            previousRecoveryShareKek: previousRecoveryKek,
+          }),
+        ).toMatchObject({
+          accounts: 0,
+          shops: 0,
+          sparkViewer: 0,
+          retiredKeys: 0,
+          recoveryShares: 0,
+        });
+
+        // Another key value under the id already in use stops the boot.
+        let reused: unknown;
+        try {
+          await rotateKeks(inTx, {
+            nostrKek: new Uint8Array(32).fill(6),
+            previousNostrKek: undefined,
+            recoveryShareKek: recoveryKek,
+            previousRecoveryShareKek: undefined,
+          });
+        } catch (error) {
+          reused = error;
+        }
+        expect(reused).toBeInstanceOf(Error);
+        expect((reused as Error).message).toBe(
+          'NOSTR_NSEC_KEK does not open the keys stored under NOSTR_NSEC_KEK_ID 1; a new key value needs a new id',
+        );
+
+        // A second rotation seals the retired keys of the first one again
+        // (they stay retired) and retires the keys of the first rotation.
+        const thirdKek = bindKekId(new Uint8Array(32).fill(5), 3);
+        expect(
+          await rotateKeks(inTx, {
+            nostrKek: thirdKek,
+            previousNostrKek: nostrKek,
+            recoveryShareKek: recoveryKek,
+            previousRecoveryShareKek: undefined,
+          }),
+        ).toMatchObject({ accounts: 1, shops: 2, sparkViewer: 1, retiredKeys: 4 });
+        expect(
+          await inTx.query<{ kek_id: number }>(
+            'SELECT DISTINCT kek_id FROM nostr_retired_key UNION SELECT DISTINCT kek_id FROM spark_viewer_retired_key',
+          ),
+        ).toEqual([{ kek_id: 3 }]);
+        expect(
+          await inTx.query(
+            "SELECT 1 FROM nostr_retired_key WHERE owner_type = 'account' AND owner_id = $1",
+            [accountId],
+          ),
+        ).toHaveLength(2);
+        expect(
+          (
+            await signDeletionForAccount(
+              auth,
+              retiredKeys,
+              accountId,
+              thirdKek,
+              { eventId: noteEventId, pubkey: oldRecord.pubkey },
+              3,
+            )
+          )?.pubkey,
+        ).toBe(oldRecord.pubkey);
+        // Deleting the shop identity deletes its retired keys (cleanup trigger).
+        await inTx.execute('DELETE FROM shop_identity WHERE message_id = $1', [noteId]);
+        expect(
+          await inTx.query(
+            "SELECT 1 FROM nostr_retired_key WHERE owner_type = 'shop' AND owner_id = $1",
+            [noteId],
+          ),
+        ).toEqual([]);
+
+        let refused: unknown;
+        try {
+          await inTx.execute('UPDATE shop_identity SET nostr_kek_id = 0 WHERE message_id = $1', [
+            twinId,
+          ]);
+        } catch (error) {
+          refused = error;
+        }
+        expect(sqlState(refused)).toBe('23514');
+        throw rollback;
+      });
+    } catch (error) {
+      if (error !== rollback) throw error;
+    } finally {
       await closeIfPossible(sql);
     }
   });

@@ -14,10 +14,10 @@ import {
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
-import { buildKind5Event } from '@/lib/nostr/event';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import { resolvePublicApiBase, resolveRelayPublic, resolveRelaySpace } from '@/lib/nostr/relays';
-import { signEventForAccount } from '@/lib/nostr/sign';
+import type { NostrRetiredKeyStore } from '@/lib/nostr/retired-key';
+import { signDeletionForAccount } from '@/lib/nostr/sign';
 import { RELAY_TIMEOUT_MS } from '@/lib/nostr/worker';
 
 /** Collaborators for {@link retractHiddenForumNotes}. */
@@ -26,6 +26,11 @@ export interface RetractHiddenForumNotesDeps {
   store: MessageStore;
   /** Auth persistence (custodial nsec ciphertext). */
   authStore: AuthStore;
+  /**
+   * Retired keys kept by KEK rotation, for notes signed before it. Omitted
+   * (memory boots) → only the current key can sign a deletion.
+   */
+  retiredKeys?: NostrRetiredKeyStore | undefined;
   /** EVENT publisher (space + public relays). */
   publisher: NostrPublisher;
   /** AES-256 KEK for the row author's nsec. */
@@ -61,17 +66,36 @@ function retractRelayUrls(env: Record<string, string | undefined>): string[] {
 }
 
 /**
+ * `pubkey` of a stored signed event, when it is 64 hex characters.
+ *
+ * @param event - Stored `nostr_event`, or `null`.
+ * @returns The lower-case pubkey, or `null`.
+ */
+function storedEventPubkey(event: Record<string, unknown> | null): string | null {
+  const pubkey = event?.['pubkey'];
+  return typeof pubkey === 'string' && /^[0-9a-fA-F]{64}$/.test(pubkey)
+    ? pubkey.toLowerCase()
+    : null;
+}
+
+/**
  * Publish NIP-09 kind:5 for hidden rows that have a stored `eventId`, then
  * purge cached media URLs for the target and its direct children.
  *
  * Missing target is a no-op. Rows with null/empty `eventId` or null
- * `accountId` are skipped. Per-row sign/publish failures log
+ * `accountId` are skipped. Each deletion is signed by the key whose pubkey
+ * is the `pubkey` of the stored event ({@link signDeletionForAccount}): the
+ * current key, or the retired key KEK rotation kept; a row without a stored
+ * event uses the current key. When no key of the author matches, nothing is
+ * published for that row (a deletion from another pubkey has no effect on
+ * relays) and, once per call, `messages.delete.nostr_key_missing` logs the
+ * count only. Per-row sign/publish failures log
  * `messages.delete.nostr_failed` with `{ messageId }` only. Purge runs when
  * Cloudflare env and `PUBLIC_BASE_URL` resolve; a failed batch logs
  * `messages.delete.purge_failed` with the target `{ messageId }`. Never
  * throws to the caller after those logs.
  *
- * @param deps - Store, auth, publisher, KEK, clock, env, fetch.
+ * @param deps - Store, auth, optional retired keys, publisher, KEK, clock, env, fetch.
  * @param targetId - Hidden forum row id.
  * @returns Resolves when best-effort work has finished (or been skipped).
  */
@@ -87,13 +111,24 @@ export async function retractHiddenForumNotes(
   const rows = [target, ...children];
   const urls = retractRelayUrls(deps.env);
   const createdAtUnix = Math.floor(deps.now() / 1000);
+  let missing = 0;
   for (const row of rows) {
     if (row.eventId === null || row.eventId === '' || row.accountId === null) {
       continue;
     }
     try {
-      const template = buildKind5Event(row.eventId, createdAtUnix);
-      const event = await signEventForAccount(deps.authStore, row.accountId, deps.kek, template);
+      const event = await signDeletionForAccount(
+        deps.authStore,
+        deps.retiredKeys,
+        row.accountId,
+        deps.kek,
+        { eventId: row.eventId, pubkey: storedEventPubkey(row.nostrEvent) },
+        createdAtUnix,
+      );
+      if (event === undefined) {
+        missing += 1;
+        continue;
+      }
       await deps.publisher.publish(
         event as unknown as Record<string, unknown>,
         urls,
@@ -102,6 +137,9 @@ export async function retractHiddenForumNotes(
     } catch {
       logEvent('messages.delete.nostr_failed', { messageId: row.id });
     }
+  }
+  if (missing > 0) {
+    logEvent('messages.delete.nostr_key_missing', { count: missing });
   }
   const config = resolveCloudflarePurgeConfig(deps.env);
   const apiBase = resolvePublicApiBase(deps.env);

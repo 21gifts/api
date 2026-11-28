@@ -936,8 +936,10 @@ export interface AuthStore {
    * the account with the pending one, delete every session and push
    * subscription of the account, store the new key (and its Spark address) as
    * the wallet key with `walletRequired` true while keeping
-   * `sparkPubkeyVerifiedAt`, consume open `recovery` challenges, and delete the
-   * pending row. Username, `sessionRefused`, the Nostr key, and the stored
+   * `sparkPubkeyVerifiedAt`, record `now` as the time the new wallet became
+   * current (Postgres: `account.spark_pubkey_current_since`, which dropping a
+   * previous wallet does not change), consume open `recovery` challenges, and
+   * delete the pending row. Username, `sessionRefused`, the Nostr key, and the stored
    * recovery shares stay.
    *
    * @param input - Account, the pending recovery's new key, and epoch ms of the commit.
@@ -1092,6 +1094,12 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #pendingRecoveries = new Map<string, PendingRecovery>();
   /** Previous wallets by `${accountId}:${sparkPubkey}`. */
   readonly #previousWallets = new Map<string, PreviousWallet>();
+  /**
+   * When the current wallet became current, by account id (Postgres:
+   * `account.spark_pubkey_current_since`). Set on verification and on a
+   * recovery commit; dropping a previous wallet leaves it unchanged.
+   */
+  readonly #walletCurrentSince = new Map<string, number>();
   /** Recovery share envelopes by `${accountId}:${sparkPubkey}`. */
   readonly #recoveryShares = new Map<string, { ciphertext: Uint8Array; storedAt: number }>();
   /** Held-share boxes by box id, with their holder account id. */
@@ -1210,7 +1218,22 @@ export class InMemoryAuthStore implements AuthStore {
       return false;
     }
     this.#accounts.set(accountId, { ...current, sparkPubkeyVerifiedAt: now });
+    this.#walletCurrentSince.set(accountId, now);
     return true;
+  }
+
+  /**
+   * Epoch ms when the account's current wallet became current, the in-memory
+   * counterpart of `account.spark_pubkey_current_since`: the time of the
+   * verification or of the latest recovery commit. Null without a verified
+   * wallet (only those two writes verify or replace one here). Dropping a
+   * previous wallet does not change it.
+   *
+   * @param accountId - Account id.
+   * @returns Epoch ms, or null.
+   */
+  sparkPubkeyCurrentSince(accountId: string): number | null {
+    return this.#walletCurrentSince.get(accountId) ?? null;
   }
 
   async getAccountByVerifiedSparkPubkey(sparkPubkey: string): Promise<Account | undefined> {
@@ -1469,6 +1492,7 @@ export class InMemoryAuthStore implements AuthStore {
     }
     this.#accounts.delete(id);
     this.#nostrKeys.delete(id);
+    this.#walletCurrentSince.delete(id);
     this.#accountsByViewKey.delete(previous.viewKey);
     for (const box of this.#heldShareBoxes.values()) {
       if (box.accountId === id) {
@@ -2080,6 +2104,7 @@ export class InMemoryAuthStore implements AuthStore {
       sparkPubkey: pending.newSparkPubkey,
       walletRequired: true,
     });
+    this.#walletCurrentSince.set(input.accountId, input.now);
     this.#consumeRecoveryChallenges(input.accountId);
     this.#pendingRecoveries.delete(input.accountId);
     return 'committed';

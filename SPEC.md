@@ -32,7 +32,96 @@ database URL that is set is fail-loud at boot. On the SQL path,
 KEK throws at boot. So is `RECOVERY_SHARE_KEK` (64 lowercase hex), the key
 of the 21.gifts recovery share, which must differ from `NOSTR_NSEC_KEK`; a
 missing or malformed value, or one equal to `NOSTR_NSEC_KEK`, throws at
-boot. `RECOVERY_SHARE_REQUIRED_FROM` (ISO date `YYYY-MM-DD`, UTC, read from the
+boot.
+
+**KEK ids and KEK rotation.** `NOSTR_NSEC_KEK_ID` and `RECOVERY_SHARE_KEK_ID`
+(optional, a decimal integer from 1 to 2147483647, the Postgres `integer` range
+of every `*_kek_id` column; default `1`) are the KEK ids the two keys carry;
+every new envelope and `*_kek_id` column records the id of the key that sealed
+it, and a key only ever opens envelopes under its own id. The exceptions are
+the two previous keys: they carry no id and, only during KEK rotation, open
+envelopes under any id other than the current one.
+`RECOVERY_SHARE_KEK_PREVIOUS` (optional, 64 lowercase hex) is the previous
+recovery key; it must differ from both current keys.
+`NOSTR_NSEC_KEK_PREVIOUS` (optional, 64 lowercase hex, secret, never logged) is
+the previous Nostr key; it must differ from `NOSTR_NSEC_KEK`,
+`RECOVERY_SHARE_KEK` and `RECOVERY_SHARE_KEK_PREVIOUS`, and it is required as
+soon as a member key, shop key, the Spark viewer key or a retired key is stored
+under another `NOSTR_NSEC_KEK_ID`: without it the boot stops with the count. A
+KEK id outside 1 to 2147483647, or a malformed or equal previous key, throws at
+boot. **A new key
+value always needs a new id:** before it changes anything, the SQL boot opens one
+envelope stored under the current `NOSTR_NSEC_KEK_ID` (a member key, else a shop
+key, else the Spark viewer key, else a retired key, else a retired viewer) with
+`NOSTR_NSEC_KEK`, and one recovery share
+under the current `RECOVERY_SHARE_KEK_ID` with `RECOVERY_SHARE_KEK`; when it does
+not open, the boot stops with an error that names the variable and the id (never
+a key). With no row under an id there is nothing to check. After every
+migration and before any worker, the SQL boot rotates everything stored under
+another id: every such Nostr envelope is first opened with
+`NOSTR_NSEC_KEK_PREVIOUS` in a read-only pass (one that does not open stops the
+boot with the count, nothing written); then each member and shop Nostr key and
+the Spark viewer key is replaced by a fresh one under the current Nostr key, and
+the old one is kept as a retired key sealed under the current key
+(`nostr_retired_key`, additional data bound to owner type, owner id and pubkey;
+`spark_viewer_retired_key`, bound to the identity public key). A retired account
+key signs only the NIP-09 kind 5 deletion of a note it signed: a staff delete
+(`DELETE /messages/:id`) signs each deletion with the key whose pubkey is the
+stored event's,
+and when none matches it publishes nothing for that note and logs
+`messages.delete.nostr_key_missing` with the count only. A retired shop key is
+kept only so the shop's old key stays available should a deletion path for shop
+events be added; today nothing signs with it. A retired viewer only
+reads wallets that have not granted the new viewer: previous wallets, which
+cannot grant it, and current wallets until the member's app grants it. Spark
+returns a balance of 0 and empty pages, not an error, through a viewer a wallet
+never granted, so a viewer counts only when it returns data (a balance above 0,
+a transfer, or a token transaction). While retired viewers exist, the worker
+reads every previous wallet and every current wallet through this choice. When
+no viewer returns data for a current wallet that became current after the
+newest retired viewer's `retired_at` (verified or recovered after it:
+`account.spark_pubkey_current_since`, set on verification and on a recovery
+commit and kept when the member drops the previous wallet), the worker reads it through the current viewer
+and stores its balance snapshot, 0 for the empty wallet, as without retired
+viewers. Such a wallet that a retired viewer returns data for is read through
+that viewer. For each previous wallet it tries
+first the viewer that was current when the wallet was replaced (by
+`previous_wallet.replaced_at` and each retired viewer's `retired_at`), then the
+other retired viewers, newest first, then the current viewer; for each current
+wallet it tries the current viewer first, then the retired viewers, newest
+first. It remembers the first one with data; a current wallet read through a
+retired viewer checks the current viewer first on every read and switches to it
+once it returns data. When retired viewers exist and none returns data (except
+for a current wallet that became current after the newest `retired_at`, above),
+the worker stores no balance and no full-sync mark for that wallet and logs
+`wallet_transfer.failed` (reason `PreviousWalletUnreadable` for a previous
+wallet, `CurrentWalletUnreadable` for a current one). A read through the
+chosen viewer that returns nothing (balance 0, no transfer, no token
+transaction) stores no balance for a previous wallet or for a current wallet
+read through a retired viewer: on a full scan it forgets the viewer and fails
+the same way, on an incremental pass it only skips the snapshot. A current
+wallet whose chosen viewer is the current one has granted it, so such a read
+stores its balance, also 0, and a full scan completes.
+Without retired viewers, current wallets use the current viewer only. Retired
+keys of an earlier rotation are sealed again under the current key. Retired
+pubkeys never attribute inbound events and are returned by no member or public
+route; like other non-secret columns they appear in `db_change` and in the
+operator read `GET /debug/db`.
+Deleting an account or a shop identity, or merging an account away, deletes its
+retired keys. Each recovery share is opened with `RECOVERY_SHARE_KEK_PREVIOUS` and sealed
+again under the current recovery key with the same account id as additional
+data. Without the previous key the shares stay as they are and
+`kek.rotation.recovery_share.pending` logs their count; every share under another
+id is opened with the previous key before the first one is written, and a previous
+key that does not open one of them stops the boot and changes no share. The boot logs one
+`kek.rotation.done` line with counts only, and the worker announces every new
+Nostr key (kind 0 and kind 10002) as for a new key. Until a key is rotated,
+signing treats it as missing and logs `nostr.key.kek_stale`. A second boot
+changes nothing. Lookups by Nostr pubkey accept only the current key. The
+operator procedure for a rotation, its log checks and its errors are in
+[docs/kek-rotation.md](docs/kek-rotation.md).
+
+`RECOVERY_SHARE_REQUIRED_FROM` (ISO date `YYYY-MM-DD`, UTC, read from the
 environment) is the first day a payout needs that share: unset or blank means
 not required yet, and a value that is not a calendar day throws at boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
@@ -703,7 +792,8 @@ otherwise Hono's default 404. Body (strict):
 payload. The api encrypts it with `RECOVERY_SHARE_KEK` (AES-256-GCM, the
 account id as additional data) and stores the envelope for that wallet key in
 one locked step under the account row; a second PUT for the same wallet
-replaces it. No route returns it, and nothing in the api decrypts it.
+replaces it. No route returns it. No request path decrypts it; only the KEK
+rotation at boot opens it to check the key and seal it again.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -783,7 +873,13 @@ called.
 **Storage.** `previous_wallet` (`docs/schema/previous_wallet.sql`): primary
 key `(account_id, spark_pubkey)`, `spark_address`, `replaced_at`, written by
 the recovery commit. Migrated with the auth schema when `DATABASE_URL` is set
-and covered by `db_change`; in memory otherwise.
+and covered by `db_change`; in memory otherwise. The same commit sets
+`account.spark_pubkey_current_since` (`timestamptz`, NULL until a wallet is
+verified) to the commit time; verification sets it too. Dropping a previous
+wallet does not change it, so the wallet worker still knows when the current
+wallet became current. The auth migration backfills it once, idempotently,
+for verified rows where it is NULL with the later of `spark_pubkey_verified_at`
+and the account's newest `previous_wallet.replaced_at`.
 
 ### `DELETE /me/previous-wallets/:sparkPubkey`
 
@@ -1034,7 +1130,8 @@ key verified and the forwarded pending recovery: the old key and its
 credential, session, and push subscription of the account is deleted and the
 new passkey inserted; `spark_pubkey` becomes the new key with its
 `spark_address` and `wallet_required` true, keeping
-`spark_pubkey_verified_at`; open `recovery` challenges are consumed and the
+`spark_pubkey_verified_at` and setting `spark_pubkey_current_since` to the
+commit time; open `recovery` challenges are consumed and the
 pending row is deleted. Username, `session_refused`, the Nostr key, and
 recovery shares stay. Logs `account.recovery.committed`
 `{ accountId, via: "claim" }`. When the commit does not land, because the
@@ -6409,7 +6506,13 @@ wallet history. At boot the api loads one deployment viewer from
 `spark_viewer_key`. If absent, it generates a BIP-39 12-word mnemonic while a
 fixed Postgres advisory lock is held, derives the 66-hex viewer identity key,
 and stores only an AES-GCM envelope in `viewer_mnemonic_ciphertext` under
-`NOSTR_NSEC_KEK`, with KEK id 1 in `viewer_kek_id`. The
+`NOSTR_NSEC_KEK`, with its KEK id (`NOSTR_NSEC_KEK_ID`, default 1) in
+`viewer_kek_id`. KEK rotation replaces a row under another id with a fresh
+mnemonic at boot, so `GET /me` then returns the new viewer identity and the
+app grants it. Until then the wallet worker reads that wallet through the
+retired viewer it granted (`spark_viewer_retired_key`), and previous wallets,
+which cannot grant the new viewer, through theirs; see KEK ids and KEK rotation
+above. The
 mnemonic is never stored in plaintext, logged, or returned; the public identity
 is returned by `GET /me`. `db_change` stores only the SHA-256 of
 `viewer_mnemonic_ciphertext`, and `GET /debug/db` exposes only its byte length.

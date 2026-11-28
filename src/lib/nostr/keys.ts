@@ -3,22 +3,29 @@ import {
   AES_GCM_ENVELOPE_VERSION,
   AES_GCM_NONCE_BYTES,
   AES_GCM_TAG_BYTES,
+  envelopeKekId,
   sealAesGcmEnvelope,
 } from '@/lib/aes-gcm-envelope';
 import type { AuthStore, NostrKeyRecord } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
+import { DEFAULT_KEK_ID, kekIdOf } from '@/lib/nostr/kek';
 
 /**
  * Per-account custodial Nostr key generation and AES-GCM envelope encryption.
  *
  * Plaintext secrets exist only briefly; HTTP and `Account` never carry them.
+ * Every envelope is sealed under the KEK id of the key object it was sealed
+ * with ({@link kekIdOf}); a key opens only envelopes under its own id.
  */
 
 /** Envelope version byte for the v1 layout (the shared AES-GCM envelope version). */
 export const NOSTR_ENVELOPE_VERSION = AES_GCM_ENVELOPE_VERSION;
 
-/** v1 KEK id written into every new envelope. */
-export const NOSTR_KEK_ID_V1 = 1;
+/**
+ * KEK id of a key without a configured `NOSTR_NSEC_KEK_ID` ({@link DEFAULT_KEK_ID}).
+ * New envelopes carry the id of the key that seals them, not this constant.
+ */
+export const NOSTR_KEK_ID_V1 = DEFAULT_KEK_ID;
 
 /** Port for secret generation so tests can inject fixed keys. */
 export interface NostrKeygen {
@@ -54,7 +61,7 @@ export function publicKeyHexFromSecret(secret: Uint8Array): string {
  * @param secret - Raw 32-byte secret.
  * @param kek - 32-byte AES key (`NOSTR_NSEC_KEK`).
  * @param accountId - AAD string: account UUID, or `shop:{messageId}` for a shop key.
- * @param kekId - Key id stored in the envelope (v1 = 1).
+ * @param kekId - Key id stored in the envelope (default: the id of `kek`, {@link kekIdOf}).
  * @returns Envelope bytes.
  * @throws When the secret or the KEK is not 32 bytes.
  */
@@ -62,7 +69,7 @@ export async function encryptNostrSecret(
   secret: Uint8Array,
   kek: Uint8Array,
   accountId: string,
-  kekId: number = NOSTR_KEK_ID_V1,
+  kekId: number = kekIdOf(kek),
 ): Promise<Uint8Array> {
   if (secret.length !== 32) {
     throw new Error('Nostr secret must be 32 bytes');
@@ -73,7 +80,9 @@ export async function encryptNostrSecret(
 /**
  * Decrypt a v1 envelope to the 32-byte secret.
  *
- * v1 decrypts `kek_id=1` only. Unknown version or kek_id throws.
+ * Decrypts only an envelope whose `kek_id` is the id of `kek` ({@link kekIdOf});
+ * an envelope under another id is never decrypted with this key.
+ * Unknown version or kek_id throws.
  *
  * @param envelope - Stored ciphertext envelope.
  * @param kek - 32-byte AES key.
@@ -93,8 +102,7 @@ export async function decryptNostrSecret(
   }
   const view = new DataView(envelope.buffer, envelope.byteOffset, envelope.byteLength);
   const kekId = view.getUint32(1, false);
-  /* v8 ignore next 3 -- v1 only decrypts kek_id 1 */
-  if (kekId !== NOSTR_KEK_ID_V1) {
+  if (kekId !== kekIdOf(kek)) {
     throw new Error('Unsupported Nostr kek_id');
   }
   if (kek.length !== 32) {
@@ -127,6 +135,45 @@ export function zeroizeSecret(secret: Uint8Array): void {
   secret.fill(0);
 }
 
+/** Owners already warned about an envelope under another KEK id (one warning each). */
+const staleKekWarned = new Set<string>();
+
+/**
+ * Return a stored Nostr envelope only when it is under the KEK id of `kek`.
+ *
+ * An envelope under another id (a key KEK rotation has not renewed yet) is
+ * treated exactly like a missing key: the caller gets `undefined`, the
+ * envelope is not decrypted, and `nostr.key.kek_stale` (owner only, no key
+ * material) is logged once per owner and process.
+ *
+ * @param envelope - Stored envelope, or `undefined` when there is none.
+ * @param kek - Current key.
+ * @param owner - Non-secret owner fields for the warning (`accountId` or `messageId`).
+ * @returns `envelope` when it is under the id of `kek` or is not a well-formed
+ *   v1 envelope (then {@link decryptNostrSecret} rejects it as before), else
+ *   `undefined`.
+ */
+export function currentKekEnvelope(
+  envelope: Uint8Array | undefined,
+  kek: Uint8Array,
+  owner: { accountId: string } | { messageId: string },
+): Uint8Array | undefined {
+  if (envelope === undefined) {
+    return undefined;
+  }
+  const kekId = envelopeKekId(envelope);
+  // A malformed envelope is passed on, so decryptNostrSecret fails it as before.
+  if (kekId === undefined || kekId === kekIdOf(kek)) {
+    return envelope;
+  }
+  const key = 'accountId' in owner ? `account:${owner.accountId}` : `shop:${owner.messageId}`;
+  if (!staleKekWarned.has(key)) {
+    staleKekWarned.add(key);
+    logEvent('nostr.key.kek_stale', owner);
+  }
+  return undefined;
+}
+
 /**
  * Ensure the account has a Nostr keypair. Generates and encrypts when absent.
  *
@@ -156,7 +203,7 @@ export async function ensureAccountNostrKey(
     const record: NostrKeyRecord = {
       pubkey,
       ciphertext,
-      kekId: NOSTR_KEK_ID_V1,
+      kekId: kekIdOf(kek),
       custody: 'custodial',
     };
     const result = await store.setNostrKeyIfAbsent(accountId, record);
@@ -176,10 +223,11 @@ export async function ensureAccountNostrKey(
 }
 
 /**
- * Build a {@link NostrKeyRecord} for a freshly generated secret (register path).
+ * Build a {@link NostrKeyRecord} for a freshly generated secret (register
+ * path, and the key renewal of KEK rotation for accounts and shops).
  *
- * @param accountId - Account id (AAD + store key).
- * @param kek - 32-byte KEK.
+ * @param accountId - AAD string: account id, or `shop:{messageId}` for a shop key.
+ * @param kek - 32-byte KEK; the record carries its id ({@link kekIdOf}).
  * @param keygen - Secret generator.
  * @returns Record ready for `setNostrKeyIfAbsent`.
  */
@@ -195,7 +243,7 @@ export async function generateNostrKeyRecord(
     return {
       pubkey,
       ciphertext,
-      kekId: NOSTR_KEK_ID_V1,
+      kekId: kekIdOf(kek),
       custody: 'custodial',
     };
   } finally {

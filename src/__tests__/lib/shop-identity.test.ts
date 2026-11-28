@@ -4,12 +4,14 @@ import { countingBytes } from '@/__tests__/helpers/counting-bytes';
 import type { SqlClient } from '@/lib/auth/sql';
 import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
+import { bindKekId } from '@/lib/nostr/kek';
 import { decryptNostrSecret, publicKeyHexFromSecret } from '@/lib/nostr/keys';
 import {
   InMemoryShopIdentityStore,
   PostgresShopIdentityStore,
   SHOP_IDENTITY_SCHEMA_SQL,
   migrateShopIdentitySchema,
+  rotateShopIdentityKey,
   shopKeyMustBeAdopted,
   shopNpub,
   type ShopIdentityRow,
@@ -271,8 +273,30 @@ describe('migrateShopIdentitySchema', () => {
     );
   });
 
+  it('lets nostr_kek_id hold every positive KEK id and replaces an older CHECK once', () => {
+    expect(SHOP_IDENTITY_SCHEMA_SQL[0]).toContain(
+      'nostr_kek_id integer NOT NULL CHECK (nostr_kek_id >= 1)',
+    );
+    const check = SHOP_IDENTITY_SCHEMA_SQL[7] ?? '';
+    expect(check).toContain("pg_get_constraintdef(oid) LIKE '%nostr_kek_id%'");
+    expect(check).toContain("c.def NOT LIKE '%nostr_kek_id >= 1%'");
+    expect(check).toContain(
+      'ADD CONSTRAINT shop_identity_nostr_kek_id_check CHECK (nostr_kek_id >= 1)',
+    );
+  });
+
+  it('seals new shop keys under the KEK id bound to the key', async () => {
+    const { store } = setup();
+    const current = bindKekId(new Uint8Array(32).fill(8), 2);
+    const created = await store.ensureListed(ID_A, current, keygenFrom(2));
+    expect(created?.nostrKekId).toBe(2);
+    expect(await decryptNostrSecret(created!.nostrNsecCiphertext, current, `shop:${ID_A}`)).toEqual(
+      secret(2),
+    );
+  });
+
   it('runs every statement under the migration advisory lock', () => {
-    expect(SHOP_IDENTITY_SCHEMA_SQL).toHaveLength(7);
+    expect(SHOP_IDENTITY_SCHEMA_SQL).toHaveLength(8);
     for (const statement of SHOP_IDENTITY_SCHEMA_SQL) {
       expect(
         statement.startsWith(
@@ -310,6 +334,56 @@ describe('migrateShopIdentitySchema', () => {
     expect(
       SHOP_IDENTITY_SCHEMA_SQL.filter((s) => s.includes('CREATE OR REPLACE FUNCTION')),
     ).toHaveLength(3);
+  });
+});
+
+describe('rotateShopIdentityKey', () => {
+  it('writes a fresh key under the current id, conditional on the old id, and queues OpenCryptoPay', async () => {
+    const current = bindKekId(new Uint8Array(32).fill(8), 2);
+    const calls: Array<{ text: string; params: readonly unknown[] }> = [];
+    let rows: Array<{ message_id: string }> = [{ message_id: ID_A }];
+    const sql: SqlClient = {
+      query: async <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+        calls.push({ text, params });
+        return rows as T[];
+      },
+      execute: async () => undefined,
+    };
+    expect(await rotateShopIdentityKey(sql, ID_A, 1, current, keygenFrom(5))).toBe(true);
+    const [call] = calls;
+    expect(call?.text).toContain('WHERE message_id = $1 AND nostr_kek_id = $5');
+    expect(call?.text).toContain(
+      'ocp_place_pending = true, ocp_place_generation = ocp_place_generation + 1',
+    );
+    expect(call?.text).toContain("m.text ~* '#21giftsshop([^a-z0-9_]|$)'");
+    expect(call?.text).not.toContain('nostr_key_custody');
+    const [messageId, pubkey, ciphertext, kekId, previous] = call?.params ?? [];
+    expect(messageId).toBe(ID_A);
+    expect(pubkey).toBe(publicKeyHexFromSecret(secret(5)));
+    expect(kekId).toBe(2);
+    expect(previous).toBe(1);
+    const opened = await decryptNostrSecret(ciphertext as Uint8Array, current, `shop:${ID_A}`);
+    expect(opened).toEqual(secret(5));
+    // A row whose id changed meanwhile is left alone.
+    rows = [];
+    expect(await rotateShopIdentityKey(sql, ID_A, 1, current, keygenFrom(6))).toBe(false);
+  });
+
+  it('keeps nostr_key_created_at, the order of the shop NIP-05 locals', async () => {
+    const current = bindKekId(new Uint8Array(32).fill(8), 2);
+    const texts: string[] = [];
+    const sql: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        texts.push(text);
+        return [{ message_id: ID_A }] as T[];
+      },
+      execute: async () => undefined,
+    };
+    expect(await rotateShopIdentityKey(sql, ID_A, 1, current, keygenFrom(7))).toBe(true);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]).toContain('UPDATE shop_identity');
+    expect(texts[0]).not.toContain('nostr_key_created_at');
+    expect(texts[0]).not.toContain('now()');
   });
 });
 

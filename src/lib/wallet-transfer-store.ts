@@ -31,6 +31,34 @@ export interface WalletTransferWallet {
   accountId: string;
   sparkPubkey: string;
   sparkAddress: string;
+  /**
+   * `true` for a previous wallet (`previous_wallet`). The worker reads it
+   * with the viewer the previous-wallet reader chooses (the retired viewers
+   * KEK rotation kept, then the current one). While retired viewers exist, a
+   * current wallet goes through the same reader with the current viewer
+   * probed first; without them it uses the current viewer only.
+   */
+  previous?: boolean;
+  /**
+   * When a previous wallet was replaced (`previous_wallet.replaced_at`). The
+   * previous-wallet reader tries the viewer that was current at that time
+   * first. Absent on current wallets.
+   */
+  replacedAt?: Date;
+  /**
+   * When a current wallet became the account's current wallet:
+   * `account.spark_pubkey_current_since`, set on verification and on a
+   * recovery commit (a recovery keeps the verification time but replaces the
+   * wallet). A member can drop a `previous_wallet` row, so the recovery time
+   * is not read from there; only a row the boot backfill has not filled yet
+   * falls back to the later of `spark_pubkey_verified_at` and the newest
+   * `previous_wallet.replaced_at`. While retired viewers exist
+   * the worker reads every current wallet through the reader; when no viewer
+   * returns data, a wallet that became current after the newest retirement
+   * is read with the current viewer and its 0 is stored. Absent on previous
+   * wallets.
+   */
+  verifiedAt?: Date;
 }
 
 /** One normalized operator transfer observation. */
@@ -724,15 +752,34 @@ export class PostgresWalletTransferStore
   constructor(private readonly sql: SqlClient) {}
 
   async listWallets(): Promise<WalletTransferWallet[]> {
-    return this.sql.query<WalletTransferWallet>(
-      `SELECT id::text AS "accountId", spark_pubkey AS "sparkPubkey", spark_address AS "sparkAddress"
+    const rows = await this.sql.query<
+      Omit<WalletTransferWallet, 'replacedAt' | 'verifiedAt'> & {
+        replacedAt: Date | string | null;
+        verifiedAt: Date | string | null;
+      }
+    >(
+      `SELECT id::text AS "accountId", spark_pubkey AS "sparkPubkey", spark_address AS "sparkAddress",
+              false AS previous, NULL::timestamptz AS "replacedAt",
+              COALESCE(spark_pubkey_current_since,
+                       GREATEST(spark_pubkey_verified_at,
+                                (SELECT max(p.replaced_at) FROM previous_wallet p WHERE p.account_id = account.id))) AS "verifiedAt"
        FROM account
        WHERE spark_address IS NOT NULL AND spark_pubkey_verified_at IS NOT NULL
        UNION ALL
-       SELECT account_id::text AS "accountId", spark_pubkey AS "sparkPubkey", spark_address AS "sparkAddress"
+       SELECT account_id::text AS "accountId", spark_pubkey AS "sparkPubkey", spark_address AS "sparkAddress",
+              true AS previous, replaced_at AS "replacedAt", NULL::timestamptz AS "verifiedAt"
        FROM previous_wallet
        ORDER BY "accountId", "sparkPubkey"`,
     );
+    return rows.map(({ replacedAt, verifiedAt, ...wallet }) => {
+      const replaced = sqlDate(replacedAt);
+      const verified = sqlDate(verifiedAt);
+      return {
+        ...wallet,
+        ...(replaced === null ? {} : { replacedAt: replaced }),
+        ...(verified === null ? {} : { verifiedAt: verified }),
+      };
+    });
   }
 
   async syncState(accountId: string, walletPubkey: string): Promise<WalletTransferSyncState> {

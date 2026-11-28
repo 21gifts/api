@@ -3457,6 +3457,21 @@ describe('InMemoryAuthStore social recovery', () => {
       expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
     });
 
+    it('keeps the time the wallet became current when its previous wallet is dropped', async () => {
+      const store = new InMemoryAuthStore();
+      expect(store.sparkPubkeyCurrentSince('acc')).toBeNull();
+      await recoverable(store, 'acc', 'ada');
+      expect(store.sparkPubkeyCurrentSince('acc')).toBe(10);
+      await forwarded(store, 'acc', 'ada', OLD, NEW, 'cred-1');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 7 });
+      expect(store.sparkPubkeyCurrentSince('acc')).toBe(NOW + 7);
+      expect(await store.dropPreviousWallet('acc', OLD)).toBe(true);
+      expect(store.sparkPubkeyCurrentSince('acc')).toBe(NOW + 7);
+      expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(10);
+      await store.deleteAccount('acc');
+      expect(store.sparkPubkeyCurrentSince('acc')).toBeNull();
+    });
+
     it('orders previous wallets of the same commit time by key whatever the commit order', async () => {
       const store = new InMemoryAuthStore();
       await recoverable(store, 'acc', 'ada', NEW);

@@ -2857,7 +2857,7 @@ const GATE_NOW = Date.parse('2026-10-29T12:00:00.000Z');
 const gateClock = (): number => GATE_NOW;
 const MEMBER_PHOTO = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
-/** Open a share envelope in the test only; the api has no decrypt function. */
+/** Open a share envelope in the test only; no request path decrypts a share. */
 async function openShare(envelope: Uint8Array, accountId: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', SHARE_KEK, { name: 'AES-GCM' }, false, [
     'decrypt',

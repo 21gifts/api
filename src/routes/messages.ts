@@ -94,6 +94,7 @@ import {
 } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { retractHiddenForumNotes } from '@/lib/nostr/retract';
+import type { NostrRetiredKeyStore } from '@/lib/nostr/retired-key';
 import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
@@ -361,6 +362,12 @@ export interface MessagesRouteDeps {
    * `nostrKek`) → skip retract after `markDeleted`.
    */
   nostrPublisher?: NostrPublisher;
+  /**
+   * Retired Nostr keys KEK rotation kept (`nostr_retired_key`). The retract
+   * signs the deletion of a note signed before the rotation with them.
+   * Omitted (memory boots) → only the current key signs deletions.
+   */
+  nostrRetiredKeys?: NostrRetiredKeyStore | undefined;
   /**
    * Optional env slice for retract relays, public media URLs, and Cloudflare
    * purge. Omitted → `{}` on the DELETE retract path.
@@ -2681,6 +2688,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               {
                 store: deps.store,
                 authStore: deps.authStore,
+                retiredKeys: deps.nostrRetiredKeys,
                 publisher: deps.nostrPublisher,
                 kek: deps.nostrKek,
                 now: deps.now,

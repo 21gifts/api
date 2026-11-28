@@ -10,7 +10,7 @@ import { logEvent } from '@/lib/log';
 import { addUtcDays } from '@/lib/member-habit';
 import { bytesToHex } from '@/lib/nostr/kek';
 import { receivingAddress } from '@/lib/receiving-address';
-import type { SparkViewer, SparkViewerTransfer } from '@/lib/spark-viewer';
+import type { PreviousWalletReader, SparkViewer, SparkViewerTransfer } from '@/lib/spark-viewer';
 import type { WalletStore } from '@/lib/wallet-store';
 import type {
   WalletTransferRecord,
@@ -33,7 +33,25 @@ const WALLET_TRANSFER_OVERLAP_MS = 60 * 60_000;
 
 /** Dependencies for one sync pass and the self-scheduling worker. */
 export interface WalletTransferWorkerDeps {
+  /**
+   * Current deployment viewer: reads current wallets unless
+   * `previousWalletViewer` is a reader with retired viewers. Then the reader
+   * chooses, and this viewer reads a current wallet that no viewer returned
+   * data for only when it became current (verified or recovered) after the
+   * newest retirement. Must be the object such a reader holds as its current
+   * viewer.
+   */
   viewer: SparkViewer;
+  /**
+   * Viewer for previous wallets (`previous: true`). A plain viewer reads them
+   * directly; a reader (`previousWalletSparkViewer`) chooses per wallet the
+   * viewer that returns data. A reader with retired viewers also reads every
+   * current wallet, with the current viewer probed first; when no viewer
+   * returns data, a current wallet that became current after its
+   * `newestRetiredAt` is read through `viewer` and its 0 is stored. Omitted →
+   * `viewer`.
+   */
+  previousWalletViewer?: SparkViewer | PreviousWalletReader | undefined;
   transfers: WalletTransferStore;
   balances: Pick<WalletStore, 'recordBalance'>;
   auth: Pick<AuthStore, 'getAccount' | 'hasRecoveryShareForVerifiedWallet'>;
@@ -270,10 +288,111 @@ function tokenInputsUnresolved(
   );
 }
 
+/**
+ * Error of a wallet that no viewer in the chain returned data for while
+ * retired viewers exist (never a current wallet that became current after
+ * the newest retirement, whose 0 is stored instead). Logged as
+ * `wallet_transfer.failed` with reason
+ * `PreviousWalletUnreadable` (previous wallet) or `CurrentWalletUnreadable`
+ * (current wallet); the wallet gets the usual backoff.
+ *
+ * @param wallet - The wallet that was read.
+ * @returns The error; nothing was written for the wallet.
+ */
+function walletUnreadable(wallet: WalletTransferWallet): Error {
+  const previous = wallet.previous === true;
+  const error = new Error(
+    `No Spark viewer returned data for this ${previous ? 'previous' : 'current'} wallet`,
+  );
+  error.name = previous ? 'PreviousWalletUnreadable' : 'CurrentWalletUnreadable';
+  return error;
+}
+
+/**
+ * `true` when a current wallet became current (verified or recovered, by
+ * `verifiedAt` from `account.spark_pubkey_current_since`, which dropping a
+ * previous wallet does not change) after the newest retired viewer was
+ * retired. Used only after no viewer returned
+ * data for it: such a wallet is new since the rotation, so its 0 is a real
+ * balance sync rather than a read through a viewer it never granted.
+ *
+ * @param wallet - A current wallet.
+ * @param reader - The reader with retired viewers.
+ * @returns `false` when either time is unknown or the wallet became current
+ *   at or before the newest retirement.
+ */
+function verifiedAfterNewestRetirement(
+  wallet: WalletTransferWallet,
+  reader: PreviousWalletReader,
+): boolean {
+  const retiredAt = reader.newestRetiredAt;
+  return (
+    wallet.verifiedAt !== undefined &&
+    retiredAt !== undefined &&
+    wallet.verifiedAt.getTime() > retiredAt.getTime()
+  );
+}
+
+/**
+ * The viewer to read `wallet` with. A previous wallet cannot grant a new
+ * viewer: after a KEK rotation only the viewer it granted while it was
+ * current can read it, and the Spark SDK reads 0 and empty pages through any
+ * other. A current wallet grants the new viewer only when the member next
+ * opens the app; until then only a retired viewer it granted reads it. So
+ * while retired viewers exist, every previous and every current wallet goes
+ * through the reader (a current wallet with the current viewer probed first),
+ * which chooses the viewer within the call timeout. When no viewer returns
+ * data, a current wallet that became current after the newest retirement
+ * (verified or recovered after it) is read through `deps.viewer` and its 0
+ * is stored: every viewer reads the same 0 for it. Any other wallet without
+ * data fails as unreadable. Without retired viewers every current wallet uses
+ * `deps.viewer` directly.
+ *
+ * @param deps - Worker collaborators.
+ * @param wallet - Wallet to read.
+ * @returns The viewer, and the reader when one chose it (`undefined` for
+ *   `deps.viewer` used directly or as the fallback).
+ * @throws walletUnreadable when the reader chose no viewer and the fallback
+ *   does not apply; the probe error when a probe failed and no viewer had
+ *   data.
+ */
+async function viewerOf(
+  deps: WalletTransferWorkerDeps,
+  wallet: WalletTransferWallet,
+): Promise<{ viewer: SparkViewer; reader: PreviousWalletReader | undefined }> {
+  const previous = wallet.previous === true;
+  const candidate = deps.previousWalletViewer ?? deps.viewer;
+  if (!('viewerFor' in candidate)) {
+    return { viewer: previous ? candidate : deps.viewer, reader: undefined };
+  }
+  if (!previous && !candidate.hasRetiredViewers) {
+    return { viewer: deps.viewer, reader: undefined };
+  }
+  const viewer = await timed(
+    candidate.viewerFor({
+      sparkAddress: wallet.sparkAddress,
+      walletPubkey: wallet.sparkPubkey,
+      replacedAt: wallet.replacedAt,
+      ...(previous ? {} : { current: true }),
+    }),
+  );
+  if (viewer === null) {
+    if (!previous && verifiedAfterNewestRetirement(wallet, candidate)) {
+      // No viewer returned data: the 0 and empty pages are true for every viewer.
+      return { viewer: deps.viewer, reader: undefined };
+    }
+    throw walletUnreadable(wallet);
+  }
+  return { viewer, reader: candidate };
+}
+
 async function syncWallet(
   deps: WalletTransferWorkerDeps,
   wallet: WalletTransferWallet,
 ): Promise<{ inserted: number; updated: number }> {
+  const { viewer, reader } = await viewerOf(deps, wallet);
+  // Any transfer, token transaction, or balance above 0 this read returned.
+  let sawData = false;
   const state = await deps.transfers.syncState(wallet.accountId, wallet.sparkPubkey);
   const today = utcDayKey(deps.now());
   const fullScan =
@@ -286,13 +405,14 @@ async function syncWallet(
   const seenOffsets = new Set<number>([0]);
   for (;;) {
     const page = await timed(
-      deps.viewer.transfers({
+      viewer.transfers({
         sparkAddress: wallet.sparkAddress,
         limit: WALLET_TRANSFER_PAGE_SIZE,
         offset,
         ...(createdAfter === undefined ? {} : { createdAfter }),
       }),
     );
+    if (page.rawCount > 0) sawData = true;
     const seenAt = new Date(deps.now());
     for (const transfer of page.transfers) {
       const row = normalizedTransfer(wallet, transfer, seenAt);
@@ -321,13 +441,14 @@ async function syncWallet(
   let unresolvedTokenInputs = false;
   for (;;) {
     const page = await timed(
-      deps.viewer.tokenTransactions({
+      viewer.tokenTransactions({
         sparkAddress: wallet.sparkAddress,
         walletPubkey: wallet.sparkPubkey,
         pageSize: WALLET_TRANSFER_PAGE_SIZE,
         ...(cursor === undefined ? {} : { cursor }),
       }),
     );
+    if (page.rawCount > 0) sawData = true;
     const seenAt = new Date(deps.now());
     await storeTokenTransactions(deps, wallet, page.transactions, seenAt);
     const ownerResolution = page.ownerResolution;
@@ -417,7 +538,28 @@ async function syncWallet(
     }
   }
 
-  const balance = await timed(deps.viewer.balance(wallet.sparkAddress));
+  const balance = await timed(viewer.balance(wallet.sparkAddress));
+  if (balance > 0) sawData = true;
+  // With retired viewers, a read that returned nothing through a viewer the
+  // wallet may not (or no longer) grant never stores a 0 balance nor
+  // completes a full scan: a previous wallet read through any viewer, or a
+  // current wallet read through a retired viewer (the chosen one may have
+  // lost the grant). A full scan that saw nothing forgets the choice and
+  // fails, so the next read probes the chain again; an incremental read with
+  // nothing new only skips the snapshot. A current wallet the reader chose
+  // the current viewer for has granted it (the probe returned data), so its
+  // empty read is a real balance sync and is stored, as is the fallback read
+  // of a wallet that became current after the newest retirement (`reader` is
+  // `undefined` then).
+  if (
+    reader?.hasRetiredViewers === true &&
+    !sawData &&
+    (wallet.previous === true || viewer !== deps.viewer)
+  ) {
+    if (!fullScan) return { inserted, updated };
+    reader.forget(wallet.sparkAddress);
+    throw walletUnreadable(wallet);
+  }
   const observedAt = new Date(deps.now());
   await deps.balances.recordBalance({
     id: crypto.randomUUID(),

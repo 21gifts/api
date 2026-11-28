@@ -25,7 +25,7 @@ BEGIN
     message_id uuid PRIMARY KEY REFERENCES message (id),
     nostr_pubkey text NOT NULL UNIQUE CHECK (nostr_pubkey ~ '^[0-9a-f]{64}$'),
     nostr_nsec_ciphertext bytea NOT NULL,
-    nostr_kek_id integer NOT NULL CHECK (nostr_kek_id = 1),
+    nostr_kek_id integer NOT NULL CHECK (nostr_kek_id >= 1),
     nostr_key_custody text NOT NULL CHECK (nostr_key_custody IN ('custodial', 'user')),
     nostr_key_created_at timestamptz NOT NULL,
     profile_name text NOT NULL,
@@ -192,5 +192,35 @@ BEGIN
   CREATE TRIGGER trg_shop_identity_extra_photo
   AFTER INSERT OR UPDATE OR DELETE ON message_extra_photo
   FOR EACH ROW EXECUTE FUNCTION queue_shop_identity_photo();
+END;
+$shop_identity$;
+
+-- nostr_kek_id is the NOSTR_NSEC_KEK_ID the key is sealed under. Replace an
+-- older CHECK (nostr_kek_id = 1) with the named >= 1 constraint; a no-op once
+-- it exists. KEK rotation (rotateShopIdentityKey) writes the current id.
+DO $shop_identity$
+BEGIN
+  PERFORM pg_advisory_xact_lock(21499001);
+  DECLARE
+    c record;
+  BEGIN
+    FOR c IN
+      SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conrelid = 'public.shop_identity'::regclass AND contype = 'c'
+        AND pg_get_constraintdef(oid) LIKE '%nostr_kek_id%'
+    LOOP
+      IF c.conname <> 'shop_identity_nostr_kek_id_check' OR c.def NOT LIKE '%nostr_kek_id >= 1%' THEN
+        EXECUTE format('ALTER TABLE shop_identity DROP CONSTRAINT %I', c.conname);
+      END IF;
+    END LOOP;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conrelid = 'public.shop_identity'::regclass
+        AND conname = 'shop_identity_nostr_kek_id_check'
+    ) THEN
+      ALTER TABLE shop_identity
+        ADD CONSTRAINT shop_identity_nostr_kek_id_check CHECK (nostr_kek_id >= 1);
+    END IF;
+  END;
 END;
 $shop_identity$;

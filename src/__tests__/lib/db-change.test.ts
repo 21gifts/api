@@ -37,8 +37,13 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/token/);
     expect(joined).toMatch(/challenge/);
     expect(joined).toMatch(/nostr_nsec_ciphertext/);
-    expect(joined).toMatch(/'nostr_nsec_ciphertext', 'viewer_mnemonic_ciphertext', 'nonce'/);
+    expect(joined).toMatch(
+      /'nostr_nsec_ciphertext', 'viewer_mnemonic_ciphertext', 'nsec_ciphertext', 'mnemonic_ciphertext', 'nonce'/,
+    );
     expect(DEBUG_DB_SECRET_COLUMNS).toContain('viewer_mnemonic_ciphertext');
+    // The retired Nostr keys and retired Spark viewers.
+    expect(DEBUG_DB_SECRET_COLUMNS).toContain('nsec_ciphertext');
+    expect(DEBUG_DB_SECRET_COLUMNS).toContain('mnemonic_ciphertext');
     expect(joined).toMatch(/nonce/);
     expect(joined).toMatch(/view_key/);
     expect(joined).toMatch(/endpoint/);
