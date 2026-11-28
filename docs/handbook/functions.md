@@ -1997,22 +1997,16 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Returns / side effects:** `{ dayIndex, recipientAccountId }`, or null. No I/O.
 - **Used by:** `account-activity` (drops repayment invoices), `zap-index`, `walletHeartRoutes` (repayment rows of `POST /me/wallet/hearts`), and the repayment plan readers.
 
-## Function: REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS
-
-- **Purpose:** The operator-approved credits that do not use the 2026-11-16 repayment minimum. These three credits start on the UTC day after they filled, however early that is.
-- **Value:** A `ReadonlySet<string>` of the lowercase message ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`.
-- **Used by:** `repaymentStartMs`, which matches the credit id case-insensitively. Every other credit keeps the 2026-11-16 minimum.
-
 ## Function: repaymentStartMs
 
-- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled. For a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS`, it is never before 2026-11-16, so a non-exempt credit that filled on or before 2026-11-15 starts on 2026-11-16, and a non-exempt credit that filled later starts the next UTC day. The three credits in `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. Every due date and due-day count uses this start.
-- **Inputs:** Epoch milliseconds when the credit filled, and the credit message id (matched case-insensitively).
+- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled, never before 2026-11-28 UTC (the module constant `REPAYMENT_EARLIEST_START_MS`). 21.gifts was unreachable from 2026-11-18 through 2026-11-27, and the owner decided that every repayment plan starts on 2026-11-28 at the earliest. This one limit applies to every credit: a credit filled on 2026-11-09, on 2026-11-15, on 2026-11-16, on 2026-11-17, or on 2026-11-27 starts on 2026-11-28, and one filled on 2026-11-28 starts on 2026-11-29. Every due date and due-day count uses this start; day indexes, and the payments stored against them, are relative to it.
+- **Inputs:** Epoch milliseconds when the credit filled.
 - **Returns / side effects:** That midnight in epoch milliseconds. No I/O.
 
 ## Function: dueDayCount
 
-- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so for a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` nothing is due before 2026-11-16. The three credits in that set may be due earlier.
-- **Inputs:** Funded time, now, term days, and the credit message id.
+- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so for every credit nothing is due before 2026-11-28.
+- **Inputs:** Funded time, now, and term days.
 - **Returns / side effects:** A count from 0 through the term. No I/O.
 
 ## Function: dayUnits
@@ -2036,8 +2030,8 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: repaymentDueDate
 
-- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, and for a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` never before 2026-11-16. The three credits in that set start the day after they filled.
-- **Inputs:** Funded time in epoch milliseconds, the zero-based day, and the credit message id.
+- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, never before 2026-11-28 (21.gifts was unreachable from 2026-11-18 through 2026-11-27). A plan whose start moves to 2026-11-28 moves every date by the same number of days.
+- **Inputs:** Funded time in epoch milliseconds and the zero-based day.
 - **Returns / side effects:** `YYYY-MM-DD`. No I/O.
 
 ## Function: formatCents
@@ -2049,7 +2043,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 ## Function: repaymentLedger
 
 - **Purpose:** List every repayment share in day order. Legacy rows with no part amount mark the full share paid; only part rows add stored loan units. Status is paid only once the full share is settled.
-- **Inputs:** Term, giver units, shares already paid, funded time or null, the clock, and the credit message id.
+- **Inputs:** Term, giver units, shares already paid, funded time or null, and the clock.
 - **Returns / side effects:** The rows. No I/O.
 - **Used by:** `repaymentStatus`.
 
@@ -2104,7 +2098,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 ## Function: myLoansRoutes
 
 - **Purpose:** Hono sub-app for `GET /me/loans` and public `GET /loans/open`, mounted at `/` by `createApp`. `GET /me/loans` requires a Bearer session. It lists the caller's live (not hidden) top-level repayable asks with a term from `listAuthoredMessages`, newest first, that are still collecting or not fully repaid; a funded loan whose every scheduled share is paid is left out. `GET /loans/open` needs no session. It lists every funded loan from `listFundedCredits` whose plan still has a remainder. A loan is listed only when its credit note also has an account id, matching `listFundedCredits` (`account_id` is not null).
-- **Open loans:** `GET /loans/open` is 200 with a JSON array of `{ messageId, accountId, name, currency, outstanding, overdue }`. A loan is listed only when its credit note also has an account id, matching `listFundedCredits`. `outstanding` is the unpaid plan remainder in the loan currency, the same units as `GET /messages/:id/repayment` (`formatCents` for fiat, sats as a number for bitcoin). `overdue` is true when an unpaid share's `repaymentDueDate` is before the current UTC day; the share due today is not overdue, and the 2026-11-16 floor applies. Order is overdue first, then currency code, then outstanding descending, then `messageId`. 503 `Ask amount is unavailable` when a listed loan's debt cannot be computed. 503 `Messages are unavailable` and `loans.open.failed` when the store throws. Read-only. Sunday does not refuse it.
+- **Open loans:** `GET /loans/open` is 200 with a JSON array of `{ messageId, accountId, name, currency, outstanding, overdue }`. A loan is listed only when its credit note also has an account id, matching `listFundedCredits`. `outstanding` is the unpaid plan remainder in the loan currency, the same units as `GET /messages/:id/repayment` (`formatCents` for fiat, sats as a number for bitcoin). `overdue` is true when an unpaid share's `repaymentDueDate` is before the current UTC day; the share due today is not overdue, and the 2026-11-28 earliest start applies. Order is overdue first, then currency code, then outstanding descending, then `messageId`. 503 `Ask amount is unavailable` when a listed loan's debt cannot be computed. 503 `Messages are unavailable` and `loans.open.failed` when the store throws. Read-only. Sunday does not refuse it.
 - **Per loan:** Includes `closedAt`, `maxSats`, and `maxAmount`. On funded loans, maximums walk receivable shares in allocation order and stop before the first legacy, oversized, or claim-only reservation that would return 409; later payable shares are excluded. While collecting, only givers who can currently receive contribute. `maxSats` sums each maximum bill's separately rounded sat price. `repaidSats` sums exact part sats plus only genuine legacy full-share rows, so a completed part-based share is not counted twice; `totalSats` adds the priced unpaid remainders.
 - **Inputs:** `{ store, authStore, now, fxSpot?, lnurlServer? }`; `fxSpot.latest()` is memoized once across every loan in one request.
 - **Lender waiting:** `lenderWaiting` `{ shares, loans, sats }`: when the caller cannot receive (`receivingAddress` is null), the due, unpaid shares owed to the caller over every live funded repayable ask named by the caller's own invoice attempts (`listInvoiceAttemptsForPayer`, both `repay:` and `repayp:` attempts left out) whose `listCreditPayers` includes the caller, with the number of those loans and their sats (not-yet-invoiced fiat units use the same once-per-request spot read; open invoices keep their stored sats; null when a required currency rate is missing). All zero, without reading invoices, when the caller can receive.

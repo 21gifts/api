@@ -474,6 +474,15 @@ The wallet rule in detail:
   Postgres. `$n::text[]` and `$n::uuid[]` parameters must be one array-literal string
   (`postgresTextArrayLiteral` for text). A JavaScript array is `malformed array literal` under
   Bun `SQL.unsafe`. CI runs this script and fails if `DATABASE_URL` is missing.
+- A replay or dedupe test for a signed Nostr event embeds the first event's JSON string byte
+  for byte (`externalZapFixture({ …, description: first.description })`), not a freshly
+  signed one. `finalizeEvent` keeps the id but gives a new signature, so a re-signed 9734
+  is a different JSON string: against the first event's invoice it fails the description
+  hash check in `verifiedExternalZapRequest` before the replay guard (`attributeZapReceipt`
+  returning false) runs, and the test passes for the wrong reason. A test of an abuse rule
+  also proves that the guard itself ran (hit count of the guard line, or a log event), not
+  only the end state. Line hit counts: `bun run test:coverage -- --coverage.reporter=json`,
+  then `coverage/coverage-final.json`; the text table shortens line numbers.
 
 ### Before every push (the same checks CI runs)
 

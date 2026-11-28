@@ -257,7 +257,7 @@ async function duePlan(
 ): Promise<DuePlan | 'unavailable'> {
   const termDays = row.goalTermDays as number;
   const fundedAt = row.goalFundedAt as Date;
-  const daysDue = dueDayCount(fundedAt.getTime(), nowMs, termDays, row.id);
+  const daysDue = dueDayCount(fundedAt.getTime(), nowMs, termDays);
   const paid = snapshot?.paid ?? (await deps.store.listRepayments(row.id));
   const parts = snapshot?.parts ?? (await deps.store.listRepaymentParts(row.id));
   const owed = snapshot?.owed ?? (await creditOwed(deps, row)).owed;
@@ -287,7 +287,7 @@ async function duePlan(
     deps,
     schedule.map((slice) => slice.accountId),
   );
-  const startMs = repaymentStartMs(fundedAt.getTime(), row.id);
+  const startMs = repaymentStartMs(fundedAt.getTime());
   const shares: ShareState[] = [];
   for (const slice of schedule) {
     const key = `${slice.dayIndex}:${slice.accountId}`;
@@ -470,7 +470,6 @@ function creditLedgerLines(
     ledgerPaid,
     fundedAt === null ? null : fundedAt.getTime(),
     nowMs,
-    row.id,
   );
 }
 
@@ -550,7 +549,7 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
       currency: fiat ? row.goalCurrency : 'BTC',
       fundedAt: fundedAt === null ? null : fundedAt.toISOString(),
       closedAt: row.goalClosedAt instanceof Date ? row.goalClosedAt.toISOString() : null,
-      startsOn: fundedAt === null ? null : repaymentDueDate(fundedAt.getTime(), 0, row.id),
+      startsOn: fundedAt === null ? null : repaymentDueDate(fundedAt.getTime(), 0),
       termDays: row.goalTermDays,
       daysDue,
       daysPaid,
@@ -1796,12 +1795,7 @@ async function nextShare(
   const plan = await duePlan(deps, row, nowMs);
   if (plan === 'unavailable') {
     return {
-      daysDue: dueDayCount(
-        (row.goalFundedAt as Date).getTime(),
-        nowMs,
-        row.goalTermDays as number,
-        row.id,
-      ),
+      daysDue: dueDayCount((row.goalFundedAt as Date).getTime(), nowMs, row.goalTermDays as number),
       daysPaid: 0,
       share: null,
       waiting: false,
@@ -2057,7 +2051,7 @@ async function loanRow(
     shares.reduce((sum, share) => sum + share.units - share.paidUnits, 0n);
   const people = (shares: readonly { accountId: string }[]): number =>
     new Set(shares.map((share) => share.accountId)).size;
-  const today = Math.floor((nowMs - repaymentStartMs(fundedAt.getTime(), row.id)) / 86_400_000);
+  const today = Math.floor((nowMs - repaymentStartMs(fundedAt.getTime())) / 86_400_000);
   const behind = new Set(
     plan.due
       .filter((share) => !share.excused && share.dayIndex < today)
@@ -2089,7 +2083,7 @@ async function loanRow(
       nextDay === undefined
         ? null
         : {
-            dueOn: repaymentDueDate(fundedAt.getTime(), nextDay, row.id),
+            dueOn: repaymentDueDate(fundedAt.getTime(), nextDay),
             sats: pricedSum(price, unpaidSharesParts(nextShares)),
             amount: cents(remainderUnits(nextShares)),
           },
