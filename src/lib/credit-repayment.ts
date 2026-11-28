@@ -179,62 +179,44 @@ export function parseRepaymentDescription(
 }
 
 /**
- * A credit outside {@link REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS} has no repayment
- * day before 2026-11-16 UTC, however early it filled.
+ * Earliest repayment day of every credit: 2026-11-28 00:00 UTC. 21.gifts was
+ * unreachable from 2026-11-18 through 2026-11-27, so borrowers could not
+ * repay. The owner decided that every repayment plan starts on 2026-11-28 at
+ * the earliest, however early its credit filled. A plan that would start
+ * earlier starts on this day instead (day 0 is 2026-11-28); day indexes stay
+ * the same and only their dates move.
  */
-const REPAYMENT_EARLIEST_START_MS = Date.UTC(2026, 10, 16);
-
-/**
- * Credits the operator approved to start on the UTC day after they filled,
- * without the 2026-11-16 minimum. Stored lowercase; lookups are
- * case-insensitive.
- */
-export const REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS: ReadonlySet<string> = new Set([
-  'bcc5b230-f446-4724-8e50-df0339657bf9',
-  '11e05676-aa85-4b27-8a0b-855239328c9b',
-  '399feee2-e84a-4f2f-94e2-21c04928298c',
-]);
+const REPAYMENT_EARLIEST_START_MS = Date.UTC(2026, 10, 28);
 
 /**
  * UTC midnight of the first repayment day: the day after the credit became
- * fully paid. A credit outside {@link REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS}
- * never starts before 2026-11-16. A credit in that set starts the day after it
- * filled, with no minimum.
+ * fully paid, never before {@link REPAYMENT_EARLIEST_START_MS} (2026-11-28
+ * UTC). A credit that filled on or before 2026-11-27 starts on 2026-11-28; one
+ * that filled on 2026-11-28 starts on 2026-11-29.
  *
  * @param fundedAtMs - When collected sats first reached the goal.
- * @param messageId - Credit message id; matched case-insensitively against the
- *   operator-approved exceptions.
  * @returns Epoch milliseconds of that UTC midnight.
  */
-export function repaymentStartMs(fundedAtMs: number, messageId: string): number {
+export function repaymentStartMs(fundedAtMs: number): number {
   const funded = new Date(fundedAtMs);
   const nextDay = Date.UTC(funded.getUTCFullYear(), funded.getUTCMonth(), funded.getUTCDate() + 1);
-  if (REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS.has(messageId.toLowerCase())) {
-    return nextDay;
-  }
   return Math.max(nextDay, REPAYMENT_EARLIEST_START_MS);
 }
 
 /**
  * How many term days are already due, including today once the start day has begun.
+ * Counting starts at {@link repaymentStartMs}, never before 2026-11-28.
  *
  * @param fundedAtMs - When the credit filled.
  * @param nowMs - Clock.
  * @param termDays - Stored term, 1..3650.
- * @param messageId - Credit message id; an operator-approved exception starts
- *   the day after it filled, without the 2026-11-16 minimum.
  * @returns A count from 0 through `termDays`.
  */
-export function dueDayCount(
-  fundedAtMs: number,
-  nowMs: number,
-  termDays: number,
-  messageId: string,
-): number {
+export function dueDayCount(fundedAtMs: number, nowMs: number, termDays: number): number {
   if (!Number.isInteger(termDays) || termDays < 1) {
     return 0;
   }
-  const start = repaymentStartMs(fundedAtMs, messageId);
+  const start = repaymentStartMs(fundedAtMs);
   if (nowMs < start) {
     return 0;
   }
@@ -624,17 +606,14 @@ export interface RepaymentLedgerLine {
 
 /**
  * UTC date of one repayment day. Day 0 is `repaymentStartMs`: the UTC day after the
- * credit filled, never before 2026-11-16 unless the credit is an
- * operator-approved exception.
+ * credit filled, never before 2026-11-28.
  *
  * @param fundedAtMs - When collected sats first reached the goal.
  * @param dayIndex - Zero-based day in the term.
- * @param messageId - Credit message id; the day-after-fill exception applies
- *   when it is in {@link REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS}.
  * @returns `YYYY-MM-DD` in UTC.
  */
-export function repaymentDueDate(fundedAtMs: number, dayIndex: number, messageId: string): string {
-  const ms = repaymentStartMs(fundedAtMs, messageId) + dayIndex * 86_400_000;
+export function repaymentDueDate(fundedAtMs: number, dayIndex: number): string {
+  const ms = repaymentStartMs(fundedAtMs) + dayIndex * 86_400_000;
   return new Date(ms).toISOString().slice(0, 10);
 }
 
@@ -663,8 +642,6 @@ export function formatCents(cents: bigint): string {
  *   means the whole share under the legacy marker.
  * @param fundedAtMs - When the credit filled, or null while it is still open.
  * @param nowMs - Clock.
- * @param messageId - Credit message id; an operator-approved exception starts
- *   the day after it filled, without the 2026-11-16 minimum.
  * @returns One row per non-zero share, with `paidUnits` and `status`.
  */
 export function repaymentLedger(
@@ -673,7 +650,6 @@ export function repaymentLedger(
   paid: readonly { dayIndex: number; accountId: string; paidUnits?: bigint }[],
   fundedAtMs: number | null,
   nowMs: number,
-  messageId: string,
 ): RepaymentLedgerLine[] {
   const slices = repaymentSchedule(days, payers);
   const settled = new Map<string, bigint>();
@@ -686,14 +662,14 @@ export function repaymentLedger(
       settled.set(key, (settled.get(key) ?? 0n) + row.paidUnits);
     }
   }
-  const daysDue = fundedAtMs === null ? 0 : dueDayCount(fundedAtMs, nowMs, days, messageId);
+  const daysDue = fundedAtMs === null ? 0 : dueDayCount(fundedAtMs, nowMs, days);
   return slices.map((slice) => {
     const key = `${slice.dayIndex}:${slice.accountId}`;
     const paidUnits = fullySettled.has(key) ? slice.units : (settled.get(key) ?? 0n);
     const fullyPaid = paidUnits >= slice.units;
     return {
       dayIndex: slice.dayIndex,
-      dueOn: fundedAtMs === null ? null : repaymentDueDate(fundedAtMs, slice.dayIndex, messageId),
+      dueOn: fundedAtMs === null ? null : repaymentDueDate(fundedAtMs, slice.dayIndex),
       accountId: slice.accountId,
       units: slice.units,
       paidUnits: fullyPaid ? slice.units : paidUnits,
